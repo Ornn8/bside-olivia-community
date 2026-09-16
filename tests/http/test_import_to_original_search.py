@@ -1,6 +1,8 @@
 """Exercise the user import route through archive backfill to the UI HTTP read."""
 import asyncio
 import json
+import shutil
+import subprocess
 from types import SimpleNamespace
 from datetime import datetime, timezone
 
@@ -16,6 +18,31 @@ from runtime.memory.conversation_memory_delivery import ConversationMemoryDelive
 from runtime.memory.conversation_memory_outbox import CanonicalMemoryOutbox
 from runtime.memory.companion_memory_context import CompanionMemoryPromptBuilder
 from tests.memory.test_mem0_memory import FakeMem0,_config
+
+
+def _read_with_production_ui(payload):
+    from original_client_settings_ui import BOOTSTRAP_JAVASCRIPT
+    source = BOOTSTRAP_JAVASCRIPT
+    reader = source[source.index('  const requestJson = async'):source.index('  const publishProactiveState')]
+    harness = """
+const assert = require('node:assert/strict');
+const payload = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
+const apiBase = 'http://127.0.0.1:1';
+const MEMORY_PATH='/memory', VIDEO_CAPABILITY_PATH='/video', VIDEO_REPLY_SETTINGS_PATH='/settings',
+      STATUS_PATH='/status', PROACTIVE_STATUS_PATH='/proactive', LOCAL_LETTER_IMPORT_PATH='/import';
+const window = {setTimeout, clearTimeout};
+const fetch = async () => ({ok:true, json:async()=>payload});
+""" + reader + """
+requestJson(MEMORY_PATH, {collection:'originals'}).then(result => {
+  assert.ok(result.originals.length > 0);
+  assert.equal(result.indexed_letters, payload.indexed_letters);
+}).catch(error => { console.error(error.code || error); process.exitCode=1; });
+"""
+    node = shutil.which('node')
+    assert node, 'Node is required to verify the production UI response contract'
+    result = subprocess.run([node, '-e', harness], input=json.dumps(payload, ensure_ascii=False),
+                            encoding='utf-8', capture_output=True, timeout=20)
+    assert result.returncode == 0, result.stderr
 
 
 def test_import_backfill_restart_then_search_multiline_originals(tmp_path,monkeypatch):
@@ -71,6 +98,7 @@ def test_import_backfill_restart_then_search_multiline_originals(tmp_path,monkey
                 payload=await response.json()
                 assert payload['archive_total']==87 and payload['archive_indexed']==87
                 assert payload['originals'],query
+                _read_with_production_ui(payload)
                 if query in bodies:
                     row=next(row for row in payload['originals'] if row['speaker']=='user')
                     assert row['text']==bodies[query]

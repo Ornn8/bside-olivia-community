@@ -404,7 +404,7 @@ async def _status(request: web.Request) -> web.Response:
 def _original_payload(value, limit):
     if not isinstance(value, Mapping):
         raise ValueError("original index response invalid")
-    result = {}
+    result = {"schema_version": COMPANION_READ_SCHEMA, "status": "READY"}
     for name in ("indexed_letters", "archive_total", "archive_indexed", "archive_removed"):
         count = value.get(name)
         if (count is None and name != "indexed_letters") or (type(count) is int and count >= 0):

@@ -7,6 +7,30 @@ from runtime.personal_chat.events import PersonalMessage
 from runtime.personal_chat.service import PersonalChatService
 
 
+@pytest.mark.parametrize('channel', ['qq', 'wechat'])
+def test_im_punctuation_and_new_proactive_id_do_not_repeat_content(channel):
+    async def scenario():
+        rows, sent = [], []
+        async def generate(event, row):
+            return '早。看看 https://example.com/a 价格 3.14。好吗？好！'
+        async def send(text):
+            sent.append(text)
+        async def commit(row):
+            assert row['reply_text'] == sent[-1]
+        service = PersonalChatService(rows, lambda: None, generate, commit,
+                                      {channel: ('a', 'owner')})
+        await service.proactive(PersonalMessage(channel, 'a', 'owner', 'p1', ''), send)
+        await service.handle(PersonalMessage(channel, 'a', 'owner', 'u1', '好呀'), send)
+        restarted = PersonalChatService(json.loads(json.dumps(rows)), lambda: None,
+                                       generate, commit, service.bindings)
+        await restarted.proactive(PersonalMessage(channel, 'a', 'owner', 'p2', ''), send)
+        assert len(sent) == 2  # Explicit user replies are not suppressed.
+        assert sent[0] == '早\n看看 https://example.com/a 价格 3.14\n好吗？好！'
+        assert restarted.rows[-1]['delivery_status'] == 'SKIPPED'
+        assert restarted.rows[-1]['error_code'] == 'PERSONAL_CHAT_DUPLICATE_CONTENT'
+    asyncio.run(scenario())
+
+
 def test_two_channels_share_serialized_generation_and_commit(tmp_path):
     async def scenario():
         rows, seen, order = [], [], []

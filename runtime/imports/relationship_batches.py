@@ -91,6 +91,18 @@ class RelationshipBatches:
         if self.running:return
         self.running=True
         try:
+            # Reuse stored assessments from earlier versions; no model calls.
+            with self.connect() as db:
+                completed = db.execute("SELECT payload,assessment FROM batches WHERE state='done' AND assessment IS NOT NULL ORDER BY id").fetchall()
+            for payload, saved in completed:
+                exchanges=tuple(HistoricalExchange(**{**x,'occurred_at':datetime.fromisoformat(x['occurred_at'])}) for x in json.loads(payload))
+                command=historical_relationship_command_id(exchanges) + '.stage-v2'
+                if await asyncio.to_thread(command_service.lookup_command, command) is not None:
+                    continue
+                values=json.loads(saved);values['relationship_stage']=RelationshipStage(values['relationship_stage']);values['evidence_indexes']=tuple(values['evidence_indexes'])
+                await asyncio.to_thread(apply_historical_private_world, exchanges,
+                    assessment=HistoricalRelationshipAssessment(**values), command_service=command_service,
+                    preserve_order=True, stage_backfill=True)
             while True:
                 with self.connect() as db:
                     row=db.execute("SELECT id,payload,state,assessment FROM batches WHERE state!='done' ORDER BY id LIMIT 1").fetchone()
@@ -107,6 +119,7 @@ class RelationshipBatches:
                         else:
                             current=snapshot()
                             previous={name:getattr(current,name) for name in ('familiarity','trust','comfort','closeness','tension')}
+                            previous['relationship_stage'] = current.relationship_stage
                             assessment=await assess_historical_relationship(exchanges,gateway=gateway,persona_policy=persona_policy,previous_state=previous,preserve_order=True)
                             with self.connect() as db:db.execute('UPDATE batches SET assessment=? WHERE id=?',(json.dumps(asdict(assessment)),batch_id))
                         await asyncio.to_thread(apply_historical_private_world,exchanges,assessment=assessment,command_service=command_service,preserve_order=True)

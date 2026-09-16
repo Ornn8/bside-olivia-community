@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 import hashlib
@@ -33,6 +33,7 @@ _RELATIONSHIP_FACT_KINDS = frozenset(
         ReducerEventKind.SHARED_EXPERIENCE,
         ReducerEventKind.CONFLICT,
         ReducerEventKind.REPAIR,
+        ReducerEventKind.STAGE_CONFIRMED,
     }
 )
 
@@ -40,7 +41,9 @@ _RELATIONSHIP_FACT_KINDS = frozenset(
 def validate_exchange_relationship(signal: object, user_text: str, reply_text: str) -> dict | None:
     if signal is None:
         return None
-    if not isinstance(signal, dict) or set(signal) != {"kind", "user_quote", "reply_quote"}:
+    if not isinstance(signal, dict) or not {"kind", "user_quote", "reply_quote"} <= set(signal) or set(signal) - {"kind", "user_quote", "reply_quote", "relationship_stage"}:
+        raise ValueError("DAILY_LIFE_RELATIONSHIP_INVALID")
+    if signal.get('relationship_stage') not in {None, 'unknown', 'acquaintance', 'familiar', 'close', 'committed'}:
         raise ValueError("DAILY_LIFE_RELATIONSHIP_INVALID")
     if signal["kind"] not in {kind.value for kind in _INTERACTION_KINDS}:
         raise ValueError("DAILY_LIFE_RELATIONSHIP_INVALID")
@@ -95,6 +98,7 @@ class RelationshipFactCommand:
     boundary_id: str | None = None
     acknowledged_affection: AcknowledgedAffection | None = None
     asserted_affection_scope: AffectionScope | None = None
+    target_stage: str | None = None
 
     def __post_init__(self) -> None:
         if any(
@@ -137,6 +141,8 @@ class RelationshipFactCommand:
             boundary_id=self.boundary_id,
             acknowledged_affection=self.acknowledged_affection,
             asserted_affection_scope=self.asserted_affection_scope,
+            target_stage=self.target_stage,
+            basis_event_ids=(self.canonical_delivery_id,) if self.target_stage is not None else (),
         )
 
 
@@ -219,12 +225,22 @@ class PrivateWorldRelationshipCommitter:
                         if event.payload.get("semantic_key") in equivalent_keys
                         and event.payload.get("applied") is True]
             last_equivalent = max(previous, default=None)
-            return self.commit(RelationshipFactCommand(
+            result = self.commit(RelationshipFactCommand(
                 command_id="exchange." + hashlib.sha256(delivery_id.encode()).hexdigest(),
                 kind=ReducerEventKind(signal["kind"]), occurred_at=occurred_at,
                 semantic_key=semantic_key, canonical_delivery_id=delivery_id,
                 canonical_reply_sha256=hashlib.sha256(reply_text.encode("utf-8")).hexdigest(),
                 evidence_ref_id=delivery_id + ".interaction", last_equivalent_at=last_equivalent,
+            ))
+            if result not in {RelationshipFactStatus.COMMITTED, RelationshipFactStatus.DUPLICATE} or signal.get('relationship_stage') is None:
+                return result
+            return self.commit(RelationshipFactCommand(
+                command_id='stage.' + hashlib.sha256(delivery_id.encode()).hexdigest(),
+                kind=ReducerEventKind.STAGE_CONFIRMED, occurred_at=occurred_at,
+                semantic_key='stage.' + hashlib.sha256(delivery_id.encode()).hexdigest(),
+                canonical_delivery_id=delivery_id,
+                canonical_reply_sha256=hashlib.sha256(reply_text.encode('utf-8')).hexdigest(),
+                evidence_ref_id=delivery_id + '.stage', target_stage=signal['relationship_stage'],
             ))
         except (ValueError, OSError, sqlite3.Error, LedgerWriteError):
             return RelationshipFactStatus.UNAVAILABLE
@@ -275,9 +291,17 @@ class PrivateWorldRelationshipCommitter:
             boundary_id=command.boundary_id,
             acknowledged_affection=command.acknowledged_affection,
             asserted_affection_scope=command.asserted_affection_scope,
+            target_stage=command.target_stage,
+            basis_event_ids=(command.canonical_delivery_id,) if command.target_stage is not None else (),
         )
         try:
             snapshot = self.ledger.snapshot()
+            if command.kind is ReducerEventKind.STAGE_CONFIRMED and any(
+                prior.event_type == ReducerEventKind.STAGE_CONFIRMED.value
+                and datetime.fromisoformat(prior.occurred_at.replace('Z', '+00:00')) > command.occurred_at
+                for prior in self.ledger.events()
+            ):
+                event = replace(event, target_stage=snapshot.relationship_stage)
             reduced = reduce_private_world(snapshot, event)
             digest = hashlib.sha256(command.command_id.encode("utf-8")).hexdigest()
             applied = self.ledger.apply_once(

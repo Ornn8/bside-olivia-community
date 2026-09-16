@@ -567,6 +567,9 @@ def reduce_private_world_command(
             updates = {field: max(getattr(snapshot, field), getattr(command, field))
                        for field in ("familiarity", "trust", "comfort", "tension")}
             updates["closeness"] = max(snapshot.closeness, min(command.closeness, command.trust, command.comfort))
+            # The service protects confirmed live stages during ordered import.
+            if command.relationship_stage is not None:
+                updates['relationship_stage'] = command.relationship_stage.value
             return _apply_updates(snapshot, updates, reason_code="APPLY_HISTORICAL_RELATIONSHIP_EVIDENCE",
                                   unchanged_reason="HISTORICAL_RELATIONSHIP_EVIDENCE_NO_CHANGE")
         return _apply_updates(

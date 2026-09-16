@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 import hashlib
 import json
@@ -426,9 +426,18 @@ class PrivateWorldCommandService:
             )
             for attempt in range(attempt_limit):
                 base_snapshot = self._ledger_snapshot()
+                effective_command = command
+                if isinstance(command, ApplyHistoricalRelationshipEvidence) and command.relationship_stage is not None:
+                    stage_events = [event for event in self._ledger_events()
+                                    if 'relationship_stage' in event.payload.get('change_fields', ())]
+                    historical_only = stage_events and all(event.event_type == command.kind.value for event in stage_events)
+                    if base_snapshot.relationship_stage != 'unknown' and not historical_only:
+                        effective_command = replace(command, relationship_stage=None)
+                    if any(event.event_type != command.kind.value for event in stage_events):
+                        effective_command = replace(command, relationship_stage=None)
                 reduced = reduce_private_world_command(
                     base_snapshot,
-                    command,
+                    effective_command,
                 )
                 change_fields = tuple(
                     change.field for change in reduced.delta.changes

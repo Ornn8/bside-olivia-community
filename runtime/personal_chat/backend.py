@@ -68,6 +68,7 @@ async def generate(server, event, row):
                                 'structured': True, 'decision_now': datetime.now(LOCAL).isoformat(),
                                 'due_followup': row.get('followup_quote'),
                                 'channel': event.channel, 'incoming_format': event.input_kind,
+                                'user_sent_at': row.get('user_sent_at'), 'received_at': row['life_received_at'],
                                 'letter_invitation_allowed': allowed,
                                 'sticker_choices': sticker_choices,
                                 'proactive': row.get('origin') == 'proactive'})
@@ -126,6 +127,19 @@ async def generate(server, event, row):
 async def commit(server, row):
     if row.get("delivery_status") != "DELIVERED":
         return
+    failures = []
+    for consume in (_commit_world, _commit_candidates, _commit_life, _commit_memory):
+        try:
+            await consume(server, row)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            failures.append(exc)
+    if failures:
+        raise failures[0]
+
+
+async def _commit_world(server, row):
     if row.get("private_world_status") == "PENDING":
         if not server._commit_private_world_letter(row):
             server._persist_store_state()
@@ -138,6 +152,10 @@ async def commit(server, row):
         server._persist_store_state()
         if row.get("media_world_status") != "COMMITTED":
             raise RuntimeError("PERSONAL_CHAT_AUDIO_WORLD_UNAVAILABLE")
+
+async def _commit_candidates(server, row):
+    if row.get("private_world_status") != "COMMITTED":
+        return  # Candidate evidence requires the canonical world delivery first.
     if row.get("candidate_delivery_status") not in {"CREATED", "DUPLICATE", "SKIPPED", "DISABLED"}:
         if row.get('origin') == 'proactive':
             row['candidate_delivery_status'] = 'SKIPPED'
@@ -150,6 +168,8 @@ async def commit(server, row):
                 raise RuntimeError("PERSONAL_CHAT_CANDIDATE_UNAVAILABLE")
             row["candidate_delivery_status"] = status
         server._persist_store_state()
+
+async def _commit_life(server, row):
     if row.get("daily_life_status") != "COMMITTED":
         server._schedule_daily_life_exchange(row)
         task = server.daily_life_tasks.get(f"reply:{row['letter_id']}:1")
@@ -157,6 +177,8 @@ async def commit(server, row):
             await task
         if row.get("daily_life_status") != "COMMITTED":
             raise RuntimeError("PERSONAL_CHAT_DAILY_LIFE_UNAVAILABLE")
+
+async def _commit_memory(server, row):
     # Mem0 is consumed by the existing canonical outbox over persisted state;
     # no second writer or extraction algorithm is introduced here.
     if not row.get("legacy_memory_delivered"):
@@ -168,8 +190,9 @@ async def commit(server, row):
 
 async def recoverable_commit(server, row):
     """A delivered reply survives optional consumer failure without a resend."""
-    if row.get("consumer_failures", 0) >= 3:
-        return  # Durable exhausted state remains visible for operator recovery.
+    now = datetime.now().timestamp()
+    if now < row.get('consumer_retry_at', 0):
+        return
     try:
         await commit(server, row)
     except asyncio.CancelledError:
@@ -177,11 +200,13 @@ async def recoverable_commit(server, row):
     except Exception as exc:
         row["consumer_error_code"] = _failure_code(exc)
         row["consumer_failures"] = row.get("consumer_failures", 0) + 1
+        row['consumer_retry_at'] = now + min(3600, 30 * 2 ** min(row['consumer_failures'] - 1, 7))
         server._persist_store_state()
         server._safe_log("personal_chat_consumer_pending", error_code=row["consumer_error_code"])
     else:
         if row.pop("consumer_error_code", None) is not None:
             row.pop("consumer_failures", None)
+            row.pop('consumer_retry_at', None)
             server._persist_store_state()
 
 

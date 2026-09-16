@@ -60,3 +60,26 @@ def test_dates_and_original_file_order(tmp_path):
         r['occurred_at']=None;r['metadata'].pop('import_position')
         r['metadata']['backup_record']={'source_id':f'offline-letter-pairs:hash:{i:06}'}
     assert [x.user_message for x in archive_exchanges(list(reversed(data)))]==['第0封问候','第1封问候','第2封问候']
+
+
+def test_completed_old_assessment_backfills_stage_without_model_call(tmp_path):
+    ledger = SQLitePrivateWorldLedger(tmp_path / 'world.sqlite3')
+    service = PrivateWorldCommandService(ledger)
+    queue = RelationshipBatches(tmp_path / 'queue.sqlite3')
+    queue.enqueue(archive_exchanges(rows(5)))
+    gateway = Gateway()
+    def run():
+        asyncio.run(queue.run(gateway=gateway, persona_policy='policy',
+                             command_service=service, snapshot=ledger.snapshot))
+    run()
+    # Old releases persisted an assessment but did not apply its stage.
+    with queue.connect() as db:
+        saved = json.loads(db.execute('SELECT assessment FROM batches').fetchone()[0])
+        saved['relationship_stage'] = 'familiar'
+        db.execute('UPDATE batches SET assessment=?', (json.dumps(saved),))
+    run()
+    assert ledger.snapshot().relationship_stage == 'familiar'
+    assert len(gateway.calls) == 1
+    previous = ledger.snapshot()
+    run()
+    assert ledger.snapshot() == previous and len(gateway.calls) == 1

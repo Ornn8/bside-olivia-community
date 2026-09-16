@@ -1,6 +1,7 @@
 """Normalize owner-only text events before any model, memory or world access."""
 from dataclasses import dataclass
 import hashlib
+from datetime import datetime, timezone
 from typing import Mapping
 
 
@@ -13,6 +14,7 @@ class PersonalMessage:
     text: str
     parts: tuple[tuple[str, str], ...] = ()
     input_kind: str = 'text'
+    sent_at: str | None = None
 
     @property
     def sources(self):
@@ -62,8 +64,15 @@ def owner_message(channel: str, payload: Mapping, *, account_id: str, owner_id: 
         raise ValueError("PERSONAL_CHAT_CHANNEL_INVALID")
     if not isinstance(text, str) or not text.strip() or len(text) > 10000 or message_id is None:
         return None
+    raw_time = payload.get('time') if channel == 'qq' else payload.get('create_time_ms')
+    sent_at = None
+    if type(raw_time) in (int, float) and raw_time > 0:
+        try:
+            sent_at = datetime.fromtimestamp(raw_time / (1000 if channel == 'wechat' else 1), timezone.utc).isoformat()
+        except (ValueError, OverflowError, OSError):
+            pass
     return PersonalMessage(channel, account_id, owner_id, str(message_id), text,
-        input_kind='voice' if channel == 'wechat' and any(i['type'] == 3 for i in items) else 'text')
+        input_kind='voice' if channel == 'wechat' and any(i['type'] == 3 for i in items) else 'text', sent_at=sent_at)
 
 
 def combine(events):
@@ -80,4 +89,4 @@ def combine(events):
     if len(text) > 10000:
         raise ValueError('PERSONAL_CHAT_BATCH_TOO_LARGE')
     return PersonalMessage(first.channel, first.account_id, first.owner_id, next(iter(sources)), text, tuple(sources.items()),
-                           'voice' if any(e.input_kind == 'voice' for e in events) else 'text')
+                           'voice' if any(e.input_kind == 'voice' for e in events) else 'text', first.sent_at)
