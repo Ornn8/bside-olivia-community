@@ -34,7 +34,8 @@ def render_original_reply(content, reply_text, output_path, *, environment,
                           include_spoken=True, **video_options):
     if duration_seconds != 110:
         raise MusicReplyError("MUSIC_DURATION_UNSUPPORTED")
-    if not original_configured(environment):
+    from runtime.remote_pipeline import enabled, generate
+    if not enabled(environment) and not original_configured(environment):
         raise MusicReplyError("ORIGINAL_RUNTIME_UNAVAILABLE")
     audio = output_path.with_name(output_path.stem + "-original.wav") if render_video else output_path
     try:
@@ -47,7 +48,7 @@ def render_original_reply(content, reply_text, output_path, *, environment,
     except Exception as exc:
         raise MusicReplyError("SONG_CONTENT_UNAVAILABLE") from exc
     try:
-        metadata = generate_ace(None, audio, environment=environment, paths=original_paths(environment),
+        metadata = generate('original', {'lyrics': plan.lyrics}, audio, environment=environment) if enabled(environment) else generate_ace(None, audio, environment=environment, paths=original_paths(environment),
             lyrics=plan.lyrics, language="zh", task_type="text2music",
             parameters={"caption": CAPTION, "duration": 110, "bpm": 68,
                         "keyscale": "Bb major", "timesignature": "4"})

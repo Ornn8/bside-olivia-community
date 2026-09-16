@@ -1,0 +1,18 @@
+[Unit]
+Description=Olivia independent generation task service
+After=network-online.target
+
+[Service]
+Type=simple
+User=olivia-gpu
+WorkingDirectory=/opt/olivia-gpu
+ExecStart=/opt/olivia-gpu/.venv/bin/python -m gpu_service.server --config /etc/olivia-gpu/config.json --data /var/lib/olivia-gpu --port 18880
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillMode=control-group
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

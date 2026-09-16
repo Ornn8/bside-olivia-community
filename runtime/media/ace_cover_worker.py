@@ -17,6 +17,27 @@ CAPTION = ("linli_voice, pop ballad, gentle and tender female singing in a natur
            "Pure solo acoustic piano accompaniment. No repeated high-note belting.")
 
 
+def check_offline_assets(root: Path) -> None:
+    """Validate only this pipeline's XL, text encoder and VAE; never install at request time."""
+    checkpoints = root / 'checkpoints'
+    model = checkpoints / 'acestep-v15-xl-sft'
+    try:
+        index = json.loads((model / 'model.safetensors.index.json').read_text(encoding='utf-8'))
+        shards = set(index['weight_map'].values())
+        if not shards or any(Path(name).name != name for name in shards):
+            raise ValueError('Invalid shards')
+        required = [model / name for name in shards]
+        required += [model / 'config.json', model / 'silence_latent.pt',
+                     checkpoints / 'Qwen3-Embedding-0.6B/model.safetensors',
+                     checkpoints / 'Qwen3-Embedding-0.6B/config.json',
+                     checkpoints / 'vae/diffusion_pytorch_model.safetensors',
+                     checkpoints / 'vae/config.json']
+        if any(not path.is_file() or path.stat().st_size == 0 for path in required):
+            raise ValueError('Missing assets')
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise RuntimeError('ACE_OFFLINE_ASSETS_MISSING') from exc
+
+
 def transcribe_cover_source(source: Path, model_path: Path, ffmpeg: str) -> tuple[str, str]:
     """Read source lyrics locally without loading ACE or generating any music."""
     if not model_path.is_file():
@@ -100,7 +121,11 @@ def main() -> None:
         progress("transcribing")
         lyrics, language = transcribe_cover_source(source, Path(request["asr_model"]), request["ffmpeg"])
     progress("loading_model")
+    check_offline_assets(root)
     handler = AceStepHandler()
+    # The upstream check also downloads default Turbo/LM models unused by this
+    # fixed XL pipeline. Required files were validated above; stay offline.
+    handler._ensure_models_present = lambda **kwargs: None
     status, ready = handler.initialize_service(
         project_root=str(root), config_path="acestep-v15-xl-sft", device="cuda",
         use_flash_attention=False, compile_model=False, offload_to_cpu=True,

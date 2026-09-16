@@ -33,9 +33,32 @@ def _audio_text_chunks(text: str) -> list[str]:
     return chunks
 
 
-def _generate_complete_audio(generate, bundle, *, text, audio_only_unbounded=False, **kwargs):
+def _plan_audio_chunks(text, bundle, runtime, reference_codes, request):
+    """Keep a continuous performance when the pinned runtime's context permits."""
+    def fits(span):
+        segments = runtime.ref_segments(str(request['reference_text']).strip(),
+                                        span.strip(), str(request.get('instruction', '')))
+        prepared = runtime._prepare_one(bundle.tokenizer, bundle.model.config,
+                                        segments, reference_codes)
+        prefill = prepared['input_ids'].shape[1]
+        available = min(int(request.get('max_new_tokens', 1500)),
+                        runtime.MAX_SEQ_LEN - 1 - prefill)
+        # Speech duration is an estimate: reserve 50% plus 64 frames for pauses.
+        estimated = runtime.estimate_speech_frames(bundle.tokenizer, span.strip())
+        return available >= estimated * 1.5 + 64
+
+    if fits(text):
+        return [text]
+    chunks = _audio_text_chunks(text)
+    if not all(fits(chunk) for chunk in chunks):
+        raise ValueError('BREEZE_REQUEST_INVALID')
+    return chunks
+
+
+def _generate_complete_audio(generate, bundle, *, text, audio_only_unbounded=False, chunks=None, **kwargs):
     # Reuse one loaded model and reference; each text span is synthesized once.
-    chunks = _audio_text_chunks(text) if audio_only_unbounded else [text]
+    if chunks is None:
+        chunks = _audio_text_chunks(text) if audio_only_unbounded else [text]
     results = []
     offset = 0
     directions = list(re.finditer(r'第(\d+)句：(.*?)(?=第\d+句：|$)', kwargs.get('instruction', ''), re.S))
@@ -47,7 +70,7 @@ def _generate_complete_audio(generate, bundle, *, text, audio_only_unbounded=Fal
             selected = [match.group(2) for match in directions if first <= int(match.group(1)) <= last]
             if selected:
                 options['instruction'] = ''.join(f'第{i}句：{direction}' for i, direction in enumerate(selected, 1))
-        results.append(generate(bundle, text=chunk, **options))
+        results.append(generate(bundle, text=chunk.strip(), **options))
         offset += len(chunk)
     if len(results) == 1:
         return results[0]
@@ -158,6 +181,18 @@ def _write_status(path: Path, value: dict[str, object]) -> None:
 
 
 def _load_package(runtime_root: Path):
+    # Select an upstream implementation explicitly when deployment kernels differ.
+    # Eager matches the INT8 path used by the Windows runtime and still runs on GPU.
+    kernel_backend = os.environ.get('OLIVIA_BREEZE_KERNEL_BACKEND')
+    if kernel_backend in ('triton', 'eager'):
+        import comfy_kitchen
+        comfy_kitchen.disable_backend('cuda')
+        if kernel_backend == 'triton':
+            comfy_kitchen.enable_backend('triton')
+            comfy_kitchen.set_backend_priority(['triton', 'eager'])
+        else:
+            comfy_kitchen.disable_backend('triton')
+            comfy_kitchen.set_backend_priority(['eager'])
     spec = importlib.util.spec_from_file_location(
         _PACKAGE_NAME,
         runtime_root / "__init__.py",
@@ -230,6 +265,9 @@ def _synthesize(request: dict[str, Any], output: Path, status: Path) -> None:
 
 
 def _synthesize_impl(request: dict[str, Any], output: Path, status: Path) -> None:
+    # Paragraph layout can make Breeze stop early. Normalize only its spoken
+    # projection; the frozen letter and the caller's request retain their layout.
+    request = {**request, 'text': ' '.join(str(request.get('text', '')).split())}
     decode = None
     register = None
     adapter_receipt = {}
@@ -335,15 +373,21 @@ def _synthesize_impl(request: dict[str, Any], output: Path, status: Path) -> Non
         reference_codes = runtime.encode_reference_audio(
             bundle.codec, reference_waveform, reference_rate
         )
+        chunks = (_plan_audio_chunks(request['text'], bundle, runtime, reference_codes, request)
+                  if request.get('audio_only_unbounded') is True else [request['text']])
+        chunk_count = remaining_chunks = len(chunks)
         phase = "generation"
         _write_status(
             status,
-            {"status": "ready", "phase": "generation", "audio_started": False},
+            {"status": "ready", "phase": "generation", "audio_started": False,
+             "chunk_count": chunk_count,
+             "segmentation": 'natural_sentences_v1' if chunk_count > 1 else 'single'},
         )
         result = _generate_complete_audio(
             nodes._generate_audio,
             bundle,
             text=str(request["text"]),
+            chunks=chunks,
             audio_only_unbounded=request.get('audio_only_unbounded') is True,
             instruction=str(request["instruction"]),
             ref_audio=None,

@@ -58,12 +58,17 @@ PAYLOAD_EXTRA_DIRS = (
     "runtime/diagnostics",
 )
 PAYLOAD_EXTRA_FILES = (
+    "runtime/cloud_service.py",
+    "runtime/remote_generation.py",
+    "runtime/remote_pipeline.py",
+    "runtime/gpu_settings.py",
     "runtime/__init__.py",
     "runtime/original_client_media_http.py",
     "runtime/video_reply_settings.py",
 )
 PAYLOAD_SUFFIXES = {".py", ".json", ".toml", ".ini", ".txt", ".ps1", ".patch"}
 PAYLOAD_ROOT_FILES = {
+    "original_client_cloud_api.py",
     "THIRD_PARTY_NOTICES.md",
     "local_server.py",
     "mem0_capability_install.py",

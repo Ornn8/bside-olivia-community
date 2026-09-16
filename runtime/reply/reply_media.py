@@ -113,8 +113,9 @@ def _tts_config(
     settings = _settings(path)
     environment = os.environ if env is None else env
 
-    def configured_path(value: object) -> Path:
-        resolved = resolve_media_path(value, environment)
+    def configured_path(value: object, *, executable: bool = False) -> Path:
+        # Resolving a venv interpreter symlink bypasses its installed packages.
+        resolved = resolve_media_path(value, environment, follow_symlinks=not executable)
         if resolved is None:
             raise ReplyMediaError("TTS_CONFIG_PATH_UNAVAILABLE")
         return resolved
@@ -137,7 +138,7 @@ def _tts_config(
         if provider == "breeze_tts2" and provider_options.get("runtime_backend") == "rocm"
         else environment.get(python_env) or provider_options.get("external_python"))
     external_python = (
-        configured_path(configured_python)
+        configured_path(configured_python, executable=True)
         if configured_python is not None and str(configured_python).strip()
         else runtime_root / "venv" / "Scripts" / "python.exe"
     )
@@ -157,7 +158,7 @@ def _tts_config(
         "wetext_fst_root",
     ):
         if key in provider_options and str(provider_options[key]).strip():
-            provider_options[key] = str(configured_path(provider_options[key]))
+            provider_options[key] = str(configured_path(provider_options[key], executable=key == 'quality_gate_python'))
     if ordinary_video:
         if provider == "breeze_tts2":
             # Apply the accepted delivery setting to existing generated configs too.
@@ -342,6 +343,13 @@ def render_reply_video(
     ffmpeg_path: Path | None = None,
     provider_cache_root: Path | None = None,
 ) -> dict[str, object]:
+    from runtime.remote_pipeline import enabled, generate
+    if enabled(environment):
+        if scene_path is None:
+            raise ReplyMediaError("GPU_SHARED_SCENE_MISSING")
+        return generate('video', {'text': text, 'voice_plan': voice_performance_plan.to_dict() if voice_performance_plan else {'reply_text': text},
+                        'adaptive_delivery': adaptive_delivery, 'enforce_content_gate': enforce_content_gate},
+                        output_path, environment=environment, assets={'scene_asset': scene_path})
     if scene_path is not None and (
         latentsync_python_path is None
         or latentsync_root is None
@@ -474,6 +482,9 @@ def render_reply_audio(text: str, output_path: Path, *, tts_config_path: Path,
     """Generate speech directly, without video dependencies or a video VRAM gate."""
     if voice_performance_plan.spoken_text != text:
         raise ReplyMediaError("VOICE_DIRECTION_TEXT_MISMATCH")
+    from runtime.remote_pipeline import enabled, generate
+    if enabled(environment):
+        return generate('tts', {'text': text, 'voice_plan': voice_performance_plan.to_dict()}, output_path, environment=environment)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="olivia-voice-", dir=output_path.parent) as temporary:
         config = _tts_config(tts_config_path, Path(temporary), ordinary_video=True, env=environment)

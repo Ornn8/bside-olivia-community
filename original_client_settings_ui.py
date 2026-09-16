@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-SETTINGS_UI_VERSION = "p03.original-settings-manage.v34"
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v35"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
@@ -498,7 +498,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const requestSetup = async (path, body = null) => {
     const endpoint = new URL(path, apiBase);
     const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), 25000);
+    const timeout = window.setTimeout(() => controller.abort(), path === "/toy/cloud/action" ? 45000 : 25000);
     const options = {
       cache: "no-store",
       credentials: "omit",
@@ -2966,6 +2966,155 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     refreshVideoReplySetting=()=>container.isConnected ? hydrate() : Promise.resolve(); void hydrate();
   };
 
+  const mountGPUSettings = (section) => {
+    const box = document.createElement("div"); box.className = "flex flex-col gap-4";
+    box.setAttribute("data-olivia-gpu-settings", "true");
+    box.append(text("div", "媒体生成服务", "text-text-body text-title-m"),
+      text("p", "选择云端后，生成所需的回信文字和素材会发送到你指定的服务。聊天模型仍使用原来的设置。", "text-text-secondary text-body-m"));
+    const field = (label, input) => {
+      const row = document.createElement("label"); row.className = "flex flex-col gap-2";
+      input.className = "rounded-3 px-4 py-3";
+      input.style.cssText = "background:transparent;color:inherit;border:1px solid #8886;width:100%;box-sizing:border-box";
+      row.append(text("span", label), input); box.append(row); return input;
+    };
+    const mode = field("生成位置", document.createElement("select"));
+    for (const [value, label] of [["local","本机 GPU"],["remote","云端 GPU"]]) {
+      const option = document.createElement("option"); option.value=value; option.textContent=label; mode.append(option);
+    }
+    const url = field("服务地址", document.createElement("input")); url.type="url"; url.placeholder="填写完整的 HTTPS 服务地址";
+    const key = field("API Key", document.createElement("input")); key.type="password"; key.autocomplete="new-password";
+    key.placeholder="填写该服务提供的 API Key";
+    const state = text("p", "正在读取…", "text-text-secondary text-body-m"); state.setAttribute("role","status");
+    const controls=actions(); let busy=false, loaded=false, savedURL="", hasKey=false;
+    const errors={GPU_NOT_CONFIGURED:"请填写服务地址和 API Key；更换地址时需填写对应的 Key。",
+      CLOUD_URL_INVALID:"请填写完整的 HTTPS 服务地址，不要附加接口路径。",
+      GPU_KEY_INVALID:"API Key 格式不正确，请重新粘贴。", GPU_SETTINGS_SAVE_FAILED:"设置保存失败，原配置未改变。",
+      GPU_SETTINGS_UNAVAILABLE:"原连接设置无法读取，请重新填写。"};
+    const render = data => {
+      loaded=true; mode.value=data.route; url.value=data.url; savedURL=data.url; hasKey=data.has_key; key.value="";
+      key.placeholder=hasKey ? "已保存，留空保留；更换地址时须重新填写" : "填写该服务提供的 API Key";
+      state.textContent=data.error_code ? (errors[data.error_code] || data.error_code) :
+        (data.route==="remote" ? "已启用云端生成。设置对后续任务生效。" : "当前使用本机生成。");
+    };
+    const perform = async action => {
+      if (busy || (!loaded && action!=="settings_status")) return;
+      busy=true; setButtonsBusy(Array.from(controls.querySelectorAll("button")),true);
+      mode.disabled=url.disabled=key.disabled=true; state.textContent="正在处理…";
+      try {
+        if (!setupSessionToken) await requestSetup(SETUP_STATUS_PATH);
+        const body={action};
+        if (action==="settings_save" || action==="settings_test") Object.assign(body,{url:url.value.trim(),key:key.value.trim()});
+        if (action==="settings_save") body.route=mode.value;
+        const result=await requestSetup("/toy/generation/action",body);
+        if (action==="settings_test") {
+          const names={tts:"语音",video:"视频",cover:"翻唱",original:"歌曲",lipsync:"口型视频",separate:"人声分离",image:"图片"};
+          state.textContent="连接成功，可用功能："+result.kinds.map(k=>names[k]||k).join("、")+"。尚未保存设置。";
+        } else { render(result); if(action!=="settings_status") void refreshVideoReplySetting(); }
+      } catch(error) { state.textContent=errors[error.code] || `连接未成功：${error.code || "网络不可用"}。请检查地址、Key 和服务器状态。`; }
+      finally {busy=false;mode.disabled=url.disabled=key.disabled=false;setButtonsBusy(Array.from(controls.querySelectorAll("button")),false);}
+    };
+    url.addEventListener("input",()=>{key.placeholder=hasKey && url.value.trim()===savedURL ? "留空保留已保存的 Key" : "请填写此地址对应的 API Key";});
+    controls.append(button("测试连接",()=>perform("settings_test")),button("保存生成设置",()=>perform("settings_save")),
+      button("清除连接",()=>perform("settings_clear")),button("重新读取",()=>perform("settings_status")));
+    box.append(controls,state,text("p","Key 使用 Windows 当前用户加密保存，不会在页面回显。云端不可用时任务会报错，不会自动切换到本机。","text-text-secondary text-caption-m"));
+    section.append(box); void perform("settings_status");
+  };
+
+  const mountCloudService = (section) => {
+    const box = document.createElement("div");
+    box.className = "flex flex-col gap-4";
+    box.setAttribute("data-olivia-cloud-service", "true");
+    const state = text("p", "读取云服务设置…", "text-text-secondary text-body-m");
+    state.setAttribute("role", "status");
+    const field = (label, type, placeholder) => {
+      const row = document.createElement("label"); row.className = "flex flex-col gap-2";
+      const input = document.createElement("input"); input.type = type; input.placeholder = placeholder;
+      input.className = "rounded-3 px-4 py-3";
+      input.style.cssText = "background:transparent;color:inherit;border:1px solid #8886;width:100%;box-sizing:border-box";
+      row.append(text("span", label), input); box.append(row); return input;
+    };
+    box.append(text("div", "云服务（可选）", "text-text-body text-title-m"),
+      text("p", "登录后每 15 分钟发送客户端版本和操作系统，用于连接状态与支持。信件、记忆及世界状态保留本地。", "text-text-secondary text-body-m"));
+    const url = field("服务地址", "url", "填写 HTTPS 服务地址"); url.autocomplete = "url";
+    const username = field("云服务账号", "text", "由服务管理员提供"); username.autocomplete = "username";
+    const password = field("密码", "password", "密码不保存在本地"); password.autocomplete = "current-password";
+    const consentLabel = document.createElement("label");
+    const consent = document.createElement("input"); consent.type = "checkbox";
+    consentLabel.append(consent, text("span", " 同意连接服务并发送上述版本信息")); box.append(consentLabel);
+    const reports = document.createElement("div"), releases = document.createElement("div");
+    let busy = false;
+    const controls = actions();
+    const request = async (body) => {
+      if (!setupSessionToken) await requestSetup(SETUP_STATUS_PATH);
+      return requestSetup("/toy/cloud/action", body);
+    };
+    const render = (data) => {
+      if (document.activeElement !== url) url.value = data.url || "";
+      if (document.activeElement !== username) username.value = data.username || "";
+      state.textContent = data.signed_in
+        ? `已登录 ${data.username}。${data.last_sync ? "最近连接：" + new Date(data.last_sync * 1000).toLocaleString() : "等待首次同步"}。待发送报告 ${data.pending_reports} 份。`
+        : "未登录云服务，本地功能可正常使用。";
+      if (data.error_code) state.textContent += ` ${data.error_code}`;
+      reports.replaceChildren(); releases.replaceChildren();
+      if (data.signed_in) {
+        reports.append(text("div", "待上报预览", "text-text-body text-label-l"));
+        const codes = data.report_preview || [];
+        reports.append(text("p", codes.length ? codes.map(r => `${r.error_code} · ${r.app_version} · ${r.os_family}`).join("\n") : "本次运行暂无可上报的错误代码。"));
+        const agree = document.createElement("input"); agree.type = "checkbox";
+        const label = document.createElement("label"); label.append(agree, text("span", " 同意上传以上错误代码、版本、操作系统及随机报告编号，不上传原始日志"));
+        const send = button("发送以上报告", () => perform({action:"report", consent:agree.checked, codes:codes.map(r=>r.error_code)}));
+        send.disabled = true; agree.addEventListener("change", () => {send.disabled = !agree.checked || !codes.length;});
+        reports.append(label, send);
+        for (const receipt of data.receipts || []) reports.append(text("p", `${receipt.error_code}：报告编号 ${receipt.id}`));
+      }
+      releases.append(text("div", "版本与公告", "text-text-body text-label-l"));
+      for (const item of data.publications || []) {
+        const card = document.createElement("div"); card.style.cssText = "padding:12px 0;border-bottom:1px solid #8884";
+        card.append(text("strong", item.title), text("p", item.body));
+        if (item.kind === "release") {
+          card.append(text("p", `版本 ${item.version} · 最低版本 ${item.minimum_version || "未指定"}`));
+          try {
+            const target = new URL(item.download_url);
+            if (target.protocol === "https:" && !target.username && !target.password) {
+              const link = document.createElement("a"); link.href = target.href; link.target = "_blank"; link.rel = "noopener noreferrer"; link.textContent = "下载补丁";
+              card.append(link, text("p", `SHA-256：${item.sha256}`), button("导入已下载的补丁", () => openDialog(false, "update")));
+            }
+          } catch (_) {}
+        }
+        releases.append(card);
+      }
+      if (!(data.publications || []).length) releases.append(text("p", data.signed_in ? "尚无已获取的版本或公告。" : "登录后查看。"));
+    };
+    const perform = async body => {
+      if (busy) return; busy = true; setButtonsBusy(Array.from(controls.querySelectorAll("button")), true);
+      state.textContent = "正在处理…";
+      try { render(await request(body)); }
+      catch (error) {state.textContent = `云服务暂不可用：${error.code || "CLOUD_UNAVAILABLE"}。本地功能不受影响。`;}
+      finally {password.value = ""; busy = false; setButtonsBusy(Array.from(controls.querySelectorAll("button")), false);}
+    };
+    const confirmDelete=document.createElement("input"); confirmDelete.type="checkbox";
+    const confirmLabel=document.createElement("label");
+    confirmLabel.append(confirmDelete,text("span", " 确认删除云端诊断或注销账号（注销需重新输入密码）"));
+    box.append(confirmLabel);
+    controls.append(button("登录", () => perform({action:"login", url:url.value.trim(), username:username.value.trim(), password:password.value, consent:consent.checked})),
+      button("退出云服务", () => perform({action:"logout"})), button("刷新状态", () => perform({action:"status"})),
+      button("删除云端诊断", () => {
+        if (confirmDelete.checked) {
+          confirmDelete.checked=false;
+          void perform({action:"delete_reports", confirm:true});
+        } else state.textContent="请先勾选删除确认。本地诊断不会删除。";
+      }),
+      button("注销云账号", () => {
+        if (confirmDelete.checked) {
+          confirmDelete.checked=false;
+          void perform({action:"delete_account", confirm:true, password:password.value});
+        } else state.textContent="请先勾选注销确认并重新输入密码。本地信件和记忆不会删除。";
+      }));
+    box.append(text("p", "退出仅停止后续同步，不删除服务器数据。诊断删除或注销后，备份副本按备份周期到期清除。", "text-text-secondary text-body-m"));
+    box.append(controls, state, reports, releases); section.append(box);
+    void perform({action:"status"});
+  };
+
   const mountDiagnosticExport = (section) => {
     const row = document.createElement("div");
     row.className = "flex items-center justify-between px-0 py-3 rounded-3";
@@ -3238,6 +3387,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     section.append(title, row);
     if (window.__oliviaNativeView) mountProactiveSetting(section);
     mountDiagnosticExport(section);
+    mountCloudService(section);
+    mountGPUSettings(section);
     mountVideoReplySetting(section);
     mountLocalLetterImport(section);
     container.append(section);

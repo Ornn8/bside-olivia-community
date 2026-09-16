@@ -49,6 +49,10 @@ def generate_cover(source: Path | None, output: Path, *, environment: Mapping[st
                    lyrics: str = "", language: str = "unknown") -> dict[str, object]:
     if source is None or not source.is_file():
         raise CoverError("COVER_SOURCE_REQUIRED")
+    from runtime.remote_pipeline import enabled, generate
+    if enabled(environment):
+        return generate('cover', {'lyrics': lyrics, 'language': language}, output,
+                        environment=environment, assets={'source_asset': source})
     if not cover_configured(environment):
         raise CoverError("COVER_RUNTIME_UNAVAILABLE")
     paths = cover_paths(environment)

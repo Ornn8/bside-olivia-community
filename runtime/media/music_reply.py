@@ -1063,6 +1063,10 @@ def separate_vocals(
     ffmpeg_path: Path | None = None,
     accompaniment_path: Path | None = None,
 ) -> None:
+    from runtime.remote_pipeline import enabled, generate
+    if enabled(environment) and accompaniment_path is None:
+        generate('separate', {}, vocals_path, environment=environment, assets={'audio_asset': song_path})
+        return
     if any(
         value is None or not value.is_file()
         for value in (executable, model_path, config_path)
@@ -1091,7 +1095,7 @@ def separate_vocals(
         )
         command = [str(executable)]
         configured_python = configured_media_path(environment, "OLIVIA_ROFORMER_PYTHON")
-        if configured_python is not None and configured_python == executable.resolve():
+        if configured_python is not None and configured_python == executable.absolute():
             command.extend(["-m", "mel_band_roformer.inference"])
         command.extend(
             [
@@ -1158,7 +1162,8 @@ def render_full_face_performance(
     environment: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    if latentsync_python_path is None or latentsync_root is None:
+    from runtime.remote_pipeline import enabled
+    if not enabled(environment) and (latentsync_python_path is None or latentsync_root is None):
         raise MusicReplyError("LATENTSYNC_INPUT_UNAVAILABLE")
     with tempfile.TemporaryDirectory(prefix="olivia-music-face-", dir=output_path.parent) as temporary:
         raw_video = Path(temporary) / "latentsync-vocals.mp4"

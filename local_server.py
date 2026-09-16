@@ -1347,6 +1347,19 @@ def _route_readiness(videos=None, *, cover=False) -> dict[str, bool]:
         videos = video_reply_settings_store.videos_snapshot()
         if video_reply_settings_store.saved_tier() == "video":
             videos["voice_reply"] = False
+    from runtime.remote_pipeline import enabled as remote_enabled, capabilities as remote_capabilities
+    if remote_enabled(environment):
+        try:
+            kinds = set(remote_capabilities(environment)['kinds'])
+        except Exception:
+            kinds = set()
+        voice = 'tts' in kinds
+        song_audio = ('cover' if cover else 'original') in kinds
+        speech_video = 'video' in kinds
+        song = song_audio and 'lipsync' in kinds and (not cover or 'separate' in kinds)
+        return {'voice_reply': speech_video if videos['voice_reply'] else voice,
+                'singing_video': song if videos['singing_video'] else song_audio,
+                'voice_song_video': song and speech_video if videos['voice_song_video'] else voice and song_audio}
     voice = _voice_reply_configured(environment)
     from runtime.media.ace_cover import cover_configured
     from runtime.media.original_song import original_configured
@@ -1393,6 +1406,9 @@ def _open_video_capability_source(capability: object, source: object) -> bool:
 def _video_reply_dependencies_ready() -> bool:
     environment = MappingProxyType(dict(_os.environ))
     try:
+        from runtime.remote_pipeline import enabled as remote_enabled
+        if remote_enabled(environment):
+            return any(_route_readiness().values())
         from runtime.media.ace_cover import cover_configured
         from runtime.media.original_song import original_configured
         return _voice_reply_configured(environment) or cover_configured(environment) or original_configured(environment)
@@ -4516,7 +4532,8 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
         stage = "prepare"
         try:
             output_dir.mkdir(parents=True, exist_ok=True)
-            if video_enabled:
+            from runtime.remote_pipeline import enabled as remote_enabled
+            if video_enabled and not remote_enabled(environment):
                 require_breeze_hardware()
             def runtime_path(name: str) -> Path:
                 configured = configured_media_path(environment, name)

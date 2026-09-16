@@ -424,7 +424,10 @@ def render_latentsync_video(
     environment: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     """Apply the accepted 1.5 settings to an original-motion source video."""
-
+    from runtime.remote_pipeline import enabled, generate
+    if enabled(environment):
+        return generate('lipsync', {}, output_path, environment=environment,
+                        assets={'scene_asset': source_video, 'audio_asset': audio_path})
     source_video = Path(source_video)
     audio_path = Path(audio_path)
     output_path = Path(output_path)

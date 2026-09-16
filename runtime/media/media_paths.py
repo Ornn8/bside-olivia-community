@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Mapping
 
 
-def resolve_media_path(value: object, environ: Mapping[str, str]) -> Path | None:
+def resolve_media_path(value: object, environ: Mapping[str, str], *, follow_symlinks: bool = True) -> Path | None:
     """Resolve one configured path without consulting the process cwd."""
 
     raw = str(value or "").strip()
@@ -16,7 +16,7 @@ def resolve_media_path(value: object, environ: Mapping[str, str]) -> Path | None
         if not project_root.is_absolute():
             return None
         path = project_root / path
-    return path.resolve(strict=False)
+    return path.resolve(strict=False) if follow_symlinks else path.absolute()
 
 
 def configured_media_path(
@@ -25,4 +25,6 @@ def configured_media_path(
 ) -> Path | None:
     """Resolve a configured media path without depending on process cwd."""
 
-    return resolve_media_path(environ.get(name, ""), environ)
+    # Executables must retain their venv location on Linux.
+    return resolve_media_path(environ.get(name, ""), environ,
+                              follow_symlinks=not name.endswith(('_PYTHON', '_EXE')))
