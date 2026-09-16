@@ -74,7 +74,10 @@ def export_letters(letters):
                 'title': letter.get('title') or '', 'origin': letter.get('origin') or 'user',
                 'reply_mode': letter.get('reply_mode') or 'text',
                 'letter_status': str(letter.get('letter_status', 'COMPLETED')),
-                'created_at': letter.get('created_at'), 'replied_at': letter.get('replied_at'),
+                # Archive created_at can be the import date; explicit unknown
+                # Preserve the original occurred_at across export.
+                'created_at': letter.get('occurred_at', letter.get('created_at')),
+                'replied_at': letter.get('replied_at'),
                 'source_id': letter.get('source_record_id') or letter.get('letter_id') or '',
             })
         digest = identity(record)

@@ -21,6 +21,11 @@ Channels may add output-format and media constraints. They must not silently use
 different memory, relationship or world snapshot provider. Preserve request limits,
 pause/forget behavior and per-user/source isolation.
 
+Knowledge boundaries, conversational intent and correction behavior are shared in
+the required `character_participation` block in `persona_assembly.py`. Do not add
+channel-specific expertise or defensive-persona rules. The cross-mode contract is
+covered by `tests/persona/test_shared_participation.py`.
+
 Media rendering projects the canonical reply. It must not invent a second exchange
 or independently advance relationship state. Delivery consumers retain their
 existing idempotent world, life and memory commits.

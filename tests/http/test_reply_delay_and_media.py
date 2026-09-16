@@ -11,6 +11,7 @@ from aiohttp.test_utils import make_mocked_request
 import local_server
 from letter_triage import TriageResult
 from llm_gateway import GatewayConfig, GatewayRequestScope
+from runtime.memory.recall_check import RECALL_CHECK_TIMEOUT_SECONDS
 from runtime.reply.reply_context import ReplyMode
 from reply_orchestrator import ReplyState
 from runtime.reply.reply_pipeline import PipelineResult
@@ -696,10 +697,10 @@ def test_reply_pipeline_total_timeout_covers_all_quality_stages(monkeypatch):
     monkeypatch.setattr(local_server, "LLM_TIMEOUT_SECONDS", 90.0)
     monkeypatch.delenv("OLIVIA_REPLY_REVIEW_TIMEOUT_SECONDS", raising=False)
 
-    assert local_server._reply_pipeline_timeout_seconds(ReplyMode.TEXT_LETTER.value) == 515.0
+    assert local_server._reply_pipeline_timeout_seconds(ReplyMode.TEXT_LETTER.value) == 515.0 + RECALL_CHECK_TIMEOUT_SECONDS
 
     monkeypatch.setenv("OLIVIA_REPLY_REVIEW_TIMEOUT_SECONDS", "20")
-    assert local_server._reply_pipeline_timeout_seconds(ReplyMode.TEXT_LETTER.value) == 235.0
+    assert local_server._reply_pipeline_timeout_seconds(ReplyMode.TEXT_LETTER.value) == 235.0 + RECALL_CHECK_TIMEOUT_SECONDS
 
 
 def test_deepseek_flash_reply_pipeline_timeout_covers_reasoning_and_adjudication(
@@ -716,12 +717,12 @@ def test_deepseek_flash_reply_pipeline_timeout_covers_reasoning_and_adjudication
     monkeypatch.setattr(local_server, "LLM_TIMEOUT_SECONDS", 180.0)
     monkeypatch.delenv("OLIVIA_REPLY_REVIEW_TIMEOUT_SECONDS", raising=False)
 
-    assert local_server._reply_pipeline_timeout_seconds(ReplyMode.TEXT_LETTER.value) == 5765.0
-    assert local_server._reply_pipeline_timeout_seconds(ReplyMode.SPOKEN_VIDEO.value) == 905.0
+    assert local_server._reply_pipeline_timeout_seconds(ReplyMode.TEXT_LETTER.value) == 5765.0 + RECALL_CHECK_TIMEOUT_SECONDS
+    assert local_server._reply_pipeline_timeout_seconds(ReplyMode.SPOKEN_VIDEO.value) == 905.0 + RECALL_CHECK_TIMEOUT_SECONDS
 
     monkeypatch.setenv("OLIVIA_REPLY_REVIEW_TIMEOUT_SECONDS", "20")
-    assert local_server._reply_pipeline_timeout_seconds(ReplyMode.TEXT_LETTER.value) == 5765.0
-    assert local_server._reply_pipeline_timeout_seconds(ReplyMode.SPOKEN_VIDEO.value) == 785.0
+    assert local_server._reply_pipeline_timeout_seconds(ReplyMode.TEXT_LETTER.value) == 5765.0 + RECALL_CHECK_TIMEOUT_SECONDS
+    assert local_server._reply_pipeline_timeout_seconds(ReplyMode.SPOKEN_VIDEO.value) == 785.0 + RECALL_CHECK_TIMEOUT_SECONDS
 
 
 def test_explicit_deepseek_reviewer_extends_non_deepseek_outer_pipeline_budget(
@@ -741,7 +742,7 @@ def test_explicit_deepseek_reviewer_extends_non_deepseek_outer_pipeline_budget(
 
     assert local_server._reply_pipeline_timeout_seconds(
         ReplyMode.TEXT_LETTER.value
-    ) == 4295.0
+    ) == 4295.0 + RECALL_CHECK_TIMEOUT_SECONDS
 
 
 @pytest.mark.parametrize("model", ["deepseek-v4-flash", "qwen3.8-flash", "qwen3.8-max"])

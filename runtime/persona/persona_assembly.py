@@ -21,7 +21,7 @@ from runtime.reply.prompt_budget import (
     PromptSection,
     plan_prompt_budget,
 )
-from runtime.reply.reply_context import ReplyContext, RELATIONSHIP_FACT_AUTHORITY
+from runtime.reply.reply_context import ReplyContext, RELATIONSHIP_FACT_AUTHORITY, WORLD_STATE_UNAVAILABLE
 from runtime.private_world.life_rhythm import LOCAL, RHYTHM_FACT_AUTHORITY
 
 
@@ -38,6 +38,33 @@ _FORBIDDEN_RULES = (
 )
 _REPLY_GROUNDING = "陈述和提问都按原文命题核对：区分已知肯定、已知否定和未知。“做过”和“没做过”都需要原信依据。否定或假设仅限原文的人物组合、行动、对象和时间，不外推。未被说明的个人经历保持未知，不把推论说成用户讲过的话。资料提到一件物品、作品或人物，不代表其中的内容、原话或具体往事也已知；表达自己的当下看法，不给观点虚构出处。未知就止于未知，不另补外围细节。"
 _AGREEMENT_GROUNDING = "将一句话认定为约定前，要在承诺者自己的原文中核对同一行动、对象和条件；不能用另一人的期待、解释或复述补齐。事项进度与双方是否确认是不同事实；原话没有明确对应时，保持未确认，也不据此催促对方履行。"
+
+_CHARACTER_PARTICIPATION = {
+    "scope": "各渠道共用人格、知识、记忆、关系和世界状态，只变表达与交付。",
+    "understand_turn": "结合上文判断意图；课程名、术语或近况分享不等于索要教程。",
+    "knowledge": "熟悉领域可具体聊，常识不必装不懂；陌生专业坦然不熟，不把模型知识当成人物训练，不编查过、学过的经历。",
+    "correction": "用户纠错时只核对具体偏差；讲过头就自然收回，没说错可平和解释。不编经历圆场，不以用户话短或表达不清替失误辩解，不借调侃训人，不猜测或追问对方是否脑补、钓鱼、故意试探。纠错不是挑衅。",
+}
+
+# A shared decision procedure, not inferred fact labels or a second memory store.
+# Keep it required even when the evidence window cannot retain any source.
+_EVIDENCE_USE = {
+    "instruction": "核对后自然回复，不展示核实过程或内部字段。",
+    "retrieval_is_confirmation": False,
+    "historical_source_is_current_state": False,
+    "checks": {
+        "source_and_speaker": "合看双方原文；用户主张不替代角色承认。",
+        "event_stage": "计划、假设、完成、更正分开；前置事件不证明后续完成。",
+        "time_scope": "旧物品与习惯不证明当前余量、位置或刚发生的动作。未知日期不猜测。",
+        "conflict": "保留来源分歧，不编中间故事调和；旧台词与当前设定分属不同范围。",
+    },
+    "assertion_status": {
+        "confirmed": "按原文范围自然承接，不要求用户再次证明，不添加场景。",
+        "inferred": "推断重复召回仍是推断。",
+        "uncertain": "仅对缺口保持不确定，不否认其他已有经历，不审问用户。",
+    },
+    "response": "可表达当下感受或新打算，不把打算说成刚做完；省略无据的装饰性动作，不另找替代细节。",
+}
 
 
 _TIME_GROUNDING = "character_local_time 是林离所在上海的北京时间，trusted_time 是同一时刻的 UTC 表示。按北京时间和最近回信保持她的活动连续，新来信不表示过了一天。用户的早晚问候或睡觉安排不改变她的钟点和作息；可以道晚安，不必报时或纠正用户。"
@@ -214,6 +241,11 @@ def _persona_blocks(
 
     blocks: list[_Block] = []
     forbidden_rules, reply_grounding = runtime_reply_rules(snapshot)
+    if snapshot.status == "READY":
+        blocks.append(_json_block(
+            "character_participation", "character_participation",
+            PromptSection.FORBIDDEN, _CHARACTER_PARTICIPATION,
+        ))
     constitution = _declaration_blocks(
         declarations, "CONSTITUTION", PromptSection.CONSTITUTION
     )
@@ -343,6 +375,8 @@ def _persona_blocks(
     blocks.append(_json_block(
         "runtime_time", "runtime_time", PromptSection.MODE_CONSTRAINTS,
         {"trusted_time": context.to_dict()["trusted_time"],
+         **({"world_state_status": "unavailable", "world_state_meaning": WORLD_STATE_UNAVAILABLE}
+            if not context.world_state_available else {}),
          **({"character_local_time": context.trusted_time.instant.astimezone(LOCAL).isoformat()}
             if snapshot.status == "READY" else {})},
     ))
@@ -432,6 +466,10 @@ def _persona_blocks(
         index = next(i for i, block in enumerate(blocks) if block.item_id == rhythm_id)
         state = blocks[index]
         blocks[index] = _Block(state.item_id, state.section, state.content + rhythm_rule.content)
+    if snapshot.status == "READY":
+        blocks.append(_json_block(
+            "evidence_use", "evidence_use", PromptSection.FORBIDDEN, _EVIDENCE_USE,
+        ))
     blocks.append(_json_block(
         "grounding", "reply_grounding", PromptSection.FORBIDDEN,
         (reply_grounding,),
@@ -449,7 +487,7 @@ def _persona_blocks(
         "用户报告或询问的过去，不等于双方确认的经历；提问也不能预设发生过。不能一边说无法确认，一边问自己当时等待或重逢的细节。可问他所说的事情指什么，不替他说下半段。没有询问过去记忆时，不主动提出失忆、缺记录或曾相识的假设。即使被问及过去，没有依据也只表示无法确认，不解释为时间太久、记忆丢失或可能想起来，不编造遗忘原因。资料出处不是她的阅读经历。用户说‘你应该知道’不证明她此前知道；仅从当前来信获知的消息按用户所述回应，不改口成自己早已知道或公开确认的事实。",
     ))
     # Ordinary absence/reunion is not evidence of identity across versions.
-    if not behavior.known_continuations and _CONTINUATION_CUE_RE.search(user_input):
+    if context.world_state_available and not behavior.known_continuations and _CONTINUATION_CUE_RE.search(user_input):
         blocks.insert(len(blocks) - 1, _json_block(
             "continuation_grounding", "continuation_grounding", PromptSection.FORBIDDEN,
             "没有角色已知的身份延续事实。用户提到旧版、离开或再次相见，只能说明他的叙述；"
@@ -488,17 +526,27 @@ def _private_behavior_payload(
         "nickname_use": {
             "has_authorized_history": view.pop("nickname_permission") == "allowed",
         },
-        "claiming_home_history": {"allowed": view.pop("home_history_allowed")},
+        # The legacy field describes current home access only.
+        "current_home_access": {"allowed": view.pop("home_history_allowed")},
     }
     view["permission_scope"] = (
-        "这些许可只约束对应的行为或历史声明，不表示她对本封来信的感受，"
+        "这些许可只约束对应的当前行为，不表示她对本封来信的感受，"
         "也不要求她拒绝普通的友善、赞美或日常亲近。具体边界仍以active_boundaries为准。"
+        "current_home_access只表示当前入家许可，不裁定过去是否发生过共同经历；历史承接以可定位原文为依据。"
         "nickname_use只表示是否有当前有效的称呼授权记录，具体称呼和方向以授权原文为准。"
         "用户称呼林离与林离称呼用户是两个方向，授权不能相互套用。"
         "没有历史授权记录不等于拒绝本次新称呼；她可按人格、当下感受和已有边界接受或拒绝。"
         "本次接受不自动成为过去已授权、关系升级或其他亲密行为的许可；"
         "她使用私人称呼仍须有该方向的明确依据。"
     )
+    if not context.world_state_available:
+        # Do not present fallback empty boundaries or unknown levels as read facts.
+        return {"state_status": "unavailable", "meaning": WORLD_STATE_UNAVAILABLE,
+                "action_permissions": {
+                    "physical_contact": {"ceiling": "none", "granted": "none"},
+                    "nickname_use": {"has_authorized_history": False},
+                    "current_home_access": {"allowed": False},
+                }, "permission_scope": "读取失败时的保守行动限制，不是对既往许可或历史经历的否定。"}
     return view
 
 

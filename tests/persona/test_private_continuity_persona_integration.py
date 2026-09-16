@@ -69,7 +69,8 @@ def test_private_continuity_reaches_persona_without_control_only_state() -> None
     assert '"expression_context"' in system
     assert "谈自己的想法和小困扰比较放心" in system
     assert '"trust":"high"' not in system
-    assert '"claiming_home_history":{"allowed":true}' in system
+    assert '"current_home_access":{"allowed":true}' in system
+    assert '不裁定过去是否发生过共同经历' in system
     assert "visit_access" not in system
     assert "林离已经知道下周课程时间会调整。" in system
     assert '"trust":81' not in system

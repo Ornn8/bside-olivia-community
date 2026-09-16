@@ -377,11 +377,15 @@ def plan_song_content(
     )
     messages = _planning_messages(user_input, duration, gateway_config, reply_adapter=reply_adapter)
     complete_scoped = getattr(active_gateway, "complete_scoped", None)
-    def complete_plan(plan_messages):
+    async def complete_plan(plan_messages):
+        from runtime.memory.recall_check import prepare_recall_messages
+        plan_messages = await prepare_recall_messages(
+            plan_messages, active_gateway, max_input_chars=gateway_config.max_input_chars,
+        )
         if callable(complete_scoped):
-            return asyncio.run(complete_scoped(plan_messages, scope=GatewayRequestScope.SONG_CONTENT))
-        return asyncio.run(active_gateway.complete(plan_messages))
-    response = complete_plan(messages)
+            return await complete_scoped(plan_messages, scope=GatewayRequestScope.SONG_CONTENT)
+        return await active_gateway.complete(plan_messages)
+    response = asyncio.run(complete_plan(messages))
     semantic_plan = _plan_from_lyrics_response(response.text, duration)
 
     # Imported lazily because music_caption imports the typed plan definitions

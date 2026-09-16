@@ -10,6 +10,13 @@ Copy `config.example.json` to a private absolute path, fill the QQ account and o
 
 Configuration alone does not grant contact access. At least three relationship dimensions must be high, backed by two qualifying exchanges, before an invitation can be offered; the selected channel follows the user's evidenced answer. Without an explicit configuration file, contact invitations are suppressed. Existing development bindings are local-only and must never be shipped. There is no native first-time account-binding UI yet.
 
+Qualified contact invitations are due immediately and take priority on the next
+five-minute proactive check. They bypass ordinary-topic cooldown and discretionary
+planning, use text, and retain the proactive opt-in, current availability, unread,
+in-flight and delivery-quota gates. Failed invitation attempts retry no sooner than
+five minutes, at most three times per rolling day, persisted across restarts.
+Completed invitations and the user's channel/refusal choices prevent repeats.
+
 The generic group bot is a separate repository and must not use these credentials or this data root.
 
 ## Processing and durability

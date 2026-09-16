@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from contextlib import closing
+from dataclasses import replace
 from datetime import datetime
 import hashlib
 import re
@@ -174,46 +175,131 @@ class SourceRetrieval:
             return tuple(selected)
 
     def _expanded_search(self, query, user, semantic, limit, excluded):
-        """Retrieve per sentence, then return complete paired originals in rounds."""
+        """Fuse per-topic and semantic ranks without allowing either to starve."""
         excluded = set(excluded)
-        topics = [part.strip() for part in re.split(r'[。！？?！\n\r\u2028\u2029]+', query) if part.strip()]
-        ranked = []
+        from .recall import query_topics
+        topics = query_topics(query)
+        ranked, topic_indexes, scores = [], {}, {}
         with closing(self.connect()) as db:
-            for topic in topics:
+            db.execute('BEGIN')
+            excluded.update(row[0] for row in db.execute('SELECT source FROM forgotten WHERE user=?', (user,)))
+            semantic_by_source = {}
+            for record in semantic:
+                if record.user_id == user and record.source_id not in excluded:
+                    semantic_by_source.setdefault(record.source_id, {})[record.memory_id] = record
+            for topic_index, topic in enumerate(topics):
                 words = terms(topic)
                 hits = []
                 # Cover every part of a long sentence without an enormous FTS expression.
                 for start in range(0, len(words), 128):
                     expression = ' OR '.join('"' + word + '"' for word in words[start:start + 128])
-                    hits.extend(row[0] for row in db.execute(
-                        'SELECT source FROM chunks WHERE tokens MATCH ? AND user=? ORDER BY bm25(chunks),rowid LIMIT 120',
-                        (expression, user)))
-                ranked.append(list(dict.fromkeys(source for source in hits if source not in excluded))[:12])
-            sources = []
-            for rank in range(12):
-                for hits in ranked:
-                    if rank < len(hits) and hits[rank] not in sources:
-                        sources.append(hits[rank])
-            sources.extend(r.source_id for r in semantic if r.user_id == user and r.source_id not in excluded and r.source_id not in sources)
+                    batch = []
+                    for (source,) in db.execute(
+                        'SELECT source FROM chunks WHERE tokens MATCH ? AND user=? ORDER BY bm25(chunks),rowid',
+                        (expression, user)):
+                        if source not in excluded and source not in batch:
+                            batch.append(source)
+                            if len(batch) == 12:
+                                break
+                    hits.extend(batch)
+                hits = list(dict.fromkeys(hits))[:12]
+                ranked.append(hits)
+                for rank, source in enumerate(hits):
+                    topic_indexes.setdefault(source, []).append(topic_index)
+                    scores[source] = scores.get(source, 0) + 1 / (60 + rank + 1)
+            semantic_sources = list(semantic_by_source)
+            for rank, source in enumerate(semantic_sources):
+                scores[source] = scores.get(source, 0) + 1 / (60 + rank + 1)
+            # Reserve a turn for semantic evidence at every rank, including sources
+            # with no surviving original. The per-topic turns preserve broad recall.
+            sources, seen = [], set()
+            for rank in range(max(12, len(semantic_sources))):
+                round_sources = sorted({hits[rank] for hits in ranked if rank < len(hits)},
+                                       key=lambda source: (-scores[source], source))
+                if rank < len(semantic_sources):
+                    round_sources.insert(0, semantic_sources[rank])
+                for source in round_sources:
+                    if source not in seen:
+                        sources.append(source)
+                        seen.add(source)
             result = []
-            proactive = {r.source_id for r in semantic if r.metadata.get('origin') == 'proactive'}
             for source in sources:
-                if db.execute('SELECT 1 FROM forgotten WHERE user=? AND source=?', (user, source)).fetchone():
+                route = 'hybrid' if source in topic_indexes and source in semantic_by_source else 'fts' if source in topic_indexes else 'semantic'
+                metadata = {'retrieval_route': route, 'topic_indexes': ','.join(map(str, topic_indexes.get(source, ())))}
+                semantic_group = tuple(semantic_by_source.get(source, {}).values())
+                if any(r.metadata.get('origin') == 'proactive' for r in semantic_group):
+                    metadata['origin'] = 'proactive'
+                group = self._source_records(db, user, source, metadata)
+                if not group:
+                    group = tuple(replace(r, metadata={**r.metadata, **metadata}) for r in semantic_group)
+                if len(result) + len(group) <= limit:
+                    result.extend(group)  # Keep every part of both sides together.
+            return tuple(result)
+
+    @staticmethod
+    def _source_records(db, user, source, metadata):
+        if db.execute('SELECT 1 FROM forgotten WHERE user=? AND source=?', (user, source)).fetchone():
+            return ()
+        rows = db.execute('SELECT actor,stamp,text FROM originals WHERE user=? AND source=? ORDER BY actor DESC', (user, source)).fetchall()
+        result = []
+        for actor, stamp, text in rows:
+            parts = []
+            for offset in range(0, len(text), 2000):
+                raw = text[offset:offset + 2000]
+                part = raw.strip()
+                if part:
+                    start = offset + len(raw) - len(raw.lstrip())
+                    parts.append((start, part))
+            for start, part in parts:
+                result.append(ConversationMemoryRecord(
+                    memory_id='original:' + hashlib.sha256(f'{user}:{source}:{actor}:{start}:full'.encode()).hexdigest(),
+                    text=part, user_id=user, source_id=source,
+                    occurred_at=datetime.fromisoformat(stamp) if stamp else None,
+                    metadata={'verbatim': True, 'speaker': actor, 'canonical': True, 'complete_original': True,
+                              'start': start, 'end': start + len(part), 'part_count': len(parts),
+                              **metadata,
+                              **({'history_actor': actor} if source.startswith('history:') else {})}))
+        return tuple(result)
+
+    def get_sources(self, user, source_ids, exclude_source_ids=()):
+        """Read complete source groups atomically; never restore forgotten data."""
+        excluded = set(exclude_source_ids)
+        with closing(self.connect()) as db:
+            db.execute('BEGIN')
+            return tuple(record for source in dict.fromkeys(source_ids) if source not in excluded
+                         for record in self._source_records(db, user, source, {'retrieval_route': 'source'}))
+
+    def forgotten_sources(self, user):
+        with closing(self.connect()) as db:
+            return frozenset(row[0] for row in db.execute('SELECT source FROM forgotten WHERE user=?', (user,)))
+
+    def expand_sources(self, user, source_ids, exclude_source_ids=(), limit=12):
+        """Read at most one neighbour per direction, as context rather than proof.
+
+        limit counts records; an exchange and all of its parts are atomic.
+        """
+        seeds = tuple(dict.fromkeys(source_ids))
+        excluded = set(exclude_source_ids)
+        result, seen = [], set(seeds)
+        with closing(self.connect()) as db:
+            db.execute('BEGIN')
+            for seed in seeds:
+                if seed in excluded or not self._source_records(db, user, seed, {}):
                     continue
-                rows = db.execute('SELECT actor,stamp,text FROM originals WHERE user=? AND source=? ORDER BY actor DESC', (user, source)).fetchall()
-                if len(result) + len(rows) > limit:
-                    break  # Keep pairs together.
-                for actor, stamp, text in rows:
-                    result.append(ConversationMemoryRecord(
-                        memory_id='original:' + hashlib.sha256(f'{user}:{source}:{actor}:full'.encode()).hexdigest(),
-                        text=text, user_id=user, source_id=source, score=1 / (1 + len(result)),
-                        occurred_at=datetime.fromisoformat(stamp) if stamp else None,
-                        metadata={'verbatim': True, 'speaker': actor, 'canonical': True, 'complete_original': True,
-                                  **({'origin': 'proactive'} if source in proactive else {}),
-                                  **({'history_actor': actor} if source.startswith('history:') else {})}))
-            present = {r.source_id for r in result}
-            result.extend(r for r in semantic if r.user_id == user and r.source_id not in excluded
-                          and r.source_id not in present
-                          and not db.execute('SELECT 1 FROM originals WHERE user=? AND source=?', (user, r.source_id)).fetchone()
-                          and not db.execute('SELECT 1 FROM forgotten WHERE user=? AND source=?', (user, r.source_id)).fetchone())
-            return tuple(result[:limit])
+                stamp = db.execute('SELECT stamp FROM originals WHERE user=? AND source=? AND stamp IS NOT NULL LIMIT 1', (user, seed)).fetchone()
+                if stamp is None:
+                    continue
+                for comparison, order in (('<', 'DESC'), ('>', 'ASC')):
+                    neighbour = db.execute(
+                        f'SELECT DISTINCT source,stamp FROM originals WHERE user=? AND '
+                        f'(julianday(stamp), source) {comparison} (julianday(?), ?) '
+                        f'ORDER BY julianday(stamp) {order},source {order} LIMIT 1',
+                        (user, stamp[0], seed)).fetchone()
+                    if neighbour is None or neighbour[0] in seen or neighbour[0] in excluded:
+                        continue
+                    source = neighbour[0]
+                    seen.add(source)
+                    group = self._source_records(db, user, source, {'retrieval_route': 'context', 'expansion_seed': seed})
+                    if len(result) + len(group) <= limit:
+                        result.extend(group)
+        return tuple(result)

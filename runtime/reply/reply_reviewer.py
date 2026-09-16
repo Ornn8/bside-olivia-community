@@ -15,6 +15,7 @@ from runtime.reply.reply_context import (
     IntimacyRequest,
     IntimacyTier,
     ReplyContext,
+    WORLD_STATE_UNAVAILABLE,
 )
 from runtime.reply.reply_policy import IntimacyClaim
 
@@ -23,6 +24,35 @@ _SCHEMA_PATH = Path(__file__).resolve().parents[2] / "contracts" / "reply_review
 _VALIDATOR = Draft202012Validator(
     json.loads(_SCHEMA_PATH.read_text(encoding="utf-8"))
 )
+
+
+def review_world_payload(context: ReplyContext) -> dict[str, object]:
+    """Keep failed state reads unknown in review and rewrite, just as in generation."""
+    if context.world_state_available:
+        relationship = {
+            "relationship_stage": context.private_behavior.relationship_stage.value,
+            "intimacy_ceiling": context.private_behavior.intimacy_ceiling.value,
+            "granted_intimacy": context.private_behavior.granted_intimacy.value,
+        }
+    else:
+        relationship = {
+            "world_state_available": False,
+            "state_status": "unavailable",
+            "meaning": WORLD_STATE_UNAVAILABLE,
+            "conservative_action_limits": {
+                "intimacy_ceiling": "none", "granted_intimacy": "none",
+                "current_home_access": False,
+            },
+        }
+    return {
+        "world_state_available": context.world_state_available,
+        "world_facts": [fact.to_dict() for fact in context.world_facts],
+        "known_continuations": (
+            [fact.to_dict() for fact in context.private_behavior.known_continuations]
+            if context.world_state_available else None
+        ),
+        "relationship_context": relationship,
+    }
 
 
 class ReviewStatus(StrEnum):
@@ -234,27 +264,7 @@ class JsonReviewerAdapter:
             "output_constraints": (
                 context.output_constraints.to_dict()
             ),
-            "world_facts": [
-                fact.to_dict()
-                for fact in context.world_facts
-            ],
-            "known_continuations": [
-                fact.to_dict()
-                for fact in (
-                    context.private_behavior.known_continuations
-                )
-            ],
-            "relationship_context": {
-                "relationship_stage": (
-                    context.private_behavior.relationship_stage.value
-                ),
-                "intimacy_ceiling": (
-                    context.private_behavior.intimacy_ceiling.value
-                ),
-                "granted_intimacy": (
-                    context.private_behavior.granted_intimacy.value
-                ),
-            },
+            **review_world_payload(context),
             "references": [
                 reference.to_dict()
                 for reference in references

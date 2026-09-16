@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, replace
 import hashlib
+import json
 import os
 from typing import Any, Mapping, Protocol
 
@@ -38,6 +39,10 @@ _PERSONA_NOT_READY = "PERSONA_NOT_READY"
 
 class _PersonaNotReadyError(RuntimeError):
     """Configured Letter generation cannot publish a non-ready Persona package."""
+
+
+class _RecallBudgetExceeded(RuntimeError):
+    code = 'RECALL_CONTEXT_BUDGET_EXCEEDED'
 
 
 class OrchestratorPort(Protocol):
@@ -171,6 +176,11 @@ class ReplyPipeline:
                 error_code=_PERSONA_NOT_READY,
                 retryable=False,
             )
+        except _RecallBudgetExceeded as error:
+            return PipelineResult(
+                request.request_id if isinstance(request, ReplyRequest) else '',
+                ReplyState.FAILED, error_code=error.code, retryable=False,
+            )
         prepared = preparation.request
         if self.current_turn_interpreter is not None and context.mode is ReplyMode.TEXT_LETTER:
             try:
@@ -197,6 +207,13 @@ class ReplyPipeline:
                 system["content"] += "\n\n" + generation_note
             if sum(len(str(m.get("content", ""))) for m in messages) <= original_budget:
                 prepared = replace(prepared, messages=tuple(messages), max_input_chars=original_budget)
+        if isinstance(prepared, ReplyRequest) and prepared.messages:
+            from runtime.memory.recall_check import prepare_recall_messages
+            adapter = getattr(getattr(self.orchestrator, 'gateway', None), 'adapter', None)
+            gateway = getattr(adapter, 'gateway', None)
+            messages = await prepare_recall_messages(prepared.messages, gateway,
+                max_input_chars=prepared.max_input_chars, request_id=prepared.request_id)
+            prepared = replace(prepared, messages=messages)
         candidate = await self.orchestrator.run(prepared)
         if candidate.state is not ReplyState.COMPLETED:
             return PipelineResult(
@@ -264,35 +281,106 @@ def assemble_reply_messages(adapter, snapshot, context, content, *, max_input_ch
     life = getattr(adapter, 'daily_life_fragments', None)
     recent = getattr(adapter, 'recent_letter_fragments', None)
     recent = recent(content) if callable(recent) else ()
+    if callable(life):
+        # Older adapters expose only content; the local adapter accepts this
+        # request's frozen recent window instead of reading the mailbox again.
+        from inspect import signature
+        try:
+            accepts_recent = 'recent_fragments' in signature(life).parameters
+        except (TypeError, ValueError):
+            accepts_recent = False
+        life = life(content, recent_fragments=recent) if accepts_recent else life(content)
+    else:
+        life = ()
+    # Reserve the minimum explicit preflight status. Full findings are optional
+    # and must fit without cutting source text or essential persona state.
+    check_enabled = getattr(getattr(getattr(adapter, 'gateway', None), 'config', None), 'provider', None) in {'openai_compatible', 'openai'}
+    assembly_limit = max(1, max_input_chars - (256 if check_enabled else 0))
     options = dict(snapshot=snapshot, context=context,
         user_input=content if user_input is None else user_input,
-        max_units=max_input_chars, evidence_summaries=life(content) if callable(life) else (),
+        max_units=assembly_limit, evidence_summaries=life,
         relationship_expression_enabled=snapshot.status == 'READY')
     baseline = assemble_persona(history=recent, **options)
-    available = max(0, max_input_chars - len(baseline.system_content) - len(baseline.user_content) - 256)
+    available = max(0, assembly_limit - len(baseline.system_content) - len(baseline.user_content) - 256)
     limit = getattr(adapter, '_memory_context_limit', None)
     if callable(limit) and limit() == 0:
         adapter._build_memory_prompt(content, max_chars=0)
         return baseline.to_messages(), TrustedReviewEvidence()
     build_memory_prompt = getattr(adapter, "_build_memory_prompt", None)
     build_memory_prompt = build_memory_prompt if callable(build_memory_prompt) else adapter.memory_prompt_builder.build
+    memory = build_memory_prompt(content, max_chars=max(1, available))
+    # Search exactly once. Capacity retries only repack the same evidence.
+    from runtime.memory.memory_prompt import MemoryPromptBuilder
+    from runtime.memory.memory_port import NullMemoryPort
+    recall = getattr(memory, 'recall_result', None)
+    renderer = MemoryPromptBuilder(NullMemoryPort(), conversation_memory=None,
+        max_tokens=getattr(adapter.memory_prompt_builder, 'max_tokens', 300000),
+        legacy_budget=available, conversation_budget=available)
+    if recall is not None:
+        from runtime.memory.recall_trace import deepen_recall
+        builder = adapter.memory_prompt_builder
+        if callable(getattr(builder, 'trace_sources', None)):
+            exclusions = getattr(adapter, '_memory_source_exclusions', lambda: ())()
+            recall = deepen_recall(builder, recall, query=content,
+                source_ids=_life_source_ids(life), exclude_source_ids=exclusions)
+        states = dict(recall.source_status)
+        states['world'] = 'available' if context.world_state_available else 'unavailable'
+        recall = replace(recall, source_status=tuple(states.items()))
+        memory = renderer.render(recall, max_chars=available)
     while available > 0:
-        memory = build_memory_prompt(content, max_chars=available)
         if not getattr(memory, 'text', ''):
             break
         selection = _selected_history(memory)
         result = assemble_persona(history=(*selection.fragments, *recent), **options)
         included = result.budget_report.included_ids
         if 'history.memory.references' in included:
-            trusted = TrustedReviewEvidence(tuple(r for r in selection.trusted_evidence.character_replies
-                if 'history.' + r.evidence_id in included))
-            return result.to_messages(), trusted
+            return result.to_messages(), selection.trusted_evidence
         available = available * 3 // 4
+        if recall is None:
+            break  # Legacy builders cannot be safely requeried during one generation.
+        memory = renderer.render(recall, max_chars=available)
+    if recall is not None:
+        # Reserve failure/omission disclosure before optional reference blocks.
+        # This is the same untrusted wrapper used by the persona assembler.
+        minimum = renderer.minimum_recall_status(recall)
+        payload = json.dumps({'untrusted': True, 'text': minimum}, ensure_ascii=False, separators=(',', ':'))
+        payload = payload.replace('<', r'\u003c').replace('>', r'\u003e')
+        disclosure = '<untrusted_history>\n' + payload + '\n</untrusted_history>\n'
+        remaining = assembly_limit - len(disclosure)
+        if remaining < 1:
+            raise _RecallBudgetExceeded(_RecallBudgetExceeded.code)
+        from runtime.reply.prompt_budget import PromptBudgetExceeded
+        try:
+            result = assemble_persona(history=recent, **{**options, 'max_units': remaining})
+        except PromptBudgetExceeded as error:
+            raise _RecallBudgetExceeded(_RecallBudgetExceeded.code) from error
+        return ({'role': 'system', 'content': result.system_content + disclosure},
+                {'role': 'user', 'content': result.user_content}), TrustedReviewEvidence()
     return baseline.to_messages(), TrustedReviewEvidence()
 
 
+def _life_source_ids(fragments) -> tuple[str, ...]:
+    """Read explicit event provenance from this request's already-frozen life view."""
+    sources = []
+    for fragment in fragments:
+        if fragment.fragment_id != 'linli.daily-life':
+            continue
+        try:
+            value = json.loads(fragment.text)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(value, dict):
+            continue
+        items = [value.get('current'), value.get('last_observation')]
+        items.extend(value.get('threads', []) if isinstance(value.get('threads'), list) else [])
+        for item in items:
+            source = item.get('source_id') if isinstance(item, dict) else None
+            if isinstance(source, str) and source and not source.startswith('day:') and source not in sources:
+                sources.append(source)
+    return tuple(sources[:12])
+
+
 def _selected_history(memory_context: object) -> _SelectedHistory:
-    character_replies: list[UntrustedFragment] = []
     trusted_replies: list[TrustedCharacterReply] = []
     remaining = _CHARACTER_REPLY_HISTORY_LIMIT
     references = getattr(memory_context, "references", ())
@@ -301,7 +389,6 @@ def _selected_history(memory_context: object) -> _SelectedHistory:
             fragment = _character_reply_fragment(reference, remaining=remaining)
             if fragment is None:
                 continue
-            character_replies.append(fragment)
             trusted_replies.append(
                 TrustedCharacterReply(
                     fragment.fragment_id,
@@ -318,7 +405,11 @@ def _selected_history(memory_context: object) -> _SelectedHistory:
         else ()
     )
     return _SelectedHistory(
-        (*character_replies, *memory_reference),
+        # Generation sees only the source-bearing group, including its paired
+        # user claim and time. A naked duplicate can look like present self-report.
+        # The bounded reviewer projection remains separate and is usable only
+        # when the corresponding memory block survives final prompt assembly.
+        memory_reference,
         TrustedReviewEvidence(tuple(trusted_replies)),
     )
 

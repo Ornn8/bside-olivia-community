@@ -35,8 +35,9 @@ def test_oversized_evidence_does_not_displace_a_later_complete_fact():
     long_record = record("我说：" + "这只是当天的情况。" * 150 + "以后不一定如此。", "long")
     short_record = record("我对用户说：以后叫我林离。", "short")
     selected = _selected_history(SimpleNamespace(references=(long_record, short_record), text=""))
-    assert len(selected.fragments) == 1
-    assert selected.fragments[0].text == _CHARACTER_REPLY_PREFIX + short_record.text
+    assert not selected.fragments  # No source-bearing memory was rendered.
+    assert len(selected.trusted_evidence.character_replies) == 1
+    assert selected.trusted_evidence.character_replies[0].text == short_record.text
 
 
 def test_memory_summary_route_also_skips_incomplete_current_facts():
