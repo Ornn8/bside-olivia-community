@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-SETTINGS_UI_VERSION = "p03.original-settings-manage.v37"
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v38"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
@@ -3453,14 +3453,19 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const group = document.createElement('div');
     group.setAttribute('data-olivia-service-buttons', '');
     group.setAttribute('aria-label', '云端服务设置');
-    group.style.cssText = 'display:inline-flex;align-items:center;gap:8px;margin-left:8px;flex-shrink:0;-webkit-app-region:no-drag';
+    group.style.cssText = 'display:inline-flex;align-items:center;gap:8px;margin-right:8px;flex-shrink:0;-webkit-app-region:no-drag';
     for (const [label, panel] of [['云服务','cloud'], ['云端 GPU','gpu']]) {
       const entry = button(label, () => openDialog(false, panel));
       entry.style.cssText = 'font:inherit;font-size:14px;line-height:20px;padding:5px 12px;white-space:nowrap;border:1px solid #686a70;border-radius:8px;background:#242426;color:#f9fafb;cursor:pointer;-webkit-app-region:no-drag';
       entry.setAttribute('aria-haspopup', 'dialog');
       group.append(entry);
     }
-    badge.after(group);
+    badge.parentElement.style.display = 'flex';
+    badge.parentElement.style.flexDirection = 'row';
+    badge.parentElement.style.alignItems = 'center';
+    badge.parentElement.style.flexWrap = 'nowrap';
+    badge.style.flexShrink = '0';
+    badge.before(group);
   };
   const constrainLetterInputs = () => {
     const matches = new Set(
