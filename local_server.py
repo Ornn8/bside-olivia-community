@@ -4589,13 +4589,13 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                 stage = "prepare"
                 music_duration_seconds = int(letter.get("music_duration_seconds", VIDEO_REPLY_MUSIC_DURATION_SECONDS))
                 performance_scene = _current_music_performance(environment)
-                if video_enabled and (performance_scene is None or not performance_scene.is_file()):
+                if video_enabled and not remote_enabled(environment) and (performance_scene is None or not performance_scene.is_file()):
                     raise MusicReplyError("MUSIC_PERFORMANCE_SCENE_NOT_CONFIGURED")
                 spoken_action_base = configured_media_path(
                     environment, "OLIVIA_ORDINARY_ACTION_BASE"
                 )
                 if (
-                    reply_mode == ReplyMode.MUSICAL_VIDEO.value and (spoken_action_base is None
+                    not remote_enabled(environment) and reply_mode == ReplyMode.MUSICAL_VIDEO.value and (spoken_action_base is None
                     or not spoken_action_base.is_file())
                 ):
                     raise MusicReplyError("MUSIC_REPLY_SPOKEN_REFERENCE_UNAVAILABLE")
@@ -4603,7 +4603,7 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                     environment, "OLIVIA_OFFICIAL_REPLY_REFERENCE"
                 )
                 if (
-                    reply_mode == ReplyMode.MUSICAL_VIDEO.value and (official_reply_reference is None
+                    not remote_enabled(environment) and reply_mode == ReplyMode.MUSICAL_VIDEO.value and (official_reply_reference is None
                     or not official_reply_reference.is_file())
                 ):
                     raise MusicReplyError("MUSIC_REPLY_TRANSITION_UNAVAILABLE")

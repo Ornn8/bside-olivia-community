@@ -62,7 +62,8 @@ def deliver_cover_video(audio, output_path, *, environment, metadata, include_sp
         latentsync_python_path=path("OLIVIA_LATENTSYNC_PYTHON"),
         latentsync_root=path("OLIVIA_LATENTSYNC_ROOT"), **common)
     if include_spoken:
-        if spoken_action_base_path is None or not spoken_action_base_path.is_file():
+        from runtime.remote_pipeline import enabled
+        if not enabled(environment) and (spoken_action_base_path is None or not spoken_action_base_path.is_file()):
             raise MusicReplyError("MUSIC_REPLY_SPOKEN_REFERENCE_UNAVAILABLE")
         render_reply_video(reply_text, normal_video_path, tts_config_path=tts_config_path,
                            visual_config_path=visual_config_path, worker_path=worker_path,
