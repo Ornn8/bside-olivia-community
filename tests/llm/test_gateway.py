@@ -99,7 +99,7 @@ def make_config(base_url: str, **overrides) -> GatewayConfig:
     return GatewayConfig(**values)
 
 
-@pytest.mark.parametrize("model", ["qwen3.8-flash", "qwen3.8-max"])
+@pytest.mark.parametrize("model", ["qwen3.8-flash", "qwen3.8-max", "qwen-plus", "qwen-flash", "qwen3.5-plus", "qwen3.6-plus", "qwen3.7-max", "qwen3.8-max-2026-09-01"])
 def test_qwen_required_tools_disable_default_thinking(monkeypatch, model):
     async def exercise():
         async def handler(request):

@@ -1070,10 +1070,8 @@ class OpenAICompatibleAdapter(Gateway):
             raise InvalidGatewayInput("REQUIRED_TOOL_CHOICE")
         request = request_id or uuid.uuid4().hex
         body = self._body(messages, stream=False)
-        if (
-            self.config.api_style == "chat_completions"
-            and self.config.model.casefold() in QWEN_REASONING_MODELS
-        ):
+        capabilities = model_capabilities(self.config.base_url, self.config.model, self.config.provider_options)
+        if self.config.api_style == "chat_completions" and capabilities.thinking == "qwen":
             # Qwen defaults to thinking; forced tool selection needs non-thinking mode.
             body["enable_thinking"] = False
         if self.config.api_style == "responses":
@@ -1093,7 +1091,6 @@ class OpenAICompatibleAdapter(Gateway):
             body["tools"] = converted
         else:
             body["tools"] = list(tools)
-        capabilities = model_capabilities(self.config.base_url, self.config.model, self.config.provider_options)
         if self.config.api_style != "chat_completions" or capabilities.tool_choice:
             body["tool_choice"] = tool_choice
         data = await self._post_json(body, request)
