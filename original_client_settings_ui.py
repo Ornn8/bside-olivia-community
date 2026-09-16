@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-SETTINGS_UI_VERSION = "p03.original-settings-manage.v38"
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v39"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
@@ -3014,6 +3014,15 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       GPU_KEY_INVALID:"API Key 格式不正确，请重新粘贴。", GPU_SETTINGS_SAVE_FAILED:"设置保存失败，原配置未改变。",
       GPU_SETTINGS_UNAVAILABLE:"原连接设置无法读取，请重新填写。",
       GPU_CONNECTION_FAILED:"无法连接 GPU 服务，请检查网络与服务地址后重试。",
+      GPU_TLS_FAILED:"HTTPS 证书校验失败。请核对电脑日期时间，并检查 Windows 证书更新；将此错误码发给管理员。",
+      GPU_CONNECTION_TIMEOUT:"连接 GPU 服务超时，请检查网络后重试。",
+      GPU_CONNECT_FAILED:"无法建立网络连接，请检查防火墙、网络与服务地址。",
+      GPU_AUTH_FAILED:"Key 验证未通过，请重新复制完整 Key。",
+      GPU_QUEUE_FULL:"当前生成队列已满，请稍后重试，无需更换 Key。",
+      GPU_ENCRYPTION_TOOL_MISSING:"找不到 Windows PowerShell，无法加密保存 Key。请将错误码发给管理员。",
+      GPU_ENCRYPTION_FAILED:"Windows 用户加密失败，Key 未保存。请将错误码发给管理员。",
+      GPU_SETTINGS_PERMISSION_DENIED:"没有权限写入客户端数据目录，原配置未改变。请检查目录权限或安全软件拦截。",
+      GPU_SETTINGS_WRITE_FAILED:"配置文件写入失败，原配置未改变。请检查磁盘剩余空间与文件占用。",
       GPU_REQUEST_FAILED:"GPU 服务请求未成功，请核对 Key 或联系管理员。",
       GPU_RESPONSE_INVALID:"GPU 服务返回的数据不兼容，请联系管理员。",
       LLM_SETUP_UNAVAILABLE:"本机服务响应异常，请更新补丁并完全退出后重启客户端。"};
@@ -3037,7 +3046,10 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           const names={tts:"语音",video:"视频",cover:"翻唱",original:"歌曲",lipsync:"口型视频",separate:"人声分离",image:"图片"};
           state.textContent="连接成功，可用功能："+result.kinds.map(k=>names[k]||k).join("、")+"。尚未保存设置。";
         } else { render(result); if(action!=="settings_status") void refreshVideoReplySetting(); }
-      } catch(error) { state.textContent=errors[error.code] || `连接未成功：${error.code || "网络不可用"}。请检查地址、Key 和服务器状态。`; }
+      } catch(error) {
+        const code = typeof error.code === 'string' && /^[A-Z][A-Z0-9_]{0,95}$/.test(error.code) ? error.code : 'GPU_LOCAL_API_UNAVAILABLE';
+        state.textContent=(errors[code] || '本机配置服务连接失败，请完全退出客户端后重启。')+`（${code}）`;
+      }
       finally {busy=false;mode.disabled=url.disabled=key.disabled=false;setButtonsBusy(Array.from(controls.querySelectorAll("button")),false);}
     };
     url.addEventListener("input",()=>{key.placeholder=hasKey && url.value.trim()===savedURL ? "留空保留已保存的 Key" : "请填写此地址对应的 API Key";});

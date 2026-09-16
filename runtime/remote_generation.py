@@ -8,8 +8,15 @@ import tempfile
 import time
 import uuid
 from urllib.parse import urlsplit
-from aiohttp import ClientSession, ClientTimeout, ClientError
+from aiohttp import ClientSession, ClientTimeout, ClientError, ClientSSLError, ClientConnectorError
 from runtime.cloud_service import endpoint, CloudError
+
+
+def connection_error(exc):
+    if isinstance(exc, ClientSSLError): return CloudError('GPU_TLS_FAILED')
+    if isinstance(exc, TimeoutError): return CloudError('GPU_CONNECTION_TIMEOUT')
+    if isinstance(exc, ClientConnectorError): return CloudError('GPU_CONNECT_FAILED')
+    return CloudError('GPU_CONNECTION_FAILED')
 
 
 class RemoteGeneration:
@@ -50,6 +57,8 @@ class RemoteGeneration:
         try:
             async with ClientSession(timeout=ClientTimeout(total=20), trust_env=False) as session:
                 async with session.request(method, self.url + path, data=encoded, headers=headers, allow_redirects=False) as response:
+                    if response.status in (401, 403): raise CloudError('GPU_AUTH_FAILED', 502)
+                    if response.status == 429: raise CloudError('GPU_QUEUE_FULL', 429)
                     if response.status not in (200, 201, 202):
                         raise CloudError('GPU_REQUEST_FAILED', 502)
                     raw = bytearray()
@@ -77,8 +86,8 @@ class RemoteGeneration:
                 if (url.scheme != 'https' and not loopback_result) or not url.hostname or url.username or url.password: raise ValueError()
                 cleaned.append({'url': item['url']})
             return {'task_id': result['task_id'], 'status': result['status'], 'outputs': cleaned}
-        except (ClientError, TimeoutError):
-            raise CloudError('GPU_CONNECTION_FAILED', 503) from None
+        except (ClientError, TimeoutError) as exc:
+            raise connection_error(exc) from None
         except (ValueError, TypeError, UnicodeError):
             raise CloudError('GPU_RESPONSE_INVALID', 502) from None
 
@@ -99,7 +108,7 @@ class RemoteGeneration:
                         value = json.loads(raw)['asset_id']
                         if not isinstance(value, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', value): raise ValueError()
                         return value
-        except (ClientError, TimeoutError): raise CloudError('GPU_CONNECTION_FAILED', 503) from None
+        except (ClientError, TimeoutError) as exc: raise connection_error(exc) from None
         except (ValueError, KeyError, TypeError): raise CloudError('GPU_RESPONSE_INVALID', 502) from None
 
     async def generate(self, kind, data, output, *, assets=None, timeout=3600, validate=None):
@@ -147,7 +156,7 @@ class RemoteGeneration:
                     if size == 0: raise CloudError('GPU_OUTPUT_EMPTY', 502)
             if validate is not None: validate(temporary)
             temporary.replace(output)
-        except (ClientError, TimeoutError): raise CloudError('GPU_CONNECTION_FAILED', 503) from None
+        except (ClientError, TimeoutError) as exc: raise connection_error(exc) from None
         finally:
             if temporary is not None: temporary.unlink(missing_ok=True)
         return task

@@ -2,7 +2,7 @@
 import json
 import os
 from pathlib import Path
-from original_client_setup_api import _dpapi_protect, _dpapi_unprotect
+from original_client_setup_api import _dpapi_protect, _dpapi_unprotect, LLMSetupError
 from runtime.cloud_service import CloudError, endpoint
 from runtime.remote_generation import RemoteGeneration
 
@@ -46,10 +46,21 @@ class GPUSettings:
         value = self.candidate(route, url, key)
         try:
             cipher = self.protect(json.dumps(value))
+        except FileNotFoundError:
+            raise CloudError('GPU_ENCRYPTION_TOOL_MISSING') from None
+        except LLMSetupError:
+            raise CloudError('GPU_ENCRYPTION_FAILED') from None
+        except Exception:
+            raise CloudError('GPU_ENCRYPTION_FAILED') from None
+        try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             temporary = self.path.with_suffix('.tmp')
             temporary.write_text(cipher, encoding='utf-8')
             temporary.replace(self.path)
+        except PermissionError:
+            raise CloudError('GPU_SETTINGS_PERMISSION_DENIED') from None
+        except OSError:
+            raise CloudError('GPU_SETTINGS_WRITE_FAILED') from None
         except Exception:
             raise CloudError('GPU_SETTINGS_SAVE_FAILED') from None
         self.apply(value)

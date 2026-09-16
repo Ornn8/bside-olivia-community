@@ -53,6 +53,45 @@ def test_invalid_key_and_corrupt_file_fail_closed(tmp_path):
     assert service.status()['error_code']=='GPU_SETTINGS_UNAVAILABLE'
 
 
+@pytest.mark.parametrize('failure,code', [(FileNotFoundError('private path'), 'GPU_ENCRYPTION_TOOL_MISSING'), (RuntimeError('private key'), 'GPU_ENCRYPTION_FAILED')])
+def test_encryption_failure_is_distinct_and_redacted(tmp_path, failure, code):
+    service=settings(tmp_path,{})
+    service.save('remote','https://old.example','old-key')
+    old=service.path.read_bytes()
+    def fail(value): raise failure
+    service.protect=fail
+    with pytest.raises(CloudError) as caught:
+        service.save('remote','https://new.example','new-key')
+    assert caught.value.code==code
+    assert str(caught.value)==code
+    assert service.path.read_bytes()==old
+    assert service.environment['OLIVIA_GPU_API_KEY']=='old-key'
+
+
+def test_permission_failure_preserves_saved_connection(tmp_path, monkeypatch):
+    from pathlib import Path
+    service=settings(tmp_path,{})
+    service.save('remote','https://old.example','old-key')
+    old=service.path.read_bytes()
+    def fail(*args,**kwargs): raise PermissionError('private path')
+    monkeypatch.setattr(Path,'write_text',fail)
+    with pytest.raises(CloudError) as caught:
+        service.save('remote','https://new.example','new-key')
+    assert caught.value.code=='GPU_SETTINGS_PERMISSION_DENIED'
+    assert service.path.read_bytes()==old
+    assert service.environment['OLIVIA_GPU_API_KEY']=='old-key'
+
+
+def test_network_diagnostics_do_not_expose_transport_details():
+    from aiohttp import ClientSSLError, ClientConnectorError, ClientError
+    from runtime.remote_generation import connection_error
+    for error,code in [(ClientSSLError(None,OSError('private')), 'GPU_TLS_FAILED'),
+                       (TimeoutError('private'), 'GPU_CONNECTION_TIMEOUT'),
+                       (ClientConnectorError(None,OSError('private')), 'GPU_CONNECT_FAILED'),
+                       (ClientError('private'), 'GPU_CONNECTION_FAILED')]:
+        assert str(connection_error(error))==code
+
+
 def test_connection_test_uses_candidate_without_saving(tmp_path, monkeypatch):
     from runtime.remote_generation import RemoteGeneration
     calls=[]
