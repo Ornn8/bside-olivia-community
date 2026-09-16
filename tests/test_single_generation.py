@@ -27,7 +27,7 @@ def test_tts_ignores_legacy_content_gate_and_only_generates_once(tmp_path, monke
     monkeypatch.setattr(delivery, '_run_breeze_worker', worker)
     monkeypatch.setattr(delivery.subprocess, 'run', lambda *a, **k: pytest.fail('Content reviewer must not run'))
     config = SimpleNamespace(provider='breeze_tts2', provider_options={'external_python': sys.executable})
-    plan = SimpleNamespace(cues=(1,), speech_units=lambda: (1,))
+    plan = SimpleNamespace(spoken_text='测试', cues=(1,), speech_units=lambda: (1,))
     result = delivery.render_delivery_wav(config, plan, tmp_path / 'out.wav', enforce_content_gate=True)
     assert len(calls) == 1
     assert result.quality_report is None

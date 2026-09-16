@@ -556,11 +556,19 @@ class _LetterGateway(Gateway):
 
     def timeout_seconds_for_scope(
         self,
-        scope: GatewayRequestScope,
+        scope: GatewayRequestScope | None,
         *,
         default: float,
     ) -> float:
-        return self.adapter.gateway.timeout_seconds_for_scope(scope, default=default)
+        from runtime.memory.recall_check import RECALL_CHECK_TIMEOUT_SECONDS
+        timeout = default
+        resolve = getattr(self.adapter.gateway, 'timeout_seconds_for_scope', None)
+        if scope is not None and callable(resolve):
+            timeout = resolve(scope, default=default)
+        config = self.adapter.config
+        check_enabled = (config.persona_v2_enabled and
+                         config.provider in {'openai_compatible', 'openai'})
+        return timeout + (RECALL_CHECK_TIMEOUT_SECONDS if check_enabled else 0)
 
     async def complete(self, messages, *, request_id=None) -> GatewayResponse:
         return await self._complete(messages, request_id=request_id, scope=None)
@@ -630,6 +638,11 @@ class _LetterGateway(Gateway):
             "",
         )
         built_messages = await asyncio.to_thread(self.adapter._messages, content)
+        from runtime.memory.recall_check import prepare_recall_messages
+        built_messages = await prepare_recall_messages(
+            built_messages, self.adapter.gateway,
+            max_input_chars=self.adapter.config.max_input_chars, request_id=request_id,
+        )
         stream = (
             self.adapter.gateway.stream_scoped(
                 built_messages,
@@ -801,42 +814,24 @@ class LetterAdapter:
         self, content: str, context: str = ""
     ) -> tuple[dict[str, str], ...]:
         user_content = content + ("\n\n" + context if context else "")
-        loaded = load_persona(self.persona_v2_path)
-        reply_context = self.build_reply_context(ReplyMode.TEXT_LETTER)
-        recent = self.recent_letter_fragments(content)
-        evidence = self.daily_life_fragments(content)
-        options = dict(
-            snapshot=loaded.snapshot,
-            context=reply_context,
-            user_input=user_content,
-            max_units=self.config.max_input_chars,
-            evidence_summaries=evidence,
-            relationship_expression_enabled=loaded.snapshot.status == "READY",
-        )
-        baseline = assemble_persona(history=recent, **options)
-        available = max(0, self.config.max_input_chars - len(baseline.system_content)
-                        - len(baseline.user_content) - 256)
-        if self._memory_context_limit() == 0:
-            self._build_memory_prompt(content, max_chars=0)
-            return baseline.to_messages()
-        # Account for JSON escaping in the final assembly, not just raw memory text.
-        while available > 0:
-            memory_context = self._build_memory_prompt(content, max_chars=available)
-            if not memory_context.text:
-                break
-            result = assemble_persona(history=(UntrustedFragment('memory.references', memory_context.text), *recent), **options)
-            if 'history.memory.references' in result.budget_report.included_ids:
-                return result.to_messages()
-            available = available * 3 // 4
-        return baseline.to_messages()
+        return self.reply_context_messages(content, mode=ReplyMode.TEXT_LETTER, user_input=user_content)
 
-    def daily_life_fragments(self, content: str) -> tuple[UntrustedFragment, ...]:
+    def reply_context_messages(self, content, *, mode, max_input_chars=None, user_input=None):
+        from runtime.reply.reply_pipeline import assemble_reply_messages
+        loaded = load_persona(self.persona_v2_path)
+        context = self.build_reply_context(mode, **({'future_im_enabled': True} if mode is ReplyMode.FUTURE_IM else {}))
+        messages, _ = assemble_reply_messages(self, loaded.snapshot, context, content,
+            max_input_chars=self.config.max_input_chars if max_input_chars is None else max_input_chars,
+            user_input=user_input)
+        return messages
+
+    def daily_life_fragments(self, content: str, *, recent_fragments=None) -> tuple[UntrustedFragment, ...]:
         if self.daily_life is None:
             return ()
         try:
             related = "\n".join(
                 pair.get("user_letter", "") + "\n" + pair.get("linli_reply", "")
-                for fragment in self.recent_letter_fragments(content)
+                for fragment in (self.recent_letter_fragments(content) if recent_fragments is None else recent_fragments)
                 if fragment.fragment_id != 'chat.historical'
                 for pair in json.loads(fragment.text)["letters"]
             )
@@ -885,12 +880,15 @@ class LetterAdapter:
         return self.config.max_input_chars
 
     def build_reply_context(self, mode: ReplyMode, *, future_im_enabled: bool = False) -> ReplyContext:
+        world_state_available = not isinstance(self.private_world_port, NullPrivateWorldPort)
         try:
             private_snapshot = self.private_world_port.snapshot()
             if not isinstance(private_snapshot, PrivateWorldSnapshot):
                 private_snapshot = PrivateWorldSnapshot()
+                world_state_available = False
         except Exception:
             private_snapshot = PrivateWorldSnapshot()
+            world_state_available = False
         projected = project_private_world(private_snapshot)
         facts = tuple(
             TrustedWorldFact(
@@ -916,6 +914,7 @@ class LetterAdapter:
             trusted_time=TrustedTime(self._now()),
             world_facts=facts,
             private_behavior=projected.behavior,
+            world_state_available=world_state_available,
         )
 
     def remember_conversation(self, content: str, reply: str) -> None:
@@ -951,16 +950,23 @@ class LetterAdapter:
         config, gateway = self._runtime
         try:
             messages = self._messages(content, context)
-            completion = (
-                gateway.complete_scoped(
-                    messages,
+            async def complete_reply():
+                from runtime.memory.recall_check import prepare_recall_messages
+                prepared = await prepare_recall_messages(
+                    messages, gateway, max_input_chars=config.max_input_chars,
                     request_id=request_id,
-                    scope=gateway_scope,
                 )
-                if gateway_scope is not None
-                else gateway.complete(messages, request_id=request_id)
-            )
-            return asyncio.run(completion).text
+                completion = (
+                    gateway.complete_scoped(
+                        prepared,
+                        request_id=request_id,
+                        scope=gateway_scope,
+                    )
+                    if gateway_scope is not None
+                    else gateway.complete(prepared, request_id=request_id)
+                )
+                return (await completion).text
+            return asyncio.run(complete_reply())
         except GatewayError as exc:
             code = "LLM_TIMEOUT" if isinstance(exc, ProviderTimeout) else "LLM_UNAVAILABLE"
             if exc.code == "PROVIDER_REJECTED":
@@ -2739,7 +2745,8 @@ def _schedule_text_reply_delay(letter: dict, reply_mode: str) -> None:
 
 
 def _reply_pipeline_timeout_seconds(exact_mode: str) -> float:
-    """Cover generation plus bounded review, rewrite, and recheck stages."""
+    """Cover recall preparation, generation, and existing quality-stage reserves."""
+    from runtime.memory.recall_check import RECALL_CHECK_TIMEOUT_SECONDS
 
     max_reasoning = (
         exact_mode != ReplyMode.FUTURE_IM.value
@@ -2763,7 +2770,7 @@ def _reply_pipeline_timeout_seconds(exact_mode: str) -> float:
     quality_stages = 7.0 if exact_mode == ReplyMode.TEXT_LETTER.value else 3.0
     if exact_mode == ReplyMode.TEXT_LETTER.value and current_turn_interpretation_enabled():
         quality_stages += 1.0
-    return generation_timeout + quality_stages * quality_timeout + 5.0
+    return RECALL_CHECK_TIMEOUT_SECONDS + generation_timeout + quality_stages * quality_timeout + 5.0
 
 
 def _send_result_for_letter(letter: dict) -> dict:
@@ -2932,9 +2939,17 @@ async def _proactive_complete(intent: dict, *, planning: bool, mode: str = 'text
     messages = ({'role': 'system', 'content': (assembled[0]['content'] + '\n' if assembled else '') + task},
                 {'role': 'user', 'content': json.dumps(packet, ensure_ascii=False)})
     gateway = letters_adapter.gateway
+    request_id = 'proactive:' + intent['id'] + (':plan' if planning else ':body')
+    if not planning:
+        from runtime.memory.recall_check import prepare_recall_messages
+        messages = await prepare_recall_messages(
+            messages, gateway,
+            max_input_chars=getattr(letters_adapter, 'config', LLM_CONFIG).max_input_chars,
+            request_id=request_id,
+        )
     scope = GatewayRequestScope.PROACTIVE_PLANNING if planning else GatewayRequestScope.BACKGROUND_REASONING
     result = await asyncio.wait_for(gateway.complete_scoped(
-        messages, request_id='proactive:' + intent['id'] + (':plan' if planning else ':body'),
+        messages, request_id=request_id,
         scope=scope), timeout=gateway.timeout_seconds_for_scope(scope, default=180))
     text = result.text.strip()
     if not text or len(text) > 10000 or '<think' in text.lower() or '</think' in text.lower():
@@ -3028,18 +3043,25 @@ async def _proactive_tick() -> None:
         _proactive_reason = 'waiting'
         return
     schedule = read_json(root / 'proactive/schedule.json')
-    if time.time() < schedule.get('next_check_at', 0):
-        return
     now = time.time()
+    intent = scan_pending(root)
+    contact = intent.get('kind') == 'contact_invitation'
+    if not contact and now < schedule.get('next_check_at', 0):
+        return
     # A decision attempt counts even when the provider fails, defers, or the
     # process exits. Keep both limits on disk, independent of model/provider.
     attempts = [item for item in schedule.get('attempts', [])
                 if isinstance(item, dict) and isinstance(item.get('id'), str)
                 and type(item.get('at')) in (int, float) and item['at'] > now - DAY]
-    if len(attempts) >= 3:
+    contact_attempts = [item for item in attempts if item['id'] == 'contact-invitation-v1']
+    ordinary_attempts = [item for item in attempts if item['id'] != 'contact-invitation-v1']
+    if (contact and (len(contact_attempts) >= 3 or
+                     any(now - item['at'] < 300 for item in contact_attempts))
+            or not contact and len(ordinary_attempts) >= 3):
         _proactive_reason = 'waiting'
         return
-    intent = scan_pending(root, excluded_ids={item['id'] for item in attempts})
+    if not contact:
+        intent = scan_pending(root, excluded_ids={item['id'] for item in attempts})
     if not intent:
         _proactive_reason = 'no_opportunity'
         return
@@ -3048,7 +3070,10 @@ async def _proactive_tick() -> None:
     attempts.append({'id': intent['id'], 'at': now})
     write_json(root / 'proactive/schedule.json', {'next_check_at': now + 3600, 'attempts': attempts})
     _proactive_reason = 'considering'
-    plan = json.loads(await _proactive_complete(intent, planning=True))
+    # Eligibility already supplies a concrete reason. The model writes the
+    # invitation in character, but does not postpone it or add media latency.
+    plan = ({'decision': 'send', 'format': 'text', 'title': '想和你聊两句'} if contact
+            else json.loads(await _proactive_complete(intent, planning=True)))
     if (not isinstance(plan, dict) or set(plan) != {'decision', 'format', 'title'}
             or plan['decision'] not in {'send', 'defer'} or plan['format'] not in {'text', 'voice'}
             or not isinstance(plan['title'], str) or not 1 <= len(plan['title']) <= 40):
@@ -4601,6 +4626,7 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                     gateway=letters_adapter.gateway,
                     environment=environment,
                     include_spoken=reply_mode == ReplyMode.MUSICAL_VIDEO.value,
+                    **({'reply_adapter': letters_adapter} if letter.get('music_provider') != 'ace_step_xl_cover' else {}),
                     **cover_options,
                     **({"render_video": False} if not video_enabled else {}),
                 )

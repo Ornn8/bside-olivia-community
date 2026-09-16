@@ -42,6 +42,7 @@ class GatewayRequestScope(str, Enum):
 
     TEXT_LETTER_MAX_REASONING = "text_letter_max_reasoning"
     MEDIA_REPLY_LOW_REASONING = "media_reply_low_reasoning"
+    RECALL_CHECK = "recall_check"
     JSON_MAX_REASONING = "json_max_reasoning"
     PERSONAL_CHAT_JSON = "personal_chat_json"
     BACKGROUND_REASONING = "background_reasoning"
@@ -818,6 +819,7 @@ class OpenAICompatibleAdapter(Gateway):
             and scope in {
                 GatewayRequestScope.TEXT_LETTER_MAX_REASONING,
                 GatewayRequestScope.MEDIA_REPLY_LOW_REASONING,
+                GatewayRequestScope.RECALL_CHECK,
                 GatewayRequestScope.JSON_MAX_REASONING,
                 GatewayRequestScope.PERSONAL_CHAT_JSON,
                 GatewayRequestScope.BACKGROUND_REASONING,
@@ -867,7 +869,7 @@ class OpenAICompatibleAdapter(Gateway):
                 for message in normalized
             ]
             body = {"model": self.config.model, "input": request_input, "stream": stream}
-            if scope in {GatewayRequestScope.SONG_CONTENT, GatewayRequestScope.PERSONAL_CHAT_JSON, GatewayRequestScope.PROACTIVE_PLANNING} and capabilities.json_mode:
+            if scope in {GatewayRequestScope.SONG_CONTENT, GatewayRequestScope.PERSONAL_CHAT_JSON, GatewayRequestScope.PROACTIVE_PLANNING, GatewayRequestScope.RECALL_CHECK} and capabilities.json_mode:
                 body["text"] = {"format": {"type": "json_object"}}
             return body
         body: dict[str, Any] = {
@@ -875,7 +877,7 @@ class OpenAICompatibleAdapter(Gateway):
             "messages": list(normalized),
             "stream": stream,
         }
-        if scope in {GatewayRequestScope.SONG_CONTENT, GatewayRequestScope.PERSONAL_CHAT_JSON, GatewayRequestScope.PROACTIVE_PLANNING} and capabilities.json_mode:
+        if scope in {GatewayRequestScope.SONG_CONTENT, GatewayRequestScope.PERSONAL_CHAT_JSON, GatewayRequestScope.PROACTIVE_PLANNING, GatewayRequestScope.RECALL_CHECK} and capabilities.json_mode:
             body["response_format"] = {"type": "json_object"}
         if self._uses_official_review_responses(scope) and capabilities.json_mode:
             body["response_format"] = {"type": "json_object"}

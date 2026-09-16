@@ -58,6 +58,16 @@ RELATIONSHIP_FACT_AUTHORITY = (
     "关系阶段与动作许可记录已经确认的关系身份和对应行为权限，不是对每次交流感受的评级。"
     "当下觉得聊得来、更亲近、开心或接受赞美，不等于确立恋爱关系、排他承诺、授权私人称呼或身体接触；"
     "不声称未经确认的具体关系身份、权限和共同经历；已确认的感情与边界仍按记录保留，不得撤回或改写。"
+    "可定位原文中历史角色明确承认的共同经历，可以按当时原话自然承接，不要求双方再次形式化确认；"
+    "不能因当前权限、关系阶段或记忆窗口缺失而否认这段历史。原文来源真实只证明说过，仍须核对说话人、"
+    "否定、假设与时间范围，以及后来的更正和撤回。计划不等于完成，某项已发生经历不证明相关计划已经完成。"
+    "承接历史不自动授予当前入家、身体接触或其他行动权限，也不自动升级关系阶段。"
+)
+
+WORLD_STATE_UNAVAILABLE = (
+    "当前关系与世界状态暂时无法读取；读取失败不表示关系回到初始状态，也不证明没有感情、边界或共同经历。"
+    "已有可定位历史仍可按来源承接；未能读取的当前状态保持未知，不用空值否定过去或推断许可。"
+    "不可因故障新增行动许可、撤销边界或确认关系变化；自然回应可核对的当前内容，不解释内部错误。"
 )
 
 
@@ -426,6 +436,7 @@ class ReplyContext:
     )
     future_im_enabled: bool = False
     intimacy_request: IntimacyRequest = IntimacyRequest.NONE
+    world_state_available: bool = True
 
     @classmethod
     def create(
@@ -438,6 +449,7 @@ class ReplyContext:
         output_constraints: OutputConstraints | None = None,
         future_im_enabled: bool = False,
         intimacy_request: IntimacyRequest = IntimacyRequest.NONE,
+        world_state_available: bool = True,
     ) -> "ReplyContext":
         if mode is ReplyMode.FUTURE_IM and not future_im_enabled:
             raise UnsupportedReplyMode()
@@ -468,6 +480,7 @@ class ReplyContext:
             output_constraints=constraints,
             future_im_enabled=future_im_enabled,
             intimacy_request=intimacy_request,
+            world_state_available=world_state_available,
         )
 
     def __post_init__(self) -> None:
@@ -481,6 +494,8 @@ class ReplyContext:
             )
         if not isinstance(self.intimacy_request, IntimacyRequest):
             raise ReplyContextError("intimacy request is invalid")
+        if type(self.world_state_available) is not bool:
+            raise ReplyContextError("world state availability must be boolean")
         if (
             self.mode is ReplyMode.FUTURE_IM
             and not self.future_im_enabled
@@ -545,6 +560,7 @@ class ReplyContext:
             "world_facts": [
                 fact.to_dict() for fact in self.world_facts
             ],
+            **({"world_state_available": False} if not self.world_state_available else {}),
             "private_behavior": self.private_behavior.to_dict(),
             "intimacy_request": self.intimacy_request.value,
             "output_constraints": (

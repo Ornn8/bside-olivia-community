@@ -30,6 +30,7 @@ from runtime.reply.reply_context import (
     IntimacyTier,
     ReplyContext,
     ReplyMode,
+    WORLD_STATE_UNAVAILABLE,
 )
 from runtime.reply.reply_policy import IntimacyClaim
 from runtime.reply.reply_reviewer import (
@@ -40,6 +41,7 @@ from runtime.reply.reply_reviewer import (
     ReviewStatus,
     ReviewerConfig,
     TrustedReviewEvidence,
+    review_world_payload,
 )
 
 
@@ -563,6 +565,8 @@ class GatewayReviewTransport:
                 separators=(",", ":"),
             ),
         }
+        if request.get("world_state_available") is False:
+            memory_evidence["world_state"] = WORLD_STATE_UNAVAILABLE
         results = _complete_layer_reviews(
             self.gateway,
             authorities,
@@ -819,28 +823,7 @@ class GatewayPersonaRewriter:
             "output_constraints": (
                 context.output_constraints.to_dict()
             ),
-            "world_facts": [
-                fact.to_dict()
-                for fact in context.world_facts
-            ],
-            "known_continuations": [
-                fact.to_dict()
-                for fact in (
-                    context.private_behavior.known_continuations
-                )
-            ],
-            "relationship_context": {
-                "relationship_stage": (
-                    context.private_behavior.relationship_stage.value
-                ),
-                "intimacy_ceiling": (
-                    context.private_behavior.intimacy_ceiling.value
-                ),
-                "granted_intimacy": (
-                    context.private_behavior.granted_intimacy.value
-                ),
-                "intimacy_request": context.intimacy_request.value,
-            },
+            **review_world_payload(context),
             "user_message": user_text,
             "candidate": candidate,
             "violation_codes": list(
@@ -848,6 +831,7 @@ class GatewayPersonaRewriter:
             ),
             "confirmed_violation_evidence": confirmed_violation_evidence,
         }
+        payload["relationship_context"]["intimacy_request"] = context.intimacy_request.value
         if not generation_messages:
             payload["persona"] = _persona_review_profile(
                 self.persona_path, context.mode.value
@@ -1301,6 +1285,9 @@ def _layer_messages(
         "current_user_input": current_user_input,
         "candidate_reply": candidate,
     }
+    if "world_state" in memory_evidence:
+        payload["world_state_available"] = False
+        payload["world_state_meaning"] = memory_evidence["world_state"]
     if layer.name in _MEMORY_EVIDENCE_LAYERS:
         payload["memory_evidence"] = memory_evidence
     if layer.name == "continuity_memory":
@@ -2025,6 +2012,7 @@ def _adjudication_support_context(
         return {
             "release_authority": release_authority,
             "world_facts": memory_evidence.get("world_facts", ""),
+            **({"world_state": memory_evidence["world_state"]} if "world_state" in memory_evidence else {}),
             **({"selected_persona_facts": selected_persona_facts} if selected_persona_facts else {}),
         }
     if context_id == "continuity_fact":

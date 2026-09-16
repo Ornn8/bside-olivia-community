@@ -259,10 +259,12 @@ def test_reviewer_request_accepts_only_short_identified_reference_summaries() ->
         "mode",
         "output_constraints",
         "world_facts",
+        "world_state_available",
         "known_continuations",
         "relationship_context",
         "references",
     }
+    assert transport.requests[0]["world_state_available"] is True
 
 
 def test_reviewer_parses_candidate_bound_intimacy_evidence() -> None:

@@ -64,6 +64,56 @@ def test_choice_needs_original_user_evidence():
         validate_choice({'choice': 'wechat', 'quote': '我同意'}, '你猜我会选什么')
 
 
+@pytest.mark.parametrize('now', [2001, 30 * 86400])
+def test_qualified_invitation_is_due_even_when_qualifying_letters_are_old(now):
+    rows = [row('a', 1000), row('b', 2000)]
+    for item in rows:
+        qualify(item)
+    intent = candidate(rows, HIGH, now)
+    assert intent['not_before'] <= now < intent['expires_at']
+
+
+def test_contact_priority_bypasses_ordinary_cooldown_and_planning(tmp_path, monkeypatch):
+    import local_server as server
+    from runtime.reply.proactive_letters import write_json, read_json
+    now = 10000
+    rows = [row('a', 1000), row('b', 2000)]
+    for item in rows:
+        qualify(item)
+    intent = candidate(rows, HIGH, now)
+    monkeypatch.setattr(server, '_state_root', lambda: tmp_path)
+    monkeypatch.setattr(server.time, 'time', lambda: now)
+    monkeypatch.setattr(server, '_proactive_settings', lambda: {'enabled': True})
+    monkeypatch.setattr(server, '_proactive_ready', lambda: True)
+    monkeypatch.setattr(server, '_refresh_proactive_context', lambda: None)
+    write_json(tmp_path / 'proactive/settings.json', {'enabled': True})
+    write_json(tmp_path / 'proactive/context.json', {'updated_at': now, 'remaining': 1,
+        'blocked': False, 'unread': False, 'candidates': [intent]})
+    write_json(tmp_path / 'proactive/schedule.json', {'next_check_at': now + 3500,
+        'attempts': [{'id': 'ordinary-'+str(i), 'at': now-60} for i in range(3)]})
+    calls = []
+    async def no_planning(*args, **kwargs):
+        pytest.fail('Qualified contact invitations do not need discretionary planning')
+    async def publish(candidate, plan):
+        calls.append((candidate, plan))
+        # Simulate an interrupted publication: no delivered invitation yet.
+    monkeypatch.setattr(server, '_proactive_complete', no_planning)
+    monkeypatch.setattr(server, '_publish_proactive', publish)
+    async def ticks():
+        await server._proactive_tick()
+        await server._proactive_tick()
+    asyncio.run(ticks())
+    assert len(calls) == 1
+    assert calls[0][1]['format'] == 'text'
+    attempts = read_json(tmp_path / 'proactive/schedule.json')['attempts']
+    assert attempts[-1]['id'] == intent['id']
+    # Failed invitations may retry on the next check, bounded across restart.
+    for _ in range(4):
+        now += 300
+        asyncio.run(server._proactive_tick())
+    assert len(calls) == 3
+
+
 def test_invitation_publication_is_once_and_uses_existing_commit(monkeypatch):
     import local_server as server
     monkeypatch.setattr('runtime.personal_chat.contact_invitation.preview_configured', lambda root: True)

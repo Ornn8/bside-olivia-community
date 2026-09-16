@@ -202,7 +202,7 @@ def test_assembly_is_off_by_default_and_opt_in_replaces_only_writer_axes() -> No
     assert opt_in_payload["action_permissions"] == {
         "physical_contact": {"ceiling": "light_contact", "granted": "light_contact"},
         "nickname_use": {"has_authorized_history": True},
-        "claiming_home_history": {"allowed": True},
+        "current_home_access": {"allowed": True},
     }
 
 

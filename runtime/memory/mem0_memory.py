@@ -26,6 +26,7 @@ from typing import Callable, Mapping, Protocol, Sequence
 from urllib.parse import urlsplit
 
 from runtime.memory.bounded_daemon_call import BoundedDaemonCall
+from .recall import RecallResult
 from runtime.reply.model_capabilities import model_capabilities
 from .conversation_memory_port import (
     ConversationMemoryPort,
@@ -603,11 +604,22 @@ class DeferredConversationMemoryAdapter:
             return delegate.register_archive_sources(user_id=user_id, sources=sources)
 
     def search_evidence_context(self, query: str, *, user_id: str, limit: int, exclude_source_ids=()):
+        return self.search_evidence_result(query, user_id=user_id, limit=limit,
+                                           exclude_source_ids=exclude_source_ids).records
+
+    def search_evidence_result(self, query: str, *, user_id: str, limit: int, exclude_source_ids=()):
         with self._using_current() as delegate:
+            structured = getattr(delegate, "search_evidence_result", None)
+            if callable(structured):
+                return structured(query, user_id=user_id, limit=limit,
+                                  exclude_source_ids=exclude_source_ids)
             search = getattr(delegate, "search_evidence_context", None)
             if search is None:
-                return delegate.search_context(query, user_id=user_id, limit=limit)
-            return search(query, user_id=user_id, limit=limit, exclude_source_ids=exclude_source_ids)
+                records = delegate.search_context(query, user_id=user_id, limit=limit)
+            else:
+                records = search(query, user_id=user_id, limit=limit,
+                                 exclude_source_ids=exclude_source_ids)
+            return RecallResult(tuple(records), source_status=(("semantic", delegate.status().status),))
 
     def index_original_exchange(self, **kwargs):
         with self._using_current() as delegate:
@@ -1197,12 +1209,18 @@ class Mem0ConversationMemoryAdapter:
         user_id: str,
         limit: int,
     ) -> tuple[ConversationMemoryRecord, ...]:
+        records, error = self._search_context_result(query, user_id=user_id, limit=limit)
+        self._last_error_code = error
+        return records
+
+    def _search_context_result(self, query: str, *, user_id: str, limit: int):
+        """Return a request-local error rather than rereading shared health state."""
         user_id = self._normalized_user_id(user_id)
         if not isinstance(query, str) or not query.strip() or not 1 <= limit <= 100:
-            return ()
+            return (), None
         records_by_id: dict[str, ConversationMemoryRecord] = {}
         for alias in self._configured_user_aliases(user_id):
-            value = self._read_with_timeout(
+            value, error = self._read_with_timeout_result(
                 lambda alias=alias: self.backend.search(
                     query.strip(),
                     filters=self._provider_filters(alias),
@@ -1211,21 +1229,23 @@ class Mem0ConversationMemoryAdapter:
                 failure_code="MEM0_SEARCH_FAILED",
             )
             if value is None:
-                return ()
+                return (), error or "MEM0_SEARCH_FAILED"
             records = self._records(value, user_id=alias, limit=limit)
             if records is None:
-                self._last_error_code = "MEM0_SEARCH_FAILED"
-                return ()
+                return (), "MEM0_SEARCH_FAILED"
             records_by_id.update({record.memory_id: record for record in records})
-        self._last_error_code = None
         return tuple(
             sorted(records_by_id.values(), key=_record_search_key)
-        )[:limit]
+        )[:limit], None
 
     def search_evidence_context(self, query: str, *, user_id: str, limit: int, exclude_source_ids=()):
+        return self.search_evidence_result(query, user_id=user_id, limit=limit,
+                                           exclude_source_ids=exclude_source_ids).records
+
+    def search_evidence_result(self, query: str, *, user_id: str, limit: int, exclude_source_ids=()):
         user_id = self._normalized_user_id(user_id)
-        if not query.strip() or not 1 <= limit <= 100:
-            return ()
+        if not isinstance(query, str) or not query.strip() or not 1 <= limit <= 100:
+            return RecallResult((), stop_reason="empty")
         excluded = tuple(sorted(exclude_source_ids))
         try:
             revision = self._originals.path.stat().st_mtime_ns
@@ -1235,17 +1255,31 @@ class Mem0ConversationMemoryAdapter:
         cached = self._evidence_cache.get(key)
         if cached and time.monotonic() - cached[0] < 30 and not self.operation_pending:
             return cached[1]
-        semantic = self.search_context(query, user_id=user_id, limit=20)
+        semantic, error = self._search_context_result(query, user_id=user_id, limit=20)
+        self._last_error_code = error
         semantic = tuple(replace(record, user_id=user_id) for record in semantic)
+        source_status = [("semantic", "unavailable" if error else "available")]
         try:
-            result = self._originals.search(query, user_id, semantic, limit=limit, exclude_source_ids=excluded, expanded=limit > 8)
-            if self._last_error_code is None and not self.operation_pending:
+            records = self._originals.search(query, user_id, semantic, limit=limit, exclude_source_ids=excluded, expanded=limit > 8)
+            source_status.append(("original_index", "available"))
+            result = RecallResult(tuple(records), source_status=tuple(source_status),
+                                  stop_reason="partial_source_failure" if error else "complete" if records else "empty")
+            if error is None and not self.operation_pending:
                 if len(self._evidence_cache) >= 64:
                     self._evidence_cache.clear()
                 self._evidence_cache[key] = (time.monotonic(), result)
             return result
         except (OSError, sqlite3.Error):
-            return tuple(record for record in semantic if record.source_id not in excluded)[:limit]
+            # A failed original query is not a successful empty search. Keep
+            # safe summary evidence if its deletion guard remains readable.
+            try:
+                forbidden = self._originals.forgotten_sources(user_id) | set(excluded)
+                records = tuple(record for record in semantic if record.source_id not in forbidden)[:limit]
+            except (OSError, sqlite3.Error):
+                records = ()
+            source_status.append(("original_index", "unavailable"))
+            return RecallResult(records, source_status=tuple(source_status),
+                                stop_reason="partial_source_failure")
 
     def search_memories(self, query: str, *, user_id: str, limit: int):
         """Management reads must distinguish failure from an empty result."""
@@ -1265,34 +1299,36 @@ class Mem0ConversationMemoryAdapter:
         *,
         failure_code: str,
     ) -> object | None:
+        value, error = self._read_with_timeout_result(operation, failure_code=failure_code)
+        if error is not None:
+            self._last_error_code = error
+        return value
+
+    def _read_with_timeout_result(self, operation, *, failure_code):
         # Serialize settle/start as one read request; otherwise another reader
         # can start between them and manufacture an inflight failure.
         if not self._read_request_lock.acquire(timeout=self.config.search_timeout_seconds):
-            self._last_error_code = "MEM0_SEARCH_TIMEOUT"
-            return None
+            return None, "MEM0_SEARCH_TIMEOUT"
         try:
-            return self._read_with_timeout_serial(operation, failure_code=failure_code)
+            return self._read_with_timeout_serial_result(operation, failure_code=failure_code)
         finally:
             self._read_request_lock.release()
 
-    def _read_with_timeout_serial(self, operation, *, failure_code):
+    def _read_with_timeout_serial_result(self, operation, *, failure_code):
         pending_state, _pending_value = self._provider_call.settle(
             timeout_seconds=self.config.search_timeout_seconds,
         )
         if pending_state == "timeout":
-            self._last_error_code = "MEM0_SEARCH_TIMEOUT"
-            return None
+            return None, "MEM0_SEARCH_TIMEOUT"
         state, value = self._provider_call.call(
             lambda: self._locked_provider_call(operation),
             timeout_seconds=self.config.search_timeout_seconds,
         )
         if state in {"timeout", "inflight"}:
-            self._last_error_code = "MEM0_SEARCH_TIMEOUT"
-            return None
+            return None, "MEM0_SEARCH_TIMEOUT"
         if state == "failed":
-            self._last_error_code = failure_code
-            return None
-        return value
+            return None, failure_code
+        return value, None
 
     def _locked_provider_call(self, operation: Callable[[], object]) -> object:
         with self._lock:

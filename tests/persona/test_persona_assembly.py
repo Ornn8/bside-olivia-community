@@ -99,7 +99,8 @@ def test_nickname_projection_distinguishes_history_from_current_addressing(permi
     assert "接受或拒绝" in scope and "不自动" in scope
     assert payload["active_boundaries"] == before["active_boundaries"]
     assert payload["action_permissions"]["physical_contact"] == {"ceiling": "none", "granted": "none"}
-    assert payload["action_permissions"]["claiming_home_history"] == {"allowed": False}
+    assert payload["action_permissions"]["current_home_access"] == {"allowed": False}
+    assert "不裁定过去是否发生过共同经历" in scope
     assert behavior.to_dict() == before
 
 
@@ -367,7 +368,7 @@ def test_writer_omits_unknown_descriptions_but_keeps_permissions_and_known_level
     assert permissions == {
         "physical_contact": {"ceiling": "none", "granted": "none"},
         "nickname_use": {"has_authorized_history": False},
-        "claiming_home_history": {"allowed": False},
+        "current_home_access": {"allowed": False},
     }
     assert projected["acknowledged_affection"] is None
     assert context.private_behavior.to_dict() == original

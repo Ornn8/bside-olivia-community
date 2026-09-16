@@ -305,8 +305,13 @@ def _planning_messages(
     user_input: str,
     duration_seconds: int,
     config: GatewayConfig,
+    reply_adapter=None,
 ) -> tuple[dict[str, str], ...]:
     contract = _planner_contract(duration_seconds)
+    if reply_adapter is not None:
+        messages = reply_adapter.reply_context_messages(user_input, mode=ReplyMode.MUSICAL_VIDEO,
+            max_input_chars=config.max_input_chars - len(contract) - 1 - _PLANNER_REPAIR_RESERVE_CHARS)
+        return ({'role': 'system', 'content': contract + '\n' + messages[0]['content']}, messages[1])
     if not config.persona_v2_enabled:
         legacy_path = (
             _runtime_path(config.persona_file)
@@ -349,6 +354,7 @@ def plan_song_content(
     duration_seconds: int,
     *,
     gateway: Gateway | None = None,
+    reply_adapter=None,
 ) -> SongContentPlan:
     """Plan constrained lyrics and render the production MiniMax caption."""
 
@@ -369,13 +375,17 @@ def plan_song_content(
         ensure_ascii=False,
         separators=(",", ":"),
     )
-    messages = _planning_messages(user_input, duration, gateway_config)
+    messages = _planning_messages(user_input, duration, gateway_config, reply_adapter=reply_adapter)
     complete_scoped = getattr(active_gateway, "complete_scoped", None)
-    def complete_plan(plan_messages):
+    async def complete_plan(plan_messages):
+        from runtime.memory.recall_check import prepare_recall_messages
+        plan_messages = await prepare_recall_messages(
+            plan_messages, active_gateway, max_input_chars=gateway_config.max_input_chars,
+        )
         if callable(complete_scoped):
-            return asyncio.run(complete_scoped(plan_messages, scope=GatewayRequestScope.SONG_CONTENT))
-        return asyncio.run(active_gateway.complete(plan_messages))
-    response = complete_plan(messages)
+            return await complete_scoped(plan_messages, scope=GatewayRequestScope.SONG_CONTENT)
+        return await active_gateway.complete(plan_messages)
+    response = asyncio.run(complete_plan(messages))
     semantic_plan = _plan_from_lyrics_response(response.text, duration)
 
     # Imported lazily because music_caption imports the typed plan definitions

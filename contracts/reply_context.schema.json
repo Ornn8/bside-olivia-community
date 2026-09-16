@@ -27,6 +27,7 @@
       "enum": ["text", "video", null]
     },
     "trusted_time": {"$ref": "#/$defs/trusted_time"},
+    "world_state_available": {"type": "boolean", "default": true},
     "world_facts": {
       "type": "array",
       "items": {"$ref": "#/$defs/world_fact"}

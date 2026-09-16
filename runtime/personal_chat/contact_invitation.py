@@ -69,5 +69,6 @@ def candidate(rows, snapshot, now):
         return None
     return {"id": "contact-invitation-v1", "kind": "contact_invitation",
             "source_id": f"reply:{source['letter_id']}:{source.get('reply_revision', 1)}",
-            "not_before": source.get("created_at", now) + 1800,
-            "expires_at": source.get("created_at", now) + 7 * 86400}
+            # Current qualification does not expire with the source letter.
+            "not_before": now,
+            "expires_at": now + 7 * 86400}

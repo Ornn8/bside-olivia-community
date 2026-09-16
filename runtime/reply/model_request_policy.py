@@ -27,6 +27,10 @@ def reasoning_request_parameters(
         if "reasoning_effort" not in options.get("capabilities", {}):
             parameters["reasoning_effort"] = "high"
         parameters["max_tokens"] = 10000
-    if purpose == "media_reply_low_reasoning" and capabilities.reasoning_effort:
+    if purpose in {"media_reply_low_reasoning", "recall_check"} and capabilities.reasoning_effort:
         parameters["reasoning_effort"] = "low"
+    if purpose == "recall_check" and capabilities.reasoning_effort:
+        # Reasoning and JSON share this cap. A full source window exhausted
+        # 8k before the provider produced any JSON, even at low effort.
+        parameters["max_completion_tokens" if capabilities.thinking == "qwen" else "max_tokens"] = 24000
     return parameters

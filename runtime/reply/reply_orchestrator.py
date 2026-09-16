@@ -224,8 +224,9 @@ class ReplyOrchestrator:
 
         provider_gateway = _provider_gateway(self.gateway, request)
         provider_timeout = self.timeout_seconds
-        if request.gateway_scope is not None:
-            provider_timeout = provider_gateway.timeout_seconds_for_scope(
+        timeout_for_scope = getattr(provider_gateway, 'timeout_seconds_for_scope', None)
+        if callable(timeout_for_scope):
+            provider_timeout = timeout_for_scope(
                 request.gateway_scope,
                 default=self.timeout_seconds,
             )
