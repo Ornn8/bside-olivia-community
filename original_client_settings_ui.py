@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-SETTINGS_UI_VERSION = "p03.original-settings-manage.v36"
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v37"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
@@ -2423,7 +2423,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     header.style.justifyContent = "space-between";
     header.style.gap = "24px";
 
-    const heading = text("h2", initialMode ? "欢迎使用 Olivia" : "本地陪伴", "text-text-title text-headline-m");
+    const serviceMode = initialPanel === "cloud" || initialPanel === "gpu";
+    const heading = text("h2", serviceMode ? (initialPanel === "gpu" ? "云端 GPU" : "云服务") : initialMode ? "欢迎使用 Olivia" : "本地陪伴", "text-text-title text-headline-m");
     heading.id = "olivia-companion-dialog-title";
     heading.style.margin = "0";
     const dismiss = () => {
@@ -2441,6 +2442,28 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       dismiss();
     });
     header.append(heading, close);
+
+    if (serviceMode) {
+      const content = document.createElement("div");
+      content.style.marginTop = "24px";
+      (initialPanel === "gpu" ? mountGPUSettings : mountCloudService)(content);
+      dialog.append(header, content);
+      backdrop.append(theme, dialog);
+      const opener = document.activeElement;
+      close.addEventListener("click", () => opener?.focus());
+      backdrop.addEventListener("keydown", event => {
+        if (event.key === "Escape") { dismiss(); opener?.focus(); }
+        if (event.key === "Tab") {
+          const items = Array.from(dialog.querySelectorAll('button,input,select,textarea,a[href]')).filter(item => !item.disabled && !item.hidden);
+          const first = items[0], last = items[items.length - 1];
+          if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+          else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+        }
+      });
+      document.body.append(backdrop);
+      close.focus();
+      return;
+    }
 
     const status = text(
       "p",
@@ -2989,7 +3012,11 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const errors={GPU_NOT_CONFIGURED:"请填写服务地址和 API Key；更换地址时需填写对应的 Key。",
       CLOUD_URL_INVALID:"请填写完整的 HTTPS 服务地址，不要附加接口路径。",
       GPU_KEY_INVALID:"API Key 格式不正确，请重新粘贴。", GPU_SETTINGS_SAVE_FAILED:"设置保存失败，原配置未改变。",
-      GPU_SETTINGS_UNAVAILABLE:"原连接设置无法读取，请重新填写。"};
+      GPU_SETTINGS_UNAVAILABLE:"原连接设置无法读取，请重新填写。",
+      GPU_CONNECTION_FAILED:"无法连接 GPU 服务，请检查网络与服务地址后重试。",
+      GPU_REQUEST_FAILED:"GPU 服务请求未成功，请核对 Key 或联系管理员。",
+      GPU_RESPONSE_INVALID:"GPU 服务返回的数据不兼容，请联系管理员。",
+      LLM_SETUP_UNAVAILABLE:"本机服务响应异常，请更新补丁并完全退出后重启客户端。"};
     const render = data => {
       loaded=true; mode.value=data.route; url.value=data.url; savedURL=data.url; hasKey=data.has_key; key.value="";
       key.placeholder=hasKey ? "已保存，留空保留；更换地址时须重新填写" : "填写该服务提供的 API Key";
@@ -3387,8 +3414,6 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     section.append(title, row);
     if (window.__oliviaNativeView) mountProactiveSetting(section);
     mountDiagnosticExport(section);
-    mountCloudService(section);
-    mountGPUSettings(section);
     mountVideoReplySetting(section);
     mountLocalLetterImport(section);
     container.append(section);
@@ -3420,6 +3445,23 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   };
 
   let scheduled = false;
+  const mountServiceButtons = () => {
+    if (document.querySelector('[data-olivia-service-buttons]')) return;
+    const badge = Array.from(document.querySelectorAll('span,div,button')).find(node =>
+      node.children.length === 0 && node.textContent.trim() === 'Resonance Edition');
+    if (!badge) return;
+    const group = document.createElement('div');
+    group.setAttribute('data-olivia-service-buttons', '');
+    group.setAttribute('aria-label', '云端服务设置');
+    group.style.cssText = 'display:inline-flex;align-items:center;gap:8px;margin-left:8px;flex-shrink:0;-webkit-app-region:no-drag';
+    for (const [label, panel] of [['云服务','cloud'], ['云端 GPU','gpu']]) {
+      const entry = button(label, () => openDialog(false, panel));
+      entry.style.cssText = 'font:inherit;font-size:14px;line-height:20px;padding:5px 12px;white-space:nowrap;border:1px solid #686a70;border-radius:8px;background:#242426;color:#f9fafb;cursor:pointer;-webkit-app-region:no-drag';
+      entry.setAttribute('aria-haspopup', 'dialog');
+      group.append(entry);
+    }
+    badge.after(group);
+  };
   const constrainLetterInputs = () => {
     const matches = new Set(
       Array.from(
@@ -3498,6 +3540,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       mountMainNavigation();
       mountLocalSongEntry();
       mountShell();
+      mountServiceButtons();
       maybeOpenInitialSetup();
     });
   };

@@ -64,7 +64,7 @@ class GPUSettings:
         return self.status()
 
     def status(self):
-        return {'route':self.environment.get('OLIVIA_GPU_ROUTE','local'),
+        return {'status':'OK', 'route':self.environment.get('OLIVIA_GPU_ROUTE','local'),
                 'url':self.environment.get('OLIVIA_GPU_API_URL',''),
                 'has_key':bool(self.environment.get('OLIVIA_GPU_API_KEY')),
                 'error_code':self.error}
@@ -72,4 +72,4 @@ class GPUSettings:
     async def test(self, url, key):
         value = self.candidate('remote', url, key)
         result = await RemoteGeneration(value['url'], value['key']).request('capabilities', {})
-        return {'kinds':result['kinds']}
+        return {'status':'OK', 'kinds':result['kinds']}

@@ -17,6 +17,7 @@ def test_saved_connection_restores_without_exposing_key(tmp_path):
     assert env['OLIVIA_GPU_ROUTE']=='remote'
     assert 'synthetic-secret' not in service.path.read_text()
     assert 'synthetic-secret' not in json.dumps(service.status())
+    assert service.status()['status'] == 'OK'
     restored=settings(tmp_path, {})
     restored.load()
     assert restored.environment['OLIVIA_GPU_API_KEY']=='synthetic-secret'
@@ -60,7 +61,9 @@ def test_connection_test_uses_candidate_without_saving(tmp_path, monkeypatch):
         return {'kinds':['tts'], 'shared_assets':[]}
     monkeypatch.setattr(RemoteGeneration,'request',request)
     service=settings(tmp_path,{})
-    assert asyncio.run(service.test('https://gpu.example','test-secret'))['kinds']==['tts']
+    result = asyncio.run(service.test('https://gpu.example','test-secret'))
+    assert result['kinds']==['tts']
+    assert result['status'] == 'OK'
     assert not service.path.exists() and not service.environment
     assert calls==[('https://gpu.example','test-secret','capabilities',{})]
 
