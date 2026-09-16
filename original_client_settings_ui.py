@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-SETTINGS_UI_VERSION = "p03.original-settings-manage.v35"
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v36"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
@@ -2967,7 +2967,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   };
 
   const mountGPUSettings = (section) => {
-    const box = document.createElement("div"); box.className = "flex flex-col gap-4";
+    const box = document.createElement("div"); box.className = "flex flex-col gap-4 text-text-body text-body-m";
     box.setAttribute("data-olivia-gpu-settings", "true");
     box.append(text("div", "媒体生成服务", "text-text-body text-title-m"),
       text("p", "选择云端后，生成所需的回信文字和素材会发送到你指定的服务。聊天模型仍使用原来的设置。", "text-text-secondary text-body-m"));
@@ -3022,7 +3022,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
 
   const mountCloudService = (section) => {
     const box = document.createElement("div");
-    box.className = "flex flex-col gap-4";
+    box.className = "flex flex-col gap-4 text-text-body text-body-m";
     box.setAttribute("data-olivia-cloud-service", "true");
     const state = text("p", "读取云服务设置…", "text-text-secondary text-body-m");
     state.setAttribute("role", "status");
