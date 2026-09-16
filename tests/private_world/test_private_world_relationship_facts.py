@@ -33,6 +33,24 @@ NOW = datetime(2026, 9, 3, tzinfo=timezone.utc)
 REPLY_SHA256 = hashlib.sha256(b"synthetic canonical reply").hexdigest()
 
 
+def test_explicit_stage_is_canonical_idempotent_and_does_not_grant_permissions(tmp_path):
+    ledger = SQLitePrivateWorldLedger(tmp_path / 'stage.sqlite3')
+    user, reply = '我们正式成为伴侣吧', '我愿意，我们正式成为伴侣'
+    signal = dict(kind='meaningful_exchange', user_quote=user, reply_quote=reply,
+                  relationship_stage='committed')
+    committer = PrivateWorldRelationshipCommitter(ledger)
+    assert committer.commit_exchange('chat:1', user, reply, signal, occurred_at=NOW) is RelationshipFactStatus.REJECTED
+    PrivateWorldDeliveryCommitter(ledger).commit(DeliveryEvent(
+        delivery_id='chat:1', occurred_at=NOW, semantic_key='chat:1',
+        canonical_reply_sha256=hashlib.sha256(reply.encode()).hexdigest()))
+    assert committer.commit_exchange('chat:1', user, reply, signal, occurred_at=NOW) is RelationshipFactStatus.COMMITTED
+    state = ledger.snapshot()
+    assert state.relationship_stage == 'committed'
+    assert state.intimacy_grants == () and state.nickname_permissions == ()
+    assert committer.commit_exchange('chat:1', user, reply, signal, occurred_at=NOW) is RelationshipFactStatus.DUPLICATE
+    assert ledger.snapshot() == state
+
+
 def test_canonical_interaction_evidence_moves_affection_not_permissions(tmp_path):
     ledger = SQLitePrivateWorldLedger(tmp_path / "world.sqlite3")
     deliveries = PrivateWorldDeliveryCommitter(ledger)

@@ -312,6 +312,7 @@ def apply_historical_private_world(
     assessment: HistoricalRelationshipAssessment,
     command_service: object,
     preserve_order: bool = False,
+    stage_backfill: bool = False,
 ) -> str:
     """Commit one idempotent migration command after all memory writes succeed."""
 
@@ -324,6 +325,8 @@ def apply_historical_private_world(
         ordered[index - 1].memory_source_id for index in assessment.evidence_indexes
     )
     corpus_id = historical_relationship_command_id(ordered)
+    if stage_backfill:
+        corpus_id += '.stage-v2'
     command = ApplyHistoricalRelationshipEvidence(
         command_id=corpus_id,
         idempotency_key=corpus_id,
@@ -337,6 +340,7 @@ def apply_historical_private_world(
         trust=assessment.trust,
         comfort=assessment.comfort,
         tension=assessment.tension,
+        relationship_stage=assessment.relationship_stage,
     )
     result = command_service.execute(command)
     status = getattr(result, "status", None)

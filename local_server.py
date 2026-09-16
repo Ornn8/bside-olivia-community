@@ -831,6 +831,7 @@ class LetterAdapter:
             related = "\n".join(
                 pair.get("user_letter", "") + "\n" + pair.get("linli_reply", "")
                 for fragment in self.recent_letter_fragments(content)
+                if fragment.fragment_id != 'chat.historical'
                 for pair in json.loads(fragment.text)["letters"]
             )
             now = _CURRENT_LETTER_RECEIPT.get() or self._now()
@@ -844,6 +845,14 @@ class LetterAdapter:
     def recent_letter_fragments(self, content: str = "") -> tuple[UntrustedFragment, ...]:
         if self.recent_letters is None:
             return ()
+        from runtime.personal_chat.presentation import CURRENT
+        if CURRENT.get() is not None:
+            from runtime.personal_chat.context import chat_context
+            recent, historical = chat_context(self.recent_letters(), query=content,
+                now=_CURRENT_LETTER_RECEIPT.get() or self._now(),
+                excluded_sources=self._memory_source_exclusions())
+            return tuple(UntrustedFragment(name, text) for name, text in
+                         (('chat.recent', recent), ('chat.historical', historical)) if text)
         from runtime.reply.recent_correspondence import recent_correspondence
         text = recent_correspondence(self.recent_letters(), query=content, excluded_sources=self._memory_source_exclusions())
         return (UntrustedFragment("letters.recent", text),) if text else ()

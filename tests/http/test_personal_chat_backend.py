@@ -317,6 +317,10 @@ def test_consumer_failure_preserves_reply_and_retries_without_stopping_transport
         assert rows[0]["delivery_status"] == "DELIVERED" and rows[0]["consumer_failures"] == 1
         for _ in range(5):
             await service.recover()
-        assert len(attempts) == 3 and sends == ["reply"]
+        assert len(attempts) == 1 and sends == ["reply"]
+        for _ in range(4):
+            rows[0]['consumer_retry_at'] = 0
+            await service.recover()
+        assert len(attempts) == 5 and sends == ['reply']
         assert rows[0]["consumer_error_code"] == "PERSONAL_CHAT_DAILY_LIFE_UNAVAILABLE"
     asyncio.run(scenario())

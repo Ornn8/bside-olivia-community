@@ -1,5 +1,6 @@
 """One owner, two transports, and the existing canonical exchange consumers."""
 import asyncio
+import re
 from datetime import datetime, timezone
 
 from .events import PersonalMessage
@@ -35,7 +36,7 @@ class PersonalChatService:
                 if any(remaining[key] != sources[key] for key in overlap):
                     raise ValueError('PERSONAL_CHAT_ID_CONFLICT')
                 stored = PersonalMessage(event.channel, event.account_id, event.owner_id,
-                    next(iter(sources)), row['content'], tuple(sources.items()), row.get('input_kind','text'))
+                    next(iter(sources)), row['content'], tuple(sources.items()), row.get('input_kind','text'), row.get('user_sent_at'))
                 terminal = row.get('delivery_status') == 'SENDING' or (
                     row.get('delivery_status') == 'FAILED' and row.get('generation_attempts', 0) >= 2)
                 if not terminal or remaining.keys() == overlap:
@@ -43,7 +44,7 @@ class PersonalChatService:
                 for key in overlap:
                     del remaining[key]
             if remaining:
-                fresh = combine([PersonalMessage(event.channel, event.account_id, event.owner_id, key, text, input_kind=event.input_kind)
+                fresh = combine([PersonalMessage(event.channel, event.account_id, event.owner_id, key, text, input_kind=event.input_kind, sent_at=event.sent_at)
                                  for key, text in remaining.items()])
                 await self._handle_one(fresh, send.for_exchange(fresh) if callable(getattr(send, 'for_exchange', None)) else send)
 
@@ -78,6 +79,7 @@ class PersonalChatService:
                        "input_kind": event.input_kind,
                        "channel": event.channel, "reply_mode": "future_im",
                        "life_received_at": now, "created_at": datetime.now(timezone.utc).timestamp(),
+                       "user_sent_at": event.sent_at,
                        "delivery_status": "GENERATING", "letter_status": "PROCESSING"}
                 if proactive:
                     row.update(origin='proactive', source_messages={})
@@ -114,6 +116,22 @@ class PersonalChatService:
                     raise
             if callable(getattr(send, 'is_available', None)) and not send.is_available():
                 raise RuntimeError('PERSONAL_CHAT_CHANNEL_DISCONNECTED')
+            # Keep the stored canonical text identical to the displayed IM text.
+            text = re.sub(r'。+[ \t]*', '\n', row['reply_text'])
+            text = re.sub(r'(?<!\.)\.(?!\.)(?=\s|$)', '', text).strip()
+            if not text:
+                raise ValueError('PERSONAL_CHAT_REPLY_INVALID')
+            if proactive:
+                normalized = lambda value: re.sub(r'[\s。.]', '', value)
+                cutoff = datetime.now(timezone.utc).timestamp() - 86400
+                if any(old is not row and old.get('delivery_status') in {'DELIVERED', 'SENDING'}
+                       and float(old.get('created_at', 0)) >= cutoff
+                       and normalized(old.get('reply_text', '')) == normalized(text)
+                       for old in self.rows):
+                    row.update(delivery_status='SKIPPED', letter_status='SKIPPED',
+                               error_code='PERSONAL_CHAT_DUPLICATE_CONTENT')
+                    self.persist()
+                    return
             audio = row.get('prepared_audio')
             if audio and callable(getattr(send, 'prepare_audio', None)):
                 try:
@@ -121,6 +139,8 @@ class PersonalChatService:
                 except Exception:
                     audio = None
                     row['voice_fallback'] = 'PERSONAL_CHAT_AUDIO_UPLOAD_UNAVAILABLE'
+            if not (audio and callable(getattr(send, 'audio', None))):
+                row['reply_text'] = text
             row["delivery_status"] = "SENDING"
             self.persist()
             try:
@@ -145,7 +165,6 @@ class PersonalChatService:
             self.persist()
             if row.get('sticker_id') and callable(getattr(send, 'image', None)):
                 from pathlib import Path
-                import re
                 if not re.fullmatch(r'linli-\d{2,3}', row['sticker_id']) or not self.sticker_allowed(row['sticker_id']):
                     row['sticker_delivery_status'] = 'LOCKED'
                 else:

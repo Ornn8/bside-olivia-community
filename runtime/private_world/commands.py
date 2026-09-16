@@ -304,6 +304,7 @@ class ApplyHistoricalRelationshipEvidence(PrivateWorldCommand):
     trust: int | None = None
     comfort: int | None = None
     tension: int | None = None
+    relationship_stage: RelationshipStage | None = None
 
     kind: ClassVar[PrivateWorldCommandKind] = (
         PrivateWorldCommandKind.APPLY_HISTORICAL_RELATIONSHIP_EVIDENCE
@@ -316,6 +317,8 @@ class ApplyHistoricalRelationshipEvidence(PrivateWorldCommand):
             if type(value) is not int or not 0 <= value <= 100:
                 raise PrivateWorldCommandError(f"{field_name} is invalid")
         axes = (self.trust, self.comfort, self.tension)
+        if self.relationship_stage is not None and (not isinstance(self.relationship_stage, RelationshipStage) or self.relationship_stage is RelationshipStage.COMMITTED):
+            raise PrivateWorldCommandError('historical relationship stage is invalid')
         if axes != (None, None, None) and any(type(v) is not int or not 0 <= v <= 100 for v in axes):
             raise PrivateWorldCommandError("historical assessment axes must be complete")
         if not self.evidence_refs:
@@ -329,6 +332,7 @@ class ApplyHistoricalRelationshipEvidence(PrivateWorldCommand):
             "closeness": self.closeness,
             **({"trust": self.trust, "comfort": self.comfort, "tension": self.tension}
                if self.trust is not None else {}),
+            **({'relationship_stage': self.relationship_stage.value} if self.relationship_stage is not None else {}),
         }
 
 
