@@ -92,6 +92,19 @@ def test_network_diagnostics_do_not_expose_transport_details():
         assert str(connection_error(error))==code
 
 
+def test_gpu_tls_context_supplements_empty_os_roots_without_disabling_verification(monkeypatch):
+    import ssl
+    from runtime.remote_generation import gpu_tls_context
+    empty=ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    assert empty.cert_store_stats()['x509_ca']==0
+    monkeypatch.setattr(ssl,'create_default_context',lambda:empty)
+    context=gpu_tls_context()
+    assert context is empty
+    assert context.cert_store_stats()['x509_ca']>100
+    assert context.check_hostname is True
+    assert context.verify_mode==ssl.CERT_REQUIRED
+
+
 def test_connection_test_uses_candidate_without_saving(tmp_path, monkeypatch):
     from runtime.remote_generation import RemoteGeneration
     calls=[]

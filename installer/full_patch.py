@@ -60,6 +60,9 @@ PAYLOAD_EXTRA_DIRS = (
 PAYLOAD_EXTRA_FILES = (
     "runtime/cloud_service.py",
     "runtime/remote_generation.py",
+    "runtime/gpu_ca_bundle.pem",
+    "runtime/gpu_ca_bundle.LICENSE.txt",
+    "runtime/gpu_ca_bundle.SOURCE.txt",
     "runtime/remote_pipeline.py",
     "runtime/gpu_settings.py",
     "runtime/__init__.py",

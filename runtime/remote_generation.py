@@ -7,8 +7,9 @@ from pathlib import Path
 import tempfile
 import time
 import uuid
+import ssl
 from urllib.parse import urlsplit
-from aiohttp import ClientSession, ClientTimeout, ClientError, ClientSSLError, ClientConnectorError
+from aiohttp import ClientSession, ClientTimeout, ClientError, ClientSSLError, ClientConnectorError, TCPConnector
 from runtime.cloud_service import endpoint, CloudError
 
 
@@ -17,6 +18,14 @@ def connection_error(exc):
     if isinstance(exc, TimeoutError): return CloudError('GPU_CONNECTION_TIMEOUT')
     if isinstance(exc, ClientConnectorError): return CloudError('GPU_CONNECT_FAILED')
     return CloudError('GPU_CONNECTION_FAILED')
+
+
+def gpu_tls_context():
+    # Keep system roots (including user-managed CAs), supplement with Mozilla roots.
+    # Hostname, expiry and signature verification remain enabled.
+    context = ssl.create_default_context()
+    context.load_verify_locations(cafile=str(Path(__file__).with_name('gpu_ca_bundle.pem')))
+    return context
 
 
 class RemoteGeneration:
@@ -55,7 +64,7 @@ class RemoteGeneration:
             raise CloudError('GPU_REQUEST_TOO_LARGE', 413)
         headers['Content-Type'] = 'application/json'
         try:
-            async with ClientSession(timeout=ClientTimeout(total=20), trust_env=False) as session:
+            async with ClientSession(timeout=ClientTimeout(total=20), trust_env=False, connector=TCPConnector(ssl=gpu_tls_context())) as session:
                 async with session.request(method, self.url + path, data=encoded, headers=headers, allow_redirects=False) as response:
                     if response.status in (401, 403): raise CloudError('GPU_AUTH_FAILED', 502)
                     if response.status == 429: raise CloudError('GPU_QUEUE_FULL', 429)
@@ -97,7 +106,7 @@ class RemoteGeneration:
             raise CloudError('GPU_ASSET_INVALID', 400)
         if not self.url or not self.token: raise CloudError('GPU_NOT_CONFIGURED', 503)
         try:
-            async with ClientSession(timeout=ClientTimeout(total=600), trust_env=False) as session:
+            async with ClientSession(timeout=ClientTimeout(total=600), trust_env=False, connector=TCPConnector(ssl=gpu_tls_context())) as session:
                 with path.open('rb') as source:
                     async with session.post(self.url + '/v1/assets', data=source,
                         headers={'Authorization': 'Bearer ' + self.token, 'X-Asset-Suffix': path.suffix.lower()},
@@ -143,7 +152,7 @@ class RemoteGeneration:
         # Atomic replacement preserves an existing valid output if transport fails.
         temporary = None
         try:
-            async with ClientSession(timeout=ClientTimeout(total=1800, sock_connect=30, sock_read=60), trust_env=False) as session:
+            async with ClientSession(timeout=ClientTimeout(total=1800, sock_connect=30, sock_read=60), trust_env=False, connector=TCPConnector(ssl=gpu_tls_context())) as session:
                 async with session.get(task['outputs'][0]['url'], allow_redirects=False) as response:
                     if response.status != 200: raise CloudError('GPU_DOWNLOAD_FAILED', 502)
                     size = 0
