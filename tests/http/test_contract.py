@@ -1325,6 +1325,22 @@ def test_http_rejects_a_new_letter_until_the_current_reply_is_delivered(
     }
 
 
+def test_interrupted_media_is_not_automatically_resubmitted(tmp_path, monkeypatch):
+    import local_server
+    monkeypatch.setenv('OLIVIA_LOCAL_DATA_ROOT', str(tmp_path))
+    local_server.store.letters.append({'letter_id':'interrupted-media', 'content':'fixture',
+        'reply_text':'preserved reply', 'letter_status':'COMPLETED', 'reply_mode':'voice_reply',
+        'media_status':'PROCESSING', 'created_at':int(time.time())})
+    local_server._persist_store_state()
+    local_server.store.letters.clear()
+    local_server._load_store_state()
+    letter=next(item for item in local_server.store.letters if item['letter_id']=='interrupted-media')
+    assert letter['media_status']=='UNAVAILABLE'
+    assert letter['media_error_code']=='MEDIA_JOB_INTERRUPTED'
+    assert letter['reply_text']=='preserved reply'
+    assert local_server._schedule_pending_media_jobs()==0
+
+
 def test_persisted_pending_reply_resumes_when_http_runtime_starts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2680,6 +2696,21 @@ def test_contract_and_fixture_artifacts_are_versioned_and_sanitized() -> None:
             "UNAVAILABLE",
         ],
         "error_codes": {
+            "GPU_TLS_FAILED": {"status": "UNAVAILABLE", "retryable": True},
+            "GPU_CONNECTION_TIMEOUT": {"status": "UNAVAILABLE", "retryable": True},
+            "GPU_CONNECT_FAILED": {"status": "UNAVAILABLE", "retryable": True},
+            "GPU_CONNECTION_FAILED": {"status": "UNAVAILABLE", "retryable": True},
+            "GPU_AUTH_FAILED": {"status": "UNAVAILABLE", "retryable": True},
+            "GPU_QUEUE_FULL": {"status": "UNAVAILABLE", "retryable": True},
+            "GPU_REQUEST_FAILED": {"status": "UNAVAILABLE", "retryable": True},
+            "GPU_TASK_TIMEOUT": {"status": "UNAVAILABLE", "retryable": True},
+            "GPU_TASK_FAILED": {"status": "UNAVAILABLE", "retryable": True},
+            "GPU_DOWNLOAD_FAILED": {"status": "UNAVAILABLE", "retryable": True},
+            "GPU_OUTPUT_INVALID": {"status": "UNAVAILABLE", "retryable": True},
+            "GPU_SHARED_SCENE_MISSING": {"status": "UNAVAILABLE", "retryable": True},
+            "GPU_NOT_CONFIGURED": {"status": "UNAVAILABLE", "retryable": True},
+            "GPU_CAPABILITY_UNAVAILABLE": {"status": "UNAVAILABLE", "retryable": True},
+            "MEDIA_JOB_INTERRUPTED": {"status": "UNAVAILABLE", "retryable": True},
             "COVER_SOURCE_REQUIRED": {"status": "FAILED", "retryable": False},
             "COVER_LYRICS_REQUIRED": {"status": "FAILED", "retryable": False},
             "COVER_RUNTIME_UNAVAILABLE": {"status": "UNAVAILABLE", "retryable": True},

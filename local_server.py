@@ -1220,7 +1220,7 @@ def _load_store_state() -> None:
                         _mark_media_not_requested(item)
                         needs_persist = True
                     if item.get("media_status") == "PROCESSING":
-                        item["media_status"] = "QUEUED"
+                        item.update(media_status="UNAVAILABLE", media_error_code="MEDIA_JOB_INTERRUPTED", media_retryable=True)
                         needs_persist = True
     if isinstance(loaded.get("settings"), dict):
         store.settings = loaded["settings"]
@@ -3245,9 +3245,9 @@ async def route(
                 return err(503, 'PROACTIVE_LOGIN_UNAVAILABLE', _proactive_status())
         _refresh_proactive_context()
         return ok(_proactive_status())
-    if p == "/toy/cover/progress":
+    if p in {"/toy/cover/progress", "/toy/media/progress"}:
         letter = next((item for item in store.letters if item["letter_id"] == query.get("letter_id")), None)
-        if letter is None or letter.get("music_provider") != "ace_step_xl_cover":
+        if letter is None or (p == "/toy/cover/progress" and letter.get("music_provider") != "ace_step_xl_cover"):
             return err(404, "LETTER_NOT_FOUND", {})
         state = {"status": letter.get("media_status", "PENDING"), "error_code": letter.get("media_error_code", "")}
         root = _media_root()
@@ -4495,6 +4495,7 @@ def _record_published_media(letter: dict, *, reply_text: str, delivery_id: str,
 
 async def _render_media_job(letter_id: str, content: str, reply_text: str, reply_mode: str) -> None:
     """Render one media reply at a time and persist a relative artifact path."""
+    from runtime.cloud_service import CloudError
 
     letter = next((item for item in store.letters if item["letter_id"] == letter_id), None)
     if letter is None:
@@ -4672,6 +4673,7 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                 path=output_path, components=components, presentation='video' if video_enabled else 'audio')
             _persist_media_state()
         except (
+            CloudError,
             ReplyMediaError,
             MusicReplyError,
             VoiceDirectionError,
@@ -4700,6 +4702,13 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                 _record_published_media(letter, reply_text=reply_text, delivery_id=delivery_id,
                     path=output_dir / f'{letter_id}-speech.wav', components=('speech',), presentation='audio')
             _persist_media_state()
+
+        except Exception as exc:
+            # A background worker must never leave a completed text reply stuck processing.
+            if still_current():
+                _record_media_job_failure(exc, stage, environment)
+                letter.update(media_status="UNAVAILABLE", media_error_code="MEDIA_PROVIDER_UNAVAILABLE", media_retryable=True)
+                _persist_media_state()
 
 
 def _schedule_media_job(letter_id: str, content: str, reply_text: str, reply_mode: str) -> None:

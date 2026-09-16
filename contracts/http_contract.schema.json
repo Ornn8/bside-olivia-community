@@ -256,6 +256,51 @@
             },
             "COVER_SOURCE_REQUIRED": {
               "$ref": "#/$defs/media_error"
+            },
+            "GPU_TLS_FAILED": {
+              "$ref": "#/$defs/media_error"
+            },
+            "GPU_CONNECTION_TIMEOUT": {
+              "$ref": "#/$defs/media_error"
+            },
+            "GPU_CONNECT_FAILED": {
+              "$ref": "#/$defs/media_error"
+            },
+            "GPU_CONNECTION_FAILED": {
+              "$ref": "#/$defs/media_error"
+            },
+            "GPU_AUTH_FAILED": {
+              "$ref": "#/$defs/media_error"
+            },
+            "GPU_QUEUE_FULL": {
+              "$ref": "#/$defs/media_error"
+            },
+            "GPU_REQUEST_FAILED": {
+              "$ref": "#/$defs/media_error"
+            },
+            "GPU_TASK_TIMEOUT": {
+              "$ref": "#/$defs/media_error"
+            },
+            "GPU_TASK_FAILED": {
+              "$ref": "#/$defs/media_error"
+            },
+            "GPU_DOWNLOAD_FAILED": {
+              "$ref": "#/$defs/media_error"
+            },
+            "GPU_OUTPUT_INVALID": {
+              "$ref": "#/$defs/media_error"
+            },
+            "GPU_SHARED_SCENE_MISSING": {
+              "$ref": "#/$defs/media_error"
+            },
+            "GPU_NOT_CONFIGURED": {
+              "$ref": "#/$defs/media_error"
+            },
+            "GPU_CAPABILITY_UNAVAILABLE": {
+              "$ref": "#/$defs/media_error"
+            },
+            "MEDIA_JOB_INTERRUPTED": {
+              "$ref": "#/$defs/media_error"
             }
           }
         }

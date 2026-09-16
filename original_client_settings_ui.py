@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-SETTINGS_UI_VERSION = "p03.original-settings-manage.v39"
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v40"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
@@ -3683,12 +3683,17 @@ BOOTSTRAP_JAVASCRIPT = r'''
       const id=this.getAttribute('cover-id');if(!id||!coverApi||this.coverBusy)return;
       this.coverBusy=true;
       try{
-        const endpoint=new URL('/toy/cover/progress',coverApi);endpoint.searchParams.set('letter_id',id);
+        const endpoint=new URL('/toy/media/progress',coverApi);endpoint.searchParams.set('letter_id',id);
         const response=await fetch(endpoint,{cache:'no-store',credentials:'omit'});if(!response.ok)return;
         const data=(await response.json()).data;const status=this.querySelector('.voice-status');if(!status||!data)return;
         const labels={loading:'正在准备翻唱…',transcribing:'正在识别原曲歌词…',loading_model:'正在加载翻唱模型…',generating:'林离正在翻唱…',decoding:'正在保存歌曲音频…',completed:'歌曲已完成，正在准备回信…'};
         const errors={COVER_LYRICS_REQUIRED:'未能识别歌词，请补充原曲歌词后重新寄信。',COVER_RUNTIME_UNAVAILABLE:'翻唱组件尚未准备完整，请检查本地组件。',COVER_GENERATION_TIMEOUT:'这次翻唱等待超时，可以手动重试。',COVER_SOURCE_REQUIRED:'这封信缺少原曲音频，请重新选择后寄信。'};
-        if(['FAILED','UNAVAILABLE'].includes(data.status))status.textContent=errors[data.error_code]||'这次翻唱未能完成，文字回信已保留。';
+        const cloudErrors={GPU_TLS_FAILED:'云端证书校验失败，请更新补丁并检查电脑时间。',GPU_CONNECTION_TIMEOUT:'云端连接超时，本次生成已停止等待。',GPU_CONNECT_FAILED:'无法连接云端，本次生成未完成。',GPU_CONNECTION_FAILED:'云端连接中断，本次生成未完成。',GPU_AUTH_FAILED:'云端 Key 验证失败，请检查云端 GPU 设置。',GPU_QUEUE_FULL:'云端队列已满，本次任务未进入队列。',GPU_TASK_TIMEOUT:'云端任务等待超时，已停止等待。',GPU_TASK_FAILED:'云端生成失败。',GPU_DOWNLOAD_FAILED:'生成结果下载失败。',GPU_SHARED_SCENE_MISSING:'视频素材与云端不匹配，请联系管理员。',MEDIA_JOB_INTERRUPTED:'上次生成已中断，未自动重复提交。'};
+        if(['FAILED','UNAVAILABLE'].includes(data.status)) {
+          const code=typeof data.error_code==='string'&&/^[A-Z][A-Z0-9_]{0,95}$/.test(data.error_code)?data.error_code:'';
+          status.textContent=(cloudErrors[code]||errors[code]||'本次媒体生成未完成。')+' 文字回信已保留。'+(code?`（${code}）`:'');
+          clearInterval(this.coverTimer);
+        }
         else if(data.status!=='COMPLETED'&&labels[data.stage])status.textContent=labels[data.stage];
       }catch(_){}finally{this.coverBusy=false}
     }
