@@ -30,7 +30,7 @@ def original_configured(environment):
 
 
 def render_original_reply(content, reply_text, output_path, *, environment,
-                          duration_seconds=110, gateway=None, render_video=True,
+                          duration_seconds=110, gateway=None, reply_adapter=None, render_video=True,
                           include_spoken=True, **video_options):
     if duration_seconds != 110:
         raise MusicReplyError("MUSIC_DURATION_UNSUPPORTED")
@@ -38,9 +38,12 @@ def render_original_reply(content, reply_text, output_path, *, environment,
         raise MusicReplyError("ORIGINAL_RUNTIME_UNAVAILABLE")
     audio = output_path.with_name(output_path.stem + "-original.wav") if render_video else output_path
     try:
+        planner_options = {"gateway": gateway} if gateway is not None else {}
+        if reply_adapter is not None:
+            planner_options['reply_adapter'] = reply_adapter
         plan = cached_song_plan(audio.parent / (audio.stem + "-song-plan.private.json"),
             content, reply_text, 110,
-            lambda: plan_song_content(content, reply_text, 110, **({"gateway": gateway} if gateway is not None else {})))
+            lambda: plan_song_content(content, reply_text, 110, **planner_options))
     except Exception as exc:
         raise MusicReplyError("SONG_CONTENT_UNAVAILABLE") from exc
     try:

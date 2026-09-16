@@ -801,34 +801,16 @@ class LetterAdapter:
         self, content: str, context: str = ""
     ) -> tuple[dict[str, str], ...]:
         user_content = content + ("\n\n" + context if context else "")
+        return self.reply_context_messages(content, mode=ReplyMode.TEXT_LETTER, user_input=user_content)
+
+    def reply_context_messages(self, content, *, mode, max_input_chars=None, user_input=None):
+        from runtime.reply.reply_pipeline import assemble_reply_messages
         loaded = load_persona(self.persona_v2_path)
-        reply_context = self.build_reply_context(ReplyMode.TEXT_LETTER)
-        recent = self.recent_letter_fragments(content)
-        evidence = self.daily_life_fragments(content)
-        options = dict(
-            snapshot=loaded.snapshot,
-            context=reply_context,
-            user_input=user_content,
-            max_units=self.config.max_input_chars,
-            evidence_summaries=evidence,
-            relationship_expression_enabled=loaded.snapshot.status == "READY",
-        )
-        baseline = assemble_persona(history=recent, **options)
-        available = max(0, self.config.max_input_chars - len(baseline.system_content)
-                        - len(baseline.user_content) - 256)
-        if self._memory_context_limit() == 0:
-            self._build_memory_prompt(content, max_chars=0)
-            return baseline.to_messages()
-        # Account for JSON escaping in the final assembly, not just raw memory text.
-        while available > 0:
-            memory_context = self._build_memory_prompt(content, max_chars=available)
-            if not memory_context.text:
-                break
-            result = assemble_persona(history=(UntrustedFragment('memory.references', memory_context.text), *recent), **options)
-            if 'history.memory.references' in result.budget_report.included_ids:
-                return result.to_messages()
-            available = available * 3 // 4
-        return baseline.to_messages()
+        context = self.build_reply_context(mode, **({'future_im_enabled': True} if mode is ReplyMode.FUTURE_IM else {}))
+        messages, _ = assemble_reply_messages(self, loaded.snapshot, context, content,
+            max_input_chars=self.config.max_input_chars if max_input_chars is None else max_input_chars,
+            user_input=user_input)
+        return messages
 
     def daily_life_fragments(self, content: str) -> tuple[UntrustedFragment, ...]:
         if self.daily_life is None:
@@ -4601,6 +4583,7 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                     gateway=letters_adapter.gateway,
                     environment=environment,
                     include_spoken=reply_mode == ReplyMode.MUSICAL_VIDEO.value,
+                    **({'reply_adapter': letters_adapter} if letter.get('music_provider') != 'ace_step_xl_cover' else {}),
                     **cover_options,
                     **({"render_video": False} if not video_enabled else {}),
                 )

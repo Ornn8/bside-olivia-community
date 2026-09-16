@@ -248,47 +248,47 @@ def _prepare_generation_request(
 
     persona_path = getattr(adapter, "persona_v2_path", None)
     memory_builder = getattr(adapter, "memory_prompt_builder", None)
-    memory_port = getattr(adapter, "memory_port", None)
     if persona_path is None or memory_builder is None:
         raise ValueError("persona generation boundary is unavailable")
 
     loaded = load_persona(persona_path)
     if loaded.snapshot.status != "READY":
         raise _PersonaNotReadyError(_PERSONA_NOT_READY)
-    memory_limit = min(
-        request.max_input_chars,
-        int(getattr(memory_port, "context_max_chars", 2400)),
-    )
+    messages, evidence = assemble_reply_messages(adapter, loaded.snapshot, context,
+        request.content, max_input_chars=request.max_input_chars)
+    return _PreparedGeneration(replace(request, content=None, messages=messages), evidence)
+
+
+def assemble_reply_messages(adapter, snapshot, context, content, *, max_input_chars, user_input=None):
+    """One memory/world assembly for every user-facing reply and media plan."""
+    life = getattr(adapter, 'daily_life_fragments', None)
+    recent = getattr(adapter, 'recent_letter_fragments', None)
+    recent = recent(content) if callable(recent) else ()
+    options = dict(snapshot=snapshot, context=context,
+        user_input=content if user_input is None else user_input,
+        max_units=max_input_chars, evidence_summaries=life(content) if callable(life) else (),
+        relationship_expression_enabled=snapshot.status == 'READY')
+    baseline = assemble_persona(history=recent, **options)
+    available = max(0, max_input_chars - len(baseline.system_content) - len(baseline.user_content) - 256)
+    limit = getattr(adapter, '_memory_context_limit', None)
+    if callable(limit) and limit() == 0:
+        adapter._build_memory_prompt(content, max_chars=0)
+        return baseline.to_messages(), TrustedReviewEvidence()
     build_memory_prompt = getattr(adapter, "_build_memory_prompt", None)
-    if callable(build_memory_prompt):
-        memory_context = build_memory_prompt(
-            request.content,
-            max_chars=memory_limit,
-        )
-    else:
-        # Test and third-party bridges may retain the original builder-only
-        # surface; source selection is unavailable only outside the local
-        # LetterAdapter production boundary.
-        memory_context = memory_builder.build(
-            request.content,
-            max_chars=memory_limit,
-        )
-    selection = _selected_history(memory_context)
-    life_fragments = getattr(adapter, "daily_life_fragments", None)
-    recent_fragments = getattr(adapter, "recent_letter_fragments", None)
-    messages = assemble_persona(
-        loaded.snapshot,
-        context,
-        user_input=request.content,
-        max_units=request.max_input_chars,
-        history=(*selection.fragments, *(recent_fragments(request.content) if callable(recent_fragments) else ())),
-        evidence_summaries=life_fragments(request.content) if callable(life_fragments) else (),
-        relationship_expression_enabled=True,
-    ).to_messages()
-    return _PreparedGeneration(
-        replace(request, content=None, messages=messages),
-        selection.trusted_evidence,
-    )
+    build_memory_prompt = build_memory_prompt if callable(build_memory_prompt) else adapter.memory_prompt_builder.build
+    while available > 0:
+        memory = build_memory_prompt(content, max_chars=available)
+        if not getattr(memory, 'text', ''):
+            break
+        selection = _selected_history(memory)
+        result = assemble_persona(history=(*selection.fragments, *recent), **options)
+        included = result.budget_report.included_ids
+        if 'history.memory.references' in included:
+            trusted = TrustedReviewEvidence(tuple(r for r in selection.trusted_evidence.character_replies
+                if 'history.' + r.evidence_id in included))
+            return result.to_messages(), trusted
+        available = available * 3 // 4
+    return baseline.to_messages(), TrustedReviewEvidence()
 
 
 def _selected_history(memory_context: object) -> _SelectedHistory:

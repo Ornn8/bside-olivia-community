@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from pathlib import Path
+import pytest
 
 from runtime.memory.mem0_memory import Mem0ConversationMemoryAdapter
 from runtime.memory.companion_memory_context import CompanionMemoryPromptBuilder
@@ -69,3 +70,68 @@ def test_old_shipped_capacity_upgrades_but_explicit_environment_limit_wins(tmp_p
     assert load_gateway_config(path, environ={'OLIVIA_LLM_MAX_INPUT_CHARS': '30000'}).max_input_chars == 30000
     path.write_text(json.dumps({'max_input_chars': 16000}), encoding='utf-8')
     assert load_gateway_config(path, environ={}).max_input_chars == 16000
+
+
+@pytest.mark.parametrize('mode', ['text_letter', 'voice_reply', 'spoken_video',
+    'singing_video', 'voice_song_video', 'musical_video', 'future_im'])
+def test_production_pipeline_shares_recall_and_world_across_modes(tmp_path, mode):
+    from types import SimpleNamespace
+    from local_server import LetterAdapter
+    from llm_gateway import GatewayConfig
+    from reply_context import ReplyMode
+    from reply_orchestrator import ReplyRequest
+    from runtime.reply.reply_pipeline import _prepare_generation_request
+    from persona_assembly import UntrustedFragment
+    memory, topics = fixture(tmp_path)
+    adapter = LetterAdapter(GatewayConfig(provider='mock'), memory_port=NullMemoryPort())
+    adapter.memory_prompt_builder = CompanionMemoryPromptBuilder(NullMemoryPort(), memory)
+    adapter.daily_life_fragments = lambda content: (UntrustedFragment('world.fixture', 'WORLD_STATE_FIXTURE'),)
+    context = adapter.build_reply_context(ReplyMode(mode), future_im_enabled=True)
+    prepared = _prepare_generation_request(ReplyRequest(content='。'.join(topics)), context,
+        SimpleNamespace(gateway=SimpleNamespace(adapter=adapter)))
+    system = prepared.request.messages[0]['content']
+    assert 'WORLD_STATE_FIXTURE' in system
+    for i in range(len(topics)):
+        assert f'更正标记{i}' in system
+
+
+@pytest.mark.parametrize('channel,proactive', [('qq', False), ('qq', True), ('wechat', False), ('wechat', True)])
+def test_social_presentation_retains_shared_relationship_and_originals(tmp_path, channel, proactive):
+    from types import SimpleNamespace
+    from local_server import LetterAdapter
+    from llm_gateway import GatewayConfig
+    from reply_context import ReplyMode
+    from reply_orchestrator import ReplyRequest
+    from runtime.reply.reply_pipeline import _prepare_generation_request
+    from runtime.personal_chat.presentation import CURRENT
+    from private_world_port import PrivateWorldSnapshot
+    memory, topics = fixture(tmp_path)
+    adapter = LetterAdapter(GatewayConfig(provider='mock'), memory_port=NullMemoryPort(),
+        private_world_port=SimpleNamespace(snapshot=lambda: PrivateWorldSnapshot(relationship_stage='close', trust=80)))
+    adapter.memory_prompt_builder = CompanionMemoryPromptBuilder(NullMemoryPort(), memory)
+    token = CURRENT.set({'channel': channel, 'proactive': proactive, 'structured': True})
+    try:
+        context = adapter.build_reply_context(ReplyMode.FUTURE_IM, future_im_enabled=True)
+        prepared = _prepare_generation_request(ReplyRequest(content='。'.join(topics)), context,
+            SimpleNamespace(gateway=SimpleNamespace(adapter=adapter)))
+        system = prepared.request.messages[0]['content']
+        assert 'close' in system
+        assert '更正标记4' in system
+    finally:
+        CURRENT.reset(token)
+
+
+def test_song_lyrics_use_same_world_and_original_context(tmp_path):
+    from local_server import LetterAdapter
+    from llm_gateway import GatewayConfig
+    from persona_assembly import UntrustedFragment
+    from runtime.media.song_content import _planning_messages
+    memory, topics = fixture(tmp_path)
+    adapter = LetterAdapter(GatewayConfig(provider='mock'), memory_port=NullMemoryPort())
+    adapter.memory_prompt_builder = CompanionMemoryPromptBuilder(NullMemoryPort(), memory)
+    adapter.daily_life_fragments = lambda content: (UntrustedFragment('world.fixture', 'WORLD_STATE_FIXTURE'),)
+    messages = _planning_messages('。'.join(topics), 110, adapter.config, reply_adapter=adapter)
+    assert 'WORLD_STATE_FIXTURE' in messages[0]['content']
+    for i in range(len(topics)):
+        assert f'更正标记{i}' in messages[0]['content']
+    assert sum(len(m['content']) for m in messages) <= adapter.config.max_input_chars

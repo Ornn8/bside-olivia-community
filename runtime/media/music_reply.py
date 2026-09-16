@@ -1794,6 +1794,7 @@ def render_musical_reply(
     spoken_action_base_path: Path | None = None,
     voice_performance_plan: TextOnlyVoicePlan | VoicePerformancePlan | None = None,
     gateway: Gateway | None = None,
+    reply_adapter=None,
     environment: Mapping[str, str] | None = None,
     include_spoken: bool = True,
     render_video: bool = True,
@@ -1842,6 +1843,8 @@ def render_musical_reply(
     try:
         from runtime.media.song_plan_cache import cached_song_plan
         planner_options = {"gateway": gateway} if gateway is not None else {}
+        if reply_adapter is not None:
+            planner_options['reply_adapter'] = reply_adapter
         song_plan = cached_song_plan(
             stage_root / "song-plan.private.json", content, reply_text, duration_seconds,
             lambda: plan_song_content(content, reply_text, duration_seconds, **planner_options),
