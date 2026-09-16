@@ -34,8 +34,9 @@ def test_pipeline_budget_adds_one_check_and_retains_existing_quality_reserve(
 @pytest.mark.parametrize('streaming', [False, True])
 @pytest.mark.parametrize('scoped', [False, True])
 @pytest.mark.parametrize('prepared', [False, True])
+@pytest.mark.parametrize('provider_name', ['mock', 'openai_compatible'])
 def test_compatibility_bridge_budget_covers_check_but_prepared_requests_keep_generation_budget(
-    monkeypatch, streaming, scoped, prepared,
+    monkeypatch, streaming, scoped, prepared, provider_name,
 ):
     from local_server import LetterAdapter, _LetterGateway
     observed_timeouts = []
@@ -56,7 +57,7 @@ def test_compatibility_bridge_budget_covers_check_but_prepared_requests_keep_gen
             yield GatewayDelta('reply', request_id, index=0, finish_reason='stop')
     provider = Provider()
     adapter = LetterAdapter.__new__(LetterAdapter)
-    adapter._runtime = (GatewayConfig(provider='mock', stream=streaming), provider)
+    adapter._runtime = (GatewayConfig(provider=provider_name, stream=streaming), provider)
     messages = ({'role': 'system', 'content': 'persona'}, {'role': 'user', 'content': 'hello'})
     adapter._messages = lambda *args: messages
     bridge = _LetterGateway(adapter)
@@ -68,7 +69,8 @@ def test_compatibility_bridge_budget_covers_check_but_prepared_requests_keep_gen
     assert result.state is ReplyState.COMPLETED
     assert provider.calls == 1
     generation_budget = 70 if scoped else 30
-    expected = generation_budget if prepared else generation_budget + RECALL_CHECK_TIMEOUT_SECONDS
+    expected = generation_budget + (RECALL_CHECK_TIMEOUT_SECONDS
+        if not prepared and provider_name == 'openai_compatible' else 0)
     assert observed_timeouts == [expected]
 
 

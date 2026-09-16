@@ -565,7 +565,10 @@ class _LetterGateway(Gateway):
         resolve = getattr(self.adapter.gateway, 'timeout_seconds_for_scope', None)
         if scope is not None and callable(resolve):
             timeout = resolve(scope, default=default)
-        return timeout + RECALL_CHECK_TIMEOUT_SECONDS
+        config = self.adapter.config
+        check_enabled = (config.persona_v2_enabled and
+                         config.provider in {'openai_compatible', 'openai'})
+        return timeout + (RECALL_CHECK_TIMEOUT_SECONDS if check_enabled else 0)
 
     async def complete(self, messages, *, request_id=None) -> GatewayResponse:
         return await self._complete(messages, request_id=request_id, scope=None)
