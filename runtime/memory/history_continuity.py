@@ -19,7 +19,7 @@ from .recall_sources import archive_source_aliases, read_archive_sources, _origi
 
 _PREVIOUS = re.compile(r'上一封|上封信|最近那封|\blast\s+letter\b', re.I)
 _REUNION = re.compile(r'好久不见|还记得我[吗么？?]|\blong\s+time\s+no\s+see\b', re.I)
-_REFERENCE = re.compile(r'那件事|这件事|那次|上面|那个|那条|当时|之前那封|还记得[吗么？?]|'
+_REFERENCE = re.compile(r'那件事|这件事|那次|上面|那个|这个|那条|当时|之前那封|还记得[吗么？?]|'
                         r'\b(?:that\s+(?:thing|time)|on\s+it|back\s+then)\b', re.I)
 _RECENT_IDS = frozenset({'letters.recent', 'chat.recent'})
 
@@ -36,7 +36,7 @@ class HistoryQuery:
         meaning = {
             'contextual': '检索补充了最近已送达交流中的用户原话，只用于理解省略的对象；'
                           '这不是新事实，也不保证用户本轮一定指它。仍依据完整原信回答，无法区分时自然问清。',
-            'ambiguous': '当前历史指代缺少可以定位的上文。召回结果只作候选，不随机认领某件往事；'
+            'ambiguous': '当前历史指代缺少可以定位的上文。不要随机认领某件往事；'
                          '没有足够线索时自然询问指的是哪件事，不宣称已经忘记全部历史。',
             'history_tail': '若提供旧通信，只作为历史参考，不是当前对话或今日状态；只承接有原文的过往。日期未知时不能称为最近一封。'
                             '仅有导入记录不代表知道用户所指的具体事件。',
@@ -73,8 +73,8 @@ def _recent_user(recent, excluded=()):
 def _has_specific_words(text: str) -> bool:
     # Reject another unresolved pointer rather than recycling vague filler.
     filler = ('记不记得', '还记得', '说过', '聊过', '那件事', '这件事', '之前', '以前',
-              '上面', '那个', '那条', '那次', '当时', '我们', '什么', '怎么', '记得', '有印象',
-              '你', '我', '还', '的', '吗', '么', '呢', '和')
+              '上面', '那个', '这个', '那条', '那次', '当时', '我们', '什么', '怎么', '有没有',
+              '东西', '回事', '记得', '有印象', '你', '我', '还', '的', '吗', '么', '呢', '和')
     rest = re.sub('|'.join(sorted(filler, key=len, reverse=True)), '', text)
     return bool(re.search(r'[\u3400-\u9fffA-Za-z0-9]{2,}', rest))
 
@@ -95,6 +95,11 @@ def plan_history_query(query: str, recent=(), *, excluded=()) -> HistoryQuery:
         return HistoryQuery(query, 'ambiguous')
     if _PREVIOUS.search(query) or _REUNION.search(query):
         return HistoryQuery(query, 'history_tail')
+    # A deictic phrase can still carry its own concrete anchor (for example,
+    # "那个蓝色纸鹤"). Search it normally. Pure pointers such as "那件事"
+    # remain ambiguous and are not allowed to pick an arbitrary archive row.
+    if _has_specific_words(query):
+        return HistoryQuery(query)
     return HistoryQuery(query, 'ambiguous')
 
 
