@@ -27,6 +27,13 @@ def observe(row, snapshot, events):
                                    "boundary_respected", "repair", "conflict"}), None)
     if event:
         row["contact_qualification"] = event.payload["contact_qualification"]
+        # Persist only a behavioral projection, never the hidden raw scores. Both
+        # proactive letters and IM can then share the same relationship-driven
+        # initiative policy without another relationship store.
+        from runtime.personal_chat.initiative_profile import profile_from_snapshot
+        profile = profile_from_snapshot(snapshot)
+        row["initiative_tier"] = profile.tier
+        row["initiative_caution"] = profile.caution
 
 
 def validate_choice(value, text):
