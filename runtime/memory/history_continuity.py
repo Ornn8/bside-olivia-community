@@ -92,7 +92,10 @@ def plan_history_query(query: str, recent=(), *, excluded=()) -> HistoryQuery:
         # Its source remains a candidate; no answer is guessed or synthesized.
         if len(text) <= 1200 and _has_specific_words(text):
             return HistoryQuery(query + '\n' + text, 'contextual', source)
-        return HistoryQuery(query, 'ambiguous')
+        # Empty retrieval query is intentional: the final user message remains
+        # untouched, but a pointer without a concrete anchor cannot choose a
+        # random memory/archive row merely because some vague words overlap.
+        return HistoryQuery('', 'ambiguous')
     if _PREVIOUS.search(query) or _REUNION.search(query):
         return HistoryQuery(query, 'history_tail')
     # A deictic phrase can still carry its own concrete anchor (for example,
@@ -100,7 +103,7 @@ def plan_history_query(query: str, recent=(), *, excluded=()) -> HistoryQuery:
     # remain ambiguous and are not allowed to pick an arbitrary archive row.
     if _has_specific_words(query):
         return HistoryQuery(query)
-    return HistoryQuery(query, 'ambiguous')
+    return HistoryQuery('', 'ambiguous')
 
 
 def companion_view(builder) -> CompanionMemoryPromptBuilder | None:
@@ -164,12 +167,18 @@ def add_history_tail(builder, recall: RecallResult, plan: HistoryQuery, *, now: 
         sources = tuple(dict.fromkeys(source for _, source in candidates))[:2]
         if not sources:
             sources = tuple(sorted(set(undated)))[:2]
-        records = read_archive_sources(view.memory, sources, excluded_sources=view.excluded)
-        addition = RecallResult(tuple(records), source_status=(('history_tail', 'available'),))
+        records = tuple(replace(record, metadata={**record.metadata, 'retrieval_route': 'history_tail'})
+                        for record in read_archive_sources(view.memory, sources, excluded_sources=view.excluded))
+        addition = RecallResult(records, source_status=(('history_tail', 'available'),))
     except Exception:
         addition = RecallResult(source_status=(('history_tail', 'unavailable'),),
                                 stop_reason='partial_source_failure')
-    result = _merge_recall(recall, addition, query=plan.query)
+    # A history-tail fallback is deliberately a tiny continuity window. Generic
+    # semantic/lexical hits for "好久不见" or "上一封" are not evidence that the
+    # user meant those events, so replace their records while retaining source
+    # health states. Deeper recall also recognizes the history_tail route and
+    # will not grow neighbours from these fallback records.
+    result = _merge_recall(replace(recall, records=()), addition, query=plan.query)
     from .recall import source_id
     priority = {source_id(record) for record in addition.records}
     return replace(result, records=tuple(sorted(result.records, key=lambda record: source_id(record) not in priority)))
