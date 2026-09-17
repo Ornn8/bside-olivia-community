@@ -67,8 +67,8 @@ jobs:
       - name: Upload release artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Olivia-${{ env.VERSION }}-local-release
-          path: ${{ env.RELEASE_DIR }}/*
+          name: Olivia-local-release
+          path: ${{ runner.temp }}/olivia-local-release/*
           if-no-files-found: error
 
       - name: Publish GitHub release
