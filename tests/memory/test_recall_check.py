@@ -63,7 +63,7 @@ def test_valid_quote_retains_originals_and_adds_interpretation_only():
     assert result[0] is not messages[0]
     assert 'original-persona' in result[0]['content']
     assert '周五只是计划，还没有登记。' in result[0]['content']
-    assert '蓝色杯子已经收到了。' not in result[0]['content']
+    assert '蓝色杯子已经收到了。' in result[0]['content']
     assert result[1] == before[1]
     check = projected(result)
     assert check['status'] == 'checked'
@@ -87,7 +87,7 @@ def test_valid_quote_retains_originals_and_adds_interpretation_only():
     assert '蓝色杯子已经收到了。' in packet['sources'][1]['text']
 
 
-def test_focused_context_keeps_conflicting_quotes_and_recent_chat_but_not_unrelated_raw():
+def test_checked_context_keeps_conflicting_quotes_recent_chat_and_selected_originals():
     messages = history_messages()
     recent = '<untrusted_history>' + json.dumps({'text': json.dumps({'letters': [
         {'user_sent_at': '2026-09-16T08:00:00+08:00', 'user_letter': '早上好',
@@ -103,11 +103,11 @@ def test_focused_context_keeps_conflicting_quotes_and_recent_chat_but_not_unrela
     assert check['findings'][0]['status'] == 'conflicting'
     assert len(check['findings'][0]['citations']) == 2
     assert recent in result[0]['content'] and canon in result[0]['content']
-    assert '蓝色杯子已经收到了。' not in result[0]['content']
-    assert '[ORIGINAL_CORRESPONDENCE_UNTRUSTED]' not in result[0]['content']
+    assert '蓝色杯子已经收到了。' in result[0]['content']
+    assert '[ORIGINAL_CORRESPONDENCE_UNTRUSTED]' in result[0]['content']
 
 
-def test_focused_raw_history_does_not_remove_extracted_memories_in_the_same_block():
+def test_checked_history_keeps_extracted_memories_and_originals_in_the_same_block():
     messages = history_messages()
     match = re.search(r'<untrusted_history>(.*?)</untrusted_history>', messages[0]['content'])
     history = json.loads(match[1])
@@ -119,7 +119,7 @@ def test_focused_raw_history_does_not_remove_extracted_memories_in_the_same_bloc
     assert projected(result)['status'] == 'checked'
     assert '用户的杯子是绿色' in result[0]['content']
     assert 'retrieved_summary' in result[0]['content']
-    assert '蓝色杯子已经收到了。' not in result[0]['content']
+    assert '蓝色杯子已经收到了。' in result[0]['content']
 
 
 def test_quote_from_another_source_is_rejected_even_when_present_in_window():

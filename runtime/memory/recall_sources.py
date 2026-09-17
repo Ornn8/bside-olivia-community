@@ -13,9 +13,12 @@ def _history_id(source):
 
 
 def _original_time(value):
+    # SQLite legacy rows preserve epoch timestamps as strings.
     try:
         if isinstance(value, bool) or value is None:
             return None
+        if isinstance(value, str) and value.strip().replace('.', '', 1).lstrip('-').isdigit():
+            value = float(value)
         stamp = (datetime.fromtimestamp(value, timezone.utc) if isinstance(value, (int, float))
                  else datetime.fromisoformat(value.replace("Z", "+00:00")))
         return stamp if stamp.utcoffset() is not None else None

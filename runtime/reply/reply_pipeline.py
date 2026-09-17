@@ -300,16 +300,26 @@ def assemble_reply_messages(adapter, snapshot, context, content, *, max_input_ch
         user_input=content if user_input is None else user_input,
         max_units=assembly_limit, evidence_summaries=life,
         relationship_expression_enabled=snapshot.status == 'READY')
+    limit = getattr(adapter, '_memory_context_limit', None)
+    disabled = callable(limit) and limit() == 0
+    from runtime.memory.history_continuity import plan_history_query, HistoryQuery
+    exclusions = getattr(adapter, '_memory_source_exclusions', lambda: ())()
+    query_plan = HistoryQuery(content) if disabled else plan_history_query(content, recent, excluded=exclusions)
+    hint = query_plan.fragment()
+    if hint is not None:
+        recent = (*recent, hint)
     baseline = assemble_persona(history=recent, **options)
     available = max(0, assembly_limit - len(baseline.system_content) - len(baseline.user_content) - 256)
-    limit = getattr(adapter, '_memory_context_limit', None)
-    if callable(limit) and limit() == 0:
+    if disabled:
         adapter._build_memory_prompt(content, max_chars=0)
         return baseline.to_messages(), TrustedReviewEvidence()
+    from runtime.diagnostics.recall_trace import begin, selection as record_selection
+    begin(adapter.memory_prompt_builder, query_plan.mode)
     build_memory_prompt = getattr(adapter, "_build_memory_prompt", None)
     build_memory_prompt = build_memory_prompt if callable(build_memory_prompt) else adapter.memory_prompt_builder.build
-    memory = build_memory_prompt(content, max_chars=max(1, available))
-    # Search exactly once. Capacity retries only repack the same evidence.
+    memory = build_memory_prompt(query_plan.query, max_chars=max(1, available))
+    # One query, optionally grounded in delivered context. Capacity retries
+    # only repack the same evidence; the history tail is a bounded local read.
     from runtime.memory.memory_prompt import MemoryPromptBuilder
     from runtime.memory.memory_port import NullMemoryPort
     recall = getattr(memory, 'recall_result', None)
@@ -317,6 +327,9 @@ def assemble_reply_messages(adapter, snapshot, context, content, *, max_input_ch
         max_tokens=getattr(adapter.memory_prompt_builder, 'max_tokens', 300000),
         legacy_budget=available, conversation_budget=available)
     if recall is not None:
+        from runtime.memory.history_continuity import add_history_tail
+        recall = add_history_tail(adapter.memory_prompt_builder, recall, query_plan,
+            now=context.trusted_time.instant, excluded=exclusions)
         from runtime.memory.recall_trace import deepen_recall
         builder = adapter.memory_prompt_builder
         if callable(getattr(builder, 'trace_sources', None)):
@@ -334,12 +347,15 @@ def assemble_reply_messages(adapter, snapshot, context, content, *, max_input_ch
         result = assemble_persona(history=(*selection.fragments, *recent), **options)
         included = result.budget_report.included_ids
         if 'history.memory.references' in included:
+            if recall is not None:
+                record_selection(recall, memory.references)
             return result.to_messages(), selection.trusted_evidence
         available = available * 3 // 4
         if recall is None:
             break  # Legacy builders cannot be safely requeried during one generation.
         memory = renderer.render(recall, max_chars=available)
     if recall is not None:
+        record_selection(recall, ())
         # Reserve failure/omission disclosure before optional reference blocks.
         # This is the same untrusted wrapper used by the persona assembler.
         minimum = renderer.minimum_recall_status(recall)

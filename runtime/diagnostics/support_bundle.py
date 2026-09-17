@@ -299,6 +299,9 @@ def _project_tail_record(value: object, *, runtime: bool) -> dict[str, object]:
     if runtime:
         from runtime.diagnostics.failure_context import project_failure_context
         record.update(project_failure_context(source))
+        if event == "history_recall":
+            from runtime.diagnostics.recall_trace import project
+            record.update(project(dict(source)))
         for name, maximum in (("elapsed_ms", 86_400_000), ("recorded_at_ms", 10_000_000_000_000)):
             if name in source:
                 value = source[name]
@@ -415,6 +418,20 @@ def _zip_member(archive: zipfile.ZipFile, name: str, payload: bytes) -> None:
     archive.writestr(member, payload)
 
 
+def _with_recall_tail(runtime_tail, recall_tail):
+    if not isinstance(runtime_tail, Sequence) or isinstance(runtime_tail, (str, bytes, bytearray)):
+        raise _invalid()
+    if not isinstance(recall_tail, Sequence) or isinstance(recall_tail, (str, bytes, bytearray)):
+        raise _invalid()
+    # Keep the existing strict validation of the source tail before bounding it.
+    if len(runtime_tail) > MAX_TAIL_RECORDS or len(recall_tail) > 32:
+        raise _invalid()
+    from runtime.diagnostics.recall_trace import project
+    validated = [_project_tail_record(row, runtime=True) for row in runtime_tail]
+    safe = [project(dict(row)) for row in recall_tail if isinstance(row, Mapping)]
+    return [*validated, *(row for row in safe if row)][-MAX_TAIL_RECORDS:]
+
+
 def build_diagnostic_bundle(source: Mapping[str, object]) -> bytes:
     """Return the complete fixed archive, or fail before returning any bytes."""
 
@@ -433,14 +450,15 @@ def build_diagnostic_bundle(source: Mapping[str, object]) -> bytes:
             "revision": 2,
             "features": ["capability_tiers", "offline_components", "delivery_projection", "audio_download",
                          "natural_voice_chunks", "worker_progress", "waveform_styles", "reply_route_preview_diagnostics",
-                         "history_relationship_failure_codes", "route_failure_context"],
+                         "history_relationship_failure_codes", "route_failure_context", "history_recall_delivery"],
         }),
         "summary.json": _json_bytes(summary),
         "health.json": _json_bytes(health),
         "install.json": _json_bytes(install),
         "tasks.json": _json_bytes(tasks),
         "launcher-tail.jsonl": _project_tail(values["launcher_tail"], runtime=False),
-        "runtime-tail.jsonl": _project_tail(values["runtime_tail"], runtime=True),
+        "runtime-tail.jsonl": _project_tail(
+            _with_recall_tail(values["runtime_tail"], values.get("recall_tail", ())), runtime=True),
         "media-provider-tail.jsonl": _project_media_tail(values.get("media_provider_tail", ())),
     }
     if tuple(payloads) != DIAGNOSTIC_BUNDLE_MEMBERS or sum(map(len, payloads.values())) > MAX_BUNDLE_BYTES:
