@@ -13,7 +13,7 @@
     "package": "pip",
     "version": "25.2"
   },
-  "requirements_sha256": "cea2a7084bf1d27dac04a759e599eb6a7fd9f308b7d2a9e0f58b3b413d82db7f",
+  "requirements_sha256": "96a0d770e24605a20425e36cbd37dace42a95b42ac753fe81c995783f0142ea5",
   "wheels": [
     {
       "path": "wheelhouse/aiohappyeyeballs-2.7.1-py3-none-any.whl",
@@ -34,11 +34,6 @@
       "path": "wheelhouse/attrs-26.1.0-py3-none-any.whl",
       "size_bytes": 67548,
       "sha256": "c647aa4a12dfbad9333ca4e71fe62ddc36f4e63b2d260a37a8b83d2f043ac309"
-    },
-    {
-      "path": "wheelhouse/colorama-0.4.6-py2.py3-none-any.whl",
-      "size_bytes": 25335,
-      "sha256": "4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6"
     },
     {
       "path": "wheelhouse/frozenlist-1.8.0-cp312-cp312-win_amd64.whl",
@@ -69,11 +64,6 @@
       "path": "wheelhouse/propcache-0.5.2-cp312-cp312-win_amd64.whl",
       "size_bytes": 42322,
       "sha256": "d9ee8826a7d47863a08ac44e1a5f611a462eefc3a194b492da242128bec75b42"
-    },
-    {
-      "path": "wheelhouse/qrcode-8.2-py3-none-any.whl",
-      "size_bytes": 45986,
-      "sha256": "16e64e0716c14960108e85d853062c9e8bba5ca8252c0b4d0231b9df4060ff4f"
     },
     {
       "path": "wheelhouse/referencing-0.37.0-py3-none-any.whl",
