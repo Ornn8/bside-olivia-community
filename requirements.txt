@@ -2,3 +2,4 @@
 # Model runtimes and official assets are intentionally external to this file.
 aiohttp>=3.9,<4
 jsonschema>=4.26,<5
+qrcode>=8.2,<9
