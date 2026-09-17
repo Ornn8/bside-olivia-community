@@ -4,6 +4,7 @@ from statistics import median
 import random
 import time
 from runtime.private_world.life_rhythm import LOCAL
+from runtime.personal_chat.initiative_profile import profile_from_rows, unanswered_wait
 
 
 def delivered(row):
@@ -33,28 +34,27 @@ def _usual_user_gap(rows):
     return median(gaps) if gaps else None
 
 
-def _unanswered_wait(rows, unanswered):
-    """Silence suppresses pressure for a while, but never permanently locks initiative."""
-    usual = _usual_user_gap(rows)
-    if unanswered <= 0:
-        return 0
-    if usual is None:
-        return 6 * 3600 if unanswered == 1 else 18 * 3600
-    if unanswered == 1:
-        return max(2 * 3600, min(12 * 3600, usual))
-    return max(6 * 3600, min(30 * 3600, usual * 2))
-
-
 class Initiative:
     def __init__(self, rows, clock=time.time, interval=None):
         self.rows, self.clock = rows, clock
-        self.interval = interval or (lambda: random.uniform(20 * 60, 45 * 60))
+        # Tests and explicit callers may pin a deterministic interval. Normal
+        # runtime derives cadence from the persisted relationship profile.
+        self.interval = interval
         self.target = None
-        self.due = clock() + self.interval()
+        self.due = clock() + self._next_interval()
+
+    def profile(self):
+        return profile_from_rows(self.rows)
+
+    def _next_interval(self):
+        if self.interval is not None:
+            return self.interval()
+        profile = self.profile()
+        return random.uniform(profile.im_interval_min, profile.im_interval_max)
 
     def received(self, event, send):
         self.target = (event, send)
-        self.due = self.clock() + self.interval()
+        self.due = self.clock() + self._next_interval()
 
     def pending_followup(self):
         latest = next((r for r in reversed(self.rows) if delivered(r) and 'followup_at' in r
@@ -80,10 +80,13 @@ class Initiative:
         local = datetime.fromtimestamp(now, LOCAL)
         if local.hour < 8 or (local.hour == 8 and local.minute < 30):
             return False
+        profile = self.profile()
         # Reserve budget for attempts too, including SKIP/failure/uncertain sends.
+        # The hard ceiling remains bounded, while shallow relationships spend
+        # much less of it than close ones.
         attempts = [r for r in self.rows if r.get('origin') == 'proactive'
                     and float(r.get('created_at', 0)) > now - 86400]
-        if len(attempts) >= 12 and not scheduled:
+        if len(attempts) >= profile.im_attempt_limit and not scheduled:
             return False
         history = [r for r in self.rows if delivered(r)]
         if any(r.get('delivery_status') == 'SENDING' for r in self.rows):
@@ -101,10 +104,13 @@ class Initiative:
             last_proactive_at = max(last_proactive_at, float(row.get('created_at', 0)))
         if scheduled:
             return True
-        wait = _unanswered_wait(history, unanswered)
+        # An unanswered message first increases "do not disturb" pressure. The
+        # pressure decays with time and does not permanently lock initiative;
+        # closer relationships recover sooner, shallow ones remain conservative.
+        wait = unanswered_wait(profile, _usual_user_gap(history), unanswered)
         if unanswered and now - last_proactive_at < wait:
             return False
         return True
 
     def attempted(self):
-        self.due = self.clock() + self.interval()
+        self.due = self.clock() + self._next_interval()
