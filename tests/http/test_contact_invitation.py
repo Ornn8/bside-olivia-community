@@ -10,8 +10,10 @@ from runtime.private_world.daily_life import DailyLifeStore
 from runtime.private_world.daily_life_runtime import DailyLifeRuntime
 
 
-HIGH = SimpleNamespace(familiarity=70, trust=70, comfort=70, closeness=0)
-LOW = SimpleNamespace(familiarity=70, trust=70, comfort=0, closeness=0)
+HIGH = SimpleNamespace(familiarity=70, trust=70, comfort=70, closeness=0, tension=0,
+                       relationship_stage='familiar')
+LOW = SimpleNamespace(familiarity=70, trust=70, comfort=0, closeness=0, tension=0,
+                      relationship_stage='familiar')
 
 
 def row(key, when):
@@ -30,10 +32,13 @@ def test_first_applied_high_exchange_and_current_threshold_are_enough():
     qualify(rows[0], applied=False)
     assert candidate(rows, HIGH, 4000) is None
     qualify(rows[0])
+    assert rows[0]['initiative_tier'] == 'close'
+    assert rows[0]['initiative_caution'] == 'normal'
     assert candidate(rows, HIGH, 4000)['kind'] == 'contact_invitation'
     assert candidate(rows, LOW, 4000) is None
     rows.append(row('b', 2000))
     qualify(rows[-1], LOW)
+    assert rows[-1]['initiative_tier'] == 'trusted'
     assert candidate(rows, HIGH, 4000) is None
 
 
