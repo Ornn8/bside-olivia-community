@@ -1,14 +1,33 @@
 """Contact access follows delivered invitations, never a model-authored score."""
+import json
 import os
 from pathlib import Path
 
 
 def preview_configured(root, environment=None):
-    """Do not offer an unavailable contact feature in a default installation."""
+    """Allow the invitation before transport setup after explicit proactive opt-in.
+
+    An explicit transport config still wins when supplied. Otherwise a durable
+    local installation may offer the invitation once proactive letters are
+    enabled; choosing QQ/WeChat can then enter the existing SETUP_REQUIRED flow.
+    """
     environment = os.environ if environment is None else environment
     configured = environment.get('OLIVIA_PERSONAL_CHAT_CONFIG')
-    path = Path(configured) if configured else Path(root) / 'personal-chat/config.json' if root else None
-    return path is not None and path.is_absolute() and path.is_file()
+    if configured:
+        path = Path(configured)
+        return path.is_absolute() and path.is_file()
+    if root is None:
+        return False
+    root = Path(root)
+    if not root.is_absolute():
+        return False
+    if (root / 'personal-chat/config.json').is_file():
+        return True
+    try:
+        prefs = json.loads((root / 'proactive/settings.json').read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return False
+    return isinstance(prefs, dict) and prefs.get('enabled') is True
 
 
 def high_count(snapshot):
@@ -61,12 +80,10 @@ def status(rows, snapshot):
                     selected = candidate["choice"]
         return {"state": selected or "invited", "invitation_id": invitation["letter_id"],
                 "channels": ["qq", "wechat"] if selected == "both" else [selected] if selected in {"qq", "wechat"} else []}
-    observed = [r for r in completed if "contact_qualification" in r and r.get("origin") != "proactive"]
-    # Reaching three high relationship dimensions is already the product gate.
-    # Require one applied, evidenced interaction at that level so imported or
-    # manually altered scores cannot invite by themselves, but do not force a
-    # second hidden qualifying exchange after the threshold was actually crossed.
-    eligible = high_count(snapshot) >= 3 and bool(observed) and observed[-1]["contact_qualification"] is True
+    # Three high relationship dimensions are the product gate. Do not require a
+    # post-upgrade hidden interaction marker: older users may already have a
+    # valid relationship state before contact_qualification existed.
+    eligible = high_count(snapshot) >= 3
     return {"state": "eligible" if eligible else "locked", "channels": []}
 
 
