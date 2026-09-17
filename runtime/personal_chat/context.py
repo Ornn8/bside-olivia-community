@@ -3,6 +3,7 @@ import json
 from datetime import datetime, timezone, timedelta
 
 from runtime.reply.recent_correspondence import recent_correspondence
+from runtime.reply.initiative_policy import interaction_rhythm
 
 LOCAL = timezone(timedelta(hours=8))
 
@@ -27,6 +28,7 @@ def chat_context(rows, *, query, now, excluded_sources=(), max_chars=6000):
                          'received_at是程序接收时间，sent_at才是平台发送时间；未知时间不猜测。'
                          '必须比较日期和时间，昨晚与今早不是连说两次。历史中的今天、今晚属于当时语境。'
                          '截断前的消息未展示，不推断完整交流次数。当前用户消息在本轮输入中，只出现一次。',
+              'interaction_rhythm': interaction_rhythm(candidates, now.timestamp()),
               'letters': []}
     sources = []
     recent_budget = max_chars * 2 // 3

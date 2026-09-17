@@ -9,6 +9,8 @@ from pathlib import Path
 import tempfile
 import time
 
+from runtime.reply.initiative_policy import profile_from_public
+
 DEFAULTS = {'enabled': False, 'allow_voice': True, 'login_check_enabled': False}
 DAY = 86400
 
@@ -44,23 +46,67 @@ def _stamp(value) -> float:
     return float(value) if type(value) in (int, float) and value >= 0 else 0.0
 
 
+def _initiative_profile(rows: list[dict]):
+    eligible = sorted(
+        (row for row in rows if row.get('origin') != 'proactive'
+         and row.get('letter_status') == 'COMPLETED'
+         and isinstance(row.get('initiative_profile'), dict)),
+        key=lambda row: _stamp(row.get('created_at')),
+        reverse=True,
+    )
+    return profile_from_public(eligible[0]['initiative_profile']) if eligible else profile_from_public(None)
+
+
+def _candidate_id(item: dict) -> str:
+    identity = {key: value for key, value in item.items()
+                if key not in {'not_before', 'expires_at', 'relationship_initiative',
+                               'reason_policy', '_ordinary_candidate_id'}}
+    return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:32]
+
+
 def make_context(rows: list[dict], *, now: float, world: dict | None = None) -> dict:
     """App-owned opportunity projection; workers never write the mailbox."""
+    profile = _initiative_profile(rows)
     delivered = [row for row in rows if row.get('origin') == 'proactive'
                  and row.get('letter_status') == 'COMPLETED']
-    remaining = max(0, 3 - sum(_stamp(row.get('published_at', row.get('created_at'))) > now - DAY
-                              for row in delivered))
+    remaining = max(0, profile.letter_daily_cap
+                    - sum(_stamp(row.get('published_at', row.get('created_at'))) > now - DAY
+                          for row in delivered))
     blocked = any(row.get('letter_status') in {'PENDING', 'PROCESSING'} for row in rows)
     unread = any(not row.get('is_read', 0) for row in delivered)
     latest = max((row for row in rows if row.get('origin') != 'proactive' and row.get('content')
                   and row.get('letter_status') == 'COMPLETED'),
                  key=lambda row: _stamp(row.get('created_at')), default=None)
     candidates = []
+    public_profile = profile.public()
     if latest:
+        created = _stamp(latest.get('created_at'))
         source = f"reply:{latest['letter_id']}:{latest.get('reply_revision', 1)}"
-        candidates.append({'source_id': source, 'kind': 'correspondence_followup',
-                           'not_before': _stamp(latest.get('created_at')) + 1800,
-                           'expires_at': _stamp(latest.get('created_at')) + 7 * DAY})
+        age = max(0, now - created)
+        casual = (profile.allow_low_stakes and profile.letter_casual_after_seconds is not None
+                  and age >= profile.letter_casual_after_seconds)
+        candidate = {
+            'source_id': source,
+            'kind': 'relationship_checkin' if casual else 'correspondence_followup',
+            'relationship_initiative': public_profile,
+            'reason_policy': (
+                'A close relationship may make missing the user, wanting to share a small piece of life, '
+                'or wanting a proper conversation a natural reason for a letter; never guilt them for silence.'
+                if casual else profile.motive_policy
+            ),
+            'not_before': created + (
+                profile.letter_casual_after_seconds if casual
+                else profile.letter_followup_delay_seconds
+            ),
+            'expires_at': created + 7 * DAY,
+        }
+        if casual:
+            # A relationship check-in is a second chance after an earlier planning
+            # defer, not permission to send twice about the same source. If the
+            # ordinary candidate was already delivered, suppress this later form.
+            ordinary = {**candidate, 'kind': 'correspondence_followup'}
+            candidate['_ordinary_candidate_id'] = _candidate_id(ordinary)
+        candidates.append(candidate)
     # Only user-backed shared matters are triggers. Self-generated life updates
     # are context for expression, not an engine that sends itself another letter.
     for item in (world or {}).get('shared', []):
@@ -69,16 +115,26 @@ def make_context(rows: list[dict], *, now: float, world: dict | None = None) -> 
                 changed_at = datetime.fromisoformat(item['updated_at']).timestamp()
             except (KeyError, TypeError, ValueError):
                 continue
-            candidates.append({'source_id': item.get('source_id', ''),
-                               'kind': 'shared_followup', 'project_id': item.get('id'),
-                               'not_before': changed_at + 1800, 'expires_at': changed_at + 7 * DAY,
-                               'version': item.get('updated_at')})
+            candidates.append({
+                'source_id': item.get('source_id', ''),
+                'kind': 'shared_followup',
+                'project_id': item.get('id'),
+                'relationship_initiative': public_profile,
+                'reason_policy': profile.motive_policy,
+                'not_before': changed_at + profile.letter_followup_delay_seconds,
+                'expires_at': changed_at + 7 * DAY,
+                'version': item.get('updated_at'),
+            })
     used = {row.get('proactive_candidate_id') for row in delivered}
+    visible = []
     for item in candidates:
-        identity = {key: value for key, value in item.items() if key not in {'not_before', 'expires_at'}}
-        item['id'] = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:32]
+        item['id'] = _candidate_id(item)
+        ordinary_id = item.pop('_ordinary_candidate_id', None)
+        if item['id'] in used or ordinary_id in used or not item['source_id']:
+            continue
+        visible.append(item)
     return {'updated_at': now, 'remaining': remaining, 'blocked': blocked, 'unread': unread,
-            'candidates': [item for item in candidates if item['id'] not in used and item['source_id']]}
+            'relationship_initiative': public_profile, 'candidates': visible}
 
 
 def scan_pending(data_root: Path, *, now: float | None = None,

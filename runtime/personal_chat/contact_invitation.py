@@ -2,6 +2,8 @@
 import os
 from pathlib import Path
 
+from runtime.reply.initiative_policy import profile_from_snapshot
+
 
 def preview_configured(root, environment=None):
     """Do not offer an unavailable contact feature in a default installation."""
@@ -17,7 +19,12 @@ def high_count(snapshot):
 
 
 def observe(row, snapshot, events):
-    if row.get("origin") == "proactive" or "contact_qualification" in row:
+    if row.get("origin") == "proactive":
+        return
+    # Keep a durable, score-free projection for proactive-letter behavior.
+    # It is not a second relationship system and never grants permissions.
+    row["initiative_profile"] = profile_from_snapshot(snapshot).public()
+    if "contact_qualification" in row:
         return
     delivery = row.get("private_world_delivery_id")
     event = next((event for event in events if event.payload.get("canonical_delivery_id") == delivery
@@ -55,7 +62,11 @@ def status(rows, snapshot):
         return {"state": selected or "invited", "invitation_id": invitation["letter_id"],
                 "channels": ["qq", "wechat"] if selected == "both" else [selected] if selected in {"qq", "wechat"} else []}
     observed = [r for r in completed if "contact_qualification" in r and r.get("origin") != "proactive"]
-    eligible = high_count(snapshot) >= 3 and len(observed) >= 2 and all(r["contact_qualification"] is True for r in observed[-2:])
+    # Keep the anti-import/manual-edit guard (two distinct grounded exchanges), but
+    # the interaction that crosses the third HIGH threshold may be the first true
+    # qualification. Requiring two consecutive post-threshold true rows delayed the
+    # invitation for no user-visible reason.
+    eligible = high_count(snapshot) >= 3 and len(observed) >= 2 and observed[-1]["contact_qualification"] is True
     return {"state": "eligible" if eligible else "locked", "channels": []}
 
 
