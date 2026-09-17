@@ -46,6 +46,15 @@ def test_unanswered_messages_quiet_down_then_reopen_in_close_relationship():
     now[0] += 4 * 3600 + 1
     assert policy.ready()
 
+    # If she actually sent again and still received no reply, the next quiet
+    # period doubles instead of reopening every four hours forever.
+    rows.append({'origin': 'proactive', 'delivery_status': 'DELIVERED', 'created_at': now[0]})
+    assert not policy.ready()
+    now[0] += 4 * 3600 + 1
+    assert not policy.ready()
+    now[0] += 4 * 3600
+    assert policy.ready()
+
 
 def test_reserved_relationship_stays_more_conservative_after_one_unanswered_message():
     now = [datetime(2026, 9, 17, 12, tzinfo=LOCAL).timestamp()]

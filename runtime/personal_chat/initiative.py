@@ -30,13 +30,17 @@ def letter_invitation_allowed(chats, letters, now):
 
 
 def _runtime_snapshot():
-    """Read the composition root only when it is already loaded; never import it."""
-    server = sys.modules.get('local_server')
-    port = getattr(server, 'private_world_port', None) if server is not None else None
-    try:
-        return port.snapshot() if port is not None else None
-    except Exception:
-        return None
+    """Read an already-loaded composition root only; never import it from here."""
+    for name in ('local_server', '__main__'):
+        server = sys.modules.get(name)
+        port = getattr(server, 'private_world_port', None) if server is not None else None
+        if port is None:
+            continue
+        try:
+            return port.snapshot()
+        except Exception:
+            continue
+    return None
 
 
 class Initiative:
@@ -121,8 +125,14 @@ class Initiative:
                 break
             trailing.append(row)
         if not scheduled and len(trailing) >= profile.unanswered_limit:
+            # One unanswered cluster may reopen after a relationship-appropriate pause,
+            # but each additional unanswered message doubles the quiet period. This
+            # avoids both the old permanent lock and repeated nudging every few hours.
+            extra = len(trailing) - profile.unanswered_limit
+            quiet = min(7 * 86400,
+                        profile.unanswered_reset_seconds * (2 ** min(extra, 4)))
             last_at = max((float(row.get('created_at', 0)) for row in trailing), default=0)
-            if now - last_at < profile.unanswered_reset_seconds:
+            if now - last_at < quiet:
                 return False
         return True
 
