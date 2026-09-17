@@ -111,4 +111,5 @@ def test_backend_wires_notice_after_generation_and_after_confirmed_delivery() ->
     )
     assert "text = attach_notice(getattr(server.store, 'letters', []), row, text)" in source
     assert "for consume in (_commit_mailbox_notice, _commit_world" in source
-    assert "commit_notice(getattr(server.store, 'letters', []), row, server._persist_store_state)" in source
+    assert "if not row.get('mailbox_notice_letter_id')" in source
+    assert "commit_notice(getattr(store, 'letters', []), row, server._persist_store_state)" in source
