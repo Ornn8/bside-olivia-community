@@ -1,4 +1,4 @@
-"""Bounded, read-only history continuity; retrieval hints are never facts.
+"""Bounded, read-only archive continuity; retrieval hints are never facts.
 
 Only delivered recent user text may supply omitted search words. A greeting
 can open a tiny dated archive window, but a context-free "that thing" cannot
@@ -93,7 +93,7 @@ def plan_history_query(query: str, recent=(), *, excluded=()) -> HistoryQuery:
         if len(text) <= 1200 and _has_specific_words(text):
             return HistoryQuery(query + '\n' + text, 'contextual', source)
         # Keep a non-empty query so an independently grounded source_id (for
-        # example from a world event) can still be traced. add_history_tail()
+        # example from a world event) can still be traced. The tail resolver
         # removes generic candidates before deeper exact-source tracing.
         return HistoryQuery(query, 'ambiguous')
     if _PREVIOUS.search(query) or _REUNION.search(query):
@@ -180,10 +180,10 @@ def add_history_tail(builder, recall: RecallResult, plan: HistoryQuery, *, now: 
     except Exception:
         addition = RecallResult(source_status=(('history_tail', 'unavailable'),),
                                 stop_reason='partial_source_failure')
-    # A history-tail fallback is deliberately a tiny continuity window. Generic
+    # This tail fallback is deliberately a tiny continuity window. Generic
     # semantic/lexical hits for "好久不见" or "上一封" are not evidence that the
     # user meant those events, so replace their records while retaining source
-    # health states. Deeper recall also recognizes the history_tail route and
+    # health states. Deeper recall also recognizes the bounded tail route and
     # will not grow neighbours from these fallback records.
     result = _merge_recall(replace(recall, records=()), addition, query=plan.query)
     from .recall import source_id
