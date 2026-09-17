@@ -30,6 +30,7 @@ from patch_feapp import (
     MAIN_JS_0627,
     _repair_mailbox_waiting_footer,
 )
+from runtime.personal_chat.setup_ui import PERSONAL_CHAT_SETUP_JAVASCRIPT
 
 
 INDEX_MEMBER = "index.html"
@@ -43,6 +44,11 @@ PATCH_MARKER = "data-olivia-companion-settings"
 PATCH_SCHEMA_VERSION = "p03.original-settings-shell.v1"
 MAX_ARCHIVE_MEMBERS = 100_000
 MAX_TEXT_MEMBER_BYTES = 64 * 1024 * 1024
+MANAGED_BOOTSTRAP_JAVASCRIPT = (
+    BOOTSTRAP_JAVASCRIPT.rstrip()
+    + "\n\n"
+    + PERSONAL_CHAT_SETUP_JAVASCRIPT.lstrip()
+)
 
 _MODULE_SCRIPT_RE = re.compile(
     r"<script\b"
@@ -251,7 +257,7 @@ def _patch_existing(
     ui_match = _UI_VERSION_RE.search(tag.group(0))
     if (
         _normalize_newlines(current_script)
-        == _normalize_newlines(BOOTSTRAP_JAVASCRIPT)
+        == _normalize_newlines(MANAGED_BOOTSTRAP_JAVASCRIPT)
         and ui_match
         and html.unescape(ui_match.group("value")) == SETTINGS_UI_VERSION
     ):
@@ -261,7 +267,7 @@ def _patch_existing(
     updated = source[: tag.start()] + managed + source[tag.end() :]
     index = bootstrap.parent.parent / INDEX_MEMBER
     _write_utf8(index, updated)
-    _write_utf8(bootstrap, BOOTSTRAP_JAVASCRIPT)
+    _write_utf8(bootstrap, MANAGED_BOOTSTRAP_JAVASCRIPT)
     return "PATCHED"
 
 
@@ -295,7 +301,7 @@ def _patch_index(root: Path, api_base: str) -> str:
         raise CompanionSettingsPatchError("COMPANION_PATCH_VERIFICATION_FAILED")
     bootstrap.parent.mkdir(parents=True, exist_ok=True)
     _write_utf8(index, patched)
-    _write_utf8(bootstrap, BOOTSTRAP_JAVASCRIPT)
+    _write_utf8(bootstrap, MANAGED_BOOTSTRAP_JAVASCRIPT)
     return "PATCHED"
 
 
@@ -535,6 +541,9 @@ def _verify_archive(
         'const MEMORY_DELETE_PATH = "/toy/companion/memory/delete";',
         'const MEMORY_PAUSE_PATH = "/toy/companion/memory/pause";',
         'const MEMORY_RESUME_PATH = "/toy/companion/memory/resume";',
+        'const STATUS = "/toy/personal-chat/setup/status";',
+        'const WECHAT_START = "/toy/personal-chat/setup/wechat/start";',
+        'const QQ_CONFIGURE = "/toy/personal-chat/setup/qq/configure";',
         'const CONFIRM_HEADER = "X-Olivia-Companion-Action";',
         'const CONFIRM_VALUE = "confirmed";',
         'method: "GET"',
@@ -542,6 +551,8 @@ def _verify_archive(
         "confirmAction",
         "login_check_enabled",
         "data-olivia-proactive-settings",
+        "data-olivia-personal-chat-setup",
+        "QQ / 微信聊天",
         "林离正在写信",
         "data-olivia-companion-settings-root",
         "panel.dataset.oliviaCompanionPanel",
@@ -581,7 +592,7 @@ def _verify_archive(
         or any(value not in bootstrap for value in bootstrap_required)
         or any(value in bootstrap for value in forbidden)
         or _normalize_newlines(bootstrap)
-        != _normalize_newlines(BOOTSTRAP_JAVASCRIPT)
+        != _normalize_newlines(MANAGED_BOOTSTRAP_JAVASCRIPT)
         or (
             mailbox_write_changed
             and (
@@ -667,6 +678,7 @@ __all__ = [
     "CompanionSettingsPatchError",
     "INDEX_MEMBER",
     "MAIN_MODULE_MEMBER",
+    "MANAGED_BOOTSTRAP_JAVASCRIPT",
     "PATCH_MARKER",
     "PATCH_SCHEMA_VERSION",
     "patch_companion_settings",
