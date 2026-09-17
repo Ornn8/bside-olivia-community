@@ -14,7 +14,7 @@
 | `pytest` | 开发测试 | [pytest-dev/pytest](https://github.com/pytest-dev/pytest) | MIT |
 | `numpy` | 可选开发/媒体测试依赖 | [numpy/numpy](https://github.com/numpy/numpy) | BSD-3-Clause |
 | `opencv-python-headless` | 可选媒体测试依赖 | [opencv/opencv-python](https://github.com/opencv/opencv-python) | Apache-2.0 |
-| NapCatQQ `v4.18.28` OneKey bootstrap | 可选 QQ 本地聊天组件；用户点击后由本机直接从 NapNeko 发布页下载固定发行包，Olivia 仅校验 SHA-256 `fa365537039e9ec29730166f3f624eb147074be18be64d1981a03f35ecb2a2af` 并启动其安装器，不把 NapCat 二进制重新打进 Olivia 发布包 | [NapNeko/NapCatQQ `v4.18.28`](https://github.com/NapNeko/NapCatQQ/releases/tag/v4.18.28) | `Limited Redistribution License for NapCat`；上游许可证明确限制商业使用。使用者需自行确认用途符合该许可证；Olivia 不修改或重新授权 NapCat。 |
+| NapCatQQ `v4.18.28` Windows Node package | 可选 QQ 本地聊天组件；用户点击后由本机直接从 NapNeko 发布页下载 `NapCat.Shell.Windows.Node.zip`，Olivia 校验 SHA-256 `fb64fa3b036ad2df1a5d7c204c482694c20e4b763978c8a4968fd3474c05b4a8` 后解压到本机受管目录；NapCat 二进制不重新打进 Olivia 发布包 | [NapNeko/NapCatQQ `v4.18.28`](https://github.com/NapNeko/NapCatQQ/releases/tag/v4.18.28) | `Limited Redistribution License for NapCat`；上游许可证明确限制商业使用。使用者需自行确认用途符合该许可证；Olivia 不修改或重新授权 NapCat。 |
 | Inno Setup 6.7.1 | 仅用于构建 Windows 单文件安装器；编译器本身不进入发布包，生成的 Setup runtime 进入 EXE | [jrsoftware/issrc `is-6_7_1`](https://github.com/jrsoftware/issrc/tree/is-6_7_1) | Inno Setup License；构建时验证 `ISCC.exe` 的有效 Authenticode 签名及发布者 `Pyrsys B.V.` |
 | `ChineseSimplified.isl` | Windows 安装向导简体中文消息，编译后进入 EXE | [Inno Setup `is-6_7_1` 固定标签](https://github.com/jrsoftware/issrc/blob/is-6_7_1/Files/Languages/Unofficial/ChineseSimplified.isl) | 随 Inno Setup 源码发布并适用其许可证；构建锁定 SHA-256 `7d544b9bb1d142cfa11f2e5d3cc8abe2e55f8e066c5124e3772675aa236e1278` |
 
