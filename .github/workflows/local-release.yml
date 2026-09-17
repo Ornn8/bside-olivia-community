@@ -86,6 +86,6 @@ jobs:
             gh release create $tag @assets `
               --repo $env:GITHUB_REPOSITORY `
               --target $env:GITHUB_SHA `
-              --title "Olivia $env:VERSION · 关系驱动主动联系" `
+              --title "Olivia $env:VERSION" `
               --notes-file $notes
           }
