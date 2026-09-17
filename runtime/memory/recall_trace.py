@@ -26,10 +26,10 @@ def deepen_recall(builder, recall: RecallResult, *, query, source_ids=(), exclud
 
     records = tuple({r.memory_id: r for r in recall.records if record_allowed(r)}.values())
     result = replace(recall, records=records, topics=recall.topics or query_topics(query))
-    # `history_tail` is already the deliberately tiny continuity fallback for
-    # reunion/last-letter prompts. It must never become a seed for neighbour
+    # The bounded tail route is already the deliberately tiny continuity fallback
+    # for reunion/last-letter prompts. It must never become a seed for neighbour
     # expansion, otherwise two fallback exchanges can silently grow into a
-    # much larger unrelated history window.
+    # much larger unrelated archive window.
     if result.records and all(
         record.metadata.get('retrieval_route') == 'history_tail'
         for record in result.records
