@@ -5,6 +5,7 @@
 | 依赖 | 用途 | 上游来源 | 许可证边界 |
 | --- | --- | --- | --- |
 | `aiohttp` | 本地 HTTP 服务 | [aio-libs/aiohttp](https://github.com/aio-libs/aiohttp) | Apache-2.0 / MIT（以安装版本随附文本为准） |
+| `qrcode` | 微信绑定二维码本地 SVG 渲染 | [lincolnloop/python-qrcode](https://github.com/lincolnloop/python-qrcode) | BSD-3-Clause（以安装版本随附文本为准） |
 | `imageio-ffmpeg` | 运行时 FFmpeg 包装器 | [imageio/imageio-ffmpeg](https://github.com/imageio/imageio-ffmpeg) | Python 包为 BSD-2-Clause；PyPI wheel 可能附带 FFmpeg 可执行文件，发行时必须按所用二进制的实际来源、许可证和 NOTICE 另行核对。 |
 | LatentSync source and declared checkpoints | Optional local lip-sync provider | [bytedance/LatentSync at `a229c394`](https://github.com/bytedance/LatentSync/tree/a229c3948406bc2cf6eaf4873e662e70c6a04746) | Apache-2.0 |
 | MiniMax Music 3 repackaged weights | Optional local music provider | [Comfy-Org/MiniMax-Music-3 at `6444666`](https://huggingface.co/Comfy-Org/MiniMax-Music-3/tree/6444666eb6edfb2c7fcab5f8b81da8b84b4b17b6) | Apache-2.0 model-card metadata |
@@ -29,12 +30,14 @@
 | `aiohttp` | 3.14.1 | Apache-2.0 AND MIT；wheel 内含 aiohttp 与 vendored llhttp 许可证 |
 | `aiosignal` | 1.4.0 | Apache-2.0 |
 | `attrs` | 26.1.0 | MIT |
+| `colorama` | 0.4.6 | BSD-3-Clause；`qrcode` 在 Windows 的运行依赖 |
 | `frozenlist` | 1.8.0 | Apache-2.0 |
 | `idna` | 3.18 | BSD-3-Clause |
 | `jsonschema` | 4.26.0 | MIT |
 | `jsonschema-specifications` | 2025.9.1 | MIT |
 | `multidict` | 6.7.1 | Apache-2.0 |
 | `propcache` | 0.5.2 | Apache-2.0；wheel 内含 NOTICE |
+| `qrcode` | 8.2 | BSD-3-Clause |
 | `referencing` | 0.37.0 | MIT |
 | `rpds-py` | 2026.6.3 | MIT |
 | `typing_extensions` | 4.16.0 | PSF-2.0 |
