@@ -42,6 +42,25 @@ def test_persisted_profile_falls_back_for_pre_profile_history():
                                'initiative_caution': 'elevated'}]).tier == 'trusted'
 
 
+def test_cadence_rearms_once_when_committed_relationship_changes(monkeypatch):
+    base = datetime(2026, 9, 13, 12, tzinfo=LOCAL).timestamp()
+    now = [base]
+    rows = []
+    monkeypatch.setattr('runtime.personal_chat.initiative.random.uniform', lambda low, high: low)
+    policy = Initiative(rows, clock=lambda: now[0])
+    policy.received(PersonalMessage('qq', 'bot', 'owner', '1', 'hi'), None)
+    assert policy.due == base + 6 * 3600  # reserved at receipt time
+    rows.append(dict(origin='user', delivery_status='DELIVERED', created_at=base,
+                     initiative_tier='committed', initiative_caution='normal'))
+    now[0] += 3600
+    assert not policy.ready()
+    assert policy.due == now[0] + 15 * 60  # re-armed from the committed profile, not the old 6h cadence
+    due = policy.due
+    now[0] += 16 * 60
+    assert policy.ready()
+    assert policy.due == due  # stable profile does not keep moving the deadline on every poll
+
+
 def test_cadence_shared_unanswered_budget_and_no_startup_backlog():
     now = [datetime(2026, 9, 13, 12, tzinfo=LOCAL).timestamp()]
     rows = []
