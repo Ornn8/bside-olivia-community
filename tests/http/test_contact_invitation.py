@@ -25,18 +25,14 @@ def qualify(item, snapshot=HIGH, applied=True):
         'contact_qualification': snapshot is HIGH})])
 
 
-def test_two_distinct_applied_exchanges_and_current_threshold():
+def test_first_applied_high_exchange_and_current_threshold_are_enough():
     rows = [row('a', 1000)]
-    qualify(rows[0])
-    qualify(rows[0])
-    assert status(rows, HIGH)['state'] == 'locked'
-    rows.append(row('b', 2000))
-    qualify(rows[1], applied=False)
+    qualify(rows[0], applied=False)
     assert candidate(rows, HIGH, 4000) is None
-    qualify(rows[1])
+    qualify(rows[0])
     assert candidate(rows, HIGH, 4000)['kind'] == 'contact_invitation'
     assert candidate(rows, LOW, 4000) is None
-    rows.append(row('c', 3000))
+    rows.append(row('b', 2000))
     qualify(rows[-1], LOW)
     assert candidate(rows, HIGH, 4000) is None
 
@@ -157,6 +153,8 @@ def test_choice_uses_existing_extraction_and_is_durable(tmp_path):
     assert len(calls) == 1
     with pytest.raises(ValueError):
         asyncio.run(runtime.consume_exchange('reply:test:2', '微信吧', '好啊。', occurred_at=now))
+
+
 def test_preview_invitation_requires_explicit_local_configuration(tmp_path):
     from runtime.personal_chat.contact_invitation import preview_configured
     assert not preview_configured(tmp_path, {})
