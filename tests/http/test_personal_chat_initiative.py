@@ -1,11 +1,64 @@
 import asyncio
 from datetime import datetime
+from types import SimpleNamespace
 from runtime.private_world.life_rhythm import LOCAL
 
 from runtime.personal_chat.events import PersonalMessage
 from runtime.personal_chat.initiative import Initiative, letter_invitation_allowed
+from runtime.personal_chat.initiative_profile import profile_from_snapshot, profile_from_rows
 from runtime.personal_chat.presentation import parse_social, parse
 from runtime.personal_chat.service import PersonalChatService
+
+
+def test_relationship_profile_uses_existing_state_not_a_new_score():
+    reserved = profile_from_snapshot(SimpleNamespace(
+        familiarity=10, trust=10, comfort=10, closeness=0, tension=0,
+        relationship_stage='acquaintance'))
+    trusted = profile_from_snapshot(SimpleNamespace(
+        familiarity=75, trust=78, comfort=50, closeness=40, tension=0,
+        relationship_stage='familiar'))
+    close = profile_from_snapshot(SimpleNamespace(
+        familiarity=80, trust=82, comfort=76, closeness=55, tension=0,
+        relationship_stage='familiar'))
+    committed = profile_from_snapshot(SimpleNamespace(
+        familiarity=80, trust=82, comfort=76, closeness=75, tension=0,
+        relationship_stage='committed'))
+    assert [reserved.tier, trusted.tier, close.tier, committed.tier] == [
+        'reserved', 'trusted', 'close', 'committed']
+    assert reserved.im_interval_min > trusted.im_interval_min > close.im_interval_min > committed.im_interval_min
+    assert reserved.im_attempt_limit < trusted.im_attempt_limit < close.im_attempt_limit <= committed.im_attempt_limit
+    tense = profile_from_snapshot(SimpleNamespace(
+        familiarity=80, trust=82, comfort=76, closeness=75, tension=80,
+        relationship_stage='committed'))
+    assert tense.tier == 'committed' and tense.caution == 'high'
+    assert tense.im_interval_min > committed.im_interval_min
+
+
+def test_persisted_profile_falls_back_for_pre_profile_history():
+    assert profile_from_rows([]).tier == 'reserved'
+    assert profile_from_rows([{'created_at': 1, 'contact_qualification': False}]).tier == 'familiar'
+    assert profile_from_rows([{'created_at': 1, 'contact_qualification': True}]).tier == 'close'
+    assert profile_from_rows([{'created_at': 2, 'initiative_tier': 'trusted',
+                               'initiative_caution': 'elevated'}]).tier == 'trusted'
+
+
+def test_cadence_rearms_once_when_committed_relationship_changes(monkeypatch):
+    base = datetime(2026, 9, 13, 12, tzinfo=LOCAL).timestamp()
+    now = [base]
+    rows = []
+    monkeypatch.setattr('runtime.personal_chat.initiative.random.uniform', lambda low, high: low)
+    policy = Initiative(rows, clock=lambda: now[0])
+    policy.received(PersonalMessage('qq', 'bot', 'owner', '1', 'hi'), None)
+    assert policy.due == base + 6 * 3600  # reserved at receipt time
+    rows.append(dict(origin='user', delivery_status='DELIVERED', created_at=base,
+                     initiative_tier='committed', initiative_caution='normal'))
+    now[0] += 3600
+    assert not policy.ready()
+    assert policy.due == now[0] + 15 * 60  # re-armed from the committed profile, not the old 6h cadence
+    due = policy.due
+    now[0] += 16 * 60
+    assert policy.ready()
+    assert policy.due == due  # stable profile does not keep moving the deadline on every poll
 
 
 def test_cadence_shared_unanswered_budget_and_no_startup_backlog():
@@ -21,11 +74,32 @@ def test_cadence_shared_unanswered_budget_and_no_startup_backlog():
     assert policy.ready()
     rows.extend([dict(origin='proactive', channel=channel, delivery_status='DELIVERED', created_at=now[0])
                  for channel in ('qq', 'wechat')])
-    assert not policy.ready()
-    rows.append(dict(delivery_status='DELIVERED', content='回来啦'))
-    assert policy.ready()
+    assert not policy.ready()  # Unanswered contact first increases do-not-disturb pressure.
+    rows.append(dict(delivery_status='DELIVERED', content='回来啦', origin='user', created_at=now[0],
+                     initiative_tier='close', initiative_caution='normal'))
+    assert policy.ready()  # A user reply ends the unanswered streak; close profile has room to initiate again.
     rows.extend(dict(origin='proactive', delivery_status='SKIPPED', created_at=now[0]) for _ in range(10))
-    assert not policy.ready()  # Skipped model calls also consume budget.
+    assert not policy.ready()  # Skipped model calls also consume the bounded relationship-specific budget.
+
+
+def test_unanswered_pressure_decays_faster_for_close_relationships():
+    base = datetime(2026, 9, 13, 12, tzinfo=LOCAL).timestamp()
+
+    def ready_after(tier, hours):
+        now = [base + hours * 3600]
+        rows = [
+            dict(origin='user', delivery_status='DELIVERED', created_at=base - 3600,
+                 initiative_tier=tier, initiative_caution='normal'),
+            dict(origin='proactive', delivery_status='DELIVERED', created_at=base),
+        ]
+        policy = Initiative(rows, clock=lambda: now[0], interval=lambda: 0)
+        policy.received(PersonalMessage('qq', 'bot', 'owner', tier, ''), None)
+        return policy.ready()
+
+    assert not ready_after('reserved', 4)
+    assert ready_after('committed', 4)
+    assert not ready_after('close', 2)
+    assert ready_after('close', 4)
 
 
 def test_sleep_and_explicit_pause():

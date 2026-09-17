@@ -40,8 +40,11 @@ root = server._state_root()
 now = [1000000.0]
 server.time.time = lambda: now[0]
 server._proactive_ready = lambda: True
+# This test is about paid-planning call bounds, not shallow-relationship cadence.
+# Keep the synthetic exchange explicitly committed so the normal candidate is due.
 server.store.letters[:] = [{'letter_id':'synthetic', 'content':'past event',
-    'reply_text':'reply', 'letter_status':'COMPLETED', 'created_at':now[0]-4000}]
+    'reply_text':'reply', 'letter_status':'COMPLETED', 'created_at':now[0]-4000,
+    'initiative_tier':'committed', 'initiative_caution':'normal'}]
 write_json(root / 'proactive/settings.json', {'enabled':True})
 calls, published = [], []
 real_complete = server._proactive_complete

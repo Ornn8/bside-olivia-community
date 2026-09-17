@@ -9,6 +9,8 @@ from pathlib import Path
 import tempfile
 import time
 
+from runtime.personal_chat.initiative_profile import profile_from_rows
+
 DEFAULTS = {'enabled': False, 'allow_voice': True, 'login_check_enabled': False}
 DAY = 86400
 
@@ -46,10 +48,11 @@ def _stamp(value) -> float:
 
 def make_context(rows: list[dict], *, now: float, world: dict | None = None) -> dict:
     """App-owned opportunity projection; workers never write the mailbox."""
+    profile = profile_from_rows(rows)
     delivered = [row for row in rows if row.get('origin') == 'proactive'
                  and row.get('letter_status') == 'COMPLETED']
-    remaining = max(0, 3 - sum(_stamp(row.get('published_at', row.get('created_at'))) > now - DAY
-                              for row in delivered))
+    remaining = max(0, profile.letter_daily_limit - sum(
+        _stamp(row.get('published_at', row.get('created_at'))) > now - DAY for row in delivered))
     blocked = any(row.get('letter_status') in {'PENDING', 'PROCESSING'} for row in rows)
     unread = any(not row.get('is_read', 0) for row in delivered)
     latest = max((row for row in rows if row.get('origin') != 'proactive' and row.get('content')
@@ -59,8 +62,16 @@ def make_context(rows: list[dict], *, now: float, world: dict | None = None) -> 
     if latest:
         source = f"reply:{latest['letter_id']}:{latest.get('reply_revision', 1)}"
         candidates.append({'source_id': source, 'kind': 'correspondence_followup',
-                           'not_before': _stamp(latest.get('created_at')) + 1800,
+                           'not_before': _stamp(latest.get('created_at')) + profile.letter_followup_delay,
                            'expires_at': _stamp(latest.get('created_at')) + 7 * DAY})
+        # Long silence may itself become a reason to consider contact, but only
+        # after the relationship permits it. This remains an opportunity; the
+        # model can still defer when the silence is ordinary for the context.
+        if profile.letter_silence_delay is not None:
+            quiet_at = _stamp(latest.get('created_at')) + profile.letter_silence_delay
+            candidates.append({'source_id': source, 'kind': 'relationship_checkin',
+                               'not_before': quiet_at,
+                               'expires_at': quiet_at + 7 * DAY})
     # Only user-backed shared matters are triggers. Self-generated life updates
     # are context for expression, not an engine that sends itself another letter.
     for item in (world or {}).get('shared', []):
@@ -71,13 +82,20 @@ def make_context(rows: list[dict], *, now: float, world: dict | None = None) -> 
                 continue
             candidates.append({'source_id': item.get('source_id', ''),
                                'kind': 'shared_followup', 'project_id': item.get('id'),
-                               'not_before': changed_at + 1800, 'expires_at': changed_at + 7 * DAY,
+                               'not_before': changed_at + profile.letter_followup_delay,
+                               'expires_at': changed_at + 7 * DAY,
                                'version': item.get('updated_at')})
     used = {row.get('proactive_candidate_id') for row in delivered}
     for item in candidates:
-        identity = {key: value for key, value in item.items() if key not in {'not_before', 'expires_at'}}
+        identity = {key: value for key, value in item.items()
+                    if key not in {'not_before', 'expires_at', 'relationship_tier', 'relationship_caution'}}
         item['id'] = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:32]
+        item['relationship_tier'] = profile.tier
+        item['relationship_caution'] = profile.caution
     return {'updated_at': now, 'remaining': remaining, 'blocked': blocked, 'unread': unread,
+            # Keep the old boolean for diagnostics/backward-compatible clients.
+            'relationship_high': profile.rank >= 3,
+            'initiative_profile': profile.public_view(),
             'candidates': [item for item in candidates if item['id'] not in used and item['source_id']]}
 
 

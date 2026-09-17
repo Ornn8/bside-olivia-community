@@ -10,22 +10,41 @@ from runtime.reply.proactive_letters import scan_pending, write_json, make_conte
 
 def test_background_only_prepares_one_current_intent_and_never_modifies_mailbox(tmp_path):
     rows = [{'letter_id': 'u1', 'letter_status': 'COMPLETED', 'content': '明天面试。',
-             'reply_text': '好啊。', 'created_at': 1000, 'reply_revision': 1}]
+             'reply_text': '好啊。', 'created_at': 1000, 'reply_revision': 1,
+             'initiative_tier': 'close', 'initiative_caution': 'normal'}]
     mailbox = tmp_path / 'state.json'
     mailbox.write_text(json.dumps({'letters': rows}), encoding='utf-8')
     before = mailbox.read_bytes()
     write_json(tmp_path / 'proactive/settings.json', {**settings({}), 'enabled': True})
     context = make_context(rows, now=2000)
     write_json(tmp_path / 'proactive/context.json', context)
-    intent = scan_pending(tmp_path, now=3100)
+    intent = scan_pending(tmp_path, now=6500)
     assert intent['source_id'] == 'reply:u1:1'
+    assert intent['relationship_tier'] == 'close'
     assert 'prompt' not in intent and 'reply_text' not in intent
-    assert scan_pending(tmp_path, now=3200) == intent
+    assert scan_pending(tmp_path, now=6600) == intent
     assert mailbox.read_bytes() == before
     rows.append({'letter_id': 'p1', 'origin': 'proactive', 'letter_status': 'COMPLETED',
-                 'proactive_candidate_id': intent['id'], 'published_at': 3200, 'is_read': 1})
-    write_json(tmp_path / 'proactive/context.json', make_context(rows, now=3300))
-    assert scan_pending(tmp_path, now=5000) == {}
+                 'proactive_candidate_id': intent['id'], 'published_at': 6600, 'is_read': 1})
+    write_json(tmp_path / 'proactive/context.json', make_context(rows, now=6700))
+    assert scan_pending(tmp_path, now=10000) == {}
+
+
+def test_relationship_profile_changes_letter_budget_and_reason_threshold():
+    base = {'letter_id': 'u1', 'letter_status': 'COMPLETED', 'content': '近况',
+            'reply_text': '嗯', 'created_at': 1000}
+    reserved = make_context([dict(base)], now=2000)
+    close = make_context([{**base, 'initiative_tier': 'close', 'initiative_caution': 'normal'}], now=2000)
+    committed = make_context([{**base, 'initiative_tier': 'committed', 'initiative_caution': 'normal'}], now=2000)
+    assert reserved['remaining'] == 1 and reserved['initiative_profile']['tier'] == 'reserved'
+    assert close['remaining'] == 2 and committed['remaining'] == 3
+    reserved_followup = next(item for item in reserved['candidates'] if item['kind'] == 'correspondence_followup')
+    close_followup = next(item for item in close['candidates'] if item['kind'] == 'correspondence_followup')
+    committed_followup = next(item for item in committed['candidates'] if item['kind'] == 'correspondence_followup')
+    assert reserved_followup['not_before'] > close_followup['not_before'] > committed_followup['not_before']
+    assert not any(item['kind'] == 'relationship_checkin' for item in reserved['candidates'])
+    assert any(item['kind'] == 'relationship_checkin' for item in close['candidates'])
+    assert any(item['kind'] == 'relationship_checkin' for item in committed['candidates'])
 
 
 def test_quota_unread_and_expiry_are_rechecked_without_catchup(tmp_path):
@@ -130,8 +149,9 @@ async def main():
         pass
     assert not server._proactive_busy and len(committed) == 1
     server.store.letters[:] = [{'letter_id':'u2', 'content':'明天面试', 'reply_text':'好啊',
-                               'letter_status':'COMPLETED', 'created_at':time.time()-4000,
-                               'reply_revision':1}]
+                               'letter_status':'COMPLETED', 'created_at':time.time()-7200,
+                               'reply_revision':1, 'initiative_tier':'close',
+                               'initiative_caution':'normal'}]
     async def plan_with_new_user(*args, **kwargs):
         assert kwargs['planning'] and not server._proactive_busy
         server.store.letters.append({'letter_id':'u3', 'content':'面试结束了', 'letter_status':'PENDING'})
