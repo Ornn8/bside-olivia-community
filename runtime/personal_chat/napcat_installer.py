@@ -16,18 +16,18 @@ import zipfile
 
 
 NAPCAT_VERSION = "v4.18.28"
-NAPCAT_ASSET = "NapCat.Shell.Windows.OneKey.zip"
+NAPCAT_ASSET = "NapCat.Shell.Windows.Node.zip"
 NAPCAT_URL = (
     "https://github.com/NapNeko/NapCatQQ/releases/download/"
     f"{NAPCAT_VERSION}/{NAPCAT_ASSET}"
 )
-NAPCAT_SHA256 = "fa365537039e9ec29730166f3f624eb147074be18be64d1981a03f35ecb2a2af"
+NAPCAT_SHA256 = "fb64fa3b036ad2df1a5d7c204c482694c20e4b763978c8a4968fd3474c05b4a8"
 NAPCAT_SOURCE = "NapNeko/NapCatQQ"
 NAPCAT_LICENSE = "Limited Redistribution License for NapCat"
 NAPCAT_WS_URL = "ws://127.0.0.1:3001"
-_MAX_ARCHIVE_BYTES = 4 * 1024 * 1024
-_MAX_EXTRACTED_BYTES = 32 * 1024 * 1024
-_MAX_MEMBERS = 96
+_MAX_ARCHIVE_BYTES = 160 * 1024 * 1024
+_MAX_EXTRACTED_BYTES = 1024 * 1024 * 1024
+_MAX_MEMBERS = 20_000
 _ALLOWED_DOWNLOAD_HOSTS = frozenset({
     "github.com",
     "release-assets.githubusercontent.com",
@@ -39,9 +39,10 @@ class NapCatSetupError(RuntimeError):
     pass
 
 
-def _root(data_root: Path) -> Path:
+def _root(data_root: Path, *, create: bool = True) -> Path:
     root = Path(data_root) / "personal-chat" / "napcat"
-    root.mkdir(parents=True, exist_ok=True)
+    if create:
+        root.mkdir(parents=True, exist_ok=True)
     return root
 
 
@@ -84,7 +85,7 @@ def _download_archive(path: Path) -> None:
         headers={"User-Agent": "Olivia-local-NapCat-bootstrap/1"},
     )
     try:
-        with urllib.request.urlopen(request, timeout=90) as response:
+        with urllib.request.urlopen(request, timeout=180) as response:
             final_url = response.geturl()
             if not _allowed_download_url(final_url):
                 raise NapCatSetupError("NAPCAT_SOURCE_INVALID")
@@ -99,7 +100,7 @@ def _download_archive(path: Path) -> None:
             try:
                 with os.fdopen(fd, "wb") as stream:
                     while True:
-                        chunk = response.read(64 * 1024)
+                        chunk = response.read(1024 * 1024)
                         if not chunk:
                             break
                         total += len(chunk)
@@ -128,7 +129,6 @@ def _safe_extract(archive_path: Path, destination: Path) -> None:
                 raise NapCatSetupError("NAPCAT_ARCHIVE_INVALID")
             if sum(max(0, info.file_size) for info in infos) > _MAX_EXTRACTED_BYTES:
                 raise NapCatSetupError("NAPCAT_ARCHIVE_TOO_LARGE")
-            root = destination.resolve()
             staging = destination.with_name(destination.name + ".staging")
             shutil.rmtree(staging, ignore_errors=True)
             staging.mkdir(parents=True, exist_ok=True)
@@ -146,7 +146,7 @@ def _safe_extract(archive_path: Path, destination: Path) -> None:
                         raise NapCatSetupError("NAPCAT_ARCHIVE_INVALID")
                     target.parent.mkdir(parents=True, exist_ok=True)
                     with archive.open(info) as source, target.open("wb") as output:
-                        shutil.copyfileobj(source, output, length=64 * 1024)
+                        shutil.copyfileobj(source, output, length=1024 * 1024)
                 shutil.rmtree(destination, ignore_errors=True)
                 os.replace(staging, destination)
             finally:
@@ -157,72 +157,76 @@ def _safe_extract(archive_path: Path, destination: Path) -> None:
         raise NapCatSetupError("NAPCAT_ARCHIVE_INVALID") from exc
 
 
-def prepare_installer(data_root: Path) -> Path:
-    if os.name != "nt":
-        raise NapCatSetupError("NAPCAT_WINDOWS_REQUIRED")
-    root = _root(data_root)
-    archive = root / NAPCAT_ASSET
-    if not archive.is_file() or hashlib.sha256(archive.read_bytes()).hexdigest().lower() != NAPCAT_SHA256:
-        archive.unlink(missing_ok=True)
-        _download_archive(archive)
-    bootstrap = root / "bootstrap"
-    _safe_extract(archive, bootstrap)
-    matches = [path for path in bootstrap.rglob("NapCatInstaller.exe") if path.is_file()]
-    if len(matches) != 1:
-        raise NapCatSetupError("NAPCAT_INSTALLER_NOT_FOUND")
-    return matches[0]
-
-
-def launch_installer(installer: Path) -> subprocess.Popen:
-    if os.name != "nt":
-        raise NapCatSetupError("NAPCAT_WINDOWS_REQUIRED")
-    flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-    try:
-        return subprocess.Popen(
-            [str(installer)],
-            cwd=str(installer.parent),
-            creationflags=flags,
-        )
-    except OSError as exc:
-        raise NapCatSetupError("NAPCAT_INSTALLER_START_FAILED") from exc
+def _component_root(data_root: Path) -> Path:
+    return _root(data_root) / "component" / NAPCAT_VERSION
 
 
 def find_shell(data_root: Path) -> Path | None:
-    root = _root(data_root)
+    root = _root(data_root, create=False)
+    if not root.is_dir():
+        return None
     candidates: list[Path] = []
     for batch in root.rglob("napcat.bat"):
         try:
             relative = batch.relative_to(root)
         except ValueError:
             continue
-        if batch.is_file() and len(relative.parts) <= 6:
+        if batch.is_file() and len(relative.parts) <= 8:
             candidates.append(batch.parent)
     if not candidates:
         return None
     return sorted(candidates, key=lambda item: (len(item.parts), str(item)))[0]
 
 
+def install_component(data_root: Path) -> Path:
+    if os.name != "nt":
+        raise NapCatSetupError("NAPCAT_WINDOWS_REQUIRED")
+    existing = find_shell(data_root)
+    if existing is not None:
+        return existing
+    root = _root(data_root)
+    archive = root / NAPCAT_ASSET
+    digest = None
+    if archive.is_file() and archive.stat().st_size <= _MAX_ARCHIVE_BYTES:
+        with archive.open("rb") as stream:
+            check = hashlib.sha256()
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                check.update(chunk)
+            digest = check.hexdigest().lower()
+    if digest != NAPCAT_SHA256:
+        archive.unlink(missing_ok=True)
+        _download_archive(archive)
+    destination = _component_root(data_root)
+    _safe_extract(archive, destination)
+    shell = find_shell(data_root)
+    if shell is None:
+        shutil.rmtree(destination, ignore_errors=True)
+        raise NapCatSetupError("NAPCAT_COMPONENT_INVALID")
+    return shell
+
+
 def public_status(data_root: Path, runtime: dict[str, object]) -> dict[str, object]:
     shell = find_shell(data_root)
     task = runtime.get("napcat_task")
-    installer = runtime.get("napcat_installer_process")
     shell_process = runtime.get("napcat_shell_process")
     state = str(runtime.get("napcat_state") or "IDLE")
     if shell is not None:
         state = "READY"
     if shell_process is not None and getattr(shell_process, "poll", lambda: 0)() is None:
         state = "RUNNING"
-    elif installer is not None and getattr(installer, "poll", lambda: 0)() is None:
-        state = "INSTALLER_OPENED"
     elif task is not None and not getattr(task, "done", lambda: True)():
         state = str(runtime.get("napcat_state") or "DOWNLOADING")
-    return {
+    result = {
         "state": state,
         "version": NAPCAT_VERSION,
         "source": NAPCAT_SOURCE,
         "installed": shell is not None,
         "managed": True,
     }
+    error = runtime.get("napcat_error")
+    if isinstance(error, str) and error.startswith("NAPCAT_"):
+        result["error"] = error
+    return result
 
 
 def _token_path(data_root: Path) -> Path:
@@ -332,11 +336,10 @@ __all__ = [
     "NAPCAT_WS_URL",
     "NapCatSetupError",
     "find_shell",
-    "launch_installer",
+    "install_component",
     "launch_shell",
     "managed_connection",
     "open_login_page",
-    "prepare_installer",
     "prepare_onebot",
     "public_status",
 ]
