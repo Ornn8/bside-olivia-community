@@ -41,16 +41,37 @@ class Initiative:
         # runtime derives cadence from the persisted relationship profile.
         self.interval = interval
         self.target = None
+        self._scheduled_profile = None
         self.due = clock() + self._next_interval()
 
     def profile(self):
         return profile_from_rows(self.rows)
 
-    def _next_interval(self):
+    @staticmethod
+    def _profile_key(profile):
+        return profile.tier, profile.caution
+
+    def _next_interval(self, profile=None):
         if self.interval is not None:
             return self.interval()
-        profile = self.profile()
+        profile = profile or self.profile()
+        self._scheduled_profile = self._profile_key(profile)
         return random.uniform(profile.im_interval_min, profile.im_interval_max)
+
+    def _recalibrate_if_relationship_changed(self, now, profile):
+        """Apply a newly committed relationship state without firing immediately.
+
+        The incoming message may itself commit a different relationship profile
+        after `received()` scheduled the next check. Re-arm once from that
+        commit time so a newly close relationship does not inherit a many-hour
+        shallow cadence, and new tension can also create more space.
+        """
+        if self.interval is not None:
+            return
+        key = self._profile_key(profile)
+        if self._scheduled_profile != key:
+            self._scheduled_profile = key
+            self.due = now + random.uniform(profile.im_interval_min, profile.im_interval_max)
 
     def received(self, event, send):
         self.target = (event, send)
@@ -75,12 +96,16 @@ class Initiative:
             return False  # Do not initiate over an unresolved user request (possibly a cancellation).
         followup = self.pending_followup()
         scheduled = followup is not None and now >= followup['followup_at']
-        if not self.target or (not scheduled and now < self.due):
+        if not self.target:
             return False
+        profile = self.profile()
+        if not scheduled:
+            self._recalibrate_if_relationship_changed(now, profile)
+            if now < self.due:
+                return False
         local = datetime.fromtimestamp(now, LOCAL)
         if local.hour < 8 or (local.hour == 8 and local.minute < 30):
             return False
-        profile = self.profile()
         # Reserve budget for attempts too, including SKIP/failure/uncertain sends.
         # The hard ceiling remains bounded, while shallow relationships spend
         # much less of it than close ones.
