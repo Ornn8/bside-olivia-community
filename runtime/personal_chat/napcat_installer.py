@@ -46,6 +46,18 @@ def _root(data_root: Path, *, create: bool = True) -> Path:
     return root
 
 
+def _workdir(data_root: Path) -> Path:
+    value = _root(data_root) / "workdir"
+    value.mkdir(parents=True, exist_ok=True)
+    return value
+
+
+def _config_dir(data_root: Path) -> Path:
+    value = _workdir(data_root) / "config"
+    value.mkdir(parents=True, exist_ok=True)
+    return value
+
+
 def _atomic_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
@@ -292,7 +304,7 @@ def prepare_onebot(data_root: Path) -> tuple[Path, str]:
         "parseMultMsg": False,
     }
     _atomic_text(
-        shell / "config" / "onebot11.json",
+        _config_dir(data_root) / "onebot11.json",
         json.dumps(config, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
     )
     return shell, token
@@ -306,10 +318,13 @@ def launch_shell(data_root: Path) -> subprocess.Popen:
     if not batch.is_file():
         raise NapCatSetupError("NAPCAT_LAUNCHER_NOT_FOUND")
     flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+    environment = dict(os.environ)
+    environment["NAPCAT_WORKDIR"] = str(_workdir(data_root))
     try:
         return subprocess.Popen(
             ["cmd.exe", "/c", str(batch)],
             cwd=str(shell),
+            env=environment,
             creationflags=flags,
         )
     except OSError as exc:
@@ -322,10 +337,9 @@ def managed_connection(data_root: Path) -> tuple[str, str]:
 
 
 def open_login_page(data_root: Path) -> bool:
-    shell = find_shell(data_root)
-    if shell is None:
+    if find_shell(data_root) is None:
         return False
-    webui = shell / "config" / "webui.json"
+    webui = _config_dir(data_root) / "webui.json"
     try:
         value = json.loads(webui.read_text(encoding="utf-8"))
     except (OSError, ValueError):
