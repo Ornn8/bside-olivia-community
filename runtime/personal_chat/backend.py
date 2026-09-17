@@ -142,8 +142,13 @@ async def commit(server, row):
 
 
 async def _commit_mailbox_notice(server, row):
+    if not row.get('mailbox_notice_letter_id'):
+        return
     from .mailbox_notice import commit_notice
-    commit_notice(getattr(server.store, 'letters', []), row, server._persist_store_state)
+    store = getattr(server, 'store', None)
+    if store is None:
+        return
+    commit_notice(getattr(store, 'letters', []), row, server._persist_store_state)
 
 
 async def _commit_world(server, row):
