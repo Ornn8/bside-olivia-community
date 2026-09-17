@@ -1,5 +1,6 @@
 """Bounded owner-wide IM initiative; no offline backlog or stored transport tokens."""
 from datetime import datetime
+from statistics import median
 import random
 import time
 from runtime.private_world.life_rhythm import LOCAL
@@ -20,6 +21,28 @@ def letter_invitation_allowed(chats, letters, now):
     paused = preference.get('letter_preference') == 'pause' and (
         preference.get('letter_until') is None or now < preference['letter_until'])
     return not paused and now - max(last_invite, last_letter) >= 7 * 86400
+
+
+def _usual_user_gap(rows):
+    """Estimate this relationship's own reply rhythm instead of imposing one clock."""
+    stamps = [float(r.get('created_at', 0)) for r in rows
+              if delivered(r) and r.get('origin') != 'proactive' and float(r.get('created_at', 0)) > 0]
+    stamps = stamps[-9:]
+    gaps = [later - earlier for earlier, later in zip(stamps, stamps[1:])
+            if 5 * 60 <= later - earlier <= 7 * 86400]
+    return median(gaps) if gaps else None
+
+
+def _unanswered_wait(rows, unanswered):
+    """Silence suppresses pressure for a while, but never permanently locks initiative."""
+    usual = _usual_user_gap(rows)
+    if unanswered <= 0:
+        return 0
+    if usual is None:
+        return 6 * 3600 if unanswered == 1 else 18 * 3600
+    if unanswered == 1:
+        return max(2 * 3600, min(12 * 3600, usual))
+    return max(6 * 3600, min(30 * 3600, usual * 2))
 
 
 class Initiative:
@@ -70,11 +93,18 @@ class Initiative:
                 preference.get('pause_until') is None or now < preference['pause_until']):
             return False
         unanswered = 0
+        last_proactive_at = 0.0
         for row in reversed(history):
             if row.get('origin') != 'proactive':
                 break
             unanswered += 1
-        return scheduled or unanswered < 2
+            last_proactive_at = max(last_proactive_at, float(row.get('created_at', 0)))
+        if scheduled:
+            return True
+        wait = _unanswered_wait(history, unanswered)
+        if unanswered and now - last_proactive_at < wait:
+            return False
+        return True
 
     def attempted(self):
         self.due = self.clock() + self.interval()
