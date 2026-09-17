@@ -57,6 +57,13 @@ def _initiative_profile(rows: list[dict]):
     return profile_from_public(eligible[0]['initiative_profile']) if eligible else profile_from_public(None)
 
 
+def _candidate_id(item: dict) -> str:
+    identity = {key: value for key, value in item.items()
+                if key not in {'not_before', 'expires_at', 'relationship_initiative',
+                               'reason_policy', '_ordinary_candidate_id'}}
+    return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:32]
+
+
 def make_context(rows: list[dict], *, now: float, world: dict | None = None) -> dict:
     """App-owned opportunity projection; workers never write the mailbox."""
     profile = _initiative_profile(rows)
@@ -78,7 +85,7 @@ def make_context(rows: list[dict], *, now: float, world: dict | None = None) -> 
         age = max(0, now - created)
         casual = (profile.allow_low_stakes and profile.letter_casual_after_seconds is not None
                   and age >= profile.letter_casual_after_seconds)
-        candidates.append({
+        candidate = {
             'source_id': source,
             'kind': 'relationship_checkin' if casual else 'correspondence_followup',
             'relationship_initiative': public_profile,
@@ -92,7 +99,14 @@ def make_context(rows: list[dict], *, now: float, world: dict | None = None) -> 
                 else profile.letter_followup_delay_seconds
             ),
             'expires_at': created + 7 * DAY,
-        })
+        }
+        if casual:
+            # A relationship check-in is a second chance after an earlier planning
+            # defer, not permission to send twice about the same source. If the
+            # ordinary candidate was already delivered, suppress this later form.
+            ordinary = {**candidate, 'kind': 'correspondence_followup'}
+            candidate['_ordinary_candidate_id'] = _candidate_id(ordinary)
+        candidates.append(candidate)
     # Only user-backed shared matters are triggers. Self-generated life updates
     # are context for expression, not an engine that sends itself another letter.
     for item in (world or {}).get('shared', []):
@@ -112,13 +126,15 @@ def make_context(rows: list[dict], *, now: float, world: dict | None = None) -> 
                 'version': item.get('updated_at'),
             })
     used = {row.get('proactive_candidate_id') for row in delivered}
+    visible = []
     for item in candidates:
-        identity = {key: value for key, value in item.items()
-                    if key not in {'not_before', 'expires_at', 'relationship_initiative', 'reason_policy'}}
-        item['id'] = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:32]
+        item['id'] = _candidate_id(item)
+        ordinary_id = item.pop('_ordinary_candidate_id', None)
+        if item['id'] in used or ordinary_id in used or not item['source_id']:
+            continue
+        visible.append(item)
     return {'updated_at': now, 'remaining': remaining, 'blocked': blocked, 'unread': unread,
-            'relationship_initiative': public_profile,
-            'candidates': [item for item in candidates if item['id'] not in used and item['source_id']]}
+            'relationship_initiative': public_profile, 'candidates': visible}
 
 
 def scan_pending(data_root: Path, *, now: float | None = None,

@@ -99,6 +99,23 @@ def test_proactive_letters_gain_low_stakes_checkin_only_after_relationship_allow
     assert make_context(reserved, now=1000 + 2 * 86400)['candidates'][0]['kind'] == 'correspondence_followup'
 
 
+def test_delivered_ordinary_followup_suppresses_later_relationship_checkin_for_same_source():
+    trusted_profile = profile_from_snapshot(snap(familiarity=70, trust=70, comfort=70)).public()
+    rows = [{
+        'letter_id': 'u1', 'letter_status': 'COMPLETED', 'content': '最近还好。',
+        'reply_text': '嗯。', 'created_at': 1000, 'reply_revision': 1,
+        'initiative_profile': trusted_profile,
+    }]
+    early = make_context(rows, now=2000)
+    ordinary_id = early['candidates'][0]['id']
+    rows.append({
+        'letter_id': 'p1', 'origin': 'proactive', 'letter_status': 'COMPLETED',
+        'proactive_candidate_id': ordinary_id, 'published_at': 2500, 'created_at': 2500,
+        'is_read': 1,
+    })
+    assert make_context(rows, now=1000 + 19 * 3600)['candidates'] == []
+
+
 def test_relationship_metadata_does_not_change_existing_candidate_identity():
     base = [{
         'letter_id': 'u1', 'letter_status': 'COMPLETED', 'content': '明天面试。',
