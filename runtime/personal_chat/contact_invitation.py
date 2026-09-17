@@ -80,6 +80,12 @@ def status(rows, snapshot):
                     selected = candidate["choice"]
         return {"state": selected or "invited", "invitation_id": invitation["letter_id"],
                 "channels": ["qq", "wechat"] if selected == "both" else [selected] if selected in {"qq", "wechat"} else []}
+    inflight = next((r for r in rows
+                     if r.get("origin") == "proactive"
+                     and r.get("proactive_kind") == "contact_invitation"
+                     and r.get("letter_status") in {"PENDING", "PROCESSING"}), None)
+    if inflight:
+        return {"state": "locked", "channels": []}
     # Three high relationship dimensions are the product gate. Do not require a
     # post-upgrade hidden interaction marker: older users may already have a
     # valid relationship state before contact_qualification existed.
