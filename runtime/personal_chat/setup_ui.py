@@ -132,7 +132,8 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
       const top = node("div", null, "olivia-chat-row");
       const left = document.createElement("div");
       const listener = status.listeners?.wechat;
-      const state = listener === "LISTENING" ? "LISTENING" : status.wechat?.state || listener;
+      const setupState = status.wechat?.state;
+      const state = setupState && setupState !== "IDLE" ? setupState : listener;
       left.append(node("div", "微信", "olivia-chat-name"), node("div", stateLabel(state), "olivia-chat-state"));
       const start = action(status.configured?.wechat ? "重新绑定" : "生成二维码", async () => {
         try {
@@ -173,7 +174,8 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
       const top = node("div", null, "olivia-chat-row");
       const left = document.createElement("div");
       const listener = status.listeners?.qq;
-      const state = listener === "LISTENING" ? "LISTENING" : status.qq?.state || listener;
+      const setupState = status.qq?.state;
+      const state = setupState && setupState !== "IDLE" ? setupState : listener;
       left.append(node("div", "QQ（实验功能）", "olivia-chat-name"), node("div", stateLabel(state), "olivia-chat-state"));
       top.append(left);
       box.append(top);
@@ -239,12 +241,9 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
     return true;
   };
 
-  if (!mount()) {
-    const observer = new MutationObserver(() => {
-      if (mount()) observer.disconnect();
-    });
-    observer.observe(document.documentElement, {childList: true, subtree: true});
-  }
+  mount();
+  const observer = new MutationObserver(() => { mount(); });
+  observer.observe(document.documentElement, {childList: true, subtree: true});
 })();
 '''
 
