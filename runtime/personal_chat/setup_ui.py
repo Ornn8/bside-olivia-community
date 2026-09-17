@@ -143,12 +143,11 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
       top.append(left, start);
       box.append(top);
 
-      if (status.wechat?.qr_url && ["SCAN_REQUIRED", "SCANNED", "VERIFY_REQUIRED"].includes(status.wechat.state)) {
+      if (status.wechat?.qr_data && ["SCAN_REQUIRED", "SCANNED", "VERIFY_REQUIRED"].includes(status.wechat.state)) {
         const image = document.createElement("img");
         image.className = "olivia-chat-qr";
         image.alt = "微信绑定二维码";
-        image.referrerPolicy = "no-referrer";
-        image.src = status.wechat.qr_url;
+        image.src = status.wechat.qr_data;
         box.append(image);
       }
       if (status.wechat?.state === "VERIFY_REQUIRED") {
