@@ -233,7 +233,9 @@ def public_status(data_root: Path, runtime: dict[str, object]) -> dict[str, obje
     state = str(runtime.get("napcat_state") or "IDLE")
     if shell is not None:
         state = "READY"
-    if shell_process is not None and getattr(shell_process, "poll", lambda: 0)() is None:
+    if shell is not None and _onebot_port_open():
+        state = "RUNNING"
+    elif shell_process is not None and getattr(shell_process, "poll", lambda: 0)() is None:
         state = "RUNNING"
     elif task is not None and not getattr(task, "done", lambda: True)():
         state = str(runtime.get("napcat_state") or "DOWNLOADING")
@@ -271,6 +273,24 @@ def _managed_token(data_root: Path) -> str:
     return token
 
 
+def _prepare_webui(data_root: Path) -> None:
+    path = _config_dir(data_root) / "webui.json"
+    try:
+        current = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        current = {}
+    if not isinstance(current, dict):
+        current = {}
+    port = current.get("port")
+    if type(port) is not int or not 1 <= port <= 65535:
+        port = 6099
+    token = current.get("token")
+    if not isinstance(token, str) or not 12 <= len(token) <= 256:
+        token = secrets.token_urlsafe(18)
+    current.update({"host": "127.0.0.1", "port": port, "token": token})
+    _atomic_text(path, json.dumps(current, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+
+
 def prepare_onebot(data_root: Path) -> tuple[Path, str]:
     shell = find_shell(data_root)
     if shell is None:
@@ -300,6 +320,7 @@ def prepare_onebot(data_root: Path) -> tuple[Path, str]:
         "enableLocalFile2Url": False,
         "parseMultMsg": False,
     }
+    _prepare_webui(data_root)
     _atomic_text(
         _config_dir(data_root) / "onebot11.json",
         json.dumps(config, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
