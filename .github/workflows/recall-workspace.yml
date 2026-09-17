@@ -1,0 +1,23 @@
+name: recall-workspace
+on:
+  push:
+    branches: [codex/history-recall-repair-1215]
+    paths: [.github/workflows/recall-workspace.yml]
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 6db0a39f66fcea52805fe72c892ea2d80d80cd9d
+          persist-credentials: false
+      - run: git archive --format=zip HEAD -o "$RUNNER_TEMP/olivia-source.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: recall-source-1214
+          path: ${{ runner.temp }}/olivia-source.zip
+          retention-days: 1
+          if-no-files-found: error
