@@ -109,9 +109,9 @@ def tier_from_snapshot(snapshot) -> str:
               for name in ("familiarity", "trust", "comfort", "closeness")]
     high = sum(value >= 70 for value in scores)
     medium = sum(value >= 35 for value in scores)
-    if stage == "close" or high >= 3 or scores[3] >= 70:
+    if stage == "close" or high >= 3:
         return "close"
-    if high >= 2 or (scores[1] >= 70 and scores[2] >= 70):
+    if high >= 2:
         return "trusted"
     if stage == "familiar" or high >= 1 or medium >= 3:
         return "familiar"
