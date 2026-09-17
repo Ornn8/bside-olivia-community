@@ -72,7 +72,9 @@ def status(rows, snapshot):
     invitation = next((r for r in reversed(completed)
                        if r.get("origin") == "proactive" and r.get("proactive_kind") == "contact_invitation"), None)
     if invitation:
-        selected = None
+        selected = invitation.get("contact_setup_choice")
+        if selected not in {"qq", "wechat", "both"}:
+            selected = None
         for row in completed:
             if row.get("contact_invitation_id") == invitation["letter_id"]:
                 candidate = validate_choice(row.get("contact_choice"), row.get("content", ""))
