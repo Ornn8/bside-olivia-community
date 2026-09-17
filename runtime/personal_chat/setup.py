@@ -18,6 +18,7 @@ import aiohttp
 from aiohttp import web
 
 from .probe import checked_url, wechat_request
+from .qr_svg import QRPayloadTooLong, svg_bytes
 
 
 STATUS_PATH = "/toy/personal-chat/setup/status"
@@ -135,12 +136,12 @@ def _qr_content(value: object) -> str:
 
 
 def _qr_data_url(value: object) -> str:
-    import qrcode
-    import qrcode.image.svg
-
     content = _qr_content(value)
-    image = qrcode.make(content, image_factory=qrcode.image.svg.SvgPathFillImage, border=4, box_size=8)
-    encoded = base64.b64encode(image.to_string()).decode("ascii")
+    try:
+        image = svg_bytes(content)
+    except (QRPayloadTooLong, ValueError) as exc:
+        raise RuntimeError("WECHAT_QR_UNAVAILABLE") from exc
+    encoded = base64.b64encode(image).decode("ascii")
     return "data:image/svg+xml;base64," + encoded
 
 
