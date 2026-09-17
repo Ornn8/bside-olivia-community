@@ -30,6 +30,12 @@ CONFIRM_VALUE = "confirmed"
 _SETUP = web.AppKey("personal_chat_setup", dict)
 _QQ_ID = re.compile(r"^[1-9][0-9]{4,19}$")
 _VERIFY_CODE = re.compile(r"^[0-9]{4,8}$")
+_SETUP_PATHS = {
+    STATUS_PATH: frozenset({"GET"}),
+    WECHAT_START_PATH: frozenset({"POST"}),
+    WECHAT_VERIFY_PATH: frozenset({"POST"}),
+    QQ_CONFIGURE_PATH: frozenset({"POST"}),
+}
 
 
 def _failure_code(exc: BaseException) -> str:
@@ -39,12 +45,63 @@ def _failure_code(exc: BaseException) -> str:
     return "PERSONAL_CHAT_SETUP_UNAVAILABLE"
 
 
-def _confirmed(request: web.Request) -> None:
-    if request.headers.get(CONFIRM_HEADER) != CONFIRM_VALUE:
-        raise web.HTTPForbidden(
-            text=json.dumps({"error": "PERSONAL_CHAT_CONFIRM_REQUIRED"}),
-            content_type="application/json",
+def _origin_allowed(server, origin: str) -> bool:
+    if not origin:
+        return True
+    checker = getattr(server, "origin_allowed", None)
+    if callable(checker):
+        try:
+            return bool(checker(origin))
+        except Exception:
+            return False
+    trusted = getattr(server, "TRUSTED_FRONTEND_ORIGINS", ())
+    return origin in trusted
+
+
+def _cors_headers(request: web.Request, server, *, preflight: bool = False) -> dict[str, str] | None:
+    headers = {
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+    }
+    origin = request.headers.get("Origin", "")
+    if origin:
+        if not _origin_allowed(server, origin):
+            return None
+        headers.update(
+            {
+                "Access-Control-Allow-Origin": origin,
+                "Vary": "Origin",
+            }
         )
+    if preflight:
+        headers.update(
+            {
+                "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+                "Access-Control-Allow-Headers": f"Content-Type, {CONFIRM_HEADER}",
+                "Access-Control-Max-Age": "600",
+            }
+        )
+    return headers
+
+
+def _json_response(
+    request: web.Request,
+    server,
+    payload: dict[str, object],
+    *,
+    status: int = 200,
+) -> web.Response:
+    headers = _cors_headers(request, server)
+    if headers is None:
+        return web.json_response(
+            {"error": "PERSONAL_CHAT_ORIGIN_FORBIDDEN"},
+            status=403,
+            headers={
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+    return web.json_response(payload, status=status, headers=headers)
 
 
 def _root(server) -> Path:
@@ -163,8 +220,13 @@ def _public_status(request: web.Request, server) -> dict[str, object]:
         "contact_state": _contact_state(server),
         "selected_channels": sorted(selected),
         "configured": configured,
-        "listeners": {name: listener.get(name, "CONFIGURED_RESTART" if configured[name] else "SETUP_REQUIRED")
-                      for name in selected},
+        "listeners": {
+            name: listener.get(
+                name,
+                "CONFIGURED_RESTART" if configured[name] else "SETUP_REQUIRED",
+            )
+            for name in selected
+        },
         "wechat": wechat,
         "qq": qq,
     }
@@ -280,14 +342,12 @@ def install_setup_routes(app: web.Application, server) -> None:
     app[_SETUP] = runtime
 
     async def status(request: web.Request) -> web.Response:
-        _confirmed(request)
         try:
             return web.json_response(_public_status(request, server))
         except Exception as exc:
             return web.json_response({"error": _failure_code(exc)}, status=503)
 
     async def wechat_start(request: web.Request) -> web.Response:
-        _confirmed(request)
         try:
             if "wechat" not in _selected_channels(server):
                 return web.json_response({"error": "PERSONAL_CHAT_CONTACT_NOT_ACCEPTED"}, status=409)
@@ -303,21 +363,24 @@ def install_setup_routes(app: web.Application, server) -> None:
             return web.json_response({"error": _failure_code(exc)}, status=503)
 
     async def wechat_verify(request: web.Request) -> web.Response:
-        _confirmed(request)
         try:
             body = await request.json()
         except Exception:
             return web.json_response({"error": "WECHAT_VERIFY_CODE_INVALID"}, status=400)
         code = body.get("code") if isinstance(body, dict) else None
         state = runtime.get("wechat")
-        if not isinstance(state, dict) or state.get("state") != "VERIFY_REQUIRED" or not isinstance(code, str) or not _VERIFY_CODE.fullmatch(code):
+        if (
+            not isinstance(state, dict)
+            or state.get("state") != "VERIFY_REQUIRED"
+            or not isinstance(code, str)
+            or not _VERIFY_CODE.fullmatch(code)
+        ):
             return web.json_response({"error": "WECHAT_VERIFY_CODE_INVALID"}, status=400)
         state["verify_code"] = code
         state["state"] = "SCANNED"
         return web.json_response({"status": "VERIFYING"})
 
     async def qq_configure(request: web.Request) -> web.Response:
-        _confirmed(request)
         if "qq" not in _selected_channels(server):
             return web.json_response({"error": "PERSONAL_CHAT_CONTACT_NOT_ACCEPTED"}, status=409)
         try:
@@ -359,16 +422,66 @@ def install_setup_routes(app: web.Application, server) -> None:
             runtime["qq"] = {"state": "FAILED", "error": code}
             return web.json_response({"error": code}, status=400 if code.startswith("QQ_") else 503)
 
+    endpoints = {
+        STATUS_PATH: status,
+        WECHAT_START_PATH: wechat_start,
+        WECHAT_VERIFY_PATH: wechat_verify,
+        QQ_CONFIGURE_PATH: qq_configure,
+    }
+
+    @web.middleware
+    async def setup_boundary(request: web.Request, handler):
+        methods = _SETUP_PATHS.get(request.path)
+        if methods is None:
+            return await handler(request)
+
+        preflight = request.method == "OPTIONS"
+        headers = _cors_headers(request, server, preflight=preflight)
+        if headers is None:
+            return web.json_response(
+                {"error": "PERSONAL_CHAT_ORIGIN_FORBIDDEN"},
+                status=403,
+                headers={
+                    "Cache-Control": "no-store",
+                    "X-Content-Type-Options": "nosniff",
+                },
+            )
+        if preflight:
+            requested = request.headers.get("Access-Control-Request-Method", "").upper()
+            if requested and requested not in methods:
+                return web.Response(status=405, headers=headers)
+            return web.Response(status=204, headers=headers)
+        if request.method not in methods:
+            return web.json_response({"error": "METHOD_NOT_ALLOWED"}, status=405, headers=headers)
+        if request.headers.get(CONFIRM_HEADER) != CONFIRM_VALUE:
+            return web.json_response(
+                {"error": "PERSONAL_CHAT_CONFIRM_REQUIRED"},
+                status=403,
+                headers=headers,
+            )
+
+        try:
+            response = await endpoints[request.path](request)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            response = web.json_response(
+                {"error": _failure_code(exc)},
+                status=503,
+            )
+        response.headers.update(headers)
+        return response
+
     async def cleanup(application: web.Application) -> None:
         task = runtime.get("wechat_task")
         if isinstance(task, asyncio.Task) and not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
 
-    app.router.add_get(STATUS_PATH, status)
-    app.router.add_post(WECHAT_START_PATH, wechat_start)
-    app.router.add_post(WECHAT_VERIFY_PATH, wechat_verify)
-    app.router.add_post(QQ_CONFIGURE_PATH, qq_configure)
+    # The original-client server owns a catch-all route before this lifecycle is
+    # installed. Middleware is therefore required here: adding late routes would
+    # leave these setup endpoints hidden behind that catch-all.
+    app.middlewares.append(setup_boundary)
     app.on_cleanup.append(cleanup)
 
 
