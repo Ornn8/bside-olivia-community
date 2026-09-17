@@ -1,10 +1,11 @@
 """Local, user-confirmed QQ/Weixin binding for personal chat.
 
 The setup surface deliberately keeps credentials on this Windows installation.
-It only exposes content-free status plus the short-lived Weixin QR display URL.
+It only exposes content-free status plus a short-lived locally rendered Weixin QR.
 """
 from __future__ import annotations
 
+import base64
 import asyncio
 import json
 import os
@@ -107,23 +108,39 @@ def _contact_state(server) -> str:
     return str(status(server.store.letters, snapshot).get("state", "locked"))
 
 
-def _qr_url(value: object) -> str:
-    if not isinstance(value, str) or not value:
+def _qr_content(value: object) -> str:
+    """Validate official QR content before encoding it locally.
+
+    Tencent currently returns a Weixin HTTPS target, but the protocol permits
+    display content rather than an image URL. Nothing here is fetched by the UI.
+    """
+    if not isinstance(value, str) or not value or len(value) > 4096:
         raise RuntimeError("WECHAT_QR_UNAVAILABLE")
-    try:
-        parsed = urlsplit(value)
-    except ValueError as exc:
-        raise RuntimeError("WECHAT_QR_UNAVAILABLE") from exc
-    if (
-        parsed.scheme != "https"
-        or not parsed.hostname
-        or not parsed.hostname.endswith(".weixin.qq.com")
-        or parsed.username
-        or parsed.password
-        or parsed.fragment
-    ):
-        raise RuntimeError("WECHAT_QR_UNAVAILABLE")
+    if "://" in value:
+        try:
+            parsed = urlsplit(value)
+        except ValueError as exc:
+            raise RuntimeError("WECHAT_QR_UNAVAILABLE") from exc
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or not parsed.hostname.endswith(".weixin.qq.com")
+            or parsed.username
+            or parsed.password
+            or parsed.fragment
+        ):
+            raise RuntimeError("WECHAT_QR_UNAVAILABLE")
     return value
+
+
+def _qr_data_url(value: object) -> str:
+    import qrcode
+    import qrcode.image.svg
+
+    content = _qr_content(value)
+    image = qrcode.make(content, image_factory=qrcode.image.svg.SvgPathFillImage, border=4, box_size=8)
+    encoded = base64.b64encode(image.to_string()).decode("ascii")
+    return "data:image/svg+xml;base64," + encoded
 
 
 def _public_status(request: web.Request, server) -> dict[str, object]:
@@ -165,14 +182,18 @@ async def _wechat_login(server, runtime: dict[str, object]) -> None:
                 params={"bot_type": "3"},
                 body={"local_token_list": []},
             )
-            qrcode = qr.get("qrcode")
-            if not isinstance(qrcode, str) or not qrcode:
+            qrcode_id = qr.get("qrcode")
+            if not isinstance(qrcode_id, str) or not qrcode_id:
                 raise RuntimeError("WECHAT_QR_UNAVAILABLE")
             state.clear()
-            state.update(state="SCAN_REQUIRED", qr_url=_qr_url(qr.get("qrcode_img_content")), qrcode=qrcode)
+            state.update(
+                state="SCAN_REQUIRED",
+                qr_data=_qr_data_url(qr.get("qrcode_img_content")),
+                qrcode=qrcode_id,
+            )
             for _ in range(150):
                 await asyncio.sleep(2)
-                params = {"qrcode": qrcode}
+                params = {"qrcode": qrcode_id}
                 verify_code = state.get("verify_code")
                 if verify_code:
                     params["verify_code"] = verify_code
@@ -283,7 +304,7 @@ def install_setup_routes(app: web.Application, server) -> None:
         _confirmed(request)
         try:
             body = await request.json()
-        except (ValueError, json.JSONDecodeError):
+        except Exception:
             return web.json_response({"error": "WECHAT_VERIFY_CODE_INVALID"}, status=400)
         code = body.get("code") if isinstance(body, dict) else None
         state = runtime.get("wechat")
@@ -299,7 +320,7 @@ def install_setup_routes(app: web.Application, server) -> None:
             return web.json_response({"error": "PERSONAL_CHAT_CONTACT_NOT_ACCEPTED"}, status=409)
         try:
             body = await request.json()
-        except (ValueError, json.JSONDecodeError):
+        except Exception:
             return web.json_response({"error": "QQ_SETUP_INVALID"}, status=400)
         if not isinstance(body, dict):
             return web.json_response({"error": "QQ_SETUP_INVALID"}, status=400)
