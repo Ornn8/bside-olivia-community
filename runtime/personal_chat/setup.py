@@ -359,11 +359,8 @@ async def _prepare_napcat(server, runtime: dict[str, object]) -> None:
 
     runtime["napcat_state"] = "DOWNLOADING"
     try:
-        installer = await asyncio.to_thread(napcat_installer.prepare_installer, _root(server))
-        runtime["napcat_state"] = "INSTALLER_READY"
-        process = await asyncio.to_thread(napcat_installer.launch_installer, installer)
-        runtime["napcat_installer_process"] = process
-        runtime["napcat_state"] = "INSTALLER_OPENED"
+        await asyncio.to_thread(napcat_installer.install_component, _root(server))
+        runtime["napcat_state"] = "READY"
     except asyncio.CancelledError:
         raise
     except Exception as exc:
@@ -395,10 +392,27 @@ def install_setup_routes(app: web.Application, server) -> None:
         "napcat_state": "IDLE",
         "napcat_task": None,
         "napcat_login_task": None,
-        "napcat_installer_process": None,
         "napcat_shell_process": None,
     }
     app[_SETUP] = runtime
+
+    async def start_managed_napcat(_application: web.Application) -> None:
+        try:
+            config = _read_config(server)
+            qq = config.get("qq")
+            if not isinstance(qq, dict) or qq.get("managed") is not True:
+                return
+            from . import napcat_installer
+
+            runtime["napcat_state"] = "STARTING"
+            process = await asyncio.to_thread(napcat_installer.ensure_shell, _root(server))
+            runtime["napcat_shell_process"] = process
+            runtime["napcat_state"] = "RUNNING"
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            runtime["napcat_state"] = "FAILED"
+            runtime["napcat_error"] = _failure_code(exc)
 
     async def status(request: web.Request) -> web.Response:
         try:
@@ -417,7 +431,10 @@ def install_setup_routes(app: web.Application, server) -> None:
             return web.json_response({"status": "SELECTED", "channels": channels})
         except Exception as exc:
             code = _failure_code(exc)
-            return web.json_response({"error": code}, status=409 if code == "PERSONAL_CHAT_INVITATION_REQUIRED" else 400)
+            return web.json_response(
+                {"error": code},
+                status=409 if code == "PERSONAL_CHAT_INVITATION_REQUIRED" else 400,
+            )
 
     async def wechat_start(request: web.Request) -> web.Response:
         try:
@@ -457,7 +474,10 @@ def install_setup_routes(app: web.Application, server) -> None:
             return web.json_response({"error": "PERSONAL_CHAT_CONTACT_NOT_ACCEPTED"}, status=409)
         task = runtime.get("napcat_task")
         if isinstance(task, asyncio.Task) and not task.done():
-            return web.json_response({"status": str(runtime.get("napcat_state") or "DOWNLOADING")}, status=202)
+            return web.json_response(
+                {"status": str(runtime.get("napcat_state") or "DOWNLOADING")},
+                status=202,
+            )
         runtime.pop("napcat_error", None)
         runtime["napcat_state"] = "DOWNLOADING"
         task = asyncio.create_task(_prepare_napcat(server, runtime))
@@ -470,10 +490,9 @@ def install_setup_routes(app: web.Application, server) -> None:
         from . import napcat_installer
 
         try:
-            process = runtime.get("napcat_shell_process")
-            if process is None or getattr(process, "poll", lambda: 0)() is not None:
-                runtime["napcat_state"] = "STARTING"
-                process = await asyncio.to_thread(napcat_installer.launch_shell, _root(server))
+            runtime["napcat_state"] = "STARTING"
+            process = await asyncio.to_thread(napcat_installer.ensure_shell, _root(server))
+            if process is not None:
                 runtime["napcat_shell_process"] = process
             login_task = runtime.get("napcat_login_task")
             if not isinstance(login_task, asyncio.Task) or login_task.done():
@@ -524,7 +543,10 @@ def install_setup_routes(app: web.Application, server) -> None:
             from original_client_setup_api import _dpapi_protect
 
             secret = _root(server) / "personal-chat" / "qq.dpapi"
-            _atomic_text(secret, _dpapi_protect(json.dumps({"token": token}, ensure_ascii=False)))
+            _atomic_text(
+                secret,
+                _dpapi_protect(json.dumps({"token": token}, ensure_ascii=False)),
+            )
             config = _read_config(server)
             config["qq"] = {
                 "url": url,
@@ -539,7 +561,10 @@ def install_setup_routes(app: web.Application, server) -> None:
         except Exception as exc:
             code = _failure_code(exc)
             runtime["qq"] = {"state": "FAILED", "error": code}
-            return web.json_response({"error": code}, status=400 if code.startswith(("QQ_", "NAPCAT_")) else 503)
+            return web.json_response(
+                {"error": code},
+                status=400 if code.startswith(("QQ_", "NAPCAT_")) else 503,
+            )
 
     endpoints = {
         STATUS_PATH: status,
@@ -597,6 +622,7 @@ def install_setup_routes(app: web.Application, server) -> None:
                 await asyncio.gather(task, return_exceptions=True)
 
     app.middlewares.append(setup_boundary)
+    app.on_startup.append(start_managed_napcat)
     app.on_cleanup.append(cleanup)
 
 
