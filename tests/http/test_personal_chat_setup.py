@@ -150,6 +150,85 @@ def test_setup_rejects_channels_that_user_has_not_accepted(tmp_path: Path, monke
     asyncio.run(scenario())
 
 
+def test_setup_allows_original_client_cors_preflight_and_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from runtime.personal_chat import setup
+
+    origin = "https://olivia.local"
+    server = _Server(tmp_path)
+    server.TRUSTED_FRONTEND_ORIGINS = frozenset({origin})
+    monkeypatch.setattr(setup, "_selected_channels", lambda _server: {"wechat"})
+    app = web.Application()
+    setup.install_setup_routes(app, server)
+
+    async def scenario() -> None:
+        async with TestClient(TestServer(app)) as client:
+            preflight = await client.options(
+                setup.STATUS_PATH,
+                headers={
+                    "Origin": origin,
+                    "Access-Control-Request-Method": "GET",
+                    "Access-Control-Request-Headers": setup.CONFIRM_HEADER,
+                },
+            )
+            assert preflight.status == 204
+            assert preflight.headers["Access-Control-Allow-Origin"] == origin
+            assert setup.CONFIRM_HEADER in preflight.headers["Access-Control-Allow-Headers"]
+
+            response = await client.get(
+                setup.STATUS_PATH,
+                headers={
+                    "Origin": origin,
+                    setup.CONFIRM_HEADER: setup.CONFIRM_VALUE,
+                },
+            )
+            assert response.status == 200
+            assert response.headers["Access-Control-Allow-Origin"] == origin
+            assert (await response.json())["selected_channels"] == ["wechat"]
+
+            denied = await client.get(
+                setup.STATUS_PATH,
+                headers={
+                    "Origin": "https://example.invalid",
+                    setup.CONFIRM_HEADER: setup.CONFIRM_VALUE,
+                },
+            )
+            assert denied.status == 403
+            assert "Access-Control-Allow-Origin" not in denied.headers
+
+    asyncio.run(scenario())
+
+
+def test_setup_middleware_precedes_existing_original_client_catch_all(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from runtime.personal_chat import setup
+
+    server = _Server(tmp_path)
+    monkeypatch.setattr(setup, "_selected_channels", lambda _server: {"wechat"})
+    app = web.Application()
+
+    async def fallback(_request: web.Request) -> web.Response:
+        return web.json_response({"fallback": True}, status=418)
+
+    app.router.add_route("*", "/{tail:.*}", fallback)
+    setup.install_setup_routes(app, server)
+
+    async def scenario() -> None:
+        async with TestClient(TestServer(app)) as client:
+            response = await client.get(
+                setup.STATUS_PATH,
+                headers={setup.CONFIRM_HEADER: setup.CONFIRM_VALUE},
+            )
+            assert response.status == 200
+            body = await response.json()
+            assert body["selected_channels"] == ["wechat"]
+            assert "fallback" not in body
+
+    asyncio.run(scenario())
+
+
 def test_personal_chat_setup_ui_stays_inside_existing_settings_surface() -> None:
     from runtime.personal_chat.setup_ui import PERSONAL_CHAT_SETUP_JAVASCRIPT
 
