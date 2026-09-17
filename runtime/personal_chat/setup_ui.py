@@ -8,9 +8,12 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
   if (!apiBase || !document.createElement) return;
 
   const STATUS = "/toy/personal-chat/setup/status";
+  const CHANNEL_CHOICE = "/toy/personal-chat/setup/channel-choice";
   const WECHAT_START = "/toy/personal-chat/setup/wechat/start";
   const WECHAT_VERIFY = "/toy/personal-chat/setup/wechat/verify";
   const QQ_CONFIGURE = "/toy/personal-chat/setup/qq/configure";
+  const NAPCAT_INSTALL = "/toy/personal-chat/setup/qq/napcat/install";
+  const NAPCAT_START = "/toy/personal-chat/setup/qq/napcat/start";
   const CONFIRM_HEADER = "X-Olivia-Companion-Action";
   const CONFIRM_VALUE = "confirmed";
   let pollTimer = null;
@@ -45,7 +48,7 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
 
   const stateLabel = (value) => ({
     IDLE: "尚未设置",
-    STARTING: "正在获取二维码…",
+    STARTING: "正在启动…",
     SCAN_REQUIRED: "等待微信扫码",
     SCANNED: "已扫码，请在手机上确认",
     VERIFY_REQUIRED: "需要输入微信验证码",
@@ -55,6 +58,12 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
     RECONNECTING: "正在重连",
     SETUP_REQUIRED: "需要设置",
     CONFIGURED_RESTART: "已保存，重启 Olivia 后生效",
+    DOWNLOADING: "正在下载 QQ 组件…",
+    INSTALLER_READY: "安装器已准备",
+    INSTALLER_OPENED: "安装窗口已打开",
+    READY: "QQ 组件已安装",
+    RUNNING: "QQ 组件正在运行",
+    UNSUPPORTED: "当前系统不支持",
     FAILED: "连接失败",
   }[value] || value || "未知状态");
 
@@ -88,7 +97,9 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
       [data-olivia-personal-chat-setup] .olivia-chat-title{font-size:16px;font-weight:600;color:var(--color-text-body,#eee)}
       [data-olivia-personal-chat-setup] .olivia-chat-copy{font-size:13px;line-height:1.7;color:var(--color-text-secondary,#aaa);margin-top:6px}
       [data-olivia-personal-chat-setup] .olivia-chat-channel{margin-top:14px;padding:14px;border:1px solid rgba(255,255,255,.10);border-radius:10px;background:rgba(255,255,255,.025)}
+      [data-olivia-personal-chat-setup] .olivia-chat-subcard{margin-top:12px;padding:12px;border:1px solid rgba(255,255,255,.08);border-radius:8px}
       [data-olivia-personal-chat-setup] .olivia-chat-row{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+      [data-olivia-personal-chat-setup] .olivia-chat-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
       [data-olivia-personal-chat-setup] .olivia-chat-name{font-size:14px;font-weight:600;color:var(--color-text-body,#eee)}
       [data-olivia-personal-chat-setup] .olivia-chat-state{font-size:12px;color:var(--color-text-secondary,#aaa)}
       [data-olivia-personal-chat-setup] .olivia-chat-action{border:1px solid rgba(255,255,255,.18);border-radius:8px;padding:7px 12px;background:rgba(255,255,255,.07);color:inherit;cursor:pointer}
@@ -99,6 +110,8 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
       [data-olivia-personal-chat-setup] .olivia-chat-qr{display:block;width:210px;height:210px;object-fit:contain;background:#fff;border-radius:8px;padding:8px;margin:12px auto 0}
       [data-olivia-personal-chat-setup] .olivia-chat-error{font-size:12px;color:#d9a2a2;margin-top:8px;white-space:pre-wrap}
       [data-olivia-personal-chat-setup] .olivia-chat-verify{display:flex;gap:8px;margin-top:10px}
+      [data-olivia-personal-chat-setup] details{margin-top:12px}
+      [data-olivia-personal-chat-setup] summary{cursor:pointer;color:var(--color-text-secondary,#aaa);font-size:12px}
       @media (max-width:650px){[data-olivia-personal-chat-setup] .olivia-chat-fields{grid-template-columns:1fr}}
     `;
     document.head?.append(style);
@@ -113,7 +126,7 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
     const root = document.createElement("section");
     root.dataset.oliviaPersonalChatSetup = "true";
     const title = node("div", "QQ / 微信聊天", "olivia-chat-title");
-    const copy = node("div", "当林离提出交换联系方式、并且你选择 QQ 或微信后，可以在这里完成绑定。微信可直接扫码；QQ 需要本机已运行 NapCat OneBot。", "olivia-chat-copy");
+    const copy = node("div", "收到林离的联系方式邀请后，可以直接在这里选择并绑定。微信直接扫码；QQ 可以由 Olivia 一键准备本地 QQ 组件，不需要手填 OneBot 参数。", "olivia-chat-copy");
     const content = document.createElement("div");
     root.append(title, copy, content);
     anchor.after(root);
@@ -125,6 +138,30 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
         parent.append(target);
       }
       target.textContent = error?.code || error?.message || String(error || "连接失败");
+    };
+
+    const chooseChannel = async (choice, parent) => {
+      try {
+        await request(CHANNEL_CHOICE, {method: "POST", body: {choice}});
+        if (choice === "wechat" || choice === "both") {
+          await request(WECHAT_START, {method: "POST", body: {}});
+        }
+        await refresh(true);
+      } catch (error) { renderError(parent, error); }
+    };
+
+    const renderChannelChoice = () => {
+      const box = node("div", null, "olivia-chat-channel");
+      box.append(node("div", "已经收到联系方式邀请", "olivia-chat-name"));
+      box.append(node("div", "不用再寄一封信确认。直接选择你想使用的聊天方式；选择微信会立即打开扫码绑定。", "olivia-chat-copy"));
+      const actions = node("div", null, "olivia-chat-actions");
+      actions.append(
+        action("微信", async () => chooseChannel("wechat", box)),
+        action("QQ", async () => chooseChannel("qq", box)),
+        action("两个都要", async () => chooseChannel("both", box)),
+      );
+      box.append(actions);
+      return box;
     };
 
     const renderWechat = (status) => {
@@ -169,6 +206,35 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
       return box;
     };
 
+    const renderAdvancedQQ = (box) => {
+      const details = document.createElement("details");
+      const summary = node("summary", "高级：连接已有 NapCat / OneBot");
+      details.append(summary);
+      const fields = node("div", null, "olivia-chat-fields");
+      const account = input("林离的 QQ 号");
+      const owner = input("你的 QQ 号");
+      const url = input("OneBot 地址，例如 ws://127.0.0.1:3001");
+      url.value = "ws://127.0.0.1:3001";
+      url.classList.add("olivia-chat-wide");
+      const token = input("OneBot Token（至少 16 位）", "password");
+      token.classList.add("olivia-chat-wide");
+      fields.append(account, owner, url, token);
+      details.append(fields);
+      const controls = node("div", null, "olivia-chat-actions");
+      controls.append(action("测试并保存", async () => {
+        try {
+          await request(QQ_CONFIGURE, {method: "POST", body: {
+            managed: false,
+            account: account.value.trim(), owner: owner.value.trim(), url: url.value.trim(), token: token.value,
+          }});
+          token.value = "";
+          await refresh(false);
+        } catch (error) { token.value = ""; renderError(box, error); }
+      }));
+      details.append(controls);
+      return details;
+    };
+
     const renderQQ = (status) => {
       const box = node("div", null, "olivia-chat-channel");
       const top = node("div", null, "olivia-chat-row");
@@ -179,30 +245,63 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
       left.append(node("div", "QQ（实验功能）", "olivia-chat-name"), node("div", stateLabel(state), "olivia-chat-state"));
       top.append(left);
       box.append(top);
-      box.append(node("div", "先在本机启动 NapCat，并开启 OneBot WebSocket。林离使用一个独立 QQ，你自己的 QQ 作为唯一 owner。Token 只会用 Windows DPAPI 加密保存在本机。", "olivia-chat-copy"));
 
-      const fields = node("div", null, "olivia-chat-fields");
-      const account = input("林离的 QQ 号");
-      const owner = input("你的 QQ 号");
-      const url = input("OneBot 地址，例如 ws://127.0.0.1:3001");
-      url.value = "ws://127.0.0.1:3001";
-      url.classList.add("olivia-chat-wide");
-      const token = input("OneBot Token（至少 16 位）", "password");
-      token.classList.add("olivia-chat-wide");
-      fields.append(account, owner, url, token);
-      box.append(fields);
-      const controls = node("div", null, "olivia-chat-row");
-      controls.style.marginTop = "10px";
-      controls.append(action("测试并保存", async () => {
-        try {
-          await request(QQ_CONFIGURE, {method: "POST", body: {
-            account: account.value.trim(), owner: owner.value.trim(), url: url.value.trim(), token: token.value,
-          }});
-          token.value = "";
-          await refresh(false);
-        } catch (error) { token.value = ""; renderError(box, error); }
-      }));
-      box.append(controls);
+      const napcat = status.napcat || {};
+      const component = node("div", null, "olivia-chat-subcard");
+      const componentTop = node("div", null, "olivia-chat-row");
+      const componentLeft = document.createElement("div");
+      componentLeft.append(
+        node("div", "QQ 本地组件", "olivia-chat-name"),
+        node("div", `${stateLabel(napcat.state)} · ${napcat.version || ""}`, "olivia-chat-state"),
+      );
+      componentTop.append(componentLeft);
+      if (!napcat.installed && !["DOWNLOADING", "INSTALLER_OPENED"].includes(napcat.state)) {
+        componentTop.append(action("一键安装", async () => {
+          try {
+            await request(NAPCAT_INSTALL, {method: "POST", body: {}});
+            await refresh(true);
+          } catch (error) { renderError(component, error); }
+        }));
+      } else if (napcat.installed) {
+        componentTop.append(action(napcat.state === "RUNNING" ? "重新打开 QQ 登录" : "启动并登录 QQ", async () => {
+          try {
+            await request(NAPCAT_START, {method: "POST", body: {}});
+            await refresh(true);
+          } catch (error) { renderError(component, error); }
+        }));
+      }
+      component.append(componentTop);
+      if (napcat.state === "DOWNLOADING") {
+        component.append(node("div", "正在获取并校验 NapCat 发布的一键安装器。", "olivia-chat-copy"));
+      } else if (napcat.state === "INSTALLER_OPENED") {
+        component.append(node("div", "NapCat 安装窗口已经打开。完成安装后无需返回配置文件，这里会自动检测。", "olivia-chat-copy"));
+      } else if (napcat.installed) {
+        component.append(node("div", "Olivia 会自动准备仅监听 127.0.0.1 的 OneBot 连接和随机 Token。点击“启动并登录 QQ”后会打开本机登录页。", "olivia-chat-copy"));
+      } else {
+        component.append(node("div", "点击一键安装即可。Olivia 不会把 NapCat 打进补丁包，而是从 NapCat 发布页下载固定版本并校验 SHA-256。", "olivia-chat-copy"));
+      }
+      if (napcat.error) renderError(component, {code: napcat.error});
+      box.append(component);
+
+      if (napcat.installed) {
+        const managed = node("div", null, "olivia-chat-subcard");
+        managed.append(node("div", "登录完成后连接", "olivia-chat-name"));
+        managed.append(node("div", "只需要填写你自己的 QQ 号。机器人 QQ 会从已经登录的 NapCat 自动读取。", "olivia-chat-copy"));
+        const owner = input("你的 QQ 号");
+        owner.style.marginTop = "10px";
+        managed.append(owner);
+        const controls = node("div", null, "olivia-chat-actions");
+        controls.append(action("连接并保存", async () => {
+          try {
+            await request(QQ_CONFIGURE, {method: "POST", body: {managed: true, owner: owner.value.trim()}});
+            await refresh(false);
+          } catch (error) { renderError(managed, error); }
+        }));
+        managed.append(controls);
+        box.append(managed);
+      }
+
+      box.append(renderAdvancedQQ(box));
       if (status.qq?.error) renderError(box, {code: status.qq.error});
       return box;
     };
@@ -212,9 +311,9 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
         clearTimeout(pollTimer);
         pollTimer = null;
       }
-      if (["STARTING", "SCAN_REQUIRED", "SCANNED", "VERIFY_REQUIRED"].includes(status.wechat?.state)) {
-        pollTimer = setTimeout(() => refresh(true), 2000);
-      }
+      const wechatBusy = ["STARTING", "SCAN_REQUIRED", "SCANNED", "VERIFY_REQUIRED"].includes(status.wechat?.state);
+      const napcatBusy = ["DOWNLOADING", "INSTALLER_READY", "INSTALLER_OPENED", "STARTING", "RUNNING"].includes(status.napcat?.state);
+      if (wechatBusy || napcatBusy) pollTimer = setTimeout(() => refresh(true), 2000);
     };
 
     async function refresh(silent = false) {
@@ -222,8 +321,13 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
         const status = await request(STATUS);
         const selected = Array.isArray(status.selected_channels) ? status.selected_channels : [];
         const fragment = document.createDocumentFragment();
-        if (!selected.length) {
-          fragment.append(node("div", "还没有选择聊天渠道。等林离主动提出交换联系方式、你回复 QQ 或微信后，这里会自动出现绑定入口。", "olivia-chat-copy"));
+        if (!selected.length && status.contact_state === "invited") {
+          fragment.append(renderChannelChoice());
+        } else if (!selected.length) {
+          const message = status.contact_state === "eligible"
+            ? "关系条件已经满足，等待林离自然提出交换联系方式。"
+            : "还没有可绑定的聊天渠道。收到林离的联系方式邀请后，这里会自动打开选择入口。";
+          fragment.append(node("div", message, "olivia-chat-copy"));
         } else {
           if (selected.includes("wechat")) fragment.append(renderWechat(status));
           if (selected.includes("qq")) fragment.append(renderQQ(status));
@@ -231,9 +335,7 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
         content.replaceChildren(fragment);
         schedule(status);
       } catch (error) {
-        if (!silent) {
-          content.replaceChildren(node("div", error?.code || error?.message || "读取聊天设置失败", "olivia-chat-error"));
-        }
+        if (!silent) content.replaceChildren(node("div", error?.code || error?.message || "读取聊天设置失败", "olivia-chat-error"));
       }
     }
 
