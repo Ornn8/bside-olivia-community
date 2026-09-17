@@ -319,7 +319,7 @@ def assemble_reply_messages(adapter, snapshot, context, content, *, max_input_ch
     build_memory_prompt = build_memory_prompt if callable(build_memory_prompt) else adapter.memory_prompt_builder.build
     memory = build_memory_prompt(query_plan.query, max_chars=max(1, available))
     # One query, optionally grounded in delivered context. Capacity retries
-    # only repack the same evidence; the history tail is a bounded local read.
+    # only repack the same evidence; the archive tail is a bounded local read.
     from runtime.memory.memory_prompt import MemoryPromptBuilder
     from runtime.memory.memory_port import NullMemoryPort
     recall = getattr(memory, 'recall_result', None)
