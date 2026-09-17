@@ -14,7 +14,7 @@ import re
 
 from persona_assembly import UntrustedFragment
 from .companion_memory_context import CompanionMemoryPromptBuilder, _merge_recall
-from .recall import RecallResult
+from .recall import RecallResult, query_topics
 from .recall_sources import archive_source_aliases, read_archive_sources, _original_time as original_time
 
 _PREVIOUS = re.compile(r'上一封|上封信|最近那封|\blast\s+letter\b', re.I)
@@ -92,10 +92,10 @@ def plan_history_query(query: str, recent=(), *, excluded=()) -> HistoryQuery:
         # Its source remains a candidate; no answer is guessed or synthesized.
         if len(text) <= 1200 and _has_specific_words(text):
             return HistoryQuery(query + '\n' + text, 'contextual', source)
-        # Empty retrieval query is intentional: the final user message remains
-        # untouched, but a pointer without a concrete anchor cannot choose a
-        # random memory/archive row merely because some vague words overlap.
-        return HistoryQuery('', 'ambiguous')
+        # Keep a non-empty query so an independently grounded source_id (for
+        # example from a world event) can still be traced. add_history_tail()
+        # removes generic candidates before deeper exact-source tracing.
+        return HistoryQuery(query, 'ambiguous')
     if _PREVIOUS.search(query) or _REUNION.search(query):
         return HistoryQuery(query, 'history_tail')
     # A deictic phrase can still carry its own concrete anchor (for example,
@@ -103,7 +103,7 @@ def plan_history_query(query: str, recent=(), *, excluded=()) -> HistoryQuery:
     # remain ambiguous and are not allowed to pick an arbitrary archive row.
     if _has_specific_words(query):
         return HistoryQuery(query)
-    return HistoryQuery('', 'ambiguous')
+    return HistoryQuery(query, 'ambiguous')
 
 
 def companion_view(builder) -> CompanionMemoryPromptBuilder | None:
@@ -127,6 +127,13 @@ def _published(metadata):
 
 def add_history_tail(builder, recall: RecallResult, plan: HistoryQuery, *, now: datetime, excluded=()):
     """Use the existing user archive and deletion guard, not a separate store."""
+    if plan.mode == 'ambiguous':
+        # A vague pointer may have produced generic semantic/lexical neighbours.
+        # They are not evidence of what the user meant. Preserve source health
+        # and a real RecallResult so deepen_recall() can still follow explicit
+        # provenance supplied independently by the current world/context.
+        return replace(recall, records=(), topics=query_topics(plan.query),
+                       stop_reason='ambiguous_reference')
     if plan.mode != 'history_tail':
         return recall
     companion = companion_view(builder)
