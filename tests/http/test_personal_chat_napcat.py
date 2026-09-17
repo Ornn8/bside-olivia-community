@@ -60,7 +60,9 @@ def test_managed_onebot_config_is_loopback_only_and_uses_dpapi_copy(
     found, token = module.prepare_onebot(tmp_path)
     assert found == shell
     assert token == "synthetic-managed-token-1234567890"
-    config = json.loads((shell / "config" / "onebot11.json").read_text(encoding="utf-8"))
+    config_path = tmp_path / "personal-chat" / "napcat" / "workdir" / "config" / "onebot11.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    assert not (shell / "config" / "onebot11.json").exists()
     servers = config["network"]["websocketServers"]
     assert len(servers) == 1
     assert servers[0]["enable"] is True
@@ -70,14 +72,39 @@ def test_managed_onebot_config_is_loopback_only_and_uses_dpapi_copy(
     assert token_file.read_text(encoding="utf-8") == "ciphertext"
 
 
-def test_napcat_login_page_opens_only_loopback_webui(
+def test_napcat_launch_passes_isolated_workdir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from runtime.personal_chat import napcat_installer as module
 
     shell = _shell(tmp_path)
-    config = shell / "config"
-    config.mkdir(exist_ok=True)
+    monkeypatch.setattr(module, "prepare_onebot", lambda _root: (shell, "synthetic-token"))
+    seen: dict[str, object] = {}
+
+    class _Process:
+        pass
+
+    def fake_popen(args, **kwargs):
+        seen["args"] = args
+        seen.update(kwargs)
+        return _Process()
+
+    monkeypatch.setattr(module.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(module.os, "name", "nt", raising=False)
+    module.launch_shell(tmp_path)
+    assert seen["args"] == ["cmd.exe", "/c", str(shell / "napcat.bat")]
+    assert seen["cwd"] == str(shell)
+    assert seen["env"]["NAPCAT_WORKDIR"] == str(tmp_path / "personal-chat" / "napcat" / "workdir")
+
+
+def test_napcat_login_page_opens_only_loopback_webui(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from runtime.personal_chat import napcat_installer as module
+
+    _shell(tmp_path)
+    config = tmp_path / "personal-chat" / "napcat" / "workdir" / "config"
+    config.mkdir(parents=True)
     (config / "webui.json").write_text(
         json.dumps({"port": 6099, "token": "a token/with spaces"}),
         encoding="utf-8",
