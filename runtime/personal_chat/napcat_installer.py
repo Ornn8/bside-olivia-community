@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import secrets
 import shutil
+import socket
 import subprocess
 import tempfile
 import urllib.request
@@ -218,14 +219,10 @@ def install_component(data_root: Path) -> Path:
 
 
 def prepare_installer(data_root: Path) -> Path:
-    """Compatibility entry used by the setup task; installs the pinned component."""
-
     return install_component(data_root)
 
 
 def launch_installer(_component: Path) -> None:
-    """The pinned Windows package is already self-contained after extraction."""
-
     return None
 
 
@@ -310,6 +307,14 @@ def prepare_onebot(data_root: Path) -> tuple[Path, str]:
     return shell, token
 
 
+def _onebot_port_open() -> bool:
+    try:
+        with socket.create_connection(("127.0.0.1", 3001), timeout=0.25):
+            return True
+    except OSError:
+        return False
+
+
 def launch_shell(data_root: Path) -> subprocess.Popen:
     if os.name != "nt":
         raise NapCatSetupError("NAPCAT_WINDOWS_REQUIRED")
@@ -317,7 +322,7 @@ def launch_shell(data_root: Path) -> subprocess.Popen:
     batch = shell / "napcat.bat"
     if not batch.is_file():
         raise NapCatSetupError("NAPCAT_LAUNCHER_NOT_FOUND")
-    flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     environment = dict(os.environ)
     environment["NAPCAT_WORKDIR"] = str(_workdir(data_root))
     try:
@@ -329,6 +334,13 @@ def launch_shell(data_root: Path) -> subprocess.Popen:
         )
     except OSError as exc:
         raise NapCatSetupError("NAPCAT_START_FAILED") from exc
+
+
+def ensure_shell(data_root: Path) -> subprocess.Popen | None:
+    prepare_onebot(data_root)
+    if _onebot_port_open():
+        return None
+    return launch_shell(data_root)
 
 
 def managed_connection(data_root: Path) -> tuple[str, str]:
@@ -361,6 +373,7 @@ __all__ = [
     "NAPCAT_VERSION",
     "NAPCAT_WS_URL",
     "NapCatSetupError",
+    "ensure_shell",
     "find_shell",
     "install_component",
     "launch_shell",
