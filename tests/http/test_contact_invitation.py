@@ -27,10 +27,10 @@ def qualify(item, snapshot=HIGH, applied=True):
         'contact_qualification': snapshot is HIGH})])
 
 
-def test_first_applied_high_exchange_and_current_threshold_are_enough():
+def test_current_three_high_threshold_is_enough_without_hidden_exchange_marker():
     rows = [row('a', 1000)]
     qualify(rows[0], applied=False)
-    assert candidate(rows, HIGH, 4000) is None
+    assert candidate(rows, HIGH, 4000)['kind'] == 'contact_invitation'
     qualify(rows[0])
     assert rows[0]['initiative_tier'] == 'close'
     assert rows[0]['initiative_caution'] == 'normal'
@@ -39,7 +39,7 @@ def test_first_applied_high_exchange_and_current_threshold_are_enough():
     rows.append(row('b', 2000))
     qualify(rows[-1], LOW)
     assert rows[-1]['initiative_tier'] == 'trusted'
-    assert candidate(rows, HIGH, 4000) is None
+    assert candidate(rows, HIGH, 4000)['kind'] == 'contact_invitation'
 
 
 def test_delivery_choice_restart_and_decline_are_separate():
