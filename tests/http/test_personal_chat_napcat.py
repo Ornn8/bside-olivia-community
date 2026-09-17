@@ -60,8 +60,9 @@ def test_managed_onebot_config_is_loopback_only_and_uses_dpapi_copy(
     found, token = module.prepare_onebot(tmp_path)
     assert found == shell
     assert token == "synthetic-managed-token-1234567890"
-    config_path = tmp_path / "personal-chat" / "napcat" / "workdir" / "config" / "onebot11.json"
-    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config_dir = tmp_path / "personal-chat" / "napcat" / "workdir" / "config"
+    config = json.loads((config_dir / "onebot11.json").read_text(encoding="utf-8"))
+    webui = json.loads((config_dir / "webui.json").read_text(encoding="utf-8"))
     assert not (shell / "config" / "onebot11.json").exists()
     servers = config["network"]["websocketServers"]
     assert len(servers) == 1
@@ -69,6 +70,9 @@ def test_managed_onebot_config_is_loopback_only_and_uses_dpapi_copy(
     assert servers[0]["host"] == "127.0.0.1"
     assert servers[0]["port"] == 3001
     assert servers[0]["token"] == token
+    assert webui["host"] == "127.0.0.1"
+    assert webui["port"] == 6099
+    assert isinstance(webui["token"], str) and len(webui["token"]) >= 12
     assert token_file.read_text(encoding="utf-8") == "ciphertext"
 
 
@@ -106,7 +110,7 @@ def test_napcat_login_page_opens_only_loopback_webui(
     config = tmp_path / "personal-chat" / "napcat" / "workdir" / "config"
     config.mkdir(parents=True)
     (config / "webui.json").write_text(
-        json.dumps({"port": 6099, "token": "a token/with spaces"}),
+        json.dumps({"host": "127.0.0.1", "port": 6099, "token": "a token/with spaces"}),
         encoding="utf-8",
     )
     seen: list[str] = []
