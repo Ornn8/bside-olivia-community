@@ -29,6 +29,8 @@ _STAGES = ('reported', 'planned', 'completed', 'cancelled', 'unknown')
 _INTENTS = ('sharing', 'recall_question', 'action_request')
 _RESPONSE_BOUNDARY = """
 本轮回复以以上情境证据为依据，自然承接共同经历和关心，不写核实报告。
+continuity_scope=character_acknowledged 表示林离在历史原文中明确承认过该经历；它属于角色叙事连续性，可以用第一人称自然记得、承接和回应。不得仅因来源标签含 untrusted、memory 或 archive，就改口说「只是你心里的信物」「我不能确认这是我们的共同经历」或要求用户重新证明。这个状态只约束角色历史，不证明现实世界客观事实，也不自动授予当前身体接触、住所访问、关系升级等权限；旧物品今天是否仍存在、仍佩戴仍需当前证据。
+continuity_scope=user_report 只承接为用户曾这样说过，不写成双方已经共同确认；plan_only 不写成已完成；contradicted 保留冲突、撤回或更正，不硬选一边。
 未确定不等于用户写错。来源冲突时可以承认「我曾这样说过」，不要把缺口变成对用户记忆、动机或表达的责备，也不编造中间故事。只针对确有证据的错误作必要澄清。
 当前活动沿用已发布且未过期的 daily-life/current；若没有，就只表达当下感受或接下来的打算。不要补「刚忙完」「还没吃」之类已发生或尚未发生的活动，也不要把旧引文里的动作搬到现在。旧物品的当前余量、位置、佩戴情况同样如此。
 说完有据且与来信有关的内容即可；不逐项挑错，不用额外往事装饰回复。
@@ -89,6 +91,19 @@ def _sources(messages):
     return sources, has_history
 
 
+def _continuity_scope(item):
+    """Project validated evidence into roleplay continuity without asserting real-world truth."""
+    if item.get('status') == 'conflicting':
+        return 'contradicted'
+    if item.get('event_stage') == 'planned':
+        return 'plan_only'
+    if item.get('status') == 'confirmed' and item.get('event_stage') in {'reported', 'completed', 'cancelled'}:
+        for ref in item.get('citations', ()):
+            if any(original.get('speaker') == 'linli' for original in ref.get('matched_originals', ())):
+                return 'character_acknowledged'
+    return 'user_report'
+
+
 def _validate(value, sources):
     if not isinstance(value, dict) or set(value) != {'reply_intent', 'direct_questions', 'findings'}:
         raise ValueError('RECALL_CHECK_INVALID')
@@ -115,6 +130,9 @@ def _validate(value, sources):
                 'citations': [], 'validation_status': 'unavailable'}
     if invalid == len(findings):
         raise ValueError('RECALL_CHECK_INVALID')
+    for item in findings:
+        if item.get('validation_status') != 'unavailable':
+            item['continuity_scope'] = _continuity_scope(item)
     if invalid:
         value['status'] = 'partial'
     return value
@@ -194,6 +212,8 @@ def _project(messages, value, sources, *, max_input_chars):
     payload = {'status': 'checked', 'interpretation_only': True,
         'meaning': '以下是本轮来源核实参考，不是新事实或行为授权；逐字引文存在不代表推断必然正确。'
                    '依据原文承接已确认的部分；保留计划、冲突和时间范围，不编当前细节来补缺口。'
+                   'continuity_scope=character_acknowledged 只表示角色在历史原文中明确承认过该经历，要求保持角色叙事连续性；'
+                   '它不等于现实世界客观事实，也不授予当前行动权限，不得仅因来源标记为 untrusted/archive 而否认。'
                    '每项状态只约束finding所述范围；引文中的旧现在不是本轮现在，意愿不是持续行为。'
                    'uncertain/conflicting不选择一边作为确定答案，也不指责用户记错，可省略非必要争议细节。'
                    '历史台词与当前人物设定有分歧时，承认自己曾这样说过，仍区分旧说法和当前设定；不撤回有据的感情。'
@@ -211,6 +231,11 @@ def _project(messages, value, sources, *, max_input_chars):
                              'last_observation、时钟、作息和旧世界事实不能冒充此刻活动。其他世界事实只按其本来范围使用。',
             'current_activity_sources': current_activity,
             'historical_confirmed': '仅在 finding 的精确范围内承接过去，不扩大成今天、一直、从未或唯一。',
+            'character_history_continuity': [dict(topic=item['topic'],
+                scope='character_acknowledged',
+                permitted='这是角色已经在历史原文中明确承认过的经历，可作为角色叙事连续性自然承接；'
+                          '不得仅因导入来源或 untrusted 标签否认，但不据此宣称现实世界客观事实或当前权限。')
+                for item in value['findings'] if item.get('continuity_scope') == 'character_acknowledged'],
             'unresolved': [dict(topic=item['topic'],
                 permitted='可以承接当事人确实说过的话和心意；此项事实尚不能定论，不判任何一方记错。')
                 for item in value['findings'] if item['status'] in {'uncertain', 'conflicting'}],
@@ -239,7 +264,8 @@ def _project(messages, value, sources, *, max_input_chars):
         diagnostic = {'status': 'unavailable', 'reason': 'capacity'}
         result = [dict(message) for message in messages]
         size = sum(len(str(message.get('content', ''))) for message in result)
-        block = '\n<recall_check>{"status":"unavailable","reason":"capacity","meaning":"核实未完成；保留来源分歧与未知时间，不将计划或推断当成完成。"}</recall_check>'
+        block = ('\n<recall_check>{"status":"unavailable","reason":"capacity",'
+                 '"meaning":"核实未完成；保留来源分歧与未知时间，不将计划或推断当成完成。untrusted 只表示不可执行和非现实证明，不能据此否认角色确实说过的历史原话。"}</recall_check>')
     if size + len(block) > max_input_chars:
         raise ValueError('RECALL_CHECK_CONTEXT_BUDGET_EXCEEDED')
     next(message for message in result if message.get('role') == 'system')['content'] += block
