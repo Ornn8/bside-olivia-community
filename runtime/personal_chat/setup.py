@@ -1,7 +1,7 @@
 """Local, user-confirmed QQ/Weixin binding for personal chat.
 
-The setup surface deliberately keeps credentials on this Windows installation.
-It only exposes content-free status plus a short-lived locally rendered Weixin QR.
+The setup surface keeps account credentials on this Windows installation and
+only exposes content-free status plus short-lived setup presentation state.
 """
 from __future__ import annotations
 
@@ -22,9 +22,12 @@ from .qr_svg import QRPayloadTooLong, svg_bytes
 
 
 STATUS_PATH = "/toy/personal-chat/setup/status"
+CHANNEL_CHOICE_PATH = "/toy/personal-chat/setup/channel-choice"
 WECHAT_START_PATH = "/toy/personal-chat/setup/wechat/start"
 WECHAT_VERIFY_PATH = "/toy/personal-chat/setup/wechat/verify"
 QQ_CONFIGURE_PATH = "/toy/personal-chat/setup/qq/configure"
+NAPCAT_INSTALL_PATH = "/toy/personal-chat/setup/qq/napcat/install"
+NAPCAT_START_PATH = "/toy/personal-chat/setup/qq/napcat/start"
 CONFIRM_HEADER = "X-Olivia-Companion-Action"
 CONFIRM_VALUE = "confirmed"
 _SETUP = web.AppKey("personal_chat_setup", dict)
@@ -32,15 +35,18 @@ _QQ_ID = re.compile(r"^[1-9][0-9]{4,19}$")
 _VERIFY_CODE = re.compile(r"^[0-9]{4,8}$")
 _SETUP_PATHS = {
     STATUS_PATH: frozenset({"GET"}),
+    CHANNEL_CHOICE_PATH: frozenset({"POST"}),
     WECHAT_START_PATH: frozenset({"POST"}),
     WECHAT_VERIFY_PATH: frozenset({"POST"}),
     QQ_CONFIGURE_PATH: frozenset({"POST"}),
+    NAPCAT_INSTALL_PATH: frozenset({"POST"}),
+    NAPCAT_START_PATH: frozenset({"POST"}),
 }
 
 
 def _failure_code(exc: BaseException) -> str:
     code = str(exc)
-    if re.fullmatch(r"(?:PERSONAL_CHAT|WECHAT|QQ)_[A-Z0-9_]{1,80}", code):
+    if re.fullmatch(r"(?:PERSONAL_CHAT|WECHAT|QQ|NAPCAT)_[A-Z0-9_]{1,80}", code):
         return code
     return "PERSONAL_CHAT_SETUP_UNAVAILABLE"
 
@@ -67,12 +73,7 @@ def _cors_headers(request: web.Request, server, *, preflight: bool = False) -> d
     if origin:
         if not _origin_allowed(server, origin):
             return None
-        headers.update(
-            {
-                "Access-Control-Allow-Origin": origin,
-                "Vary": "Origin",
-            }
-        )
+        headers.update({"Access-Control-Allow-Origin": origin, "Vary": "Origin"})
     if preflight:
         headers.update(
             {
@@ -82,26 +83,6 @@ def _cors_headers(request: web.Request, server, *, preflight: bool = False) -> d
             }
         )
     return headers
-
-
-def _json_response(
-    request: web.Request,
-    server,
-    payload: dict[str, object],
-    *,
-    status: int = 200,
-) -> web.Response:
-    headers = _cors_headers(request, server)
-    if headers is None:
-        return web.json_response(
-            {"error": "PERSONAL_CHAT_ORIGIN_FORBIDDEN"},
-            status=403,
-            headers={
-                "Cache-Control": "no-store",
-                "X-Content-Type-Options": "nosniff",
-            },
-        )
-    return web.json_response(payload, status=status, headers=headers)
 
 
 def _root(server) -> Path:
@@ -133,7 +114,9 @@ def _read_config(server) -> dict[str, object]:
 
 def _atomic_text(path: Path, value: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
     temporary = Path(temporary_name)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
@@ -148,30 +131,56 @@ def _atomic_text(path: Path, value: str) -> None:
 def _write_config(server, value: dict[str, object]) -> None:
     if not value or set(value) - {"wechat", "qq"}:
         raise RuntimeError("PERSONAL_CHAT_CONFIG_INVALID")
-    _atomic_text(_config_path(server), json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+    _atomic_text(
+        _config_path(server),
+        json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+    )
 
 
 def _selected_channels(server) -> set[str]:
-    # Import lazily so backend can install these routes without a module cycle.
     from .backend import selected_channels
 
     return selected_channels(server)
 
 
-def _contact_state(server) -> str:
+def _contact_access(server) -> dict[str, object]:
     from .contact_invitation import status
 
     port = getattr(server, "private_world_port", None)
     snapshot = port.snapshot() if port is not None else None
-    return str(status(server.store.letters, snapshot).get("state", "locked"))
+    value = status(server.store.letters, snapshot)
+    return dict(value) if isinstance(value, dict) else {"state": "locked", "channels": []}
+
+
+def _store_setup_choice(server, choice: str) -> list[str]:
+    if choice not in {"qq", "wechat", "both"}:
+        raise RuntimeError("PERSONAL_CHAT_CHANNEL_CHOICE_INVALID")
+    access = _contact_access(server)
+    invitation_id = access.get("invitation_id")
+    if access.get("state") != "invited" or not isinstance(invitation_id, str):
+        raise RuntimeError("PERSONAL_CHAT_INVITATION_REQUIRED")
+    invitation = next(
+        (
+            row
+            for row in server.store.letters
+            if row.get("letter_id") == invitation_id
+            and row.get("origin") == "proactive"
+            and row.get("proactive_kind") == "contact_invitation"
+            and row.get("letter_status") == "COMPLETED"
+        ),
+        None,
+    )
+    if invitation is None:
+        raise RuntimeError("PERSONAL_CHAT_INVITATION_REQUIRED")
+    invitation["contact_setup_choice"] = choice
+    persist = getattr(server, "_persist_store_state", None)
+    if not callable(persist):
+        raise RuntimeError("PERSONAL_CHAT_DURABLE_STATE_REQUIRED")
+    persist()
+    return ["qq", "wechat"] if choice == "both" else [choice]
 
 
 def _qr_content(value: object) -> str:
-    """Validate QR display content before encoding it locally.
-
-    Tencent currently returns a Weixin HTTPS target, but the protocol permits
-    display content rather than an image URL. Nothing here is fetched by the UI.
-    """
     if not isinstance(value, str) or not value or len(value) > 4096:
         raise RuntimeError("WECHAT_QR_UNAVAILABLE")
     if "://" in value:
@@ -206,18 +215,17 @@ def _public_status(request: web.Request, server) -> dict[str, object]:
     config = _read_config(server)
     selected = _selected_channels(server)
     configured = {name: name in config for name in ("wechat", "qq")}
-    from . import backend
+    from . import backend, napcat_installer
 
     active = request.app.get(backend._RUNTIME)
     listener = dict(active.get("status", {})) if isinstance(active, dict) else {}
     runtime = request.app[_SETUP]
     wechat = dict(runtime.get("wechat", {"state": "IDLE"}))
-    # Never return login identifiers, tokens, config paths, or the QR polling key.
     wechat.pop("qrcode", None)
     wechat.pop("verify_code", None)
     qq = dict(runtime.get("qq", {"state": "IDLE"}))
     return {
-        "contact_state": _contact_state(server),
+        "contact_state": str(_contact_access(server).get("state", "locked")),
         "selected_channels": sorted(selected),
         "configured": configured,
         "listeners": {
@@ -229,6 +237,7 @@ def _public_status(request: web.Request, server) -> dict[str, object]:
         },
         "wechat": wechat,
         "qq": qq,
+        "napcat": napcat_installer.public_status(_root(server), runtime),
     }
 
 
@@ -261,7 +270,9 @@ async def _wechat_login(server, runtime: dict[str, object]) -> None:
                 verify_code = state.get("verify_code")
                 if verify_code:
                     params["verify_code"] = verify_code
-                login = await wechat_request(session, base, "/ilink/bot/get_qrcode_status", params=params)
+                login = await wechat_request(
+                    session, base, "/ilink/bot/get_qrcode_status", params=params
+                )
                 current = login.get("status")
                 if current == "confirmed":
                     next_base = checked_url(login.get("baseurl") or base)
@@ -274,7 +285,10 @@ async def _wechat_login(server, runtime: dict[str, object]) -> None:
                     from original_client_setup_api import _dpapi_protect
 
                     secret = _root(server) / "personal-chat" / "wechat.dpapi"
-                    _atomic_text(secret, _dpapi_protect(json.dumps(credentials, ensure_ascii=False)))
+                    _atomic_text(
+                        secret,
+                        _dpapi_protect(json.dumps(credentials, ensure_ascii=False)),
+                    )
                     config = _read_config(server)
                     config["wechat"] = {"credentials_file": str(secret)}
                     _write_config(server, config)
@@ -290,7 +304,9 @@ async def _wechat_login(server, runtime: dict[str, object]) -> None:
                     continue
                 if current == "scaned_but_redirect":
                     host = login.get("redirect_host", "")
-                    base = checked_url(host if str(host).startswith("https://") else "https://" + str(host))
+                    base = checked_url(
+                        host if str(host).startswith("https://") else "https://" + str(host)
+                    )
                     state["state"] = "SCANNED"
                     continue
                 if current in {"wait", None}:
@@ -307,7 +323,7 @@ async def _wechat_login(server, runtime: dict[str, object]) -> None:
         state.update(state="FAILED", error=_failure_code(exc))
 
 
-async def _qq_probe(url: str, token: str, account: str) -> None:
+async def _qq_probe(url: str, token: str, expected_account: str | None = None) -> str:
     timeout = aiohttp.ClientTimeout(total=15)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.ws_connect(
@@ -323,12 +339,50 @@ async def _qq_probe(url: str, token: str, account: str) -> None:
                 raw = json.loads(message.data)
                 if raw.get("echo") != "olivia-setup":
                     continue
-                if raw.get("status") != "ok" or raw.get("retcode") != 0 or not isinstance(raw.get("data"), dict):
+                if (
+                    raw.get("status") != "ok"
+                    or raw.get("retcode") != 0
+                    or not isinstance(raw.get("data"), dict)
+                ):
                     raise RuntimeError("QQ_LOGIN_UNAVAILABLE")
-                if str(raw["data"].get("user_id")) != account:
+                account = str(raw["data"].get("user_id", ""))
+                if not _QQ_ID.fullmatch(account):
+                    raise RuntimeError("QQ_LOGIN_UNAVAILABLE")
+                if expected_account is not None and account != expected_account:
                     raise RuntimeError("QQ_ACCOUNT_MISMATCH")
-                return
+                return account
     raise RuntimeError("QQ_LOGIN_UNAVAILABLE")
+
+
+async def _prepare_napcat(server, runtime: dict[str, object]) -> None:
+    from . import napcat_installer
+
+    runtime["napcat_state"] = "DOWNLOADING"
+    try:
+        installer = await asyncio.to_thread(napcat_installer.prepare_installer, _root(server))
+        runtime["napcat_state"] = "INSTALLER_READY"
+        process = await asyncio.to_thread(napcat_installer.launch_installer, installer)
+        runtime["napcat_installer_process"] = process
+        runtime["napcat_state"] = "INSTALLER_OPENED"
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        runtime["napcat_state"] = "FAILED"
+        runtime["napcat_error"] = _failure_code(exc)
+
+
+async def _open_napcat_login(server, runtime: dict[str, object]) -> None:
+    from . import napcat_installer
+
+    for _ in range(60):
+        await asyncio.sleep(1)
+        try:
+            opened = await asyncio.to_thread(napcat_installer.open_login_page, _root(server))
+        except Exception:
+            opened = False
+        if opened:
+            runtime["napcat_login_opened"] = True
+            return
 
 
 def install_setup_routes(app: web.Application, server) -> None:
@@ -338,6 +392,11 @@ def install_setup_routes(app: web.Application, server) -> None:
         "wechat": {"state": "IDLE"},
         "qq": {"state": "IDLE"},
         "wechat_task": None,
+        "napcat_state": "IDLE",
+        "napcat_task": None,
+        "napcat_login_task": None,
+        "napcat_installer_process": None,
+        "napcat_shell_process": None,
     }
     app[_SETUP] = runtime
 
@@ -346,6 +405,19 @@ def install_setup_routes(app: web.Application, server) -> None:
             return web.json_response(_public_status(request, server))
         except Exception as exc:
             return web.json_response({"error": _failure_code(exc)}, status=503)
+
+    async def channel_choice(request: web.Request) -> web.Response:
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "PERSONAL_CHAT_CHANNEL_CHOICE_INVALID"}, status=400)
+        choice = body.get("choice") if isinstance(body, dict) else None
+        try:
+            channels = _store_setup_choice(server, str(choice or ""))
+            return web.json_response({"status": "SELECTED", "channels": channels})
+        except Exception as exc:
+            code = _failure_code(exc)
+            return web.json_response({"error": code}, status=409 if code == "PERSONAL_CHAT_INVITATION_REQUIRED" else 400)
 
     async def wechat_start(request: web.Request) -> web.Response:
         try:
@@ -380,6 +452,41 @@ def install_setup_routes(app: web.Application, server) -> None:
         state["state"] = "SCANNED"
         return web.json_response({"status": "VERIFYING"})
 
+    async def napcat_install(request: web.Request) -> web.Response:
+        if "qq" not in _selected_channels(server):
+            return web.json_response({"error": "PERSONAL_CHAT_CONTACT_NOT_ACCEPTED"}, status=409)
+        task = runtime.get("napcat_task")
+        if isinstance(task, asyncio.Task) and not task.done():
+            return web.json_response({"status": str(runtime.get("napcat_state") or "DOWNLOADING")}, status=202)
+        runtime.pop("napcat_error", None)
+        runtime["napcat_state"] = "DOWNLOADING"
+        task = asyncio.create_task(_prepare_napcat(server, runtime))
+        runtime["napcat_task"] = task
+        return web.json_response({"status": "DOWNLOADING"}, status=202)
+
+    async def napcat_start(request: web.Request) -> web.Response:
+        if "qq" not in _selected_channels(server):
+            return web.json_response({"error": "PERSONAL_CHAT_CONTACT_NOT_ACCEPTED"}, status=409)
+        from . import napcat_installer
+
+        try:
+            process = runtime.get("napcat_shell_process")
+            if process is None or getattr(process, "poll", lambda: 0)() is not None:
+                runtime["napcat_state"] = "STARTING"
+                process = await asyncio.to_thread(napcat_installer.launch_shell, _root(server))
+                runtime["napcat_shell_process"] = process
+            login_task = runtime.get("napcat_login_task")
+            if not isinstance(login_task, asyncio.Task) or login_task.done():
+                login_task = asyncio.create_task(_open_napcat_login(server, runtime))
+                runtime["napcat_login_task"] = login_task
+            runtime["napcat_state"] = "RUNNING"
+            return web.json_response({"status": "RUNNING"}, status=202)
+        except Exception as exc:
+            code = _failure_code(exc)
+            runtime["napcat_state"] = "FAILED"
+            runtime["napcat_error"] = code
+            return web.json_response({"error": code}, status=400)
+
     async def qq_configure(request: web.Request) -> web.Response:
         if "qq" not in _selected_channels(server):
             return web.json_response({"error": "PERSONAL_CHAT_CONTACT_NOT_ACCEPTED"}, status=409)
@@ -389,20 +496,31 @@ def install_setup_routes(app: web.Application, server) -> None:
             return web.json_response({"error": "QQ_SETUP_INVALID"}, status=400)
         if not isinstance(body, dict):
             return web.json_response({"error": "QQ_SETUP_INVALID"}, status=400)
-        account = str(body.get("account", "")).strip()
+        managed = body.get("managed") is True
         owner = str(body.get("owner", "")).strip()
-        token = str(body.get("token", ""))
-        url = str(body.get("url", "ws://127.0.0.1:3001")).strip()
         try:
-            parsed = urlsplit(checked_url(url, local=True))
-            if parsed.scheme != "ws" or not _QQ_ID.fullmatch(account) or not _QQ_ID.fullmatch(owner):
+            if not _QQ_ID.fullmatch(owner):
                 raise RuntimeError("QQ_SETUP_INVALID")
+            if managed:
+                from . import napcat_installer
+
+                url, token = await asyncio.to_thread(
+                    napcat_installer.managed_connection, _root(server)
+                )
+                account = await _qq_probe(url, token)
+            else:
+                account = str(body.get("account", "")).strip()
+                token = str(body.get("token", ""))
+                url = str(body.get("url", "ws://127.0.0.1:3001")).strip()
+                parsed = urlsplit(checked_url(url, local=True))
+                if parsed.scheme != "ws" or not _QQ_ID.fullmatch(account):
+                    raise RuntimeError("QQ_SETUP_INVALID")
+                if not 16 <= len(token) <= 512:
+                    raise RuntimeError("QQ_TOKEN_INVALID")
+                await _qq_probe(url, token, account)
             if account == owner:
                 raise RuntimeError("QQ_BOT_AND_OWNER_MUST_DIFFER")
-            if not 16 <= len(token) <= 512:
-                raise RuntimeError("QQ_TOKEN_INVALID")
             runtime["qq"] = {"state": "TESTING"}
-            await _qq_probe(url, token, account)
             from original_client_setup_api import _dpapi_protect
 
             secret = _root(server) / "personal-chat" / "qq.dpapi"
@@ -413,6 +531,7 @@ def install_setup_routes(app: web.Application, server) -> None:
                 "account": account,
                 "owner": owner,
                 "credentials_file": str(secret),
+                "managed": managed,
             }
             _write_config(server, config)
             runtime["qq"] = {"state": "READY_RESTART"}
@@ -420,13 +539,16 @@ def install_setup_routes(app: web.Application, server) -> None:
         except Exception as exc:
             code = _failure_code(exc)
             runtime["qq"] = {"state": "FAILED", "error": code}
-            return web.json_response({"error": code}, status=400 if code.startswith("QQ_") else 503)
+            return web.json_response({"error": code}, status=400 if code.startswith(("QQ_", "NAPCAT_")) else 503)
 
     endpoints = {
         STATUS_PATH: status,
+        CHANNEL_CHOICE_PATH: channel_choice,
         WECHAT_START_PATH: wechat_start,
         WECHAT_VERIFY_PATH: wechat_verify,
         QQ_CONFIGURE_PATH: qq_configure,
+        NAPCAT_INSTALL_PATH: napcat_install,
+        NAPCAT_START_PATH: napcat_start,
     }
 
     @web.middleware
@@ -434,7 +556,6 @@ def install_setup_routes(app: web.Application, server) -> None:
         methods = _SETUP_PATHS.get(request.path)
         if methods is None:
             return await handler(request)
-
         preflight = request.method == "OPTIONS"
         headers = _cors_headers(request, server, preflight=preflight)
         if headers is None:
@@ -459,35 +580,32 @@ def install_setup_routes(app: web.Application, server) -> None:
                 status=403,
                 headers=headers,
             )
-
         try:
             response = await endpoints[request.path](request)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            response = web.json_response(
-                {"error": _failure_code(exc)},
-                status=503,
-            )
+            response = web.json_response({"error": _failure_code(exc)}, status=503)
         response.headers.update(headers)
         return response
 
     async def cleanup(application: web.Application) -> None:
-        task = runtime.get("wechat_task")
-        if isinstance(task, asyncio.Task) and not task.done():
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+        for name in ("wechat_task", "napcat_task", "napcat_login_task"):
+            task = runtime.get(name)
+            if isinstance(task, asyncio.Task) and not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
 
-    # The original-client server owns a catch-all route before this lifecycle is
-    # installed. Middleware is therefore required here: adding late routes would
-    # leave these setup endpoints hidden behind that catch-all.
     app.middlewares.append(setup_boundary)
     app.on_cleanup.append(cleanup)
 
 
 __all__ = [
+    "CHANNEL_CHOICE_PATH",
     "CONFIRM_HEADER",
     "CONFIRM_VALUE",
+    "NAPCAT_INSTALL_PATH",
+    "NAPCAT_START_PATH",
     "QQ_CONFIGURE_PATH",
     "STATUS_PATH",
     "WECHAT_START_PATH",
