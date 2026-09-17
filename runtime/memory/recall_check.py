@@ -170,41 +170,13 @@ def _current_activity_sources(sources):
     return ids
 
 
-def _focus_original_history(messages):
-    """The check consumed whole pairs; generation receives its cited local evidence.
-
-    Keep other memory sections, recent conversations, canon and world state intact.
-    Source records remain in the archive and the frozen retrieval result.
-    """
-    def focus(match):
-        value = json.loads(match.group(1))
-        text = _unescape_reserved(value.get('text', ''))
-        if '[ORIGINAL_CORRESPONDENCE_UNTRUSTED]' not in text:
-            return match.group(0)
-        lines = []
-        for line in text.split('\n'):
-            if line.startswith('[{'):
-                summaries = [record for record in json.loads(line)
-                             if record.get('evidence_scope') == 'retrieved_summary']
-                if summaries:
-                    lines.append(json.dumps(summaries, ensure_ascii=False, separators=(',', ':')))
-            elif line != '[ORIGINAL_CORRESPONDENCE_UNTRUSTED]':
-                lines.append(line)
-        # Retain retrieval status and independently selected extracted memories.
-        value['text'] = '\n'.join(lines) + '\n原文已按本轮问题核对；相关原话与来源见 recall_check。'
-        return '<untrusted_history>' + json.dumps(value, ensure_ascii=False).replace('<', r'\u003c').replace('>', r'\u003e') + '</untrusted_history>'
-    return [dict(message, content=re.sub(r'<untrusted_history>\s*(.*?)\s*</untrusted_history>',
-            focus, message['content'], flags=re.S)) if message.get('role') == 'system'
-            else dict(message) for message in messages]
-
-
 def _quote_texts(text):
     """Check decoded values, never require a model to quote JSON wire escapes."""
     def strings(value):
         if isinstance(value, str):
             return [value]
         if isinstance(value, list):
-            return [s for item in value for s in strings(item)]
+            return [_s for item in value for _s in strings(item)]
         if isinstance(value, dict):
             # Only text-bearing fields are evidence; IDs/roles/times are not quotes.
             return [s for key, item in value.items()
@@ -226,6 +198,7 @@ def _project(messages, value, sources, *, max_input_chars):
                    'uncertain/conflicting不选择一边作为确定答案，也不指责用户记错，可省略非必要争议细节。'
                    '历史台词与当前人物设定有分歧时，承认自己曾这样说过，仍区分旧说法和当前设定；不撤回有据的感情。'
                    '只承接有依据的具体经历；不补童年次数、物品现状或新的装饰性经历。'
+                   '核实结论不是原文的替代品，也不保证覆盖了所有问题；未覆盖的话题仍按保留的原文核对。'
                    '不向用户报告核实流程或内部字段。', **value}
     by_id = {source['source']: source for source in sources}
     if value.get('findings'):
@@ -256,16 +229,22 @@ def _project(messages, value, sources, *, max_input_chars):
                       '选一两件有据的共同经历自然接话即可。未被直接询问的分歧保留在记忆核实结果里，'
                       '不主动拿出来纠错、辩论、要求对方澄清，也不借回复默认其为真。'
                       '不要因为来源有分歧就让用户为自己的旧话负责；本轮不需要证明关系或解释所有历史。</reply_focus>')
-    result = (_focus_original_history(messages) if payload['status'] in {'checked', 'partial'}
-              else [dict(message) for message in messages])
+    # Verification annotates the frozen evidence; it must not replace it.
+    # A valid finding may cover only one of several questions or miss a later
+    # correction. Retain every whole source already admitted by the assembler.
+    result = [dict(message) for message in messages]
     size = sum(len(str(message.get('content', ''))) for message in result)
+    diagnostic = payload
     if size + len(block) > max_input_chars:
+        diagnostic = {'status': 'unavailable', 'reason': 'capacity'}
         result = [dict(message) for message in messages]
         size = sum(len(str(message.get('content', ''))) for message in result)
         block = '\n<recall_check>{"status":"unavailable","reason":"capacity","meaning":"核实未完成；保留来源分歧与未知时间，不将计划或推断当成完成。"}</recall_check>'
     if size + len(block) > max_input_chars:
         raise ValueError('RECALL_CHECK_CONTEXT_BUDGET_EXCEEDED')
     next(message for message in result if message.get('role') == 'system')['content'] += block
+    from runtime.diagnostics.recall_trace import finish
+    finish(messages, result, diagnostic)
     return tuple(result)
 
 
@@ -274,12 +253,16 @@ async def prepare_recall_messages(messages, gateway, *, max_input_chars, request
     if (not any('<evidence_use>' in str(m.get('content', '')) for m in messages if m.get('role') == 'system')
             or any('<recall_check>' in str(m.get('content', '')) for m in messages if m.get('role') == 'system')
             or getattr(getattr(gateway, 'config', None), 'provider', None) not in {'openai_compatible', 'openai'}):
+        from runtime.diagnostics.recall_trace import finish
+        finish(messages, messages, {'status': 'skipped', 'reason': 'not_enabled'})
         return tuple(messages)
     sources = []
     phase = 'source_parse'
     try:
         sources, has_history = _sources(messages)
         if not has_history:
+            from runtime.diagnostics.recall_trace import finish
+            finish(messages, messages, {'status': 'skipped', 'reason': 'no_history'})
             return tuple(messages)
         question = next((m['content'] for m in reversed(messages) if m.get('role') == 'user'), '')
         current = {'source': 'current', 'scope': 'current_user_statement', 'text': question}

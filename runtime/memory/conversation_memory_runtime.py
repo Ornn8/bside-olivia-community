@@ -364,6 +364,12 @@ def ensure_conversation_memory_runtime(
                     reason_code="MEMORY_OUTBOX_INITIALIZATION_FAILED",
                 )
         runtime = _RUNTIME
+        if runtime is not None:
+            # The first import can replace the unavailable/read-only archive
+            # handle without changing the canonical root or user. Keep the
+            # existing journal and worker, but let its next local index scan
+            # observe the newly bound archive. Do not replay Mem0 deliveries.
+            runtime.outbox.archive_memory = archive_memory
         if not _ATEXIT_REGISTERED:
             atexit.register(stop_conversation_memory_runtime)
             _ATEXIT_REGISTERED = True

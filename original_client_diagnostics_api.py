@@ -105,7 +105,8 @@ async def _export(request: web.Request) -> web.Response:
         values = await asyncio.to_thread(source)
         if not isinstance(values, Mapping):
             raise DiagnosticExportAPIError("DIAGNOSTIC_EXPORT_UNAVAILABLE", 503)
-        bundle = build_diagnostic_bundle(values)
+        from runtime.diagnostics.recall_trace import snapshot
+        bundle = build_diagnostic_bundle({**values, "recall_tail": snapshot()})
         return web.Response(
             body=bundle,
             content_type="application/zip",
