@@ -55,7 +55,11 @@ def status(rows, snapshot):
         return {"state": selected or "invited", "invitation_id": invitation["letter_id"],
                 "channels": ["qq", "wechat"] if selected == "both" else [selected] if selected in {"qq", "wechat"} else []}
     observed = [r for r in completed if "contact_qualification" in r and r.get("origin") != "proactive"]
-    eligible = high_count(snapshot) >= 3 and len(observed) >= 2 and all(r["contact_qualification"] is True for r in observed[-2:])
+    # Reaching three high relationship dimensions is already the product gate.
+    # Require one applied, evidenced interaction at that level so imported or
+    # manually altered scores cannot invite by themselves, but do not force a
+    # second hidden qualifying exchange after the threshold was actually crossed.
+    eligible = high_count(snapshot) >= 3 and bool(observed) and observed[-1]["contact_qualification"] is True
     return {"state": "eligible" if eligible else "locked", "channels": []}
 
 
