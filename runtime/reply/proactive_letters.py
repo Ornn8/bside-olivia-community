@@ -44,12 +44,26 @@ def _stamp(value) -> float:
     return float(value) if type(value) in (int, float) and value >= 0 else 0.0
 
 
+def _high_relationship(rows: list[dict]) -> bool:
+    """Use persisted relationship evidence; never infer intimacy from message count."""
+    completed = [row for row in rows if row.get('origin') != 'proactive'
+                 and row.get('letter_status') == 'COMPLETED']
+    observed = [row.get('contact_qualification') for row in completed
+                if type(row.get('contact_qualification')) is bool]
+    return bool(observed and observed[-1] is True)
+
+
 def make_context(rows: list[dict], *, now: float, world: dict | None = None) -> dict:
     """App-owned opportunity projection; workers never write the mailbox."""
+    high = _high_relationship(rows)
     delivered = [row for row in rows if row.get('origin') == 'proactive'
                  and row.get('letter_status') == 'COMPLETED']
-    remaining = max(0, 3 - sum(_stamp(row.get('published_at', row.get('created_at'))) > now - DAY
-                              for row in delivered))
+    # A shallow relationship should not receive three unsolicited letters merely
+    # because the global safety budget allows it. High relationship keeps the
+    # existing hard cap; lower relationship gets one natural proactive letter/day.
+    daily_limit = 3 if high else 1
+    remaining = max(0, daily_limit - sum(
+        _stamp(row.get('published_at', row.get('created_at'))) > now - DAY for row in delivered))
     blocked = any(row.get('letter_status') in {'PENDING', 'PROCESSING'} for row in rows)
     unread = any(not row.get('is_read', 0) for row in delivered)
     latest = max((row for row in rows if row.get('origin') != 'proactive' and row.get('content')
@@ -58,9 +72,20 @@ def make_context(rows: list[dict], *, now: float, world: dict | None = None) -> 
     candidates = []
     if latest:
         source = f"reply:{latest['letter_id']}:{latest.get('reply_revision', 1)}"
+        # Close relationships may naturally continue a conversation sooner. A
+        # lower relationship still needs more distance before an unsolicited letter.
+        followup_delay = 15 * 60 if high else 2 * 3600
         candidates.append({'source_id': source, 'kind': 'correspondence_followup',
-                           'not_before': _stamp(latest.get('created_at')) + 1800,
+                           'not_before': _stamp(latest.get('created_at')) + followup_delay,
                            'expires_at': _stamp(latest.get('created_at')) + 7 * DAY})
+        # Once the relationship is already high, a long quiet stretch is itself
+        # a legitimate reason to consider writing. This is only an opportunity;
+        # the model may still defer when there is nothing natural to say.
+        if high:
+            silence = 4 * DAY
+            candidates.append({'source_id': source, 'kind': 'relationship_checkin',
+                               'not_before': _stamp(latest.get('created_at')) + silence,
+                               'expires_at': _stamp(latest.get('created_at')) + 11 * DAY})
     # Only user-backed shared matters are triggers. Self-generated life updates
     # are context for expression, not an engine that sends itself another letter.
     for item in (world or {}).get('shared', []):
@@ -69,15 +94,17 @@ def make_context(rows: list[dict], *, now: float, world: dict | None = None) -> 
                 changed_at = datetime.fromisoformat(item['updated_at']).timestamp()
             except (KeyError, TypeError, ValueError):
                 continue
+            delay = 15 * 60 if high else 2 * 3600
             candidates.append({'source_id': item.get('source_id', ''),
                                'kind': 'shared_followup', 'project_id': item.get('id'),
-                               'not_before': changed_at + 1800, 'expires_at': changed_at + 7 * DAY,
+                               'not_before': changed_at + delay, 'expires_at': changed_at + 7 * DAY,
                                'version': item.get('updated_at')})
     used = {row.get('proactive_candidate_id') for row in delivered}
     for item in candidates:
         identity = {key: value for key, value in item.items() if key not in {'not_before', 'expires_at'}}
         item['id'] = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:32]
     return {'updated_at': now, 'remaining': remaining, 'blocked': blocked, 'unread': unread,
+            'relationship_high': high,
             'candidates': [item for item in candidates if item['id'] not in used and item['source_id']]}
 
 
