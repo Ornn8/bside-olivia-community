@@ -8,7 +8,7 @@ import pytest
 
 
 def _shell(root: Path) -> Path:
-    shell = root / "personal-chat" / "napcat" / "bootstrap" / "NapCat.synthetic.Shell"
+    shell = root / "personal-chat" / "napcat" / "component" / "v4.18.28" / "NapCat.synthetic.Shell"
     shell.mkdir(parents=True)
     (shell / "napcat.bat").write_text("@echo off\n", encoding="utf-8")
     return shell
@@ -20,9 +20,9 @@ def test_napcat_source_is_pinned_to_publisher_release() -> None:
     assert module.NAPCAT_VERSION == "v4.18.28"
     assert module.NAPCAT_URL == (
         "https://github.com/NapNeko/NapCatQQ/releases/download/"
-        "v4.18.28/NapCat.Shell.Windows.OneKey.zip"
+        "v4.18.28/NapCat.Shell.Windows.Node.zip"
     )
-    assert module.NAPCAT_SHA256 == "fa365537039e9ec29730166f3f624eb147074be18be64d1981a03f35ecb2a2af"
+    assert module.NAPCAT_SHA256 == "fb64fa3b036ad2df1a5d7c204c482694c20e4b763978c8a4968fd3474c05b4a8"
     assert module._allowed_download_url(module.NAPCAT_URL) is True
     assert module._allowed_download_url("https://example.invalid/NapCat.zip") is False
 
@@ -98,3 +98,10 @@ def test_napcat_public_status_discovers_completed_install(tmp_path: Path) -> Non
     assert status["installed"] is True
     assert status["state"] == "READY"
     assert status["managed"] is True
+
+
+def test_napcat_public_status_exposes_only_sanitized_error(tmp_path: Path) -> None:
+    from runtime.personal_chat import napcat_installer as module
+
+    status = module.public_status(tmp_path, {"napcat_state": "FAILED", "napcat_error": "NAPCAT_DOWNLOAD_FAILED"})
+    assert status["error"] == "NAPCAT_DOWNLOAD_FAILED"
