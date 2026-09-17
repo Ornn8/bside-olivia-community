@@ -22,17 +22,9 @@ def _stamp(row: dict) -> float:
     return 0.0
 
 
-def pending_letter(rows: Iterable[dict]) -> dict | None:
-    """Return the newest unread proactive letter that has not been mentioned in IM.
-
-    The contact-invitation letter is excluded: once personal chat is configured,
-    reminding the user about that setup invitation is stale and confusing.
-    """
-
-    candidates = [
-        row
-        for row in rows
-        if isinstance(row, dict)
+def _eligible(row: dict) -> bool:
+    return (
+        isinstance(row, dict)
         and row.get("origin") == "proactive"
         and row.get("letter_status") == "COMPLETED"
         and not bool(row.get("is_read", 0))
@@ -41,8 +33,17 @@ def pending_letter(rows: Iterable[dict]) -> dict | None:
         and row.get("proactive_kind") != "contact_invitation"
         and isinstance(row.get("letter_id"), str)
         and bool(row.get("letter_id"))
-    ]
-    return max(candidates, key=_stamp, default=None)
+    )
+
+
+def pending_letter(rows: Iterable[dict]) -> dict | None:
+    """Return the newest unread proactive letter that has not been mentioned in IM.
+
+    The contact-invitation letter is excluded: once personal chat is configured,
+    reminding the user about that setup invitation is stale and confusing.
+    """
+
+    return max((row for row in rows if _eligible(row)), key=_stamp, default=None)
 
 
 def attach_notice(letters: Iterable[dict], chat_row: dict, text: str) -> str:
@@ -50,10 +51,14 @@ def attach_notice(letters: Iterable[dict], chat_row: dict, text: str) -> str:
 
     if chat_row.get("origin") == "proactive":
         return text
+    rows = list(letters)
     existing = chat_row.get("mailbox_notice_letter_id")
     if isinstance(existing, str) and existing:
-        return text.rstrip() + "\n\n" + NOTICE_TEXT
-    letter = pending_letter(letters)
+        letter = next((row for row in rows if row.get("letter_id") == existing), None)
+        if letter is not None and _eligible(letter):
+            return text.rstrip() + "\n\n" + NOTICE_TEXT
+        chat_row.pop("mailbox_notice_letter_id", None)
+    letter = pending_letter(rows)
     if letter is None:
         return text
     chat_row["mailbox_notice_letter_id"] = letter["letter_id"]
