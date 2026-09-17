@@ -20,9 +20,13 @@ class _Server:
         self.root = root
         self.store = _Store()
         self.private_world_port = None
+        self.persist_calls = 0
 
     def _state_root(self) -> Path:
         return self.root
+
+    def _persist_store_state(self) -> None:
+        self.persist_calls += 1
 
 
 def test_wechat_qr_is_rendered_locally_and_rejects_foreign_targets() -> None:
@@ -72,8 +76,52 @@ def test_setup_status_requires_explicit_local_action_and_redacts_login_state(
             assert body["wechat"]["qr_data"].startswith("data:image/svg+xml;base64,")
             assert "qrcode" not in body["wechat"]
             assert "verify_code" not in body["wechat"]
+            assert body["napcat"]["managed"] is True
 
     asyncio.run(scenario())
+
+
+def test_completed_invitation_can_choose_channel_directly_in_settings(tmp_path: Path) -> None:
+    from runtime.personal_chat import setup
+
+    server = _Server(tmp_path)
+    server.store.letters.append(
+        {
+            "letter_id": "invite-1",
+            "origin": "proactive",
+            "proactive_kind": "contact_invitation",
+            "letter_status": "COMPLETED",
+            "content": "要不要交换联系方式？",
+            "created_at": 1,
+            "published_at": 1,
+        }
+    )
+    app = web.Application()
+    setup.install_setup_routes(app, server)
+    headers = {setup.CONFIRM_HEADER: setup.CONFIRM_VALUE}
+
+    async def scenario() -> None:
+        async with TestClient(TestServer(app)) as client:
+            before = await client.get(setup.STATUS_PATH, headers=headers)
+            assert before.status == 200
+            assert (await before.json())["contact_state"] == "invited"
+
+            selected = await client.post(
+                setup.CHANNEL_CHOICE_PATH,
+                headers=headers,
+                json={"choice": "wechat"},
+            )
+            assert selected.status == 200
+            assert (await selected.json())["channels"] == ["wechat"]
+
+            after = await client.get(setup.STATUS_PATH, headers=headers)
+            body = await after.json()
+            assert body["contact_state"] == "wechat"
+            assert body["selected_channels"] == ["wechat"]
+
+    asyncio.run(scenario())
+    assert server.store.letters[0]["contact_setup_choice"] == "wechat"
+    assert server.persist_calls == 1
 
 
 def test_qq_setup_tests_loopback_and_never_persists_plaintext_token(
@@ -85,10 +133,11 @@ def test_qq_setup_tests_loopback_and_never_persists_plaintext_token(
     server = _Server(tmp_path)
     monkeypatch.setattr(setup, "_selected_channels", lambda _server: {"qq"})
 
-    async def fake_probe(url: str, token: str, account: str) -> None:
+    async def fake_probe(url: str, token: str, account: str | None = None) -> str:
         assert url == "ws://127.0.0.1:3001"
         assert token == "synthetic-token-123456"
         assert account == "123456789"
+        return "123456789"
 
     monkeypatch.setattr(setup, "_qq_probe", fake_probe)
     monkeypatch.setattr(original_client_setup_api, "_dpapi_protect", lambda _value: "synthetic-ciphertext")
@@ -121,7 +170,51 @@ def test_qq_setup_tests_loopback_and_never_persists_plaintext_token(
     assert "synthetic-token-123456" not in config_text
     assert config["qq"]["account"] == "123456789"
     assert config["qq"]["owner"] == "987654321"
+    assert config["qq"]["managed"] is False
     assert config["qq"]["credentials_file"].endswith("qq.dpapi")
+
+
+def test_managed_qq_only_needs_owner_after_napcat_login(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import original_client_setup_api
+    from runtime.personal_chat import napcat_installer, setup
+
+    server = _Server(tmp_path)
+    monkeypatch.setattr(setup, "_selected_channels", lambda _server: {"qq"})
+    monkeypatch.setattr(
+        napcat_installer,
+        "managed_connection",
+        lambda _root: ("ws://127.0.0.1:3001", "managed-synthetic-token-123456"),
+    )
+
+    async def fake_probe(url: str, token: str, account: str | None = None) -> str:
+        assert url == "ws://127.0.0.1:3001"
+        assert token == "managed-synthetic-token-123456"
+        assert account is None
+        return "123456789"
+
+    monkeypatch.setattr(setup, "_qq_probe", fake_probe)
+    monkeypatch.setattr(original_client_setup_api, "_dpapi_protect", lambda _value: "managed-ciphertext")
+    app = web.Application()
+    setup.install_setup_routes(app, server)
+
+    async def scenario() -> None:
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post(
+                setup.QQ_CONFIGURE_PATH,
+                headers={setup.CONFIRM_HEADER: setup.CONFIRM_VALUE},
+                json={"managed": True, "owner": "987654321"},
+            )
+            assert response.status == 200
+            assert (await response.json())["status"] == "READY_RESTART"
+
+    asyncio.run(scenario())
+    config = json.loads((tmp_path / "personal-chat" / "config.json").read_text(encoding="utf-8"))
+    assert config["qq"]["managed"] is True
+    assert config["qq"]["account"] == "123456789"
+    assert config["qq"]["url"] == "ws://127.0.0.1:3001"
+    assert "managed-synthetic-token-123456" not in json.dumps(config)
 
 
 def test_setup_rejects_channels_that_user_has_not_accepted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -146,6 +239,10 @@ def test_setup_rejects_channels_that_user_has_not_accepted(tmp_path: Path, monke
             )
             assert qq.status == 409
             assert (await qq.json())["error"] == "PERSONAL_CHAT_CONTACT_NOT_ACCEPTED"
+
+            napcat = await client.post(setup.NAPCAT_INSTALL_PATH, headers=headers, json={})
+            assert napcat.status == 409
+            assert (await napcat.json())["error"] == "PERSONAL_CHAT_CONTACT_NOT_ACCEPTED"
 
     asyncio.run(scenario())
 
@@ -178,10 +275,7 @@ def test_setup_allows_original_client_cors_preflight_and_status(
 
             response = await client.get(
                 setup.STATUS_PATH,
-                headers={
-                    "Origin": origin,
-                    setup.CONFIRM_HEADER: setup.CONFIRM_VALUE,
-                },
+                headers={"Origin": origin, setup.CONFIRM_HEADER: setup.CONFIRM_VALUE},
             )
             assert response.status == 200
             assert response.headers["Access-Control-Allow-Origin"] == origin
@@ -237,12 +331,16 @@ def test_personal_chat_setup_ui_stays_inside_existing_settings_surface() -> None
         'document.querySelector("[data-olivia-proactive-settings]")',
         'root.dataset.oliviaPersonalChatSetup = "true"',
         '"/toy/personal-chat/setup/status"',
+        '"/toy/personal-chat/setup/channel-choice"',
         '"/toy/personal-chat/setup/wechat/start"',
         '"/toy/personal-chat/setup/wechat/verify"',
         '"/toy/personal-chat/setup/qq/configure"',
+        '"/toy/personal-chat/setup/qq/napcat/install"',
+        '"/toy/personal-chat/setup/qq/napcat/start"',
         'status.wechat?.qr_data',
         '"QQ / 微信聊天"',
         '"QQ（实验功能）"',
+        '"一键安装"',
         '"X-Olivia-Companion-Action"',
     ):
         assert required in script
