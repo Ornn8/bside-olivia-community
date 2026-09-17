@@ -1,0 +1,91 @@
+name: local-release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - installer/release-version.json
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  local-release:
+    name: Build and publish local patch
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package
+        run: python -m pip install -e .
+
+      - name: Validate release metadata
+        shell: pwsh
+        run: |
+          $version = (Get-Content installer/release-version.json -Raw | ConvertFrom-Json).version
+          $project = Select-String -Path pyproject.toml -Pattern '^version = "([^"]+)"$'
+          if (-not $project -or $project.Matches[0].Groups[1].Value -ne $version) {
+            throw "release-version.json and pyproject.toml do not match"
+          }
+          if (-not (Test-Path "docs/releases/v$version.md")) {
+            throw "missing docs/releases/v$version.md"
+          }
+          "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build update bundle
+        shell: pwsh
+        run: |
+          $output = Join-Path $env:RUNNER_TEMP "olivia-local-release"
+          New-Item -ItemType Directory -Path $output -Force | Out-Null
+          python -m installer build-update `
+            --source "$PWD" `
+            --output "$output\Olivia-$env:VERSION.oliviapatch" `
+            --version "$env:VERSION" `
+            --source-commit "$env:GITHUB_SHA"
+          "RELEASE_DIR=$output" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build checksum manifest
+        shell: pwsh
+        run: |
+          $lines = Get-ChildItem $env:RELEASE_DIR -File | Sort-Object Name | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($_.Name)"
+          }
+          $lines | Set-Content (Join-Path $env:RELEASE_DIR "SHA256SUMS.txt") -Encoding utf8NoBOM
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Olivia-local-release
+          path: ${{ runner.temp }}/olivia-local-release/*
+          if-no-files-found: error
+
+      - name: Publish GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "v$env:VERSION"
+          $notes = "docs/releases/v$env:VERSION.md"
+          $assets = Get-ChildItem $env:RELEASE_DIR -File | ForEach-Object { $_.FullName }
+          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag @assets --repo $env:GITHUB_REPOSITORY --clobber
+          } else {
+            gh release create $tag @assets `
+              --repo $env:GITHUB_REPOSITORY `
+              --target $env:GITHUB_SHA `
+              --title "Olivia $env:VERSION · 关系驱动主动联系" `
+              --notes-file $notes
+          }
