@@ -121,10 +121,11 @@ def _qr_content(value: object) -> str:
             parsed = urlsplit(value)
         except ValueError as exc:
             raise RuntimeError("WECHAT_QR_UNAVAILABLE") from exc
+        hostname = parsed.hostname or ""
         if (
             parsed.scheme != "https"
-            or not parsed.hostname
-            or not parsed.hostname.endswith(".weixin.qq.com")
+            or not hostname
+            or (hostname != "weixin.qq.com" and not hostname.endswith(".weixin.qq.com"))
             or parsed.username
             or parsed.password
             or parsed.fragment
