@@ -88,6 +88,8 @@ async def generate(server, event, row):
         if decision['skip']:
             return '[[skip]]'
         text, mode = decision['text'].strip(), decision['delivery']
+        from .mailbox_notice import attach_notice
+        text = attach_notice(getattr(server.store, 'letters', []), row, text)
         preference = previous if decision['listening'] == 'keep' else decision['listening']
         for kind, until in [('initiative', 'pause_until'), ('letter', 'letter_until')]:
             if decision[kind] != 'keep':
@@ -128,7 +130,7 @@ async def commit(server, row):
     if row.get("delivery_status") != "DELIVERED":
         return
     failures = []
-    for consume in (_commit_world, _commit_candidates, _commit_life, _commit_memory):
+    for consume in (_commit_mailbox_notice, _commit_world, _commit_candidates, _commit_life, _commit_memory):
         try:
             await consume(server, row)
         except asyncio.CancelledError:
@@ -137,6 +139,11 @@ async def commit(server, row):
             failures.append(exc)
     if failures:
         raise failures[0]
+
+
+async def _commit_mailbox_notice(server, row):
+    from .mailbox_notice import commit_notice
+    commit_notice(getattr(server.store, 'letters', []), row, server._persist_store_state)
 
 
 async def _commit_world(server, row):
