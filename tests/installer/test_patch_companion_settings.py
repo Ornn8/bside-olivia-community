@@ -15,6 +15,7 @@ from patch_companion_settings import (
     CompanionSettingsPatchError,
     INDEX_MEMBER,
     MAIN_MODULE_MEMBER,
+    MANAGED_BOOTSTRAP_JAVASCRIPT,
     PATCH_MARKER,
     patch_companion_settings,
     validate_api_base,
@@ -95,6 +96,10 @@ def test_patch_adds_original_settings_management_and_preserves_existing_assets(
         "/toy/companion/memory/pause",
         "/toy/companion/memory/resume",
         "/toy/letter/legacy/local-import",
+        "/toy/personal-chat/setup/status",
+        "/toy/personal-chat/setup/wechat/start",
+        "/toy/personal-chat/setup/wechat/verify",
+        "/toy/personal-chat/setup/qq/configure",
     ):
         assert path_value in bootstrap
     for visible_text in (
@@ -106,6 +111,9 @@ def test_patch_adds_original_settings_management_and_preserves_existing_assets(
         "暂停长期记忆",
         "恢复长期记忆",
         "从原版目录读取",
+        "QQ / 微信聊天",
+        "生成二维码",
+        "QQ（实验功能）",
     ):
         assert visible_text in bootstrap
     for hidden_artifact in (
@@ -219,7 +227,7 @@ def test_repository_owned_bootstrap_is_upgraded_without_touching_main_module(
     after = _members(path)
     assert result["status"] == "PATCHED"
     assert after[MAIN_MODULE_MEMBER] == before_main
-    assert after[BOOTSTRAP_MEMBER].decode() == BOOTSTRAP_JAVASCRIPT
+    assert after[BOOTSTRAP_MEMBER].decode() == MANAGED_BOOTSTRAP_JAVASCRIPT
     index = after[INDEX_MEMBER].decode()
     assert f'data-ui-version="{SETTINGS_UI_VERSION}"' in index
     assert index.count(PATCH_MARKER) == 1
@@ -258,7 +266,7 @@ def test_repository_owned_bootstrap_upgrade_restores_0627_mailbox_write_access(
 
     after = _members(path)
     assert result["status"] == "PATCHED"
-    assert after[BOOTSTRAP_MEMBER].decode() == BOOTSTRAP_JAVASCRIPT
+    assert after[BOOTSTRAP_MEMBER].decode() == MANAGED_BOOTSTRAP_JAVASCRIPT
     main = after[main_member].decode()
     assert '"hide-write":o(h).some(e=>[1,2,3].includes(e.letterStatus))' in main
     assert '"hide-write":o(p)||!o(N3)' not in main
