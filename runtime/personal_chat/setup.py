@@ -110,7 +110,7 @@ def _contact_state(server) -> str:
 
 
 def _qr_content(value: object) -> str:
-    """Validate official QR content before encoding it locally.
+    """Validate QR display content before encoding it locally.
 
     Tencent currently returns a Weixin HTTPS target, but the protocol permits
     display content rather than an image URL. Nothing here is fetched by the UI.
