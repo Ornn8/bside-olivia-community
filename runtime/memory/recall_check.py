@@ -92,7 +92,7 @@ def _sources(messages):
 
 
 def _continuity_scope(item):
-    """Project validated historical evidence into roleplay continuity, never real-world truth."""
+    """Project validated evidence into roleplay continuity without asserting real-world truth."""
     if item.get('status') == 'conflicting':
         return 'contradicted'
     if item.get('event_stage') == 'planned':
