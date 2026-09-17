@@ -245,6 +245,9 @@ def selected_channels(server):
 
 
 def install_personal_chat(app, server):
+    from .setup import install_setup_routes
+    install_setup_routes(app, server)
+
     async def start(application):
         configured = os.environ.get("OLIVIA_PERSONAL_CHAT_CONFIG")
         if not configured and server._state_root() is not None:
