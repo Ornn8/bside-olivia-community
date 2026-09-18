@@ -134,9 +134,9 @@ async def run_wechat(credentials, handle_message, stop_event, *, cursor_store=No
         try:
             while not stop_event.is_set():
                 try:
-                if not connected:
-                    publish("CONNECTING" if failures == 0 else "RECONNECTING")
-                batch = await _read_until_stopped(session, credentials, cursor, stop_event)
+                    if not connected:
+                        publish("CONNECTING" if failures == 0 else "RECONNECTING")
+                    batch = await _read_until_stopped(session, credentials, cursor, stop_event)
                 except (aiohttp.ClientConnectionError, asyncio.TimeoutError):
                     batch = None
                 except ValueError as exc:
