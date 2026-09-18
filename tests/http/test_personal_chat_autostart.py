@@ -38,10 +38,12 @@ def test_saved_choice_controls_listener_on_each_app_start(tmp_path, monkeypatch,
 
     async def run_once():
         connected = []
-        async def listen_qq(url, token, account, owner, handler, stop):
+        async def listen_qq(url, token, account, owner, handler, stop, **kwargs):
+            kwargs.get("state_callback", lambda _state: None)("CONNECTED")
             connected.append('qq')
             await stop.wait()
         async def listen_wechat(credentials, handler, stop, **kwargs):
+            kwargs.get("state_callback", lambda _state: None)("CONNECTED")
             connected.append('wechat')
             await stop.wait()
         monkeypatch.setattr(qq, 'run_qq', listen_qq)
