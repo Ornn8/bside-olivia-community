@@ -214,3 +214,36 @@ def test_disconnect_during_send_is_visible_and_never_resends():
                 await asyncio.wait_for(run_qq(str(server.make_url("/")), TOKEN, "100", "200", handler, asyncio.Event(), reconnect_delay=.01), 3)
         assert len(sends) == 1
     asyncio.run(scenario())
+
+
+def test_qq_logged_out_state_requires_relogin_without_hiding_status():
+    async def scenario():
+        states = []
+
+        async def handler(*args):
+            raise AssertionError("handler must not run before QQ login")
+
+        async def socket(request):
+            ws = web.WebSocketResponse()
+            await ws.prepare(request)
+            login_request = await ws.receive_json()
+            await ws.send_json({
+                "echo": login_request["echo"],
+                "status": "failed",
+                "retcode": 100,
+                "data": {},
+            })
+            await ws.close()
+            return ws
+
+        app = web.Application()
+        app.router.add_get("/", socket)
+        async with TestServer(app) as server:
+            with pytest.raises(Exception, match="QQ_AUTH_REQUIRED"):
+                await run_qq(
+                    str(server.make_url("/")), TOKEN, "100", "200", handler,
+                    asyncio.Event(), state_callback=states.append,
+                )
+        assert states[-1] == "AUTH_REQUIRED"
+
+    asyncio.run(scenario())
