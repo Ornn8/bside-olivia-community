@@ -75,6 +75,31 @@ def owner_message(channel: str, payload: Mapping, *, account_id: str, owner_id: 
         input_kind='voice' if channel == 'wechat' and any(i['type'] == 3 for i in items) else 'text', sent_at=sent_at)
 
 
+
+def mergeable_by_sent_time(previous: PersonalMessage, current: PersonalMessage, max_gap_seconds: float) -> bool:
+    """Do not collapse delayed platform backlog into one live conversation turn.
+
+    Arrival time is only a fallback when the transport does not provide a
+    trustworthy send timestamp. When both timestamps exist, they must be
+    chronological and within the configured burst window.
+    """
+    if not isinstance(previous, PersonalMessage) or not isinstance(current, PersonalMessage):
+        raise TypeError("PERSONAL_CHAT_MESSAGE_REQUIRED")
+    if max_gap_seconds <= 0:
+        return False
+    if previous.sent_at is None or current.sent_at is None:
+        return True
+    try:
+        before = datetime.fromisoformat(previous.sent_at.replace("Z", "+00:00"))
+        after = datetime.fromisoformat(current.sent_at.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return False
+    if before.tzinfo is None or after.tzinfo is None:
+        return False
+    gap = (after - before).total_seconds()
+    return 0 <= gap <= max_gap_seconds
+
+
 def combine(events):
     first = events[0]
     sources = {}

@@ -67,7 +67,7 @@ _EVIDENCE_USE = {
 }
 
 
-_TIME_GROUNDING = "character_local_time 是林离所在上海的北京时间，trusted_time 是同一时刻的 UTC 表示。按北京时间和最近回信保持她的活动连续，新来信不表示过了一天。用户的早晚问候或睡觉安排不改变她的钟点和作息；可以道晚安，不必报时或纠正用户。"
+_TIME_GROUNDING = "character_local_time 是林离所在上海的北京时间，trusted_time 是同一时刻的 UTC 表示。按北京时间和最近回信保持她的活动连续，新来信不表示过了一天。用户的早晚问候、睡觉安排或对早餐/午饭/晚饭的问法都不能改写当前钟点和作息；餐次与当前活动按 character_local_time 和当前生活状态判断。延迟到达的旧消息也不能当作刚刚发生。可以自然纠正时间前提，不必机械报时。"
 
 
 def runtime_reply_rules(snapshot: PersonaSnapshot) -> tuple[tuple[str, ...], str]:

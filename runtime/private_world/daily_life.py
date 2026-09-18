@@ -31,6 +31,37 @@ FRESH_FOR = timedelta(hours=6)
 # Common conversational/time words are not evidence that a task is relevant.
 _QUERY_STOP_WORDS = set("今天 明天 昨天 晚上 现在 这次 上次 已经 还是 一下 一些 一点 我们 你们 我的 你的 她的 自己 时候 最近 然后 但是 还有 就是 觉得 可以 没有 怎么 什么 这个 那个 这件 那件".split())
 
+_MEAL_WINDOWS = {
+    "breakfast": (5 * 60, 11 * 60 + 30),
+    "lunch": (10 * 60 + 30, 16 * 60),
+    "dinner": (16 * 60 + 30, 23 * 60),
+}
+_MEAL_WORDS = {
+    "breakfast": r"(?:早餐|早饭)",
+    "lunch": r"(?:午饭|午餐)",
+    "dinner": r"(?:晚饭|晚餐)",
+}
+_MEAL_DONE = r"(?:正在吃|正吃|刚吃(?:完|过)?|吃完(?:了)?|吃过(?:了)?|已经.{0,6}吃(?:完|过)?|收尾|解决(?:了)?|搞定(?:了)?|用过(?:了)?)"
+
+
+def _current_time_consistent(note: object, occurred_at: object) -> bool:
+    """Reject impossible current meal claims without treating user wording as time."""
+    if not isinstance(note, str) or not note.strip():
+        return True
+    try:
+        when = occurred_at if isinstance(occurred_at, datetime) else datetime.fromisoformat(str(occurred_at).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return True
+    if when.tzinfo is None:
+        return True
+    minute = when.astimezone(LOCAL).hour * 60 + when.astimezone(LOCAL).minute
+    for kind, word in _MEAL_WORDS.items():
+        if re.search(word + r".{0,16}" + _MEAL_DONE, note) or re.search(_MEAL_DONE + r".{0,16}" + word, note):
+            start, end = _MEAL_WINDOWS[kind]
+            return start <= minute < end
+    return True
+
+
 
 def _time(value: datetime) -> str:
     if not isinstance(value, datetime) or value.tzinfo is None:
@@ -124,7 +155,9 @@ def _current_evidence(current: dict | None) -> dict | None:
     if (current and str(current.get("source_id", "")).startswith("reply:")
             and current.get("location") == "她刚在信里说"
             and current.get("activity") == "新的近况"):
-        return {**current, "location": None, "activity": None}
+        current = {**current, "location": None, "activity": None}
+    if current and not _current_time_consistent(current.get("note"), current.get("occurred_at")):
+        return None
     return current
 
 
@@ -248,6 +281,8 @@ class DailyLifeStore:
 
     @staticmethod
     def _set_current(db, current):
+        if not _current_time_consistent(current.get("note"), current.get("occurred_at")):
+            return
         old = db.execute("SELECT payload FROM life_current WHERE id=1").fetchone()
         if not old or json.loads(old[0])["occurred_at"] <= current["occurred_at"]:
             db.execute("INSERT OR REPLACE INTO life_current VALUES (1,?)", (_json(current),))

@@ -4,7 +4,7 @@ from contextlib import suppress
 
 import aiohttp
 
-from .events import owner_message, combine
+from .events import owner_message, combine, mergeable_by_sent_time
 from .probe import checked_url, wechat_request
 
 
@@ -136,18 +136,20 @@ async def run_wechat(credentials, handle_message, stop_event, *, cursor_store=No
                                       owner_id=credentials["owner"])
                 if event is None:
                     continue
+                last_event = event
                 context = raw.get("context_token")
                 if not isinstance(context, str) or not context:
                     raise RuntimeError("WECHAT_REPLY_CONTEXT_MISSING")
                 if grouped and (merge_seconds == 0 or event.text.strip() == '/连接测试' or grouped[-1][0].text.strip() == '/连接测试'
-                                or len(grouped[-1][0].text)+len(event.text)+1 > 10000):
-                    previous, token = grouped.pop()
+                                or len(grouped[-1][0].text)+len(event.text)+1 > 10000
+                                or not mergeable_by_sent_time(grouped[-1][2], event, merge_seconds)):
+                    previous, token, _ = grouped.pop()
                     await handle_message(previous, _sender(session, credentials, previous, token))
                 if grouped:
-                    previous, _ = grouped.pop()
+                    previous, _, _ = grouped.pop()
                     event = combine([previous, event])
-                grouped.append((event, context))
-            for event, context in grouped:
+                grouped.append((event, context, last_event))
+            for event, context, _ in grouped:
                 await handle_message(event, _sender(session, credentials, event, context))
             if cursor_store is not None:
                 cursor_store.save(next_cursor)

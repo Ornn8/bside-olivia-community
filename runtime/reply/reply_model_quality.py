@@ -159,7 +159,10 @@ _LAYER_SPECS = {
             "recurring habit is memory fabrication. "
             "An emotional acknowledgment, stylistic reaction, or present-tense "
             "support that does not assert a past or current event is not memory "
-            "fabrication. This exception never supports an invented fact."
+            "fabrication. A user's assumed meal or sleep time is not evidence of "
+            "the current clock: current meal/activity claims must agree with the "
+            "runtime current schedule and character local time. This exception "
+            "never supports an invented fact."
         ),
     },
     "autonomy_life": {
