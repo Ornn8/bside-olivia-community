@@ -399,8 +399,20 @@ def install_personal_chat(app, server):
                         raise
                     except ValueError as exc:
                         code = _failure_code(exc)
-                        runtime['status'][name] = 'AUTH_REQUIRED' if code == 'WECHAT_AUTH_REQUIRED' else 'SETUP_REQUIRED'
                         runtime['errors'][name] = code
+                        if code == 'WECHAT_AUTH_REQUIRED':
+                            runtime['status'][name] = 'AUTH_REQUIRED'
+                            _publish_status(server, runtime)
+                            return
+                        if code == 'QQ_AUTH_REQUIRED':
+                            runtime['status'][name] = 'AUTH_REQUIRED'
+                            _publish_status(server, runtime)
+                            try:
+                                await asyncio.wait_for(stop_event.wait(), 15)
+                            except asyncio.TimeoutError:
+                                pass
+                            continue
+                        runtime['status'][name] = 'SETUP_REQUIRED'
                         _publish_status(server, runtime)
                         return
                     except Exception as exc:
