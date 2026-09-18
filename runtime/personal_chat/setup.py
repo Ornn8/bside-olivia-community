@@ -42,6 +42,7 @@ _SETUP_PATHS = {
     NAPCAT_INSTALL_PATH: frozenset({"POST"}),
     NAPCAT_START_PATH: frozenset({"POST"}),
 }
+_NAPCAT_WATCHDOG_SECONDS = 15.0
 
 
 def _failure_code(exc: BaseException) -> str:
@@ -219,6 +220,7 @@ def _public_status(request: web.Request, server) -> dict[str, object]:
 
     active = request.app.get(backend._RUNTIME)
     listener = dict(active.get("status", {})) if isinstance(active, dict) else {}
+    last_seen_at = dict(active.get("last_seen_at", {})) if isinstance(active, dict) else {}
     runtime = request.app[_SETUP]
     wechat = dict(runtime.get("wechat", {"state": "IDLE"}))
     wechat.pop("qrcode", None)
@@ -235,6 +237,7 @@ def _public_status(request: web.Request, server) -> dict[str, object]:
             )
             for name in selected
         },
+        "last_seen_at": {name: last_seen_at.get(name) for name in selected if last_seen_at.get(name)},
         "wechat": wechat,
         "qq": qq,
         "napcat": napcat_installer.public_status(_root(server), runtime),
@@ -392,9 +395,41 @@ def install_setup_routes(app: web.Application, server) -> None:
         "napcat_state": "IDLE",
         "napcat_task": None,
         "napcat_login_task": None,
+        "napcat_watchdog_task": None,
         "napcat_shell_process": None,
     }
     app[_SETUP] = runtime
+
+    async def napcat_watchdog() -> None:
+        from . import napcat_installer
+
+        while True:
+            try:
+                await asyncio.sleep(_NAPCAT_WATCHDOG_SECONDS)
+                config = _read_config(server)
+                qq = config.get("qq")
+                if not isinstance(qq, dict) or qq.get("managed") is not True:
+                    return
+                process = runtime.get("napcat_shell_process")
+                alive = process is not None and getattr(process, "poll", lambda: 0)() is None
+                available = await asyncio.to_thread(napcat_installer.onebot_available)
+                if available:
+                    runtime["napcat_state"] = "RUNNING"
+                    runtime.pop("napcat_error", None)
+                    continue
+                if alive:
+                    runtime["napcat_state"] = "STARTING"
+                    continue
+                runtime["napcat_state"] = "STARTING"
+                process = await asyncio.to_thread(napcat_installer.ensure_shell, _root(server))
+                runtime["napcat_shell_process"] = process
+                runtime["napcat_state"] = "RUNNING" if await asyncio.to_thread(napcat_installer.onebot_available) else "STARTING"
+                runtime.pop("napcat_error", None)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                runtime["napcat_state"] = "FAILED"
+                runtime["napcat_error"] = _failure_code(exc)
 
     async def start_managed_napcat(_application: web.Application) -> None:
         try:
@@ -407,7 +442,10 @@ def install_setup_routes(app: web.Application, server) -> None:
             runtime["napcat_state"] = "STARTING"
             process = await asyncio.to_thread(napcat_installer.ensure_shell, _root(server))
             runtime["napcat_shell_process"] = process
-            runtime["napcat_state"] = "RUNNING"
+            runtime["napcat_state"] = "RUNNING" if await asyncio.to_thread(napcat_installer.onebot_available) else "STARTING"
+            task = runtime.get("napcat_watchdog_task")
+            if not isinstance(task, asyncio.Task) or task.done():
+                runtime["napcat_watchdog_task"] = asyncio.create_task(napcat_watchdog())
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -615,7 +653,7 @@ def install_setup_routes(app: web.Application, server) -> None:
         return response
 
     async def cleanup(application: web.Application) -> None:
-        for name in ("wechat_task", "napcat_task", "napcat_login_task"):
+        for name in ("wechat_task", "napcat_task", "napcat_login_task", "napcat_watchdog_task"):
             task = runtime.get(name)
             if isinstance(task, asyncio.Task) and not task.done():
                 task.cancel()
