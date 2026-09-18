@@ -55,6 +55,11 @@ def test_managed_qq_component_starts_with_olivia(
 
     monkeypatch.setattr(napcat_installer, "ensure_shell", fake_ensure)
     monkeypatch.setattr(napcat_installer, "onebot_available", lambda: True)
+    monkeypatch.setattr(napcat_installer, "managed_connection", lambda _root: ("ws://127.0.0.1:3001", "synthetic-token-123456789"))
+    monkeypatch.setattr(napcat_installer, "account_config_ready", lambda _root, _account: True)
+    async def fake_probe(_url, _token, _account=None):
+        return "123456789"
+    monkeypatch.setattr(setup, "_qq_probe", fake_probe)
     app = web.Application()
     setup.install_setup_routes(app, server)
     runtime = app[setup._SETUP]
@@ -63,7 +68,7 @@ def test_managed_qq_component_starts_with_olivia(
         async with TestClient(TestServer(app)):
             assert calls == [tmp_path]
             assert runtime["napcat_shell_process"] is process
-            assert runtime["napcat_state"] == "RUNNING"
+            assert runtime["napcat_state"] == "ONEBOT_READY"
 
     asyncio.run(scenario())
 
@@ -113,6 +118,12 @@ def test_managed_qq_watchdog_restarts_dead_napcat(
     monkeypatch.setattr(
         napcat_installer, "onebot_available", lambda: availability["value"]
     )
+    monkeypatch.setattr(napcat_installer, "webui_available", lambda _root: False)
+    monkeypatch.setattr(napcat_installer, "managed_connection", lambda _root: ("ws://127.0.0.1:3001", "synthetic-token-123456789"))
+    monkeypatch.setattr(napcat_installer, "account_config_ready", lambda _root, _account: True)
+    async def fake_probe(_url, _token, _account=None):
+        return "123456789"
+    monkeypatch.setattr(setup, "_qq_probe", fake_probe)
 
     app = web.Application()
     setup.install_setup_routes(app, server)
