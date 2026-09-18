@@ -29,7 +29,7 @@ class Model:
             if ':conduct' in request_id:
                 assert 'linli_reply' not in data
                 assert data['user_letter'] == cases[0][0]
-                return SimpleNamespace(text=json.dumps({'conduct':'pressure', 'quote':cases[0][0]}))
+                return SimpleNamespace(text=json.dumps({'conduct':'pressure', 'target':'linli', 'quote':cases[0][0]}))
             assert '每封都判断 relationship' in messages[0]['content']
             case = next(c for c in cases if c[0] == data['user_letter'])
             assert data['linli_reply'] == case[1], (data['user_letter'], data['linli_reply'], case[1])
