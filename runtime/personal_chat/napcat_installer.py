@@ -234,7 +234,7 @@ def public_status(data_root: Path, runtime: dict[str, object]) -> dict[str, obje
     if shell is not None:
         state = "READY"
     if shell is not None and onebot_available():
-        state = "ONEBOT_READY"
+        state = state if state in {"ONEBOT_PROBING", "ONEBOT_CONFIG_PENDING"} else "ONEBOT_READY"
     elif shell is not None and webui_available(data_root):
         state = "AWAITING_QQ_LOGIN"
     elif shell_process is not None and getattr(shell_process, "poll", lambda: 0)() is None:
