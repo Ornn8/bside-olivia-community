@@ -52,7 +52,7 @@ def test_boundary_set_conflict_withdraw_and_replay(tmp_path):
         async def complete(self, messages, request_id, **kwargs):
             data = json.loads(messages[-1]["content"])
             assert data["active_boundaries"][0]["boundary_id"] == "b1"
-            result = {"conduct": "boundary_violation", "quote": "小笨蛋", "boundary_id": "b1"} if ":conduct" in request_id else {
+            result = {"conduct": "boundary_violation", "target": "linli", "quote": "小笨蛋", "boundary_id": "b1"} if ":conduct" in request_id else {
                 "updates": [], "relationship": {"kind": "conflict", "user_quote": "小笨蛋", "reply_quote": "说过不喜欢这个称呼了。"}}
             return SimpleNamespace(text=json.dumps(result, ensure_ascii=False))
     runtime.gateway = Conflict
