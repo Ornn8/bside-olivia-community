@@ -215,13 +215,15 @@ def test_two_channel_lifecycle_uses_one_service_and_stops_owned_tasks(tmp_path, 
         async def sender(text):
             return "receipt"
         async def run_wechat(credentials, handler, stop, **kwargs):
+            kwargs.get("state_callback", lambda _state: None)("CONNECTED")
             try:
                 await handler(PersonalMessage("wechat", "bot", "owner", "1", "wechat text"), sender)
                 kwargs["cursor_store"].save("synthetic-cursor")
                 await stop.wait()
             finally:
                 stopped.append("wechat")
-        async def run_qq(url, token, account, owner, handler, stop):
+        async def run_qq(url, token, account, owner, handler, stop, **kwargs):
+            kwargs.get("state_callback", lambda _state: None)("CONNECTED")
             try:
                 await handler(PersonalMessage("qq", account, owner, "probe", "/连接测试"), sender)
                 await handler(PersonalMessage("qq", account, owner, "probe", "/连接测试"), sender)
@@ -281,8 +283,9 @@ def test_saved_config_is_loaded_on_normal_start_without_environment(tmp_path, mo
     monkeypatch.setattr(original_client_setup_api, "_dpapi_unprotect", lambda x: x)
     async def scenario():
         called = asyncio.Event()
-        async def run(url, token, account, owner, handle, stop):
+        async def run(url, token, account, owner, handle, stop, **kwargs):
             assert token == "synthetic-token-123456789" and account == "100" and owner == "200"
+            kwargs.get("state_callback", lambda _state: None)("CONNECTED")
             called.set()
             await stop.wait()
         monkeypatch.setattr(qq, "run_qq", run)
