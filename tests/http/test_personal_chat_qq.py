@@ -113,6 +113,7 @@ def test_read_disconnect_reconnects_and_stops_cleanly():
     async def scenario():
         stop = asyncio.Event()
         connections = []
+        states = []
         async def handler(message, send):
             assert message.message_id == "2"
             stop.set()
@@ -129,8 +130,16 @@ def test_read_disconnect_reconnects_and_stops_cleanly():
         app = web.Application()
         app.router.add_get("/", socket)
         async with TestServer(app) as server:
-            await asyncio.wait_for(run_qq(str(server.make_url("/")), TOKEN, "100", "200", handler, stop, reconnect_delay=.01), 3)
+            await asyncio.wait_for(
+                run_qq(
+                    str(server.make_url("/")), TOKEN, "100", "200", handler, stop,
+                    reconnect_delay=.01, state_callback=states.append,
+                ),
+                3,
+            )
         assert len(connections) == 2
+        assert states.count("CONNECTED") >= 2
+        assert "RECONNECTING" in states
     asyncio.run(scenario())
 
 
