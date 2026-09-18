@@ -10,6 +10,10 @@ CREDENTIALS = {"base": "https://ilinkai.weixin.qq.com", "token": "synthetic",
                "account": "bot", "owner": "owner"}
 
 
+def lifecycle(path):
+    return path.endswith("notifystart") or path.endswith("notifystop")
+
+
 def message(identifier, owner="owner"):
     return {"message_id": identifier, "from_user_id": owner, "to_user_id": "bot",
             "message_type": 1, "message_state": 2, "context_token": "private-context",
@@ -29,9 +33,12 @@ class Cursor:
 
 def test_owner_only_send_and_cursor_saved_after_checked_ack(monkeypatch):
     async def exercise():
-        stop, cursor, sends = asyncio.Event(), Cursor(), []
+        stop, cursor, sends, lifecycle_calls = asyncio.Event(), Cursor(), [], []
 
         async def request(session, base, path, **kwargs):
+            if lifecycle(path):
+                lifecycle_calls.append(path)
+                return {}
             if path.endswith("getupdates"):
                 assert kwargs["body"] == {"get_updates_buf": "old"}
                 return {"msgs": [message(1, "stranger"), message(2)], "get_updates_buf": "new"}
@@ -53,6 +60,7 @@ def test_owner_only_send_and_cursor_saved_after_checked_ack(monkeypatch):
         assert sends[0]["to_user_id"] == "owner"
         assert sends[0]["context_token"] == "private-context"
         assert sends[0]["item_list"][0]["text_item"]["text"] == "  reply\ntext  "
+        assert lifecycle_calls == ["/ilink/bot/msg/notifystart", "/ilink/bot/msg/notifystop"]
 
     asyncio.run(exercise())
 
@@ -62,6 +70,8 @@ def test_failed_handler_leaves_batch_replayable(monkeypatch):
         cursor, handled = Cursor(), []
 
         async def request(*args, **kwargs):
+            if lifecycle(args[2]):
+                return {}
             return {"msgs": [message(1), message(2), message(3)], "get_updates_buf": "new"}
 
         async def handle(event, send):
@@ -83,6 +93,8 @@ def test_unknown_send_is_not_retried(monkeypatch):
         stop, attempts = asyncio.Event(), []
 
         async def request(session, base, path, **kwargs):
+            if lifecycle(path):
+                return {}
             if path.endswith("getupdates"):
                 return {"msgs": [message(1)]}
             attempts.append(path)
@@ -107,6 +119,8 @@ def test_stop_cancels_long_poll(monkeypatch):
         stop, polling, cancelled = asyncio.Event(), asyncio.Event(), asyncio.Event()
 
         async def request(*args, **kwargs):
+            if lifecycle(args[2]):
+                return {}
             polling.set()
             try:
                 await asyncio.Event().wait()
@@ -128,6 +142,8 @@ def test_read_disconnect_retries_same_cursor(monkeypatch):
         stop, reads = asyncio.Event(), []
 
         async def request(session, base, path, **kwargs):
+            if lifecycle(path):
+                return {}
             reads.append(kwargs["body"]["get_updates_buf"])
             if len(reads) == 1:
                 raise aiohttp.ClientConnectionError("synthetic")
@@ -150,6 +166,8 @@ def test_missing_context_does_not_advance_cursor(monkeypatch):
         del raw["context_token"]
 
         async def request(*args, **kwargs):
+            if lifecycle(args[2]):
+                return {}
             return {"msgs": [raw], "get_updates_buf": "new"}
 
         monkeypatch.setattr(wechat, "wechat_request", request)
@@ -165,6 +183,8 @@ def test_authorization_rejection_stops_without_retry_or_secret_error(monkeypatch
         calls = []
 
         async def request(*args, **kwargs):
+            if lifecycle(args[2]):
+                return {}
             calls.append(1)
             raise aiohttp.ClientResponseError(None, (), status=401, message="private-token")
 
@@ -221,12 +241,37 @@ def test_expired_wechat_authorization_stops_for_rebind(monkeypatch):
         states = []
 
         async def request(*args, **kwargs):
+            if lifecycle(args[2]):
+                return {}
             raise aiohttp.ClientResponseError(
                 None, (), status=401, message="private-token-must-not-escape"
             )
 
         monkeypatch.setattr(wechat, "wechat_request", request)
         with pytest.raises(wechat.WechatAuthRequired, match="WECHAT_AUTH_REQUIRED"):
+            await wechat.run_wechat(
+                CREDENTIALS,
+                None,
+                asyncio.Event(),
+                reconnect_delay=.001,
+                state_callback=states.append,
+            )
+        assert states[-1] == "AUTH_REQUIRED"
+
+    asyncio.run(exercise())
+
+
+def test_stale_wechat_session_requires_rebind(monkeypatch):
+    async def exercise():
+        states = []
+
+        async def request(*args, **kwargs):
+            if lifecycle(args[2]):
+                return {}
+            raise ValueError("WECHAT_SESSION_STALE")
+
+        monkeypatch.setattr(wechat, "wechat_request", request)
+        with pytest.raises(wechat.WechatAuthRequired, match="WECHAT_SESSION_STALE"):
             await wechat.run_wechat(
                 CREDENTIALS,
                 None,
