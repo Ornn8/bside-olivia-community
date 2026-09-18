@@ -65,7 +65,6 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
     INSTALLER_READY: "安装器已准备",
     INSTALLER_OPENED: "安装窗口已打开",
     READY: "QQ 组件已安装",
-    STARTING: "正在启动…",
     AWAITING_QQ_LOGIN: "等待 QQ 登录",
     ONEBOT_PROBING: "QQ 已登录，正在检查 OneBot",
     ONEBOT_CONFIG_PENDING: "QQ 已登录，正在加载 OneBot 配置",
