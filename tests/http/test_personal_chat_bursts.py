@@ -130,3 +130,95 @@ def test_qq_burst_keeps_ack_reader_live():
             await asyncio.wait_for(run_qq(str(server.make_url('/')),TOKEN,'100','200',handle,stop,merge_seconds=.1),3)
         assert len(seen)==1 and len(seen[0].sources)==2
     asyncio.run(scenario())
+
+
+def test_qq_delayed_backlog_uses_platform_send_times_instead_of_arrival_burst():
+    from aiohttp import web
+    from aiohttp.test_utils import TestServer
+    from runtime.personal_chat.qq import run_qq
+    from tests.http.test_personal_chat_qq import login, event as raw_event, TOKEN
+
+    async def scenario():
+        stop = asyncio.Event()
+        seen = []
+
+        async def handle(message, send):
+            seen.append(message)
+            await send("回应-" + message.message_id)
+            if len(seen) == 2:
+                stop.set()
+
+        async def socket(request):
+            ws = web.WebSocketResponse()
+            await ws.prepare(request)
+            await login(ws)
+            base = 1_789_700_000
+            # They arrive together after reconnect, but were actually sent an hour apart.
+            await ws.send_json(raw_event(1, time=base))
+            await ws.send_json(raw_event(2, time=base + 3600))
+            for reply_id in (31, 32):
+                outgoing = await ws.receive_json()
+                await ws.send_json({
+                    "echo": outgoing["echo"], "status": "ok", "retcode": 0,
+                    "data": {"message_id": reply_id},
+                })
+            await stop.wait()
+            await ws.close()
+            return ws
+
+        app = web.Application()
+        app.router.add_get("/", socket)
+        async with TestServer(app) as server:
+            await asyncio.wait_for(
+                run_qq(
+                    str(server.make_url("/")), TOKEN, "100", "200", handle, stop,
+                    merge_seconds=.1,
+                ),
+                3,
+            )
+        assert [tuple(item.sources) for item in seen] == [
+            (("1", "hello"),),
+            (("2", "hello"),),
+        ]
+        assert seen[0].sent_at != seen[1].sent_at
+
+    asyncio.run(scenario())
+
+
+def test_wechat_delayed_backlog_uses_platform_send_times_instead_of_poll_batch(monkeypatch):
+    from runtime.personal_chat import wechat
+    from tests.http.test_personal_chat_wechat import message, CREDENTIALS, Cursor
+
+    async def scenario():
+        stop, cursor, seen = asyncio.Event(), Cursor(), []
+        first = message(1)
+        second = message(2)
+        first["create_time_ms"] = 1_789_700_000_000
+        second["create_time_ms"] = first["create_time_ms"] + 3_600_000
+
+        async def request(session, base, path, **kwargs):
+            if path.endswith("getupdates"):
+                if kwargs["body"]["get_updates_buf"] == "old":
+                    return {"msgs": [first, second], "get_updates_buf": "new"}
+                return {"msgs": [], "get_updates_buf": "new"}
+            return {}
+
+        async def handle(event, send):
+            seen.append(event)
+            if len(seen) == 2:
+                stop.set()
+
+        monkeypatch.setattr(wechat, "wechat_request", request)
+        await asyncio.wait_for(
+            wechat.run_wechat(
+                CREDENTIALS, handle, stop, cursor_store=cursor, merge_seconds=.1
+            ),
+            2,
+        )
+        assert [tuple(item.sources) for item in seen] == [
+            (("1", "hello"),),
+            (("2", "hello"),),
+        ]
+        assert cursor.value == "new"
+
+    asyncio.run(scenario())
