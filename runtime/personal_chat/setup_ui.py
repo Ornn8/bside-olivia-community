@@ -65,7 +65,16 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
     INSTALLER_READY: "安装器已准备",
     INSTALLER_OPENED: "安装窗口已打开",
     READY: "QQ 组件已安装",
+    STARTING: "正在启动…",
+    AWAITING_QQ_LOGIN: "等待 QQ 登录",
+    ONEBOT_PROBING: "QQ 已登录，正在检查 OneBot",
+    ONEBOT_CONFIG_PENDING: "QQ 已登录，正在加载 OneBot 配置",
+    ONEBOT_READY: "QQ 已登录，OneBot 已就绪",
     RUNNING: "QQ 组件正在运行",
+    E2E_VERIFIED: "端到端已验证",
+    PLATFORM_ACCEPTED: "平台已接受回复",
+    PLATFORM_CONFIRMED: "平台已确认回复",
+    UNCONFIRMED: "回复投递未确认",
     UNSUPPORTED: "当前系统不支持",
     FAILED: "连接失败",
   }[value] || value || "未知状态");
@@ -183,6 +192,19 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
       });
       top.append(left, start);
       box.append(top);
+      if (status.e2e_verified_at?.wechat) {
+        box.append(node("div", "端到端连接已验证：微信客户端确实收到了 Olivia 的测试回复。", "olivia-chat-copy"));
+      } else if (listener === "CONNECTED") {
+        const pending = (status.connection_test_pending || []).includes("wechat");
+        box.append(node("div",
+          pending
+            ? "连接测试进行中：请把微信里收到的 4 位验证码原样回复。"
+            : "接收链路正常。请在微信里发送 /连接测试；收到 4 位验证码后原样回复，完成真实端到端验证。",
+          "olivia-chat-copy"));
+      }
+      if (status.delivery_health?.wechat === "UNCONFIRMED") {
+        box.append(node("div", "最近一次微信回复只得到表面成功响应，客户端投递尚未确认；Olivia 不会自动重发，避免重复消息。", "olivia-chat-error"));
+      }
 
       if (status.wechat?.qr_data && ["SCAN_REQUIRED", "SCANNED", "VERIFY_REQUIRED"].includes(status.wechat.state)) {
         const image = document.createElement("img");
@@ -265,8 +287,9 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
             await refresh(true);
           } catch (error) { renderError(component, error); }
         }));
-      } else if (napcat.installed) {
-        componentTop.append(action(napcat.state === "RUNNING" ? "重新打开 QQ 登录" : "启动并登录 QQ", async () => {
+      } else if (napcat.installed && napcat.state !== "ONEBOT_READY") {
+        const label = napcat.state === "AWAITING_QQ_LOGIN" ? "重新打开 QQ 登录" : "启动并登录 QQ";
+        componentTop.append(action(label, async () => {
           try {
             await request(NAPCAT_START, {method: "POST", body: {}});
             await refresh(true);
@@ -275,21 +298,27 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
       }
       component.append(componentTop);
       if (napcat.state === "DOWNLOADING") {
-        component.append(node("div", "正在获取并校验 NapCat 发布的一键安装器。", "olivia-chat-copy"));
-      } else if (napcat.state === "INSTALLER_OPENED") {
-        component.append(node("div", "NapCat 安装窗口已经打开。完成安装后无需返回配置文件，这里会自动检测。", "olivia-chat-copy"));
+        component.append(node("div", "正在获取并校验 NapCat 发布的固定 Node 运行包。", "olivia-chat-copy"));
+      } else if (napcat.state === "AWAITING_QQ_LOGIN") {
+        component.append(node("div", "NapCat WebUI 已真实启动。请在本机登录页完成 QQ 登录；Olivia 会自动等待 OneBot 就绪。", "olivia-chat-copy"));
+      } else if (napcat.state === "ONEBOT_PROBING") {
+        component.append(node("div", "已经检测到 OneBot 端口，正在确认真实登录账号。", "olivia-chat-copy"));
+      } else if (napcat.state === "ONEBOT_CONFIG_PENDING") {
+        component.append(node("div", "QQ 已登录，正在等待 NapCat 把默认 OneBot 配置落成账号专属配置。", "olivia-chat-copy"));
+      } else if (napcat.state === "ONEBOT_READY") {
+        component.append(node("div", "QQ 已登录，账号专属 OneBot 配置和 127.0.0.1:3001 都已验证。", "olivia-chat-copy"));
       } else if (napcat.installed) {
-        component.append(node("div", "Olivia 会自动准备仅监听 127.0.0.1 的 OneBot 连接和随机 Token。点击“启动并登录 QQ”后会打开本机登录页。", "olivia-chat-copy"));
+        component.append(node("div", "Olivia 会使用 NapCat 的自包含 Node 包，自动准备仅监听 127.0.0.1 的 OneBot 连接和随机 Token。", "olivia-chat-copy"));
       } else {
         component.append(node("div", "点击一键安装即可。Olivia 不会把 NapCat 打进补丁包，而是从 NapCat 发布页下载固定版本并校验 SHA-256。", "olivia-chat-copy"));
       }
       if (napcat.error) renderError(component, {code: napcat.error});
       box.append(component);
 
-      if (napcat.installed) {
+      if (napcat.state === "ONEBOT_READY") {
         const managed = node("div", null, "olivia-chat-subcard");
-        managed.append(node("div", "登录完成后连接", "olivia-chat-name"));
-        managed.append(node("div", "只需要填写你自己的 QQ 号。机器人 QQ 会从已经登录的 NapCat 自动读取。", "olivia-chat-copy"));
+        managed.append(node("div", "OneBot 已就绪", "olivia-chat-name"));
+        managed.append(node("div", "机器人 QQ 已由 NapCat 自动识别并复核。现在只需要填写你自己的 QQ 号。", "olivia-chat-copy"));
         const owner = input("你的 QQ 号");
         owner.style.marginTop = "10px";
         managed.append(owner);
@@ -304,6 +333,17 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
         box.append(managed);
       }
 
+      if (status.e2e_verified_at?.qq) {
+        box.append(node("div", "端到端连接已验证：QQ 客户端确实收到了 Olivia 的测试回复。", "olivia-chat-copy"));
+      } else if (listener === "CONNECTED") {
+        const pending = (status.connection_test_pending || []).includes("qq");
+        box.append(node("div",
+          pending
+            ? "连接测试进行中：请把 QQ 里收到的 4 位验证码原样回复。"
+            : "协议连接正常。请在 QQ 里发送 /连接测试；收到 4 位验证码后原样回复，完成真实端到端验证。",
+          "olivia-chat-copy"));
+      }
+
       box.append(renderAdvancedQQ(box));
       if (status.qq?.error) renderError(box, {code: status.qq.error});
       return box;
@@ -315,7 +355,7 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
         pollTimer = null;
       }
       const wechatBusy = ["STARTING", "SCAN_REQUIRED", "SCANNED", "VERIFY_REQUIRED"].includes(status.wechat?.state);
-      const napcatBusy = ["DOWNLOADING", "INSTALLER_READY", "INSTALLER_OPENED", "STARTING", "RUNNING"].includes(status.napcat?.state);
+      const napcatBusy = ["DOWNLOADING", "INSTALLER_READY", "INSTALLER_OPENED", "STARTING", "AWAITING_QQ_LOGIN", "ONEBOT_PROBING", "ONEBOT_CONFIG_PENDING"].includes(status.napcat?.state);
       const transportBusy = Object.values(status.listeners || {}).some((value) => ["CONNECTING", "RECONNECTING"].includes(value));
       if (wechatBusy || napcatBusy || transportBusy) pollTimer = setTimeout(() => refresh(true), 2000);
     };
