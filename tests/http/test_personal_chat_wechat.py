@@ -169,7 +169,7 @@ def test_authorization_rejection_stops_without_retry_or_secret_error(monkeypatch
             raise aiohttp.ClientResponseError(None, (), status=401, message="private-token")
 
         monkeypatch.setattr(wechat, "wechat_request", request)
-        with pytest.raises(RuntimeError, match="WECHAT_POLL_REJECTED") as caught:
+        with pytest.raises(wechat.WechatAuthRequired, match="WECHAT_AUTH_REQUIRED") as caught:
             await wechat.run_wechat(CREDENTIALS, None, asyncio.Event(), merge_seconds=0)
         assert "private-token" not in str(caught.value)
         assert len(calls) == 1
