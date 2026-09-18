@@ -175,3 +175,65 @@ def test_authorization_rejection_stops_without_retry_or_secret_error(monkeypatch
         assert len(calls) == 1
 
     asyncio.run(exercise())
+
+
+def test_long_transient_outage_keeps_polling_until_recovery(monkeypatch):
+    async def exercise():
+        stop = asyncio.Event()
+        reads = 0
+        states = []
+
+        async def request(session, base, path, **kwargs):
+            nonlocal reads
+            if path.endswith("getupdates"):
+                reads += 1
+                if reads <= 8:
+                    raise aiohttp.ClientConnectionError("synthetic outage")
+                return {"msgs": [message(9)], "get_updates_buf": "recovered"}
+            return {}
+
+        async def handle(event, send):
+            assert event.message_id == "9"
+            stop.set()
+
+        monkeypatch.setattr(wechat, "wechat_request", request)
+        await asyncio.wait_for(
+            wechat.run_wechat(
+                CREDENTIALS,
+                handle,
+                stop,
+                cursor_store=Cursor(),
+                merge_seconds=0,
+                reconnect_delay=.001,
+                state_callback=states.append,
+            ),
+            2,
+        )
+        assert reads == 9
+        assert states.count("RECONNECTING") >= 8
+        assert "CONNECTED" in states
+
+    asyncio.run(exercise())
+
+
+def test_expired_wechat_authorization_stops_for_rebind(monkeypatch):
+    async def exercise():
+        states = []
+
+        async def request(*args, **kwargs):
+            raise aiohttp.ClientResponseError(
+                None, (), status=401, message="private-token-must-not-escape"
+            )
+
+        monkeypatch.setattr(wechat, "wechat_request", request)
+        with pytest.raises(wechat.WechatAuthRequired, match="WECHAT_AUTH_REQUIRED"):
+            await wechat.run_wechat(
+                CREDENTIALS,
+                None,
+                asyncio.Event(),
+                reconnect_delay=.001,
+                state_callback=states.append,
+            )
+        assert states[-1] == "AUTH_REQUIRED"
+
+    asyncio.run(exercise())
