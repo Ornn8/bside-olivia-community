@@ -3,6 +3,7 @@ import asyncio
 from contextvars import ContextVar
 from datetime import datetime, timezone
 import json
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -205,7 +206,7 @@ def test_two_channel_lifecycle_uses_one_service_and_stops_owned_tasks(tmp_path, 
     monkeypatch.setenv("OLIVIA_PERSONAL_QQ_TOKEN", "synthetic-token-123456789")
     monkeypatch.setattr(original_client_setup_api, "_dpapi_unprotect", lambda value: value)
     async def scenario():
-        seen, stopped = [], []
+        seen, stopped, sent = [], [], []
         async def generate(server, event, row):
             seen.append(event.channel)
             await asyncio.sleep(0)
@@ -213,6 +214,7 @@ def test_two_channel_lifecycle_uses_one_service_and_stops_owned_tasks(tmp_path, 
         async def commit(server, row):
             assert row["delivery_status"] == "DELIVERED"
         async def sender(text):
+            sent.append(text)
             return "receipt"
         async def run_wechat(credentials, handler, stop, **kwargs):
             kwargs.get("state_callback", lambda _state: None)("CONNECTED")
@@ -226,7 +228,9 @@ def test_two_channel_lifecycle_uses_one_service_and_stops_owned_tasks(tmp_path, 
             kwargs.get("state_callback", lambda _state: None)("CONNECTED")
             try:
                 await handler(PersonalMessage("qq", account, owner, "probe", "/连接测试"), sender)
-                await handler(PersonalMessage("qq", account, owner, "probe", "/连接测试"), sender)
+                challenge = re.search(r"([0-9]{4})", sent[-1])
+                assert challenge is not None
+                await handler(PersonalMessage("qq", account, owner, "probe-code", challenge.group(1)), sender)
                 await handler(PersonalMessage("qq", account, owner, "1", "qq text"), sender)
                 await stop.wait()
             finally:
@@ -252,6 +256,8 @@ def test_two_channel_lifecycle_uses_one_service_and_stops_owned_tasks(tmp_path, 
         assert server.store.letters == [] and len(server.store.personal_chats) == 2
         assert server.store.settings == {} and list(server.store.personal_chat_cursors.values()) == ["synthetic-cursor"]
         assert app[backend._RUNTIME]["roundtrips"] == {"qq": 1}
+        assert "qq" in app[backend._RUNTIME]["e2e_verified_at"]
+        assert app[backend._RUNTIME]["delivery_health"]["qq"] == "E2E_VERIFIED"
     asyncio.run(scenario())
 
 

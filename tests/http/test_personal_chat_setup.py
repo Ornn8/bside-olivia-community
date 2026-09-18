@@ -191,13 +191,17 @@ def test_managed_qq_only_needs_owner_after_napcat_login(
     async def fake_probe(url: str, token: str, account: str | None = None) -> str:
         assert url == "ws://127.0.0.1:3001"
         assert token == "managed-synthetic-token-123456"
-        assert account is None
+        assert account == "123456789"
         return "123456789"
 
     monkeypatch.setattr(setup, "_qq_probe", fake_probe)
+    monkeypatch.setattr(napcat_installer, "account_config_ready", lambda _root, _account: True)
     monkeypatch.setattr(original_client_setup_api, "_dpapi_protect", lambda _value: "managed-ciphertext")
     app = web.Application()
     setup.install_setup_routes(app, server)
+    runtime = app[setup._SETUP]
+    runtime["napcat_state"] = "ONEBOT_READY"
+    runtime["napcat_account"] = "123456789"
 
     async def scenario() -> None:
         async with TestClient(TestServer(app)) as client:

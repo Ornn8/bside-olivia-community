@@ -9,7 +9,7 @@ import pytest
 from runtime.personal_chat.probe import ProbeJournal, checked_url, qq
 
 
-@pytest.mark.parametrize("ack,passes", [({}, True), ({"ret": 0}, True),
+@pytest.mark.parametrize("ack,passes", [({"message_id": "42"}, True), ({}, False), ({"ret": 0}, False),
     ({"ret": -1}, False), ({"errcode": -14}, False)])
 def test_wechat_send_ack_matches_official_optional_ret(tmp_path, monkeypatch, ack, passes):
     from runtime.personal_chat import probe
@@ -26,6 +26,8 @@ def test_wechat_send_ack_matches_official_optional_ret(tmp_path, monkeypatch, ac
                 "message_type": 1, "message_state": 2, "context_token": "synthetic-context",
                 "item_list": [{"type": 1, "text_item": {"text": "/连接测试"}}]}]}
         # The shared HTTP wrapper rejects explicit business errors.
+        if ack.get("ret", 0) == -14 or ack.get("errcode", 0) == -14:
+            raise ValueError("WECHAT_SESSION_STALE")
         if ack.get("ret", 0) != 0 or ack.get("errcode", 0) != 0:
             raise RuntimeError("WECHAT_API_REJECTED")
         return ack
@@ -36,7 +38,7 @@ def test_wechat_send_ack_matches_official_optional_ret(tmp_path, monkeypatch, ac
         if passes:
             asyncio.run(probe.wechat(args, None, journal))
         else:
-            with pytest.raises(RuntimeError):
+            with pytest.raises((RuntimeError, ValueError)):
                 asyncio.run(probe.wechat(args, None, journal))
         assert journal.db.execute("SELECT state FROM sent").fetchall() == [("sent" if passes else "sending",)]
         assert calls.count("/ilink/bot/sendmessage") == 1
@@ -58,6 +60,29 @@ def test_wechat_accepts_live_binary_mime_json_and_checks_business_result(monkeyp
             result = await probe.wechat_request(client, str(server.make_url("/")).rstrip("/"),
                 "/ilink/bot/getupdates", token="synthetic-test-token", body={"get_updates_buf": ""})
             assert result == {"ret": 0, "msgs": []}
+    asyncio.run(scenario())
+
+
+
+def test_wechat_request_surfaces_stale_session(monkeypatch):
+    from runtime.personal_chat import probe
+    monkeypatch.setattr(probe, "checked_url", lambda value: value)
+
+    async def scenario():
+        async def endpoint(_request):
+            return web.json_response({"errcode": -14, "errmsg": "stale"})
+        app = web.Application()
+        app.router.add_post("/ilink/bot/getupdates", endpoint)
+        async with TestServer(app) as server, ClientSession() as client:
+            with pytest.raises(ValueError, match="WECHAT_SESSION_STALE"):
+                await probe.wechat_request(
+                    client,
+                    str(server.make_url("/")).rstrip("/"),
+                    "/ilink/bot/getupdates",
+                    token="synthetic-test-token",
+                    body={"get_updates_buf": ""},
+                )
+
     asyncio.run(scenario())
 
 

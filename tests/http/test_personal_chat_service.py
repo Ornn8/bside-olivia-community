@@ -137,3 +137,38 @@ def test_oversized_reply_fails_before_any_send_reservation():
             await service.handle(PersonalMessage("qq", "b", "owner", "1", "hi"), unexpected)
         assert "SENDING" not in states
     asyncio.run(scenario())
+
+
+def test_wechat_unconfirmed_platform_ack_is_not_committed_or_retried():
+    async def scenario():
+        rows, calls = [], []
+
+        async def generate(event, row):
+            calls.append("generate")
+            return "答复"
+
+        async def send(text):
+            calls.append("send")
+            return {"ret": 0}
+
+        send.delivery_confirmation = lambda response: "UNCONFIRMED"
+
+        async def commit(row):
+            calls.append("commit")
+
+        event = PersonalMessage("wechat", "bot", "owner", "1", "你好")
+        service = PersonalChatService(rows, lambda: None, generate, commit, {"wechat": ("bot", "owner")})
+        await service.handle(event, send)
+        assert rows[0]["delivery_status"] == "DELIVERY_UNCONFIRMED"
+        assert rows[0]["letter_status"] == "PROCESSING"
+        assert rows[0]["transport_confirmation"] == "UNCONFIRMED"
+        assert rows[0]["wechat_send_response"] == {"ret": 0}
+        assert rows[0]["error_code"] == "PERSONAL_CHAT_DELIVERY_UNCONFIRMED"
+        assert calls == ["generate", "send"]
+
+        restarted = PersonalChatService(json.loads(json.dumps(rows)), lambda: None, generate, commit, service.bindings)
+        with pytest.raises(RuntimeError, match="REQUIRES_ATTENTION"):
+            await restarted.handle(event, send)
+        assert calls == ["generate", "send"]
+
+    asyncio.run(scenario())

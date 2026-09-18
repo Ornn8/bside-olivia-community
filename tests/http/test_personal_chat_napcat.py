@@ -114,6 +114,7 @@ def test_napcat_login_page_opens_only_loopback_webui(
         encoding="utf-8",
     )
     seen: list[str] = []
+    monkeypatch.setattr(module, "webui_available", lambda _root: True)
     monkeypatch.setattr(module.webbrowser, "open", lambda url, new=0: seen.append(url) or True)
 
     assert module.open_login_page(tmp_path) is True
@@ -136,3 +137,15 @@ def test_napcat_public_status_exposes_only_sanitized_error(tmp_path: Path) -> No
 
     status = module.public_status(tmp_path, {"napcat_state": "FAILED", "napcat_error": "NAPCAT_DOWNLOAD_FAILED"})
     assert status["error"] == "NAPCAT_DOWNLOAD_FAILED"
+
+
+def test_account_specific_onebot_config_is_required_after_login(tmp_path: Path) -> None:
+    from runtime.personal_chat import napcat_installer as module
+
+    _shell(tmp_path)
+    config = tmp_path / "personal-chat" / "napcat" / "workdir" / "config"
+    config.mkdir(parents=True, exist_ok=True)
+    (config / "onebot11.json").write_text("{}", encoding="utf-8")
+    assert module.account_config_ready(tmp_path, "123456789") is False
+    (config / "onebot11_123456789.json").write_text("{}", encoding="utf-8")
+    assert module.account_config_ready(tmp_path, "123456789") is True

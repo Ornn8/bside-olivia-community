@@ -37,7 +37,7 @@ class PersonalChatService:
                     raise ValueError('PERSONAL_CHAT_ID_CONFLICT')
                 stored = PersonalMessage(event.channel, event.account_id, event.owner_id,
                     next(iter(sources)), row['content'], tuple(sources.items()), row.get('input_kind','text'), row.get('user_sent_at'))
-                terminal = row.get('delivery_status') == 'SENDING' or (
+                terminal = row.get('delivery_status') in {'SENDING', 'DELIVERY_UNCONFIRMED'} or (
                     row.get('delivery_status') == 'FAILED' and row.get('generation_attempts', 0) >= 2)
                 if not terminal or remaining.keys() == overlap:
                     await self._handle_one(stored, send.for_exchange(stored) if callable(getattr(send, 'for_exchange', None)) else send)
@@ -124,7 +124,7 @@ class PersonalChatService:
             if proactive:
                 normalized = lambda value: re.sub(r'[\s。.]', '', value)
                 cutoff = datetime.now(timezone.utc).timestamp() - 86400
-                if any(old is not row and old.get('delivery_status') in {'DELIVERED', 'SENDING'}
+                if any(old is not row and old.get('delivery_status') in {'DELIVERED', 'SENDING', 'DELIVERY_UNCONFIRMED'}
                        and float(old.get('created_at', 0)) >= cutoff
                        and normalized(old.get('reply_text', '')) == normalized(text)
                        for old in self.rows):
@@ -143,17 +143,30 @@ class PersonalChatService:
                 row['reply_text'] = text
             row["delivery_status"] = "SENDING"
             self.persist()
+            receipt = None
             try:
                 if audio and callable(getattr(send, 'audio', None)):
-                    await send.audio(audio)
+                    receipt = await send.audio(audio)
                     row['delivered_format'] = 'audio'
                 else:
-                    await send(row["reply_text"])
+                    receipt = await send(row["reply_text"])
                     row['delivered_format'] = 'text'
             except BaseException:
                 row["error_code"] = "PERSONAL_CHAT_DELIVERY_UNKNOWN"
                 self.persist()
                 raise
+            classifier = getattr(send, 'delivery_confirmation', None)
+            if callable(classifier):
+                confirmation = classifier(receipt)
+                row['transport_confirmation'] = confirmation
+                if event.channel == 'wechat' and isinstance(receipt, dict):
+                    row['wechat_send_response'] = receipt
+                if confirmation == 'UNCONFIRMED':
+                    row.update(delivery_status='DELIVERY_UNCONFIRMED',
+                               letter_status='PROCESSING',
+                               error_code='PERSONAL_CHAT_DELIVERY_UNCONFIRMED')
+                    self.persist()
+                    return
             row.update(delivery_status="DELIVERED", letter_status="COMPLETED", reply_revision=1,
                        private_world_status="PENDING", daily_life_status="PENDING",
                        private_world_delivery_id=event.exchange_id + ":1",
