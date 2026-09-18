@@ -221,6 +221,9 @@ def _public_status(request: web.Request, server) -> dict[str, object]:
     active = request.app.get(backend._RUNTIME)
     listener = dict(active.get("status", {})) if isinstance(active, dict) else {}
     last_seen_at = dict(active.get("last_seen_at", {})) if isinstance(active, dict) else {}
+    delivery_health = dict(active.get("delivery_health", {})) if isinstance(active, dict) else {}
+    e2e_verified_at = dict(active.get("e2e_verified_at", {})) if isinstance(active, dict) else {}
+    pending_tests = set(active.get("connection_tests", {}).keys()) if isinstance(active, dict) else set()
     runtime = request.app[_SETUP]
     wechat = dict(runtime.get("wechat", {"state": "IDLE"}))
     wechat.pop("qrcode", None)
@@ -238,6 +241,9 @@ def _public_status(request: web.Request, server) -> dict[str, object]:
             for name in selected
         },
         "last_seen_at": {name: last_seen_at.get(name) for name in selected if last_seen_at.get(name)},
+        "delivery_health": {name: delivery_health.get(name) for name in selected if delivery_health.get(name)},
+        "e2e_verified_at": {name: e2e_verified_at.get(name) for name in selected if e2e_verified_at.get(name)},
+        "connection_test_pending": sorted(name for name in selected if name in pending_tests),
         "wechat": wechat,
         "qq": qq,
         "napcat": napcat_installer.public_status(_root(server), runtime),
@@ -382,6 +388,8 @@ async def _open_napcat_login(server, runtime: dict[str, object]) -> None:
             opened = False
         if opened:
             runtime["napcat_login_opened"] = True
+            if runtime.get("napcat_state") != "ONEBOT_READY":
+                runtime["napcat_state"] = "AWAITING_QQ_LOGIN"
             return
 
 
@@ -397,8 +405,33 @@ def install_setup_routes(app: web.Application, server) -> None:
         "napcat_login_task": None,
         "napcat_watchdog_task": None,
         "napcat_shell_process": None,
+        "napcat_account": None,
     }
     app[_SETUP] = runtime
+
+    async def refresh_managed_napcat_state() -> str:
+        from . import napcat_installer
+
+        root = _root(server)
+        if await asyncio.to_thread(napcat_installer.onebot_available):
+            try:
+                url, token = await asyncio.to_thread(napcat_installer.managed_connection, root)
+                account = await _qq_probe(url, token)
+            except Exception:
+                runtime["napcat_state"] = "ONEBOT_PROBING"
+                return "ONEBOT_PROBING"
+            runtime["napcat_account"] = account
+            ready = await asyncio.to_thread(napcat_installer.account_config_ready, root, account)
+            runtime["napcat_state"] = "ONEBOT_READY" if ready else "ONEBOT_CONFIG_PENDING"
+            if ready:
+                runtime.pop("napcat_error", None)
+            return str(runtime["napcat_state"])
+        runtime["napcat_account"] = None
+        if await asyncio.to_thread(napcat_installer.webui_available, root):
+            runtime["napcat_state"] = "AWAITING_QQ_LOGIN"
+            return "AWAITING_QQ_LOGIN"
+        runtime["napcat_state"] = "STARTING"
+        return "STARTING"
 
     async def napcat_watchdog() -> None:
         from . import napcat_installer
@@ -412,18 +445,14 @@ def install_setup_routes(app: web.Application, server) -> None:
                     return
                 process = runtime.get("napcat_shell_process")
                 alive = process is not None and getattr(process, "poll", lambda: 0)() is None
-                available = await asyncio.to_thread(napcat_installer.onebot_available)
-                if available:
-                    runtime["napcat_state"] = "RUNNING"
-                    runtime.pop("napcat_error", None)
+                state = await refresh_managed_napcat_state()
+                if state != "STARTING":
                     continue
                 if alive:
-                    runtime["napcat_state"] = "STARTING"
                     continue
-                runtime["napcat_state"] = "STARTING"
                 process = await asyncio.to_thread(napcat_installer.ensure_shell, _root(server))
                 runtime["napcat_shell_process"] = process
-                runtime["napcat_state"] = "RUNNING" if await asyncio.to_thread(napcat_installer.onebot_available) else "STARTING"
+                await refresh_managed_napcat_state()
                 runtime.pop("napcat_error", None)
             except asyncio.CancelledError:
                 raise
@@ -442,7 +471,7 @@ def install_setup_routes(app: web.Application, server) -> None:
             runtime["napcat_state"] = "STARTING"
             process = await asyncio.to_thread(napcat_installer.ensure_shell, _root(server))
             runtime["napcat_shell_process"] = process
-            runtime["napcat_state"] = "RUNNING" if await asyncio.to_thread(napcat_installer.onebot_available) else "STARTING"
+            await refresh_managed_napcat_state()
             task = runtime.get("napcat_watchdog_task")
             if not isinstance(task, asyncio.Task) or task.done():
                 runtime["napcat_watchdog_task"] = asyncio.create_task(napcat_watchdog())
@@ -532,12 +561,12 @@ def install_setup_routes(app: web.Application, server) -> None:
             process = await asyncio.to_thread(napcat_installer.ensure_shell, _root(server))
             if process is not None:
                 runtime["napcat_shell_process"] = process
+            await refresh_managed_napcat_state()
             login_task = runtime.get("napcat_login_task")
             if not isinstance(login_task, asyncio.Task) or login_task.done():
                 login_task = asyncio.create_task(_open_napcat_login(server, runtime))
                 runtime["napcat_login_task"] = login_task
-            runtime["napcat_state"] = "RUNNING"
-            return web.json_response({"status": "RUNNING"}, status=202)
+            return web.json_response({"status": str(runtime.get("napcat_state") or "STARTING")}, status=202)
         except Exception as exc:
             code = _failure_code(exc)
             runtime["napcat_state"] = "FAILED"
@@ -561,10 +590,19 @@ def install_setup_routes(app: web.Application, server) -> None:
             if managed:
                 from . import napcat_installer
 
+                if runtime.get("napcat_state") != "ONEBOT_READY":
+                    raise RuntimeError("QQ_LOGIN_UNAVAILABLE")
+                expected = str(runtime.get("napcat_account") or "")
+                if not _QQ_ID.fullmatch(expected):
+                    raise RuntimeError("QQ_LOGIN_UNAVAILABLE")
                 url, token = await asyncio.to_thread(
                     napcat_installer.managed_connection, _root(server)
                 )
-                account = await _qq_probe(url, token)
+                account = await _qq_probe(url, token, expected)
+                if not await asyncio.to_thread(
+                    napcat_installer.account_config_ready, _root(server), account
+                ):
+                    raise RuntimeError("NAPCAT_ONEBOT_CONFIG_PENDING")
             else:
                 account = str(body.get("account", "")).strip()
                 token = str(body.get("token", ""))
