@@ -32,8 +32,11 @@ def test_generation_timeout_retries_then_receives_next_wechat_message(tmp_path, 
             raise asyncio.TimeoutError()
         return '慢慢说，我听着呢。'
     async def request(*args, **kwargs):
+        path = args[2]
+        if path.endswith("notifystart") or path.endswith("notifystop"):
+            return {}
         calls.append('send')
-        return {}
+        return {"message_id": f"synthetic-{calls.count('send')}"}
     async def commit(*args):
         calls.append('commit')
     monkeypatch.setattr(wechat, 'wechat_request', request)
