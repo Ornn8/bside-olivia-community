@@ -93,6 +93,7 @@ async def run_wechat(credentials, handle_message, stop_event, *, cursor_store=No
     if reconnect_delay <= 0:
         raise ValueError("WECHAT_RECONNECT_DELAY_INVALID")
     failures = 0
+    connected = False
 
     def publish(state):
         if callable(state_callback):
@@ -101,7 +102,8 @@ async def run_wechat(credentials, handle_message, stop_event, *, cursor_store=No
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=45)) as session:
         while not stop_event.is_set():
             try:
-                publish("CONNECTING" if failures == 0 else "RECONNECTING")
+                if not connected:
+                    publish("CONNECTING" if failures == 0 else "RECONNECTING")
                 batch = await _read_until_stopped(session, credentials, cursor, stop_event)
             except (aiohttp.ClientConnectionError, asyncio.TimeoutError):
                 batch = None
@@ -115,6 +117,7 @@ async def run_wechat(credentials, handle_message, stop_event, *, cursor_store=No
             if stop_event.is_set():
                 break
             if batch is None:
+                connected = False
                 publish("RECONNECTING")
                 failures += 1
                 try:
@@ -126,6 +129,7 @@ async def run_wechat(credentials, handle_message, stop_event, *, cursor_store=No
                     pass
                 continue
             failures = 0
+            connected = True
             publish("CONNECTED")
             messages = batch.get("msgs", [])
             next_cursor = batch.get("get_updates_buf", cursor)
