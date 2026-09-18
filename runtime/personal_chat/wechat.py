@@ -8,6 +8,10 @@ from .events import owner_message, combine, mergeable_by_sent_time
 from .probe import checked_url, wechat_request
 
 
+class WechatAuthRequired(ValueError):
+    pass
+
+
 async def _read_until_stopped(session, credentials, cursor, stop_event):
     read = asyncio.create_task(wechat_request(
         session, credentials["base"], "/ilink/bot/getupdates",
@@ -66,7 +70,8 @@ def _sender(session, credentials, event, context_token):
     return send
 
 
-async def run_wechat(credentials, handle_message, stop_event, *, cursor_store=None, merge_seconds=2):
+async def run_wechat(credentials, handle_message, stop_event, *, cursor_store=None, merge_seconds=2,
+                     reconnect_delay=1, state_callback=None):
     """Run one authorized owner account, with no model or memory logic here.
 
     ``handle_message(event, send)`` must durably deduplicate ``exchange_id`` and
@@ -85,29 +90,43 @@ async def run_wechat(credentials, handle_message, stop_event, *, cursor_store=No
     cursor = cursor_store.load() if cursor_store is not None else ""
     if not isinstance(cursor, str):
         raise ValueError("WECHAT_CURSOR_INVALID")
+    if reconnect_delay <= 0:
+        raise ValueError("WECHAT_RECONNECT_DELAY_INVALID")
     failures = 0
+
+    def publish(state):
+        if callable(state_callback):
+            state_callback(state)
+
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=45)) as session:
         while not stop_event.is_set():
             try:
+                publish("CONNECTING" if failures == 0 else "RECONNECTING")
                 batch = await _read_until_stopped(session, credentials, cursor, stop_event)
             except (aiohttp.ClientConnectionError, asyncio.TimeoutError):
                 batch = None
             except aiohttp.ClientResponseError as exc:
+                if exc.status in {401, 403}:
+                    publish("AUTH_REQUIRED")
+                    raise WechatAuthRequired("WECHAT_AUTH_REQUIRED") from None
                 if exc.status != 429 and exc.status < 500:
                     raise RuntimeError("WECHAT_POLL_REJECTED") from None
                 batch = None
             if stop_event.is_set():
                 break
             if batch is None:
+                publish("RECONNECTING")
                 failures += 1
-                if failures > 6:
-                    raise RuntimeError("WECHAT_POLL_UNAVAILABLE")
                 try:
-                    await asyncio.wait_for(stop_event.wait(), min(2 ** (failures - 1), 30))
+                    await asyncio.wait_for(
+                        stop_event.wait(),
+                        min(30, reconnect_delay * 2 ** min(failures - 1, 5)),
+                    )
                 except asyncio.TimeoutError:
                     pass
                 continue
             failures = 0
+            publish("CONNECTED")
             messages = batch.get("msgs", [])
             next_cursor = batch.get("get_updates_buf", cursor)
             if not isinstance(messages, list) or not isinstance(next_cursor, str):
