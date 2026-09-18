@@ -57,7 +57,7 @@ def test_generation_timeout_retries_then_receives_next_wechat_message(tmp_path, 
             await asyncio.sleep(.01)
             if calls.count('send') == 2:
                 break
-        assert app[backend._RUNTIME]['status']['wechat'] == 'LISTENING'
+        assert app[backend._RUNTIME]['status']['wechat'] == 'CONNECTED'
         assert calls.count('generate') == 3 and calls.count('send') == 2
         assert [r['delivery_status'] for r in server.store.personal_chats] == ['DELIVERED', 'DELIVERED']
         assert [r['generation_attempts'] for r in server.store.personal_chats] == [2, 1]

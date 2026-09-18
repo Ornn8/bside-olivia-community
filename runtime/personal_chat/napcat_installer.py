@@ -336,6 +336,11 @@ def _onebot_port_open() -> bool:
         return False
 
 
+def onebot_available() -> bool:
+    """Content-free liveness check for the managed local OneBot endpoint."""
+    return _onebot_port_open()
+
+
 def launch_shell(data_root: Path) -> subprocess.Popen:
     if os.name != "nt":
         raise NapCatSetupError("NAPCAT_WINDOWS_REQUIRED")
@@ -400,6 +405,7 @@ __all__ = [
     "launch_shell",
     "managed_connection",
     "open_login_page",
+    "onebot_available",
     "prepare_installer",
     "prepare_onebot",
     "public_status",

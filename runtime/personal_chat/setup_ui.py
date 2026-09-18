@@ -54,8 +54,11 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
     VERIFY_REQUIRED: "需要输入微信验证码",
     TESTING: "正在检查连接…",
     READY_RESTART: "绑定成功，重启 Olivia 后生效",
+    CONNECTING: "正在连接",
+    CONNECTED: "已连接",
     LISTENING: "已连接",
     RECONNECTING: "正在重连",
+    AUTH_REQUIRED: "登录已失效，需要重新绑定",
     SETUP_REQUIRED: "需要设置",
     CONFIGURED_RESTART: "已保存，重启 Olivia 后生效",
     DOWNLOADING: "正在下载 QQ 组件…",
@@ -313,7 +316,8 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
       }
       const wechatBusy = ["STARTING", "SCAN_REQUIRED", "SCANNED", "VERIFY_REQUIRED"].includes(status.wechat?.state);
       const napcatBusy = ["DOWNLOADING", "INSTALLER_READY", "INSTALLER_OPENED", "STARTING", "RUNNING"].includes(status.napcat?.state);
-      if (wechatBusy || napcatBusy) pollTimer = setTimeout(() => refresh(true), 2000);
+      const transportBusy = Object.values(status.listeners || {}).some((value) => ["CONNECTING", "RECONNECTING"].includes(value));
+      if (wechatBusy || napcatBusy || transportBusy) pollTimer = setTimeout(() => refresh(true), 2000);
     };
 
     async function refresh(silent = false) {
