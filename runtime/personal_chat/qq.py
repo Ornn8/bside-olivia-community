@@ -12,6 +12,10 @@ from .probe import checked_url
 log = logging.getLogger(__name__)
 
 
+class QQAuthRequired(ValueError):
+    pass
+
+
 def _ack(raw):
     if raw.get("status") != "ok" or raw.get("retcode") != 0 or not isinstance(raw.get("data"), dict):
         raise RuntimeError("QQ_ACTION_UNCONFIRMED")
@@ -31,7 +35,13 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
             except (ValueError, TypeError):
                 continue
             if isinstance(raw, dict) and raw.get("echo") == login_echo:
-                if str(_ack(raw).get("user_id", "")) != account_id:
+                try:
+                    login = _ack(raw)
+                except RuntimeError:
+                    if callable(state_callback):
+                        state_callback("AUTH_REQUIRED")
+                    raise QQAuthRequired("QQ_AUTH_REQUIRED") from None
+                if str(login.get("user_id", "")) != account_id:
                     raise ValueError("QQ_ACCOUNT_MISMATCH")
                 if callable(state_callback):
                     state_callback("CONNECTED")
