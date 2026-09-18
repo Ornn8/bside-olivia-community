@@ -28,6 +28,7 @@ def _publish_status(server, runtime):
         if state in {"GENERATING", "GENERATED", "SENDING", "DELIVERED", "FAILED"}:
             counts[state] = counts.get(state, 0) + 1
     value = {"channels": dict(runtime["status"]), "errors": dict(runtime.get("errors", {})),
+             "last_seen_at": dict(runtime.get("last_seen_at", {})),
              "exchanges": counts, "diagnostic_roundtrips": dict(runtime.get("roundtrips", {})),
              "consumer_pending": sum(bool(r.get("consumer_error_code")) for r in server.store.personal_chats)}
     writer = getattr(server, "_atomic_write_store_file", None)
@@ -300,8 +301,8 @@ def install_personal_chat(app, server):
                 path = _absolute_file(config["wechat"]["credentials_file"])
                 credentials = json.loads(_dpapi_unprotect(path.read_text(encoding="utf-8")))
                 bindings["wechat"] = (credentials["account"], credentials["owner"])
-                jobs.append(("wechat", lambda handler: run_wechat(credentials, handler, stop_event,
-                    cursor_store=_Cursor(server, credentials["account"]))))
+                jobs.append(("wechat", lambda handler, on_state: run_wechat(credentials, handler, stop_event,
+                    cursor_store=_Cursor(server, credentials["account"]), state_callback=on_state)))
             if "qq" in config:
                 from .qq import run_qq
                 qq = config["qq"]
@@ -313,7 +314,8 @@ def install_personal_chat(app, server):
                 if len(token) < 16:
                     raise ValueError("PERSONAL_CHAT_QQ_TOKEN_REQUIRED")
                 bindings["qq"] = (str(qq["account"]), str(qq["owner"]))
-                jobs.append(("qq", lambda handler: run_qq(qq["url"], token, *bindings["qq"], handler, stop_event)))
+                jobs.append(("qq", lambda handler, on_state: run_qq(
+                    qq["url"], token, *bindings["qq"], handler, stop_event, state_callback=on_state)))
             def sticker_allowed(key):
                 from reply_context import ReplyMode
                 from runtime.letter_stickers.selection import allowed_stickers
@@ -328,7 +330,7 @@ def install_personal_chat(app, server):
             from .probe import ProbeJournal
             journal = ProbeJournal(server._state_root() / "personal-chat-diagnostics")
             runtime = {"stop": stop_event, "tasks": [], "service": service, "status": {},
-                       "errors": {}, "roundtrips": {}, "journal": journal}
+                       "errors": {}, "roundtrips": {}, "last_seen_at": {}, "journal": journal}
             runtime['status'].update({name: 'SETUP_REQUIRED' for name in missing})
             application[_RUNTIME] = runtime
             from .initiative import Initiative
@@ -372,11 +374,23 @@ def install_personal_chat(app, server):
                     _publish_status(server, runtime)
 
             async def run(name, factory):
+                def on_state(state):
+                    if state not in {"CONNECTING", "CONNECTED", "RECONNECTING", "AUTH_REQUIRED"}:
+                        return
+                    runtime['status'][name] = state
+                    if state == "CONNECTED":
+                        runtime['last_seen_at'][name] = datetime.now(LOCAL).isoformat()
+                        if runtime['errors'].get(name) in {
+                            "QQ_TRANSPORT_DISCONNECTED", "WECHAT_POLL_UNAVAILABLE",
+                            "PERSONAL_CHAT_UNAVAILABLE",
+                        }:
+                            runtime['errors'].pop(name, None)
+                    _publish_status(server, runtime)
+
                 while not stop_event.is_set():
                     try:
-                        runtime['status'][name] = 'LISTENING'
-                        _publish_status(server, runtime)
-                        await factory(handle)
+                        on_state("CONNECTING")
+                        await factory(handle, on_state)
                         if stop_event.is_set():
                             break
                     except asyncio.CancelledError:
@@ -384,16 +398,16 @@ def install_personal_chat(app, server):
                         _publish_status(server, runtime)
                         raise
                     except ValueError as exc:
-                        runtime['status'][name] = 'SETUP_REQUIRED'
-                        runtime['errors'][name] = _failure_code(exc)
+                        code = _failure_code(exc)
+                        runtime['status'][name] = 'AUTH_REQUIRED' if code == 'WECHAT_AUTH_REQUIRED' else 'SETUP_REQUIRED'
+                        runtime['errors'][name] = code
                         _publish_status(server, runtime)
                         return
                     except Exception as exc:
                         runtime['errors'][name] = _failure_code(exc)
-                    runtime['status'][name] = 'RECONNECTING'
-                    _publish_status(server, runtime)
+                    on_state("RECONNECTING")
                     try:
-                        await asyncio.wait_for(stop_event.wait(), 30)
+                        await asyncio.wait_for(stop_event.wait(), 5)
                     except asyncio.TimeoutError:
                         pass
                 runtime['status'][name] = 'STOPPED'
@@ -428,7 +442,7 @@ def install_personal_chat(app, server):
                     old, sender = initiative.target
                     if old.channel not in selected_channels(server):
                         continue
-                    if runtime['status'].get(old.channel) != 'LISTENING':
+                    if runtime['status'].get(old.channel) != 'CONNECTED':
                         continue
                     if callable(getattr(sender, 'is_available', None)) and not sender.is_available():
                         continue
