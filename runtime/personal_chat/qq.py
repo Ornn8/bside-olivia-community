@@ -6,7 +6,7 @@ import uuid
 
 import aiohttp
 
-from .events import owner_message, combine
+from .events import owner_message, combine, mergeable_by_sent_time
 from .probe import checked_url
 
 log = logging.getLogger(__name__)
@@ -111,7 +111,9 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
                         next_event = await asyncio.wait_for(queue.get(), wait)
                     except asyncio.TimeoutError:
                         break
-                    if next_event.text.strip() == '/连接测试' or sum(len(e.text)+1 for e in events) + len(next_event.text) > 10000:
+                    if (next_event.text.strip() == '/连接测试'
+                            or sum(len(e.text)+1 for e in events) + len(next_event.text) > 10000
+                            or not mergeable_by_sent_time(events[-1], next_event, merge_seconds)):
                         carry = next_event
                         break
                     events.append(next_event)
