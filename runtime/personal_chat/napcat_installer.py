@@ -233,10 +233,12 @@ def public_status(data_root: Path, runtime: dict[str, object]) -> dict[str, obje
     state = str(runtime.get("napcat_state") or "IDLE")
     if shell is not None:
         state = "READY"
-    if shell is not None and _onebot_port_open():
-        state = "RUNNING"
+    if shell is not None and onebot_available():
+        state = "ONEBOT_READY"
+    elif shell is not None and webui_available(data_root):
+        state = "AWAITING_QQ_LOGIN"
     elif shell_process is not None and getattr(shell_process, "poll", lambda: 0)() is None:
-        state = "RUNNING"
+        state = "STARTING"
     elif task is not None and not getattr(task, "done", lambda: True)():
         state = str(runtime.get("napcat_state") or "DOWNLOADING")
     result = {
@@ -328,17 +330,43 @@ def prepare_onebot(data_root: Path) -> tuple[Path, str]:
     return shell, token
 
 
-def _onebot_port_open() -> bool:
+def _tcp_port_open(port: int) -> bool:
     try:
-        with socket.create_connection(("127.0.0.1", 3001), timeout=0.25):
+        with socket.create_connection(("127.0.0.1", int(port)), timeout=0.25):
             return True
     except OSError:
         return False
 
 
+def _onebot_port_open() -> bool:
+    return _tcp_port_open(3001)
+
+
 def onebot_available() -> bool:
     """Content-free liveness check for the managed local OneBot endpoint."""
     return _onebot_port_open()
+
+
+def _webui_port(data_root: Path) -> int:
+    path = _config_dir(data_root) / "webui.json"
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return 6099
+    port = value.get("port") if isinstance(value, dict) else None
+    return port if type(port) is int and 1 <= port <= 65535 else 6099
+
+
+def webui_available(data_root: Path) -> bool:
+    """Return true only when the managed WebUI is actually accepting TCP connections."""
+    return _tcp_port_open(_webui_port(data_root))
+
+
+def account_config_ready(data_root: Path, account: str) -> bool:
+    """NapCat materializes onebot11_<uin>.json after loading the default template."""
+    if not isinstance(account, str) or not account.isascii() or not account.isdigit():
+        return False
+    return (_config_dir(data_root) / f"onebot11_{account}.json").is_file()
 
 
 def launch_shell(data_root: Path) -> subprocess.Popen:
@@ -375,7 +403,7 @@ def managed_connection(data_root: Path) -> tuple[str, str]:
 
 
 def open_login_page(data_root: Path) -> bool:
-    if find_shell(data_root) is None:
+    if find_shell(data_root) is None or not webui_available(data_root):
         return False
     webui = _config_dir(data_root) / "webui.json"
     try:
