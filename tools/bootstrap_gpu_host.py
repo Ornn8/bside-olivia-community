@@ -1,35 +1,52 @@
 """Initialize a private Linux acceptance service; prints no credentials."""
+import argparse
+import ipaddress
 import json
 import os
 from pathlib import Path
 import secrets
-import subprocess
-import argparse
-import ipaddress
 import shutil
+import subprocess
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--host', type=ipaddress.IPv4Address, required=True)
-host = str(parser.parse_args().host)
+parser.add_argument('--gpus', default='0', help='Comma-separated CUDA device ids, e.g. 0,1,2,3')
+args = parser.parse_args()
+host = str(args.host)
+gpus = [item.strip() for item in args.gpus.split(',') if item.strip()]
+if not gpus or any(not item.isdigit() for item in gpus) or len(set(gpus)) != len(gpus):
+    parser.error('--gpus must contain unique numeric CUDA device ids')
 
 root = Path('/etc/olivia-gpu')
 root.mkdir(exist_ok=True)
 os.umask(0o077)
-config = root/'config.json'
+config = root / 'config.json'
 if not config.exists():
-    config.write_text(json.dumps({'public_url':'https://' + host,
-        'signing_key':secrets.token_urlsafe(48),
-        'tokens':{'acceptance-user-a':secrets.token_urlsafe(32),'acceptance-user-b':secrets.token_urlsafe(32)},
-        'gpus':['0'],'profiles':{},'shared_assets':{}}),encoding='utf-8')
+    config.write_text(json.dumps({
+        'public_url': 'https://' + host,
+        'signing_key': secrets.token_urlsafe(48),
+        'tokens': {
+            'acceptance-user-a': secrets.token_urlsafe(32),
+            'acceptance-user-b': secrets.token_urlsafe(32),
+        },
+        'gpus': gpus,
+        'profiles': {},
+        'shared_assets': {},
+        'queue_sla_seconds': {'tts': 600, 'default': 1800},
+        'result_upload_workers': 2,
+        'heartbeat_interval_seconds': 5,
+    }), encoding='utf-8')
     config.chmod(0o600)
 shutil.chown(config, user='ubuntu', group='ubuntu')
-if not (root/'server.key').exists():
-    subprocess.run(['openssl','req','-x509','-newkey','rsa:2048','-sha256','-nodes','-days','7',
-        '-keyout',str(root/'server.key'),'-out',str(root/'server.crt'),
-        '-subj','/CN=' + host,'-addext','subjectAltName=IP:' + host],check=True,capture_output=True)
-    (root/'server.key').chmod(0o600)
-(root/'server.crt').chmod(0o644)
-service='''[Unit]
+if not (root / 'server.key').exists():
+    subprocess.run([
+        'openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-sha256', '-nodes', '-days', '7',
+        '-keyout', str(root / 'server.key'), '-out', str(root / 'server.crt'),
+        '-subj', '/CN=' + host, '-addext', 'subjectAltName=IP:' + host,
+    ], check=True, capture_output=True)
+    (root / 'server.key').chmod(0o600)
+(root / 'server.crt').chmod(0o644)
+service = '''[Unit]
 Description=Olivia GPU acceptance task API
 After=network-online.target
 [Service]
@@ -61,12 +78,14 @@ Path('/etc/nginx/sites-available/olivia-gpu').write_text('''server {
     location / { return 404; }
 }
 '''.replace('HOST_ADDRESS', host))
-target=Path('/etc/nginx/sites-enabled/olivia-gpu')
-if not target.exists():target.symlink_to('/etc/nginx/sites-available/olivia-gpu')
-default=Path('/etc/nginx/sites-enabled/default')
-if default.is_symlink():default.unlink()
-subprocess.run(['nginx','-t'],check=True)
-subprocess.run(['systemctl','daemon-reload'],check=True)
-subprocess.run(['systemctl','enable','--now','olivia-gpu'],check=True)
-subprocess.run(['systemctl','reload','nginx'],check=True)
+target = Path('/etc/nginx/sites-enabled/olivia-gpu')
+if not target.exists():
+    target.symlink_to('/etc/nginx/sites-available/olivia-gpu')
+default = Path('/etc/nginx/sites-enabled/default')
+if default.is_symlink():
+    default.unlink()
+subprocess.run(['nginx', '-t'], check=True)
+subprocess.run(['systemctl', 'daemon-reload'], check=True)
+subprocess.run(['systemctl', 'enable', '--now', 'olivia-gpu'], check=True)
+subprocess.run(['systemctl', 'reload', 'nginx'], check=True)
 print('Acceptance API installed; capabilities disabled until assets pass verification.')
