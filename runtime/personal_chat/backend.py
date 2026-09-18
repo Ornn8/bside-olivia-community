@@ -64,11 +64,19 @@ async def generate(server, event, row):
     context = adapter.build_reply_context(ReplyMode.FUTURE_IM, future_im_enabled=True)
     from .stickers import choices, extract
     sticker_choices = choices(server.store.personal_chats, context.private_behavior) if event.channel == 'wechat' else {}
+    delayed_delivery = False
+    try:
+        sent_at = datetime.fromisoformat(row['user_sent_at']) if row.get('user_sent_at') else None
+        received_at = datetime.fromisoformat(row['life_received_at'])
+        delayed_delivery = sent_at is not None and (received_at - sent_at).total_seconds() > 60
+    except (TypeError, ValueError):
+        pass
     presentation = CURRENT.set({'voice_available': voice_available, 'listening_preference': previous,
                                 'structured': True, 'decision_now': datetime.now(LOCAL).isoformat(),
                                 'due_followup': row.get('followup_quote'),
                                 'channel': event.channel, 'incoming_format': event.input_kind,
                                 'user_sent_at': row.get('user_sent_at'), 'received_at': row['life_received_at'],
+                                'delayed_delivery': delayed_delivery,
                                 'letter_invitation_allowed': allowed,
                                 'sticker_choices': sticker_choices,
                                 'proactive': row.get('origin') == 'proactive'})
