@@ -416,7 +416,7 @@ def install_setup_routes(app: web.Application, server) -> None:
         if await asyncio.to_thread(napcat_installer.onebot_available):
             try:
                 url, token = await asyncio.to_thread(napcat_installer.managed_connection, root)
-                account = await _qq_probe(url, token)
+                account = await asyncio.wait_for(_qq_probe(url, token), 2)
             except Exception:
                 runtime["napcat_state"] = "ONEBOT_PROBING"
                 return "ONEBOT_PROBING"
