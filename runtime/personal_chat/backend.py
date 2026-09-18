@@ -4,6 +4,7 @@ from datetime import datetime
 import json
 import os
 import re
+import secrets
 from pathlib import Path
 
 from aiohttp import web
@@ -25,10 +26,13 @@ def _publish_status(server, runtime):
     counts = {}
     for row in server.store.personal_chats:
         state = row.get("delivery_status")
-        if state in {"GENERATING", "GENERATED", "SENDING", "DELIVERED", "FAILED"}:
+        if state in {"GENERATING", "GENERATED", "SENDING", "DELIVERY_UNCONFIRMED", "DELIVERED", "FAILED"}:
             counts[state] = counts.get(state, 0) + 1
     value = {"channels": dict(runtime["status"]), "errors": dict(runtime.get("errors", {})),
              "last_seen_at": dict(runtime.get("last_seen_at", {})),
+             "delivery_health": dict(runtime.get("delivery_health", {})),
+             "e2e_verified_at": dict(runtime.get("e2e_verified_at", {})),
+             "connection_test_pending": sorted(runtime.get("connection_tests", {}).keys()),
              "exchanges": counts, "diagnostic_roundtrips": dict(runtime.get("roundtrips", {})),
              "consumer_pending": sum(bool(r.get("consumer_error_code")) for r in server.store.personal_chats)}
     writer = getattr(server, "_atomic_write_store_file", None)
@@ -330,20 +334,58 @@ def install_personal_chat(app, server):
             from .probe import ProbeJournal
             journal = ProbeJournal(server._state_root() / "personal-chat-diagnostics")
             runtime = {"stop": stop_event, "tasks": [], "service": service, "status": {},
-                       "errors": {}, "roundtrips": {}, "last_seen_at": {}, "journal": journal}
+                       "errors": {}, "roundtrips": {}, "last_seen_at": {}, "journal": journal,
+                       "delivery_health": {}, "e2e_verified_at": {}, "connection_tests": {}}
             runtime['status'].update({name: 'SETUP_REQUIRED' for name in missing})
             application[_RUNTIME] = runtime
             from .initiative import Initiative
             initiative = Initiative(server.store.personal_chats)
 
             async def handle(event, send):
-                # Connection diagnostics are never persona/memory inputs.
-                if event.text.strip() == "/连接测试":
+                # Connection diagnostics are never persona/memory inputs. The first
+                # leg only proves inbound reception plus an outbound API attempt.
+                # E2E verification is recorded only after the owner echoes the
+                # challenge that was visible in the real QQ/Weixin client.
+                text = event.text.strip()
+                now = datetime.now(LOCAL)
+                pending = runtime["connection_tests"].get(event.channel)
+                if isinstance(pending, dict) and now.timestamp() - float(pending.get("created_at", 0)) > 600:
+                    runtime["connection_tests"].pop(event.channel, None)
+                    pending = None
+                if isinstance(pending, dict) and text == pending.get("code"):
+                    journal.delivered(str(pending["exchange_id"]))
+                    runtime["connection_tests"].pop(event.channel, None)
+                    runtime["roundtrips"][event.channel] = runtime["roundtrips"].get(event.channel, 0) + 1
+                    runtime["e2e_verified_at"][event.channel] = now.isoformat()
+                    runtime["delivery_health"][event.channel] = "E2E_VERIFIED"
+                    if runtime["errors"].get(event.channel) in {
+                        "PERSONAL_CHAT_DELIVERY_UNCONFIRMED",
+                        "PERSONAL_CHAT_CONNECTION_TEST_CODE_MISMATCH",
+                    }:
+                        runtime["errors"].pop(event.channel, None)
+                    _publish_status(server, runtime)
+                    return
+                if text == "/连接测试":
                     if journal.reserve(event.exchange_id):
-                        await send("连接测试成功。正式聊天通道已加载；这条测试消息不会写入记忆。")
-                        journal.delivered(event.exchange_id)
-                        runtime["roundtrips"][event.channel] = runtime["roundtrips"].get(event.channel, 0) + 1
+                        code = f"{secrets.randbelow(10000):04d}"
+                        receipt = await send(
+                            f"连接测试验证码：{code}\n请原样回复这 4 位数字。回复后设置页会显示端到端已验证。"
+                        )
+                        classifier = getattr(send, "delivery_confirmation", None)
+                        confirmation = classifier(receipt) if callable(classifier) else "PLATFORM_CONFIRMED"
+                        runtime["delivery_health"][event.channel] = confirmation
+                        runtime["connection_tests"][event.channel] = {
+                            "code": code,
+                            "created_at": now.timestamp(),
+                            "exchange_id": event.exchange_id,
+                        }
+                        if confirmation == "UNCONFIRMED":
+                            runtime["errors"][event.channel] = "PERSONAL_CHAT_DELIVERY_UNCONFIRMED"
                         _publish_status(server, runtime)
+                    return
+                if isinstance(pending, dict) and re.fullmatch(r"[0-9]{4}", text):
+                    runtime["errors"][event.channel] = "PERSONAL_CHAT_CONNECTION_TEST_CODE_MISMATCH"
+                    _publish_status(server, runtime)
                     return
                 try:
                     if event.channel not in selected_channels(server):
@@ -400,7 +442,7 @@ def install_personal_chat(app, server):
                     except ValueError as exc:
                         code = _failure_code(exc)
                         runtime['errors'][name] = code
-                        if code == 'WECHAT_AUTH_REQUIRED':
+                        if code in {'WECHAT_AUTH_REQUIRED', 'WECHAT_SESSION_STALE'}:
                             runtime['status'][name] = 'AUTH_REQUIRED'
                             _publish_status(server, runtime)
                             return
