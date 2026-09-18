@@ -231,7 +231,10 @@ def public_status(data_root: Path, runtime: dict[str, object]) -> dict[str, obje
     task = runtime.get("napcat_task")
     shell_process = runtime.get("napcat_shell_process")
     state = str(runtime.get("napcat_state") or "IDLE")
-    if shell is not None:
+    if shell is not None and state not in {
+        "STARTING", "AWAITING_QQ_LOGIN", "ONEBOT_PROBING",
+        "ONEBOT_CONFIG_PENDING", "ONEBOT_READY",
+    }:
         state = "READY"
     if shell is not None and onebot_available():
         state = state if state in {"ONEBOT_PROBING", "ONEBOT_CONFIG_PENDING"} else "ONEBOT_READY"
