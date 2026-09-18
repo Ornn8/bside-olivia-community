@@ -66,7 +66,11 @@ async def wechat_request(session, base, path, *, token=None, body=None, params=N
         response.raise_for_status()
         # The live Weixin endpoint labels valid JSON application/octet-stream.
         data = await response.json(content_type=None)
-    if not isinstance(data, dict) or data.get("ret", 0) != 0 or data.get("errcode", 0) != 0:
+    if not isinstance(data, dict):
+        raise RuntimeError("WECHAT_API_REJECTED")
+    if data.get("ret", 0) == -14 or data.get("errcode", 0) == -14:
+        raise ValueError("WECHAT_SESSION_STALE")
+    if data.get("ret", 0) != 0 or data.get("errcode", 0) != 0:
         raise RuntimeError("WECHAT_API_REJECTED")
     return data
 
@@ -113,14 +117,16 @@ async def wechat(args, session, journal):
                 continue
             if not journal.reserve(event.exchange_id):
                 continue
-            await wechat_request(session, credentials["base"], "/ilink/bot/sendmessage", token=credentials["token"], body={
+            ack = await wechat_request(session, credentials["base"], "/ilink/bot/sendmessage", token=credentials["token"], body={
                 "msg": {"from_user_id": "", "to_user_id": event.owner_id, "client_id": event.exchange_id,
                         "message_type": 2, "message_state": 2, "context_token": raw["context_token"],
-                        "item_list": [{"type": 1, "text_item": {"text": "连接测试成功。这是固定测试消息，还没有调用林离的记忆和世界。"}}]}})
-            # Weixin sendMessage accepts an absent ret; the HTTP wrapper
-            # already rejects transport failures and explicit business errors.
+                        "item_list": [{"type": 1, "text_item": {"text": "连接测试消息已提交。正式端到端验证请在 Olivia 设置页按提示完成。"}}]}})
+            # A ret=0 response without a platform message id has been observed
+            # without a visible client-side delivery. Do not call that roundtrip success.
+            if not isinstance(ack.get("message_id"), str) or not ack["message_id"].strip():
+                raise RuntimeError("WECHAT_SEND_UNCONFIRMED")
             journal.delivered(event.exchange_id)
-            print('WECHAT_OWNER_ROUNDTRIP_PASSED', flush=True)
+            print('WECHAT_PLATFORM_ACK_PASSED', flush=True)
             return
         cursor = batch.get("get_updates_buf") or cursor
 
