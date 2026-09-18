@@ -483,6 +483,10 @@ def install_setup_routes(app: web.Application, server) -> None:
 
     async def status(request: web.Request) -> web.Response:
         try:
+            if "qq" in _selected_channels(server):
+                from . import napcat_installer
+                if napcat_installer.find_shell(_root(server)) is not None and runtime.get("napcat_state") != "DOWNLOADING":
+                    await refresh_managed_napcat_state()
             return web.json_response(_public_status(request, server))
         except Exception as exc:
             return web.json_response({"error": _failure_code(exc)}, status=503)
