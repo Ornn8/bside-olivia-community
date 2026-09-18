@@ -18,7 +18,7 @@ def _ack(raw):
     return raw["data"]
 
 
-async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_timeout, merge_seconds=2):
+async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_timeout, merge_seconds=2, state_callback=None):
     login_echo = uuid.uuid4().hex
     await ws.send_json({"action": "get_login_info", "echo": login_echo})
     async with asyncio.timeout(ack_timeout):
@@ -33,6 +33,8 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
             if isinstance(raw, dict) and raw.get("echo") == login_echo:
                 if str(_ack(raw).get("user_id", "")) != account_id:
                     raise ValueError("QQ_ACCOUNT_MISMATCH")
+                if callable(state_callback):
+                    state_callback("CONNECTED")
                 break
 
     queue = asyncio.Queue(maxsize=32)
@@ -79,6 +81,8 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
                 continue
             if not isinstance(raw, dict):
                 continue
+            if callable(state_callback):
+                state_callback("CONNECTED")
             echo = raw.get("echo")
             future = pending.get(echo) if isinstance(echo, str) else None
             if future is not None:
@@ -144,7 +148,7 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
 
 
 async def run_qq(url, token, account_id, owner_id, handle_message, stop_event,
-                 *, ack_timeout=30, reconnect_delay=1, merge_seconds=2):
+                 *, ack_timeout=30, reconnect_delay=1, merge_seconds=2, state_callback=None):
     """Run until stopped. send(text) returns a confirmed platform message ID.
 
     The handler must persist a sending reservation before calling send: a timeout
@@ -159,15 +163,26 @@ async def run_qq(url, token, account_id, owner_id, handle_message, stop_event,
     if ack_timeout <= 0 or reconnect_delay <= 0:
         raise ValueError("QQ_TIMEOUT_INVALID")
     failures = 0
+
+    def publish(state):
+        nonlocal failures
+        if state == "CONNECTED":
+            failures = 0
+        if callable(state_callback):
+            state_callback(state)
+
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=45)) as session:
         while not stop_event.is_set():
             try:
+                publish("CONNECTING" if failures == 0 else "RECONNECTING")
                 async with session.ws_connect(url, headers={"Authorization": "Bearer " + token}, heartbeat=20) as ws:
-                    await _connection(ws, account_id, owner_id, handle_message, stop_event, ack_timeout, merge_seconds)
+                    await _connection(ws, account_id, owner_id, handle_message, stop_event, ack_timeout, merge_seconds,
+                                      state_callback=publish)
             except (aiohttp.ClientError, ConnectionError, TimeoutError):
                 log.warning("QQ_TRANSPORT_DISCONNECTED")
             if stop_event.is_set():
                 break
+            publish("RECONNECTING")
             failures += 1
             try:
                 await asyncio.wait_for(stop_event.wait(), min(30, reconnect_delay * 2 ** min(failures - 1, 5)))
