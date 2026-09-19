@@ -835,7 +835,7 @@ class LetterAdapter:
                 if fragment.fragment_id != 'chat.historical'
                 for pair in json.loads(fragment.text)["letters"]
             )
-            now = _CURRENT_LETTER_RECEIPT.get() or self._now()
+            now = self._now()
             value = self.daily_life.store.reply_context(content, now=now, related_text=related)
             rhythm = self.daily_life.snapshot(now)["rhythm"]
             fragments = (UntrustedFragment("linli.daily-life", value),) if value else ()
@@ -850,7 +850,7 @@ class LetterAdapter:
         if CURRENT.get() is not None:
             from runtime.personal_chat.context import chat_context
             recent, historical = chat_context(self.recent_letters(), query=content,
-                now=_CURRENT_LETTER_RECEIPT.get() or self._now(),
+                now=self._now(),
                 excluded_sources=self._memory_source_exclusions())
             return tuple(UntrustedFragment(name, text) for name, text in
                          (('chat.recent', recent), ('chat.historical', historical)) if text)
@@ -4934,7 +4934,31 @@ def _start_ready_conversation_memory_runtime():
     return status
 
 
+_memory_initialization_recovery: asyncio.Task | None = None
+
+
+async def _recover_conversation_memory_initialization(*, interval: float = 30.0) -> None:
+    """Retry failed startup without requiring settings access or a new letter."""
+    delay = interval
+    while True:
+        await asyncio.sleep(delay)
+        if getattr(conversation_memory_adapter, 'closed', False):
+            return
+        status = conversation_memory_adapter.status()
+        if status.status in {'available', 'disabled'}:
+            return
+        # The adapter is single-flight: never create a second model loader or
+        # vector-store owner while an initialization is still in progress.
+        if status.reason_code == 'MEM0_INITIALIZING':
+            continue
+        if not callable(getattr(conversation_memory_adapter, 'start_initialization', None)):
+            return
+        _start_conversation_memory_initialization(asyncio.get_running_loop())
+        delay = min(300.0, delay * 2)
+
+
 async def _start_conversation_memory(_app: web.Application) -> None:
+    global _memory_initialization_recovery
     global _history_relationship_queue
     from runtime.imports.relationship_batches import RelationshipBatches
     try:
@@ -4945,6 +4969,8 @@ async def _start_conversation_memory(_app: web.Application) -> None:
     started = _start_conversation_memory_initialization(asyncio.get_running_loop())
     if not started and conversation_memory_adapter.status().status == "available":
         _start_ready_conversation_memory_runtime()
+    if _memory_initialization_recovery is None or _memory_initialization_recovery.done():
+        _memory_initialization_recovery = asyncio.create_task(_recover_conversation_memory_initialization())
 
 
 def _start_conversation_memory_initialization(loop: asyncio.AbstractEventLoop) -> bool:
@@ -4986,6 +5012,11 @@ async def _stop_reply_tasks(_app: web.Application) -> None:
 
 
 async def _stop_conversation_memory(_app: web.Application) -> None:
+    global _memory_initialization_recovery
+    if _memory_initialization_recovery is not None:
+        _memory_initialization_recovery.cancel()
+        await asyncio.gather(_memory_initialization_recovery, return_exceptions=True)
+        _memory_initialization_recovery = None
     close = getattr(conversation_memory_adapter, "close", None)
     if callable(close):
         close()

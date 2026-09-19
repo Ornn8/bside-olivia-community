@@ -83,7 +83,7 @@ class Initiative:
         if not latest or not latest['followup_at']:
             return None
         used = [r for r in self.rows if r.get('followup_source_id') == latest['letter_id']]
-        if any(r.get('delivery_status') in {'SENDING','DELIVERED','GENERATING'} for r in used) or len(used) >= 2:
+        if any(r.get('delivery_status') in {'SENDING','DELIVERY_UNCONFIRMED','DELIVERED','GENERATING'} for r in used) or len(used) >= 2:
             return None
         if self.clock() > latest['followup_at'] + 7200:
             return None  # Expired appointments are not accumulated offline mail.
@@ -92,7 +92,7 @@ class Initiative:
     def ready(self):
         now = self.clock()
         latest_user = next((r for r in reversed(self.rows) if r.get('origin') != 'proactive'), None)
-        if latest_user and latest_user.get('delivery_status') in {'FAILED','GENERATING','GENERATED','SENDING'}:
+        if latest_user and latest_user.get('delivery_status') in {'FAILED','GENERATING','GENERATED','SENDING','DELIVERY_UNCONFIRMED'}:
             return False  # Do not initiate over an unresolved user request (possibly a cancellation).
         followup = self.pending_followup()
         scheduled = followup is not None and now >= followup['followup_at']
@@ -114,7 +114,7 @@ class Initiative:
         if len(attempts) >= profile.im_attempt_limit and not scheduled:
             return False
         history = [r for r in self.rows if delivered(r)]
-        if any(r.get('delivery_status') == 'SENDING' for r in self.rows):
+        if any(r.get('delivery_status') in {'SENDING', 'DELIVERY_UNCONFIRMED'} for r in self.rows):
             return False
         preference = next((r for r in reversed(history) if r.get('initiative_preference')), {})
         if not scheduled and preference.get('initiative_preference') == 'pause' and (
