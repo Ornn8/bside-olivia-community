@@ -90,6 +90,32 @@ async def _client(backend: object) -> TestClient:
     return client
 
 
+def test_multiline_memory_survives_status_list_and_search_http_roundtrip():
+    from types import SimpleNamespace
+    from conversation_memory_admin import MemoryAdminStatus
+    from conversation_memory_port import ConversationMemoryRecord
+    from original_client_companion_backend import OriginalClientCompanionServiceBackend
+    text = '用户喜欢散步。\r\n也喜欢听音乐。\t周末有空。'
+    record = ConversationMemoryRecord(memory_id='synthetic.1', text=text,
+        user_id='local-user', source_id='reply:synthetic:1')
+    memory = SimpleNamespace(
+        status=lambda: MemoryAdminStatus('available', 'mem0', True, 1, 0, 0),
+        list_memories=lambda **kwargs: (record,))
+    async def scenario():
+        client = await _client(OriginalClientCompanionServiceBackend(memory_admin=memory))
+        try:
+            headers = {'Origin':TRUSTED_ORIGIN}
+            status = await client.get('/toy/companion/status', headers=headers)
+            assert (await status.json())['capabilities']['memory']['state'] == 'available'
+            for url in ['/toy/companion/memory', '/toy/companion/memory?query=music']:
+                response = await client.get(url, headers=headers)
+                assert response.status == 200
+                assert (await response.json())['memories'][0]['text'] == text
+        finally:
+            await client.close()
+    asyncio.run(scenario())
+
+
 def test_original_settings_read_contract_returns_bounded_payloads() -> None:
     async def scenario() -> None:
         backend = FixtureBackend()

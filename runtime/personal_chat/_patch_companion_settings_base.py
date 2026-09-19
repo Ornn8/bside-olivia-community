@@ -356,6 +356,8 @@ def _repair_native_mail_icons(source: str) -> str:
 
 
 def _repair_mailbox_write_access(root: Path) -> str:
+    from runtime.personal_chat._patch_music_playback import patch_music_playback
+
     main = root / Path(*MAIN_JS_0627.split("/"))
     if not main.is_file():
         return "UNCHANGED"
@@ -364,6 +366,7 @@ def _repair_mailbox_write_access(root: Path) -> str:
     # otherwise initializes/resets to zero until its account-driven refresh,
     # leaving a fresh local session unable to open the composer.
     source_before_quota = source
+    source = patch_music_playback(source)
     # Expose the existing native router for the world page and settings entry.
     router_anchor = 'const Db=async()=>'
     if 'window.__oliviaNativeView=' not in source and router_anchor in source:

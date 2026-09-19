@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import importlib.metadata
 import importlib.util
 import json
+import os
 from pathlib import Path
 import re
 import sys
@@ -13,6 +15,22 @@ from urllib.parse import urlsplit
 
 
 _OFFLINE_SOURCE = "offline-package"
+
+
+def verify_vector_runtime() -> bool:
+    """Exercise imports and local storage without opening user data or the network."""
+    os.environ['MEM0_TELEMETRY'] = 'False'
+    try:
+        importlib.import_module('mem0')
+        client_type = importlib.import_module('qdrant_client').QdrantClient
+        client = client_type(location=':memory:')
+        try:
+            client.get_collections()
+        finally:
+            client.close()
+    except Exception:
+        return False
+    return True
 
 
 def verify_runtime(runtime: Path, requirements: Path) -> bool:
@@ -90,7 +108,7 @@ def verify_runtime(runtime: Path, requirements: Path) -> bool:
             return False
         if runtime not in Path(spec.origin).resolve().parents:
             return False
-    return True
+    return verify_vector_runtime()
 
 
 def main(argv: list[str] | None = None) -> int:

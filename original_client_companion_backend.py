@@ -318,16 +318,19 @@ class OriginalClientCompanionServiceBackend(OriginalClientCompanionReadBackend):
             raise OriginalClientCompanionBackendError(
                 "COMPANION_MEMORY_INVALID"
             )
-        return tuple(
-            CompanionMemorySummary(
-                memory_id=record.memory_id,
-                text=record.text,
-                source_id=record.source_id,
-                created_at=_memory_timestamp(record),
-                score=record.score,
+        try:
+            return tuple(
+                CompanionMemorySummary(
+                    memory_id=record.memory_id,
+                    text=record.text,
+                    source_id=record.source_id,
+                    created_at=_memory_timestamp(record),
+                    score=record.score,
+                )
+                for record in records
             )
-            for record in records
-        )
+        except ValueError as exc:
+            raise OriginalClientCompanionBackendError('COMPANION_MEMORY_INVALID') from exc
 
     def private_world_summary(self) -> CompanionPrivateWorldSummary:
         if self._private_world is None:

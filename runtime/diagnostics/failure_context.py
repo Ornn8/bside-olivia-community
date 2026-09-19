@@ -1,9 +1,13 @@
 """Finite failure metadata; never retain exception text or request content."""
 
-STAGES = {"configuration", "request", "http_response", "response_json", "tool_parse", "route_validation", "internal"}
+STAGES = {"configuration", "request", "http_response", "response_json", "tool_parse", "route_validation", "internal",
+          "structured_completion", "structured_validation", "tool_completion"}
 CODES = {"PROVIDER_QUOTA_EXHAUSTED", "PROVIDER_TIMEOUT", "PROVIDER_PROTOCOL", "PROVIDER_UNAVAILABLE", "PROVIDER_RETRYABLE", "PROVIDER_REJECTED", "GATEWAY_OTHER"}
 KINDS = {"TimeoutError", "TypeError", "ValueError", "AttributeError", "RuntimeError", "ClientConnectorError", "ClientConnectorCertificateError", "ClientConnectorSSLError", "ServerDisconnectedError", "ClientPayloadError", "OTHER"}
 DETAILS = {"invalid_json", "invalid_response_shape", "missing_tools", "invalid_tool_entry", "invalid_tool_name", "invalid_tool_arguments"}
+DETAILS |= {'structured_truncated', 'structured_validation_failed', 'tool_truncated',
+            'unexpected_tool', 'invalid_tool_schema', 'invalid_tool_count', 'unsupported_tool_fallback',
+            'unsupported_response_format', 'unsupported_tools', 'unsupported_tool_choice'}
 DETAILS |= {
     "route_tool_count", "route_tool_name", "route_fields", "route_values",
     "route_contexts", "route_booleans", "route_disposition", "route_current_work",

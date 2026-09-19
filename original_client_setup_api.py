@@ -15,7 +15,8 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from aiohttp import ClientError, ClientSession, ClientTimeout, web
-from llm_gateway import ManagedLLMConfig, QWEN_REASONING_MODELS
+from llm_gateway import ManagedLLMConfig
+from runtime.reply.model_capabilities import model_capabilities
 
 
 PROVIDER_USER_AGENT = "Olivia-Community/0.1"
@@ -200,7 +201,7 @@ async def _probe_openai_compatible(base_url: str, model: str, api_key: str) -> N
         "max_tokens": 2,
         "stream": False,
     }
-    if model.casefold() in QWEN_REASONING_MODELS:
+    if model_capabilities(base_url, model).thinking == 'qwen':
         # Connection probes do not need the reasoning budget used by real letters.
         body.pop("max_tokens")
         body.update(enable_thinking=False, max_completion_tokens=16)
