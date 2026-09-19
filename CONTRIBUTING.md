@@ -4,9 +4,9 @@
 
 ## 开始前
 
-1. 阅读 [`README.md`](README.md)、[`docs/README.md`](docs/README.md) 和 [`docs/PUBLIC_REPOSITORY.md`](docs/PUBLIC_REPOSITORY.md)。
+1. 阅读 [`README.md`](README.md)、[`docs/README.md`](client/docs/README.md) 和 [`docs/PUBLIC_REPOSITORY.md`](client/docs/PUBLIC_REPOSITORY.md)。
 2. 从最新 `main` 创建独立分支和工作树。
-3. 使用独立 Python 3.12 虚拟环境安装 `requirements-dev.txt`。
+3. 使用独立 Python 3.12 虚拟环境进入 `client/`，安装 `requirements-dev.txt`。
 4. 确认模型、媒体、私人数据、`.evidence/`、凭据和机器配置没有被加入 Git。
 
 ## 变更要求
@@ -24,6 +24,7 @@
 先运行与改动直接相关的 focused 测试。公共边界或发布相关变更还应运行：
 
 ```powershell
+cd client
 python -m pytest -q
 python baseline_hardening_scan.py --mode all
 git diff --check

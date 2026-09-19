@@ -53,7 +53,7 @@ def _verify_source(source: Path, expected_source_commit: str) -> str:
     if not _COMMIT_RE.fullmatch(expected):
         raise ComponentPackageBuildError("UPDATE_SOURCE_COMMIT_INVALID")
     top_level = Path(_git(source, "rev-parse", "--show-toplevel")).resolve()
-    if top_level != source:
+    if top_level != source and source != top_level / "client":
         raise ComponentPackageBuildError("UPDATE_SOURCE_NOT_TOPLEVEL")
     actual = _git(source, "rev-parse", "HEAD").lower()
     if actual != expected:
@@ -204,9 +204,10 @@ def build_component_package(
         )
         exported_source = staging / "source"
         exported_source.mkdir()
+        prefix = _git(source_root, "rev-parse", "--show-prefix").rstrip("/")
         _export_commit(
-            source_root,
-            source_commit,
+            source_root.parent if prefix else source_root,
+            f"{source_commit}:{prefix}" if prefix else source_commit,
             exported_source,
             staging / "source.zip",
         )

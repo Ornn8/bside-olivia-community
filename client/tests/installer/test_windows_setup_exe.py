@@ -1986,7 +1986,7 @@ def test_windows_installer_documents_single_instance_and_fresh_rollback_contract
 
 
 def test_github_build_publishes_setup_and_checksum_for_merged_main() -> None:
-    workflow = (ROOT / ".github" / "workflows" / "windows-setup.yml").read_text(
+    workflow = (ROOT.parent / ".github" / "workflows" / "windows-setup.yml").read_text(
         encoding="utf-8"
     )
 

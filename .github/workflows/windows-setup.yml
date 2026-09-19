@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    working-directory: client
+
 jobs:
   build:
     name: Build offline Windows setup
@@ -88,7 +92,7 @@ jobs:
         with:
           name: Olivia-Windows-Setup-${{ github.sha }}
           path: |
-            dist/Olivia-Setup-x64.exe
-            dist/Olivia-Setup-x64.exe.sha256
+            client/dist/Olivia-Setup-x64.exe
+            client/dist/Olivia-Setup-x64.exe.sha256
           if-no-files-found: error
           retention-days: 14

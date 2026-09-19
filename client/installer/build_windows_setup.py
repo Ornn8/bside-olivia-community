@@ -896,6 +896,7 @@ def _git_dirty_files(source: Path) -> set[str]:
                 "-C",
                 os.fspath(source),
                 "diff",
+                "--relative",
                 "--name-only",
                 "-z",
                 "HEAD",

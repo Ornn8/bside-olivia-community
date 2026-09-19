@@ -1,3 +1,5 @@
+> 本文路径相对于 `client/`。仓库根目录保留 GitHub 配置及项目入口；Python 工程整体位于 `client/`，运行和构建前先进入该目录。已安装客户端的布局不变。
+
 # Repository layout
 
 仓库当前采用“根入口与兼容层＋职责包”的结构。根目录 Python 文件的逐项职责、兼容依据、迁移映射和延期项统一记录在 [`ROOT_PY_INVENTORY.md`](ROOT_PY_INVENTORY.md)。
