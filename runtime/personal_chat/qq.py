@@ -23,6 +23,7 @@ def _ack(raw):
 
 
 async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_timeout, merge_seconds=2, state_callback=None):
+    queue = asyncio.Queue(maxsize=32)
     login_echo = uuid.uuid4().hex
     await ws.send_json({"action": "get_login_info", "echo": login_echo})
     async with asyncio.timeout(ack_timeout):
@@ -46,8 +47,16 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
                 if callable(state_callback):
                     state_callback("CONNECTED")
                 break
+            # OneBot events and action acknowledgements share the socket.
+            # Preserve owner messages during the login probe; dispatch only
+            # after the returned bot identity has been verified.
+            event = owner_message("qq", raw, account_id=account_id, owner_id=owner_id)
+            if event is not None:
+                try:
+                    queue.put_nowait(event)
+                except asyncio.QueueFull:
+                    raise RuntimeError("QQ_OWNER_QUEUE_FULL") from None
 
-    queue = asyncio.Queue(maxsize=32)
     pending = {}
     processing = False
 

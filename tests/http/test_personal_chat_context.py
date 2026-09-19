@@ -4,6 +4,45 @@ from datetime import datetime, timezone
 from runtime.personal_chat.context import chat_context
 
 
+def test_current_chat_clock_does_not_reuse_old_receipt():
+    import local_server
+    from runtime.personal_chat.presentation import CURRENT
+    adapter = object.__new__(local_server.LetterAdapter)
+    adapter.recent_letters = lambda: []
+    now = datetime(2026, 9, 19, 8, tzinfo=timezone.utc)
+    adapter._now = lambda: now
+    receipt = local_server._CURRENT_LETTER_RECEIPT.set(datetime(2026, 9, 18, 14, tzinfo=timezone.utc))
+    presentation = CURRENT.set({'channel': 'qq'})
+    try:
+        packet = json.loads(adapter.recent_letter_fragments('现在几点')[0].text)
+        assert packet['current_time'] == '2026-09-19T16:00:00+08:00'
+    finally:
+        CURRENT.reset(presentation)
+        local_server._CURRENT_LETTER_RECEIPT.reset(receipt)
+
+
+def test_world_clock_uses_generation_time_for_delayed_replies():
+    import local_server
+    from types import SimpleNamespace
+    adapter = object.__new__(local_server.LetterAdapter)
+    now = datetime(2026, 9, 19, 8, tzinfo=timezone.utc)
+    observed = []
+    def context(content, *, now, related_text):
+        observed.append(now)
+        return 'current world'
+    def snapshot(stamp):
+        observed.append(stamp)
+        return {'rhythm': {}}
+    adapter._now = lambda: now
+    adapter.daily_life = SimpleNamespace(store=SimpleNamespace(reply_context=context), snapshot=snapshot)
+    receipt = local_server._CURRENT_LETTER_RECEIPT.set(datetime(2026, 9, 18, 14, tzinfo=timezone.utc))
+    try:
+        assert adapter.daily_life_fragments('午饭吃什么', recent_fragments=())
+        assert observed == [now, now]
+    finally:
+        local_server._CURRENT_LETTER_RECEIPT.reset(receipt)
+
+
 def test_cross_night_and_cross_channel_keep_contiguous_tail_and_separate_history():
     rows = []
     for index in range(20):

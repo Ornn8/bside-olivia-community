@@ -4,6 +4,30 @@ import threading
 from types import SimpleNamespace
 
 
+def test_failed_initializer_recovers_without_user_request(tmp_path, monkeypatch):
+    import local_server
+    from mem0_memory import DeferredConversationMemoryAdapter, Mem0Config
+    calls, ready = [], []
+    def factory():
+        calls.append(True)
+        if len(calls) == 1:
+            raise RuntimeError('Storage folder synthetic is already accessed by another instance of Qdrant client.')
+        return SimpleNamespace(status=lambda: SimpleNamespace(status='available', enabled=True))
+    memory = DeferredConversationMemoryAdapter(Mem0Config(enabled=True, data_root=tmp_path), factory)
+    monkeypatch.setattr(local_server, 'conversation_memory_adapter', memory)
+    monkeypatch.setattr(local_server, '_start_ready_conversation_memory_runtime', lambda: ready.append(True))
+    async def exercise():
+        local_server._start_conversation_memory_initialization(asyncio.get_running_loop())
+        await asyncio.wait_for(local_server._recover_conversation_memory_initialization(interval=.01), 2)
+        await asyncio.sleep(0)
+        assert calls == [True, True]
+        assert ready == [True]
+    try:
+        asyncio.run(exercise())
+    finally:
+        memory.close()
+
+
 def test_configured_app_starts_memory_once_without_opening_settings(tmp_path, monkeypatch):
     from aiohttp.test_utils import TestClient, TestServer
     import local_server

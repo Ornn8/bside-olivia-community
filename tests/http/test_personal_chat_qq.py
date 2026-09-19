@@ -24,6 +24,34 @@ async def login(ws, account=100):
         "data": {"user_id": account}})
 
 
+def test_owner_message_arriving_before_login_ack_is_preserved():
+    async def scenario():
+        stop = asyncio.Event()
+        received = []
+        async def handler(message, send):
+            received.append(message.message_id)
+            stop.set()
+        async def socket(request):
+            ws = web.WebSocketResponse()
+            await ws.prepare(request)
+            request = await ws.receive_json()
+            await ws.send_json(event(42))
+            await ws.send_json({'echo': request['echo'], 'status': 'ok', 'retcode': 0,
+                                'data': {'user_id': 100}})
+            await stop.wait()
+            await ws.close()
+            return ws
+        app = web.Application()
+        app.router.add_get('/', socket)
+        async with TestServer(app) as server:
+            try:
+                await asyncio.wait_for(run_qq(str(server.make_url('/')), TOKEN, '100', '200', handler, stop), .5)
+            finally:
+                stop.set()
+        assert received == ['42']
+    asyncio.run(scenario())
+
+
 def test_owner_filter_and_ack_reader_do_not_deadlock():
     async def scenario():
         stop = asyncio.Event()

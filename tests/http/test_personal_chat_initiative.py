@@ -10,6 +10,19 @@ from runtime.personal_chat.presentation import parse_social, parse
 from runtime.personal_chat.service import PersonalChatService
 
 
+def test_unconfirmed_followup_is_not_scheduled_again():
+    now = datetime(2026, 9, 19, 12, tzinfo=LOCAL).timestamp()
+    rows = [dict(letter_id='owner-request', delivery_status='DELIVERED', created_at=now-60,
+                 followup_at=now-1),
+            dict(letter_id='attempt', origin='proactive', delivery_status='DELIVERY_UNCONFIRMED',
+                 followup_source_id='owner-request', created_at=now-1)]
+    policy = Initiative(rows, clock=lambda: now, interval=lambda: 1)
+    policy.received(PersonalMessage('wechat', 'bot', 'owner', '1', 'hi'), None)
+    assert policy.pending_followup() is None
+    policy.due = now - 1
+    assert not policy.ready()
+
+
 def test_relationship_profile_uses_existing_state_not_a_new_score():
     reserved = profile_from_snapshot(SimpleNamespace(
         familiarity=10, trust=10, comfort=10, closeness=0, tension=0,
