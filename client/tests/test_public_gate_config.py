@@ -34,8 +34,8 @@ def test_pytest_ini_is_the_single_public_gate_configuration() -> None:
 
 
 def test_community_policies_publish_actionable_private_reporting_routes() -> None:
-    security = (ROOT / "SECURITY.md").read_text(encoding="utf-8")
-    conduct = (ROOT / "CODE_OF_CONDUCT.md").read_text(encoding="utf-8")
+    security = (ROOT.parent / "SECURITY.md").read_text(encoding="utf-8")
+    conduct = (ROOT.parent / "CODE_OF_CONDUCT.md").read_text(encoding="utf-8")
 
     advisory_url = (
         "https://github.com/Ornn8/bside-olivia-community/security/advisories/new"

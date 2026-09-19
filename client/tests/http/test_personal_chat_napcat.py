@@ -121,14 +121,25 @@ def test_napcat_login_page_opens_only_loopback_webui(
     assert seen == ["http://127.0.0.1:6099/webui/?token=a%20token%2Fwith%20spaces"]
 
 
-def test_napcat_public_status_discovers_completed_install(tmp_path: Path) -> None:
+@pytest.mark.parametrize("onebot,webui,expected", [
+    (False, False, "READY"),
+    (False, True, "AWAITING_QQ_LOGIN"),
+    (True, False, "ONEBOT_READY"),
+    (True, True, "ONEBOT_READY"),
+])
+def test_napcat_public_status_discovers_completed_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    onebot: bool, webui: bool, expected: str,
+) -> None:
     from runtime.personal_chat import napcat_installer as module
 
+    monkeypatch.setattr(module, "onebot_available", lambda: onebot)
+    monkeypatch.setattr(module, "webui_available", lambda _root: webui)
     assert module.public_status(tmp_path, {"napcat_state": "IDLE"})["installed"] is False
     _shell(tmp_path)
     status = module.public_status(tmp_path, {"napcat_state": "INSTALLER_OPENED"})
     assert status["installed"] is True
-    assert status["state"] == "READY"
+    assert status["state"] == expected
     assert status["managed"] is True
 
 

@@ -336,6 +336,8 @@ def _git_tracked_payload_files(payload_root: Path) -> set[str] | None:
     """Return tracked paths for a clone/worktree, or None for an archive."""
 
     git_marker = payload_root / ".git"
+    if not git_marker.exists() and payload_root.name == "client":
+        git_marker = payload_root.parent / ".git"
     if not git_marker.is_dir() and not git_marker.is_file():
         return None
     try:

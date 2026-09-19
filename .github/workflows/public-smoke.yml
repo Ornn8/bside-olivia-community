@@ -7,6 +7,10 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    working-directory: client
+
 jobs:
   public-smoke:
     name: Public smoke (Windows / Python 3.12)
@@ -29,6 +33,9 @@ jobs:
 
       - name: Run repository hardening scan
         run: python baseline_hardening_scan.py --mode all
+
+      - name: Check repository-wide secret and artifact boundaries
+        run: python baseline_hardening_scan.py --root .. --mode secrets --mode sensitive-paths --mode large-files --mode evidence-ignore
 
       - name: Check whitespace
         run: git diff --check --exit-code

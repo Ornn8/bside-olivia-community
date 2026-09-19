@@ -75,6 +75,34 @@ def _managed_installation(tmp_path: Path) -> Path:
     return installation
 
 
+def test_builds_from_client_subdirectory_without_changing_installed_paths(tmp_path: Path) -> None:
+    source, _ = _clean_payload_repo(tmp_path)
+    client = source / "client"
+    client.mkdir()
+    for item in list(source.iterdir()):
+        if item.name not in {".git", "client"}:
+            item.rename(client / item.name)
+    (source / "README.md").write_text("Repository landing page", encoding="utf-8")
+    _run_git(source, "add", ".")
+    _run_git(source, "commit", "-m", "Move client source")
+    commit = _run_git(source, "rev-parse", "HEAD")
+    package = tmp_path / "client.oliviapatch"
+    result = build_component_package(client, package, version="0.1.1", expected_source_commit=commit)
+    assert result["status"] == "BUILT"
+    with zipfile.ZipFile(package) as archive:
+        assert "payload/local_server.py" in archive.namelist()
+        assert not any(name.startswith("payload/client/") for name in archive.namelist())
+    from installer.full_patch import _git_tracked_payload_files
+    from installer.build_windows_setup import _git_dirty_files
+    (client / "untracked.py").write_text("untracked fixture", encoding="utf-8")
+    tracked = _git_tracked_payload_files(client)
+    assert "local_server.py" in tracked
+    assert "untracked.py" not in tracked
+    assert not _git_dirty_files(client)
+    (client / "local_server.py").write_text("changed fixture", encoding="utf-8")
+    assert _git_dirty_files(client) == {"local_server.py"}
+
+
 def test_builds_release_ready_component_package_that_the_updater_accepts(
     tmp_path: Path,
 ) -> None:
