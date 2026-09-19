@@ -180,7 +180,7 @@ class CompanionMemorySummary:
 
     def __post_init__(self) -> None:
         _identifier(self.memory_id, code="MEMORY_ID_INVALID")
-        _text(self.text, maximum=2000, code="MEMORY_TEXT_INVALID")
+        _text(self.text, maximum=2000, code="MEMORY_TEXT_INVALID", multiline=True)
         _identifier(self.source_id, code="MEMORY_SOURCE_INVALID")
         if self.created_at is not None:
             _timestamp(self.created_at, code="MEMORY_TIME_INVALID")

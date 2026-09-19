@@ -21,6 +21,7 @@ from typing import Any, AsyncIterator, Callable, Mapping, Sequence
 from urllib.parse import urlsplit
 
 import aiohttp
+from jsonschema import Draft202012Validator, ValidationError
 
 from runtime.diagnostics.usage_metrics import record_usage, purpose_for
 from runtime.reply.model_capabilities import model_capabilities
@@ -32,7 +33,6 @@ PROVIDER_USER_AGENT = "Olivia-Community/0.1"
 
 ALLOWED_ROLES = frozenset({"system", "user", "assistant"})
 SUPPORTED_API_STYLES = frozenset({"chat_completions", "responses"})
-QWEN_REASONING_MODELS = frozenset({"qwen3.8-flash", "qwen3.8-max"})
 MANAGED_LLM_SCHEMA_VERSION = 3
 _MANAGED_LLM_MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 
@@ -935,7 +935,22 @@ class OpenAICompatibleAdapter(Gateway):
                                 continue
                             raise ProviderRetryableError(status)
                         if status >= 400:
-                            raise ProviderRejected(status)
+                            rejected = ProviderRejected(status)
+                            if status in {400, 422}:
+                                # Classify only explicit capability rejection. Never
+                                # retain provider messages (they may echo credentials).
+                                try:
+                                    error_body = await response.json(content_type=None)
+                                    error = error_body.get('error', {}) if isinstance(error_body, Mapping) else {}
+                                    message = str(error.get('message', '')).casefold() if isinstance(error, Mapping) else ''
+                                    if any(term in message for term in ('not support', 'unsupported', 'not allowed')):
+                                        for parameter in ('response_format', 'tool_choice', 'tools'):
+                                            if parameter in body and parameter in message:
+                                                rejected.diagnostic_detail = 'unsupported_' + parameter
+                                                break
+                                except (ValueError, TypeError):
+                                    pass
+                            raise rejected
                         diagnostic_stage = "response_json"
                         try:
                             raw = await response.text()
@@ -1017,6 +1032,8 @@ class OpenAICompatibleAdapter(Gateway):
     ) -> GatewayResponse:
         request = request_id or uuid.uuid4().hex
         max_reasoning = self._uses_max_reasoning(scope)
+        if response_format is not None:
+            return await self._structured_completion(messages, response_format, request, scope=scope)
         if self._uses_official_review_responses(scope):
             normalized = validate_messages(messages, max_input_chars=self.config.max_input_chars)
             capabilities = model_capabilities(self.config.base_url, self.config.model, self.config.provider_options)
@@ -1058,6 +1075,72 @@ class OpenAICompatibleAdapter(Gateway):
             raise InvalidGatewayInput("OUTPUT_TOO_LONG")
         return GatewayResponse(text, request, self.config.provider, self.config.model)
 
+    async def _structured_completion(self, messages, response_format, request, *, scope=None, attempts=2):
+        spec = response_format.get('json_schema', response_format)
+        schema = {'type':'object'} if response_format.get('type') == 'json_object' else spec.get('schema')
+        if not isinstance(schema, Mapping):
+            raise InvalidGatewayInput('INVALID_RESPONSE_SCHEMA')
+        validator = Draft202012Validator(schema)
+        caps = model_capabilities(self.config.base_url, self.config.model, self.config.provider_options)
+        instruction = {'role': 'system', 'content': 'Return only JSON matching this schema. Preserve the supplied facts and frozen text. '
+                       + json.dumps(schema, ensure_ascii=False)}
+        current = [instruction, *messages]
+        official_review = self._uses_official_review_responses(scope)
+        responses = self.config.api_style == 'responses' or official_review
+        for attempt in range(attempts):
+            body = self._body(current, stream=False, max_reasoning=self._uses_max_reasoning(scope), scope=scope)
+            if official_review:
+                body = {'model':self.config.model, 'input':body['messages'], 'stream':False,
+                        'reasoning':{'effort':caps.reasoning_effort}}
+            if scope is None and self.config.api_style == 'chat_completions':
+                body.update(caps.reasoning_parameters(False))
+            body.pop('response_format', None)
+            body.pop('text', None)
+            if caps.json_schema:
+                normalized = {'type':'json_schema', 'name':spec.get('name', 'structured_reply'),
+                              'strict':spec.get('strict', False), 'schema':dict(schema)}
+                if responses:
+                    body['text'] = {'format': normalized}
+                else:
+                    body['response_format'] = {'type':'json_schema', 'json_schema':{k:v for k,v in normalized.items() if k != 'type'}}
+            elif caps.json_mode:
+                if responses:
+                    body['text'] = {'format':{'type':'json_object'}}
+                else:
+                    body['response_format'] = {'type':'json_object'}
+            try:
+                data = await self._post_json(body, request, max_reasoning=self._uses_max_reasoning(scope),
+                                             background_reasoning=scope is GatewayRequestScope.BACKGROUND_REASONING,
+                                             **({'endpoint':'https://api.deepseek.com/responses'} if official_review else {}))
+            except ProviderRejected as error:
+                if getattr(error, 'diagnostic_detail', None) != 'unsupported_response_format' or attempt + 1 == attempts:
+                    raise
+                # Retry without wire-format extensions but keep the same schema
+                # in the prompt and the same mandatory local validation.
+                caps = replace(caps, json_mode=False, json_schema=False)
+                continue
+            if _extract_finish_reason(data) == 'length' or data.get('status') in {'incomplete', 'failed'}:
+                error = ProviderProtocolError('structured_truncated')
+                error.diagnostic_stage = 'structured_completion'
+                raise error
+            text = _extract_official_review_response_text(data) if official_review else _extract_response_text(data)
+            if len(text) > self.config.max_output_chars:
+                raise InvalidGatewayInput('OUTPUT_TOO_LONG')
+            # Remove a complete Markdown wrapper only; never guess missing JSON.
+            fenced = re.fullmatch(r'\s*```(?:json)?\s*\n(.*?)\n```\s*', text, re.DOTALL | re.IGNORECASE)
+            if fenced:
+                text = fenced.group(1)
+            try:
+                value = json.loads(text)
+                validator.validate(value)
+                return GatewayResponse(json.dumps(value, ensure_ascii=False, separators=(',', ':'), allow_nan=False), request, self.config.provider, self.config.model)
+            except (ValueError, ValidationError):
+                if attempt + 1 == attempts:
+                    error = ProviderProtocolError('structured_validation_failed')
+                    error.diagnostic_stage = 'structured_validation'
+                    raise error from None
+                current = [*current, {'role':'system', 'content':'The previous structured result was invalid. Produce the required JSON once more from the original input; do not add facts or change frozen text.'}]
+
     async def complete_with_tools(
         self,
         *,
@@ -1069,13 +1152,19 @@ class OpenAICompatibleAdapter(Gateway):
         if tool_choice != "required":
             raise InvalidGatewayInput("REQUIRED_TOOL_CHOICE")
         request = request_id or uuid.uuid4().hex
+        capabilities = model_capabilities(self.config.base_url, self.config.model, self.config.provider_options)
+        single = tools[0].get('function') if len(tools) == 1 and isinstance(tools[0], Mapping) else None
+        async def structured_tool(*, attempts):
+            if not isinstance(single, Mapping) or not isinstance(single.get('parameters'), Mapping):
+                raise ProviderProtocolError('unsupported_tool_fallback')
+            result = await self._structured_completion(messages, {'type':'json_schema',
+                'name':single['name'], 'schema':single['parameters']}, request, attempts=attempts)
+            return (GatewayToolCall(name=single['name'], arguments=json.loads(result.text)),)
+        if not capabilities.tools or (capabilities.json_schema and single is not None):
+            return await structured_tool(attempts=2)
         body = self._body(messages, stream=False)
-        if (
-            self.config.api_style == "chat_completions"
-            and self.config.model.casefold() in QWEN_REASONING_MODELS
-        ):
-            # Qwen defaults to thinking; forced tool selection needs non-thinking mode.
-            body["enable_thinking"] = False
+        if self.config.api_style == 'chat_completions':
+            body.update(capabilities.reasoning_parameters(False))
         if self.config.api_style == "responses":
             converted: list[dict[str, object]] = []
             for tool in tools:
@@ -1096,13 +1185,36 @@ class OpenAICompatibleAdapter(Gateway):
         capabilities = model_capabilities(self.config.base_url, self.config.model, self.config.provider_options)
         if self.config.api_style != "chat_completions" or capabilities.tool_choice:
             body["tool_choice"] = tool_choice
-        data = await self._post_json(body, request)
+        try:
+            data = await self._post_json(body, request)
+        except ProviderRejected as error:
+            if single is not None and getattr(error, 'diagnostic_detail', None) in {'unsupported_tools', 'unsupported_tool_choice'}:
+                return await structured_tool(attempts=1)
+            raise
+        if _extract_finish_reason(data) == 'length' or data.get('status') in {'incomplete', 'failed'}:
+            error = ProviderProtocolError('tool_truncated')
+            error.diagnostic_stage = 'tool_completion'
+            raise error
         try:
             calls = _extract_tool_calls(data)
             if not calls:
                 raise ProviderProtocolError("missing_tools")
+            if single is not None and len(calls) != 1:
+                raise ProviderProtocolError('invalid_tool_count')
+            for call in calls:
+                function = next((t.get('function') for t in tools if isinstance(t, Mapping)
+                                 and isinstance(t.get('function'), Mapping) and t['function'].get('name') == call.name), None)
+                if function is None:
+                    raise ProviderProtocolError('unexpected_tool')
+                try:
+                    json.dumps(call.arguments, allow_nan=False)
+                    Draft202012Validator(function.get('parameters', {})).validate(call.arguments)
+                except (ValueError, ValidationError):
+                    raise ProviderProtocolError('invalid_tool_schema') from None
         except GatewayError as exc:
             exc.diagnostic_stage = "tool_parse"
+            if isinstance(single, Mapping):
+                return await structured_tool(attempts=1)
             raise
         return calls
 

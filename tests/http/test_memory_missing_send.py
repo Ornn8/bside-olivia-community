@@ -4,7 +4,9 @@ from types import SimpleNamespace
 import pytest
 
 
-@pytest.mark.parametrize('code', ['MEM0_EMBEDDING_CACHE_UNAVAILABLE', 'MEM0_IMPORT_FAILED'])
+@pytest.mark.parametrize('code', ['MEM0_EMBEDDING_CACHE_UNAVAILABLE', 'MEM0_IMPORT_FAILED',
+                                  'MEM0_INIT_IMPORT_VECTOR_STORE_IMPORT',
+                                  'MEM0_INIT_IMPORT_EMBEDDING_MODULE_MISSING'])
 @pytest.mark.parametrize('path', ['/toy/letter/route-preview', '/toy/letter/send'])
 def test_missing_memory_components_reject_before_acceptance(monkeypatch, code, path):
     import local_server as server

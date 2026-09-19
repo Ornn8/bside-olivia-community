@@ -1488,11 +1488,15 @@ def _official_history_memory_available() -> bool:
 
 
 def _missing_memory_component() -> str | None:
+    import re
+
     status = conversation_memory_adapter.status()
     code = getattr(status, 'reason_code', None)
-    if status.status == 'unavailable' and code in {
+    if status.status == 'unavailable' and (code in {
         'MEM0_EMBEDDING_CACHE_UNAVAILABLE', 'MEM0_IMPORT_FAILED',
-    }:
+    } or isinstance(code, str) and re.fullmatch(
+        r'MEM0_INIT_IMPORT_(?:APP|MEM0|VECTOR_STORE|EMBEDDING|LLM_CLIENT|SQLITE)_(?:IMPORT|MODULE_MISSING)', code
+    )):
         return code
     return None
 

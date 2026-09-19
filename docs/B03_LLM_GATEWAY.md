@@ -134,3 +134,12 @@ rtk python -m pytest -q tests/llm
 ```
 
 本批测试只使用 synthetic 文本与本地 `aiohttp` mock server；不下载权重、不调用生产 provider、不发送真实用户数据。视觉证据：本批没有 UI 改动，标记 `N/A`；听觉证据：只生成文本，标记 `N/A`。
+# Structured reply compatibility
+
+Single-function reply routing and explicitly structured completions share capability-based output handling. `provider_options.capabilities` supports `json_schema` (default false), `tools` (default true), `json_mode`, `tool_choice`, and the existing thinking controls. Enable `json_schema` only for endpoints known to support it. Tool-free endpoints can set `tools: false`; endpoints without JSON mode can additionally set `json_mode: false`.
+
+For single-function tasks, a supported JSON schema is preferred, otherwise native tools are used, with one schema-validated JSON fallback when the tool result is missing or invalid. JSON-only requests retain their schema in the prompt even without wire-format support. Both Chat Completions and Responses layouts are supported. The shared gateway does not execute tools or publish replies.
+
+Every explicit schema result is validated locally. A complete Markdown JSON wrapper is tolerated; missing fields, unexpected values, multiple results for a single-function task, and non-finite numbers are not silently invented or coerced. There is at most one format repair/fallback; normal network retries remain governed by the configured retry policy and caller deadline. Truncated or incomplete model responses fail closed. Only explicit HTTP 400/422 unsupported-parameter errors permit a capability fallback; authentication and unrelated request errors propagate unchanged.
+
+Diagnostics retain fixed stage/detail codes, never the provider's error message or user text. Current production speech already consumes frozen reply text through `TextOnlyVoicePlan`; this change preserves that path and existing media-only retry persistence. Legacy voice-director helpers remain outside the production speech path.

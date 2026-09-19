@@ -12,6 +12,8 @@ class ModelCapabilities:
     json_mode: bool = True
     stream_usage: bool = False
     tool_choice: bool = True
+    tools: bool = True
+    json_schema: bool = False
 
     @property
     def scoped_reasoning(self) -> bool:
@@ -53,6 +55,6 @@ def model_capabilities(base_url: str, model: str, options: Mapping | None = None
         not isinstance(values['reasoning_effort'], str) or values['reasoning_effort'] not in {'low', 'medium', 'high', 'max'}
     ):
         raise ValueError("invalid provider reasoning capabilities")
-    if any(type(values[k]) is not bool for k in ('json_mode', 'stream_usage', 'tool_choice')):
+    if any(type(values[k]) is not bool for k in ('json_mode', 'stream_usage', 'tool_choice', 'tools', 'json_schema')):
         raise ValueError("invalid provider boolean capabilities")
     return ModelCapabilities(**values)

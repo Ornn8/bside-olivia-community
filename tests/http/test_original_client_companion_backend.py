@@ -22,6 +22,21 @@ from private_world_candidates import (
 NOW = datetime(2026, 8, 23, 10, 30, tzinfo=timezone.utc)
 
 
+@pytest.mark.parametrize('separator', ['\n', '\r\n', '\t'])
+def test_valid_multiline_memory_remains_readable_when_provider_is_available(separator):
+    from dataclasses import replace
+    class MultilineMemory(MemoryAdminFixture):
+        def list_memories(self, **kwargs):
+            first, second = super().list_memories(**kwargs)
+            return (replace(first, text='用户喜欢雨天散步。' + separator + '也喜欢听音乐。'), second)
+    backend = OriginalClientCompanionServiceBackend(memory_admin=MultilineMemory())
+    assert backend.read_status().memory.state == 'available'
+    rows = backend.list_memories(query=None, limit=50)
+    assert len(rows) == 2
+    assert separator in rows[0].text
+    assert backend.diagnostic_status_history()[-1]['status'] == 'available'
+
+
 def test_list_failure_is_recorded_separately_from_available_status():
     class BrokenRead(MemoryAdminFixture):
         def list_memories(self, **kwargs):
