@@ -128,7 +128,7 @@ def test_napcat_public_status_discovers_completed_install(tmp_path: Path) -> Non
     _shell(tmp_path)
     status = module.public_status(tmp_path, {"napcat_state": "INSTALLER_OPENED"})
     assert status["installed"] is True
-    assert status["state"] == "READY"
+    assert status["state"] == "ONEBOT_READY"
     assert status["managed"] is True
 
 
