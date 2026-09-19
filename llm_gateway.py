@@ -1032,7 +1032,9 @@ class OpenAICompatibleAdapter(Gateway):
     ) -> GatewayResponse:
         request = request_id or uuid.uuid4().hex
         max_reasoning = self._uses_max_reasoning(scope)
-        if response_format is not None:
+        # Persona review scopes already own their format and empty-result retry
+        # contract. Keep that existing wire protocol and caller validation.
+        if response_format is not None and scope is GatewayRequestScope.PERSONAL_CHAT_JSON:
             return await self._structured_completion(messages, response_format, request, scope=scope)
         if self._uses_official_review_responses(scope):
             normalized = validate_messages(messages, max_input_chars=self.config.max_input_chars)
@@ -1163,7 +1165,7 @@ class OpenAICompatibleAdapter(Gateway):
         if not capabilities.tools or (capabilities.json_schema and single is not None):
             return await structured_tool(attempts=2)
         body = self._body(messages, stream=False)
-        if self.config.api_style == 'chat_completions':
+        if self.config.api_style == 'chat_completions' and capabilities.thinking == 'qwen':
             body.update(capabilities.reasoning_parameters(False))
         if self.config.api_style == "responses":
             converted: list[dict[str, object]] = []
@@ -1208,13 +1210,18 @@ class OpenAICompatibleAdapter(Gateway):
                     raise ProviderProtocolError('unexpected_tool')
                 try:
                     json.dumps(call.arguments, allow_nan=False)
-                    Draft202012Validator(function.get('parameters', {})).validate(call.arguments)
-                except (ValueError, ValidationError):
+                    # Native tools retain caller-owned semantic validation and
+                    # optional-field defaults; strict schema validation belongs
+                    # to the synthetic JSON fallback above.
+                except ValueError:
                     raise ProviderProtocolError('invalid_tool_schema') from None
         except GatewayError as exc:
             exc.diagnostic_stage = "tool_parse"
             if isinstance(single, Mapping):
-                return await structured_tool(attempts=1)
+                try:
+                    return await structured_tool(attempts=1)
+                except ProviderProtocolError:
+                    raise exc from None
             raise
         return calls
 

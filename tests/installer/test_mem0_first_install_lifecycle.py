@@ -218,6 +218,11 @@ def test_memory_runtime_probe_accepts_a_hash_locked_requirement_and_runtime(
         "Metadata-Version: 2.1\nName: annotated-doc\nVersion: 0.0.5\n",
         encoding="utf-8",
     )
+    (runtime / "qdrant_client.py").write_text(
+        "class QdrantClient:\n"
+        "    def __init__(self, *, location): assert location == ':memory:'\n"
+        "    def get_collections(self): return []\n"
+        "    def close(self): pass\n", encoding="utf-8")
     for module in ("mem0", "sentence_transformers", "huggingface_hub"):
         package = runtime / module
         package.mkdir()
@@ -307,6 +312,11 @@ def test_windows_installer_runtime_probe_survives_native_argument_quoting(
         "Metadata-Version: 2.1\nName: annotated-doc\nVersion: 0.0.5\n",
         encoding="utf-8",
     )
+    (runtime / "qdrant_client.py").write_text(
+        "class QdrantClient:\n"
+        "    def __init__(self, *, location): assert location == ':memory:'\n"
+        "    def get_collections(self): return []\n"
+        "    def close(self): pass\n", encoding="utf-8")
     for module in ("mem0", "sentence_transformers", "huggingface_hub"):
         package = runtime / module
         package.mkdir()
