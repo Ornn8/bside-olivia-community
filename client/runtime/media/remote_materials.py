@@ -49,15 +49,16 @@ def render_music_materials(kind, data, output, *, environment, include_spoken, r
     from runtime.media.latentsync_reply import resolve_ffmpeg_executable
     ffmpeg = resolve_ffmpeg_executable(environment)
     api = RemoteGeneration(environment.get('OLIVIA_GPU_API_URL', ''), environment.get('OLIVIA_GPU_API_KEY', ''))
-    inputs = {**data, 'include_spoken': include_spoken}
-    assets = {'scene_asset': performance_video_path}
+    inputs = {**data, 'include_spoken': include_spoken,
+              'scene_asset': 'official-performance-lipsync-safe-2950f-v1'}
+    assets = {}
     if source_audio is not None:
         assets['source_asset'] = source_audio
     if include_spoken:
         inputs['text'] = reply_text
         if voice_performance_plan is not None:
             inputs['voice_plan'] = voice_performance_plan.to_dict()
-        assets['spoken_scene_asset'] = spoken_action_base_path
+        inputs['spoken_scene_asset'] = 'official-reply-action-base-v1'
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='olivia-materials-', dir=output.parent) as temporary:
@@ -80,8 +81,10 @@ def render_music_materials(kind, data, output, *, environment, include_spoken, r
              'MUSIC_REPLY_AUDIO_MUX_FAILED', timeout=900, cleanup_path=song)
         final = work / 'final.mp4'
         if include_spoken:
+            transition = Path(official_reply_reference_path) if official_reply_reference_path else None
             concat_videos(work / 'speech.mp4', song, final,
-                          transition_video_path=official_reply_reference_path, ffmpeg_path=ffmpeg)
+                          transition_video_path=transition if transition and transition.is_file() else None,
+                          ffmpeg_path=ffmpeg)
         else:
             shutil.copyfile(song, final)
         final.replace(output)

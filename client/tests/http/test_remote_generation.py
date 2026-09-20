@@ -6,6 +6,18 @@ from runtime.remote_generation import RemoteGeneration
 from runtime.cloud_service import CloudError
 
 
+def test_missing_shared_spoken_scene_fails_before_submission(tmp_path, monkeypatch):
+    async def request(self, action, data):
+        assert action == 'capabilities'
+        return {'kinds': ['original_video'], 'shared_assets': [
+            {'asset_id': 'performance', 'sha256': '0' * 64}]}
+    monkeypatch.setattr(RemoteGeneration, 'request', request)
+    with pytest.raises(CloudError) as error:
+        asyncio.run(RemoteGeneration().generate('original_video',
+            {'scene_asset': 'performance', 'spoken_scene_asset': 'missing'}, tmp_path / 'result.zip'))
+    assert error.value.code == 'GPU_SHARED_SCENE_MISSING'
+
+
 def test_billing_reads_server_amounts_and_rejects_invalid_money():
     async def scenario():
         account = {'mode': 'simulation', 'currency': 'CNY', 'opening_cents': 10000,
