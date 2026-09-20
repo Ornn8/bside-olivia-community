@@ -161,16 +161,14 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
       } catch (error) { renderError(parent, error); }
     };
 
-    const renderChannelChoice = () => {
+    const renderChannelChoice = (selected = []) => {
       const box = node("div", null, "olivia-chat-channel");
-      box.append(node("div", "已经收到联系方式邀请", "olivia-chat-name"));
-      box.append(node("div", "不用再寄一封信确认。直接选择你想使用的聊天方式；选择微信会立即打开扫码绑定。", "olivia-chat-copy"));
+      box.append(node("div", selected.length ? "添加聊天方式" : "已经收到联系方式邀请", "olivia-chat-name"));
+      box.append(node("div", selected.length ? "可以继续添加另一种聊天方式，已绑定的渠道会保留。" : "不用再寄一封信确认。直接选择你想使用的聊天方式；选择微信会立即打开扫码绑定。", "olivia-chat-copy"));
       const actions = node("div", null, "olivia-chat-actions");
-      actions.append(
-        action("微信", async () => chooseChannel("wechat", box)),
-        action("QQ", async () => chooseChannel("qq", box)),
-        action("两个都要", async () => chooseChannel("both", box)),
-      );
+      if (!selected.includes("wechat")) actions.append(action(selected.length ? "添加微信" : "微信", async () => chooseChannel("wechat", box)));
+      if (!selected.includes("qq")) actions.append(action(selected.length ? "添加 QQ" : "QQ", async () => chooseChannel("qq", box)));
+      if (!selected.length) actions.append(action("两个都要", async () => chooseChannel("both", box)));
       box.append(actions);
       return box;
     };
@@ -374,6 +372,7 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
         } else {
           if (selected.includes("wechat")) fragment.append(renderWechat(status));
           if (selected.includes("qq")) fragment.append(renderQQ(status));
+          if (selected.length === 1) fragment.append(renderChannelChoice(selected));
         }
         content.replaceChildren(fragment);
         schedule(status);

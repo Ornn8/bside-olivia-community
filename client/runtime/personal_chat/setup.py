@@ -11,6 +11,7 @@ import json
 import os
 import re
 import tempfile
+import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -158,7 +159,7 @@ def _store_setup_choice(server, choice: str) -> list[str]:
         raise RuntimeError("PERSONAL_CHAT_CHANNEL_CHOICE_INVALID")
     access = _contact_access(server)
     invitation_id = access.get("invitation_id")
-    if access.get("state") != "invited" or not isinstance(invitation_id, str):
+    if access.get("state") not in {"invited", "qq", "wechat", "both"} or not isinstance(invitation_id, str):
         raise RuntimeError("PERSONAL_CHAT_INVITATION_REQUIRED")
     invitation = next(
         (
@@ -173,12 +174,14 @@ def _store_setup_choice(server, choice: str) -> list[str]:
     )
     if invitation is None:
         raise RuntimeError("PERSONAL_CHAT_INVITATION_REQUIRED")
-    invitation["contact_setup_choice"] = choice
     persist = getattr(server, "_persist_store_state", None)
     if not callable(persist):
         raise RuntimeError("PERSONAL_CHAT_DURABLE_STATE_REQUIRED")
+    channels = set(access.get('channels', [])) | ({'qq', 'wechat'} if choice == 'both' else {choice})
+    invitation["contact_setup_choice"] = 'both' if len(channels) == 2 else choice
+    invitation["contact_setup_choice_at"] = time.time()
     persist()
-    return ["qq", "wechat"] if choice == "both" else [choice]
+    return sorted(channels)
 
 
 def _qr_content(value: object) -> str:
