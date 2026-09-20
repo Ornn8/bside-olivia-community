@@ -6,6 +6,62 @@ from runtime.remote_generation import RemoteGeneration
 from runtime.cloud_service import CloudError
 
 
+@pytest.mark.parametrize('failure', [502, 503, 504, 404, 401, 'persistent'])
+def test_status_transient_failure_does_not_resubmit(tmp_path, monkeypatch, failure):
+    async def scenario():
+        submitted, polled, delays = [], [], []
+        async def sleep(seconds): delays.append(seconds)
+        monkeypatch.setattr('runtime.remote_generation.asyncio.sleep', sleep)
+        async def handler(request):
+            if request.path == '/v1/capabilities':
+                return web.json_response({'kinds': ['tts'], 'shared_assets': []})
+            if request.path == '/v1/tasks':
+                submitted.append(await request.json())
+                return web.json_response({'task_id': 'existing', 'status': 'running'})
+            if request.path == '/v1/tasks/existing':
+                polled.append(1)
+                if len(polled) == 1 or failure == 'persistent':
+                    return web.Response(status=503 if failure == 'persistent' else failure)
+                return web.json_response({'task_id': 'existing', 'status': 'succeeded',
+                    'outputs': [{'url': str(server.make_url('/result'))}]})
+            return web.Response(body=b'synthetic-output')
+        app=web.Application();app.router.add_route('*','/{tail:.*}',handler)
+        async with TestServer(app) as server:
+            api=RemoteGeneration(str(server.make_url('/')),'synthetic')
+            output=tmp_path/'reply.wav'
+            if failure in (401,404,'persistent'):
+                with pytest.raises(CloudError): await api.generate('tts',{'text':'synthetic'},output)
+                assert len(polled)==(5 if failure=='persistent' else 1)
+                assert not output.exists()
+            else:
+                await api.generate('tts',{'text':'synthetic'},output)
+                assert output.read_bytes()==b'synthetic-output'
+                assert len(polled)==2
+            assert len(submitted)==1
+            assert delays == ([1, 2, 4, 8, 16] if failure == 'persistent'
+                              else [1] if failure in (401, 404) else [1, 2])
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('code', ['GPU_CONNECT_FAILED', 'GPU_CONNECTION_TIMEOUT',
+    'GPU_CONNECTION_FAILED', 'GPU_TLS_FAILED', 'GPU_RESPONSE_INVALID'])
+def test_status_transport_retry_boundary(monkeypatch, code):
+    calls = []
+    async def request(self, action, data):
+        calls.append((action, data))
+        if len(calls) == 1: raise CloudError(code)
+        return {'task_id': 'existing', 'status': 'succeeded'}
+    async def sleep(seconds): pass
+    monkeypatch.setattr(RemoteGeneration, 'request', request)
+    monkeypatch.setattr('runtime.remote_generation.asyncio.sleep', sleep)
+    if code in ('GPU_TLS_FAILED', 'GPU_RESPONSE_INVALID'):
+        with pytest.raises(CloudError): asyncio.run(RemoteGeneration()._status('existing'))
+        assert len(calls) == 1
+    else:
+        assert asyncio.run(RemoteGeneration()._status('existing'))['status'] == 'succeeded'
+        assert calls == [('status', {'task_id': 'existing'})] * 2
+
+
 def test_missing_shared_spoken_scene_fails_before_submission(tmp_path, monkeypatch):
     async def request(self, action, data):
         assert action == 'capabilities'
