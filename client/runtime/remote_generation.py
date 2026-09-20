@@ -196,8 +196,9 @@ class RemoteGeneration:
                     saved = {}
             except (OSError, ValueError):
                 pass
-        if 'scene_asset' in data and data['scene_asset'] not in {a['asset_id'] for a in caps['shared_assets']}:
-            raise CloudError('GPU_SHARED_SCENE_MISSING', 503)
+        for field in ('scene_asset', 'spoken_scene_asset'):
+            if field in data and data[field] not in {a['asset_id'] for a in caps['shared_assets']}:
+                raise CloudError('GPU_SHARED_SCENE_MISSING', 503)
         for field, path in (() if saved else (assets or {}).items()):
             with Path(path).open('rb') as source: digest = hashlib.file_digest(source, 'sha256').hexdigest()
             shared = next((a['asset_id'] for a in caps['shared_assets'] if a['sha256'] == digest), None)

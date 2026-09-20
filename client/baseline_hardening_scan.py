@@ -299,8 +299,10 @@ def scan_runtime_dependencies(root: Path, files: list[Path]) -> tuple[list[str],
             for label, pattern in RUNTIME_DEPENDENCY_PATTERNS:
                 # This is a pinned local scene identifier, not a network endpoint.
                 if (label == "official_request_poll_download_token_marker"
-                        and relative(path, root) == "runtime/reply/reply_media.py"
-                        and line.strip() == "'scene_asset': 'official-reply-action-base-v1',"):
+                        and (relative(path, root), line.strip()) in {
+                            ("runtime/reply/reply_media.py", "'scene_asset': 'official-reply-action-base-v1',"),
+                            ("runtime/media/remote_materials.py", "inputs['spoken_scene_asset'] = 'official-reply-action-base-v1'"),
+                        }):
                     continue
                 if pattern.search(line):
                     findings.append(f"{relative(path, root)}:{line_no}:{label}")
