@@ -22,7 +22,7 @@ PROVENANCE_PATH = (
 PUBLIC_REFERENCE_PATH = (
     ROOT / "docs" / "persona-sources" / "linli-im-private-constitution-1.0.zh-CN.md"
 )
-README_PATH = ROOT / "README.md"
+README_PATH = ROOT.parent / "README.md"
 WINDOWS_INSTALL_PATH = ROOT / "docs" / "WINDOWS_FULL_PATCH.md"
 LETTER_CONTRACT_PATH = ROOT / "docs" / "P03_ORIGINAL_CLIENT_LETTER_CONTRACT.md"
 
