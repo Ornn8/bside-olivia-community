@@ -2066,7 +2066,7 @@ def test_first_release_notes_cover_user_facing_release_boundaries() -> None:
 
 
 def test_readme_release_status_matches_deferred_optional_model_install() -> None:
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    readme = (ROOT.parent / "README.md").read_text(encoding="utf-8")
 
     assert "Mem0 一键新装仍是发布阻断" not in readme
     assert "可选模型在登录后的初始设置中按需安装" in readme

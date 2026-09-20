@@ -15,7 +15,7 @@ import pytest
 
 def test_public_docs_define_one_spoken_plus_sixty_second_music_video() -> None:
     root = Path(__file__).parents[2]
-    readme = (root / "README.md").read_text(encoding="utf-8")
+    readme = (root.parent / "README.md").read_text(encoding="utf-8")
     windows = (root / "docs/WINDOWS_FULL_PATCH.md").read_text(encoding="utf-8")
     stabilization = (root / "docs/P03_01C_MINIMAX_MUSIC_STABILIZATION.md").read_text(
         encoding="utf-8"
