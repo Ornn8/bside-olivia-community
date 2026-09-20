@@ -51,6 +51,37 @@ ROOT_MESSAGES = (
 )
 
 
+def test_background_structured_json_keeps_long_prefix_and_rejects_truncation(monkeypatch):
+    adapter = OpenAICompatibleAdapter(make_config('http://127.0.0.1:1/v1', model='qwen3.7-flash'))
+    messages = ({'role': 'system', 'content': '固定提取规则。' * 800},
+                {'role': 'user', 'content': 'synthetic exchange'})
+    finish = 'stop'
+    async def response(body, request_id, **kwargs):
+        assert body['response_format'] == {'type': 'json_object'}
+        assert body['messages'][0]['content'].startswith(messages[0]['content'])
+        return {'choices': [{'finish_reason': finish, 'message': {'content': '```json\n{"updates": []}\n```'}}]}
+    monkeypatch.setattr(adapter, '_post_json', response)
+    result = run(adapter.complete_structured_scoped(messages, response_format={'type': 'json_object'},
+                                                    scope=GatewayRequestScope.BACKGROUND_REASONING))
+    assert json.loads(result.text) == {'updates': []}
+    finish = 'length'
+    with pytest.raises(ProviderProtocolError):
+        run(adapter.complete_structured_scoped(messages, response_format={'type': 'json_object'},
+                                               scope=GatewayRequestScope.BACKGROUND_REASONING))
+
+
+def test_qwen37_reasoning_is_not_silently_cut_after_failed_budget_trial():
+    adapter = OpenAICompatibleAdapter(make_config('http://127.0.0.1:1/v1', model='qwen3.7-flash'))
+    background = adapter._body(ROOT_MESSAGES, stream=False, max_reasoning=True,
+                               scope=GatewayRequestScope.BACKGROUND_REASONING)
+    reply = adapter._body(ROOT_MESSAGES, stream=True, max_reasoning=True,
+                          scope=GatewayRequestScope.TEXT_LETTER_MAX_REASONING)
+    assert background['enable_thinking'] is True
+    assert 'thinking_budget' not in background
+    assert reply['enable_thinking'] is True
+    assert 'thinking_budget' not in reply
+
+
 def run(coro):
     return asyncio.run(coro)
 
@@ -99,7 +130,7 @@ def make_config(base_url: str, **overrides) -> GatewayConfig:
     return GatewayConfig(**values)
 
 
-@pytest.mark.parametrize("model", ["qwen3.8-flash", "qwen3.8-max"])
+@pytest.mark.parametrize("model", ["qwen3.8-flash", "qwen3.8-max", "qwen-plus", "qwen-flash", "qwen3.5-plus", "qwen3.6-plus", "qwen3.7-max", "qwen3.8-max-2026-09-01"])
 def test_qwen_required_tools_disable_default_thinking(monkeypatch, model):
     async def exercise():
         async def handler(request):

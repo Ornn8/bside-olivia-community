@@ -798,3 +798,26 @@ def test_invalid_router_output_fails_closed_to_text_letter():
     assert result.reply_mode == "text_letter"
     assert result.status == "unavailable"
     assert result.reason_code == "router_invalid_result"
+
+
+@pytest.mark.parametrize('model', ['qwen-plus', 'qwen3.6-plus', 'qwen3.8-max-2026-09-01'])
+def test_qwen_router_uses_compatible_tool_request(model):
+    from llm_gateway import OpenAICompatibleAdapter
+    async def exercise():
+        seen = []
+        async def handler(request):
+            body = await request.json()
+            seen.append(body)
+            if body.get('enable_thinking', True):
+                return web.json_response({'error': {'code': 'InvalidParameter'}}, status=400)
+            assert body['tools'][0]['function']['name'] == 'select_reply_mode'
+            return web.json_response({'choices': [{'message': {'tool_calls': [{'function': {
+                'name': 'select_reply_mode', 'arguments': json.dumps(_route_arguments())}}]}}]})
+        app = web.Application(); app.router.add_post('/v1/chat/completions', handler)
+        async with TestServer(app) as server:
+            gateway = OpenAICompatibleAdapter(GatewayConfig(provider='openai_compatible',
+                base_url=str(server.make_url('/v1')), model=model), key_resolver=lambda: 'synthetic')
+            result = await LetterReplyRouter(gateway, routing_context=RoutingContext(True)).classify('synthetic letter')
+            assert result.status == 'completed'
+            assert len(seen) == 1
+    asyncio.run(exercise())

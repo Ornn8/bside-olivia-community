@@ -101,7 +101,6 @@ def test_completed_empty_is_typed_and_reasoning_is_not_final(monkeypatch, text):
 
 @pytest.mark.parametrize("url,scope", [
     ("https://api.deepseek.com", GatewayRequestScope.TEXT_LETTER_MAX_REASONING),
-    ("https://api.deepseek.com", GatewayRequestScope.BACKGROUND_REASONING),
     ("https://api.deepseek.com", None),
     ("https://api.deepseek.com/other", JSON_SCOPE),
     ("http://api.deepseek.com", JSON_SCOPE),

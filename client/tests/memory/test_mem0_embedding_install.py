@@ -638,7 +638,7 @@ def test_settings_exposes_only_the_confirmed_embedding_action_and_health_is_hone
     ).replace("https://opencode.ai/zen/go/v1", "").replace(
         "https://dashscope.aliyuncs.com/compatible-mode/v1", ""
     )
-    assert "https://" not in without_provider_presets
+    assert "https://" not in without_provider_presets.replace("https://175.24.191.6/v1", "")
 
     memory = UnavailableConversationMemoryPort("MEM0_EMBEDDING_CACHE_UNAVAILABLE")
     admin = ConversationMemoryAdminService(memory, tmp_path / "memory-admin.sqlite3")

@@ -216,6 +216,25 @@ def test_audio_only_budget_scales_with_full_text_without_video_duration_target(t
     assert video['duration_target_seconds'] == [40.0, 50.0]
 
 
+def test_audio_context_preserves_whole_reply_and_rejects_insufficient_budget():
+    import torch
+    from tts.external_breeze_worker import _plan_audio_chunks
+    text = '今天的事情终于做完，可以慢慢休息了。' * 15
+    bundle = SimpleNamespace(tokenizer=object(), model=SimpleNamespace(config=object()))
+    runtime = SimpleNamespace(MAX_SEQ_LEN=2048,
+        ref_segments=lambda reference, text, instruction: text,
+        _prepare_one=lambda tokenizer, config, segments, codes:
+            {'input_ids': torch.zeros(1, len(segments) + codes)},
+        estimate_speech_frames=lambda tokenizer, text: len(text) * 3)
+    request = {'reference_text': '参考', 'max_new_tokens': 3000}
+    assert _plan_audio_chunks(text, bundle, runtime, 40, request) == [text]
+    longer = text * 4
+    chunks = _plan_audio_chunks(longer, bundle, runtime, 40, request)
+    assert len(chunks) > 1 and ''.join(chunks) == longer
+    with pytest.raises(ValueError, match='BREEZE_REQUEST_INVALID'):
+        _plan_audio_chunks(text, bundle, runtime, 2000, request)
+
+
 def test_long_audio_chunks_preserve_every_character_and_video_stays_single_pass():
     from tts.external_breeze_worker import _audio_text_chunks, _generate_complete_audio
     text = '长文需要完整说完，不能因为视频限制而截断。' * 30
@@ -250,7 +269,9 @@ def test_audio_chunks_are_generated_once_and_directions_are_renumbered(monkeypat
     assert result['waveform'] == [101,101,101]
 
 
-def test_multi_chunk_worker_retains_model_until_last_decode(tmp_path, monkeypatch):
+@pytest.mark.parametrize('separator', ['', '\n\n'])
+@pytest.mark.parametrize('whole_reply', [False, True])
+def test_worker_retains_model_until_planned_last_decode(tmp_path, monkeypatch, separator, whole_reply):
     import contextlib
     import torch
     device = SimpleNamespace(type='cuda')
@@ -270,12 +291,16 @@ def test_multi_chunk_worker_retains_model_until_last_decode(tmp_path, monkeypatc
     monkeypatch.setattr(torch.cuda, 'empty_cache', lambda:None)
     monkeypatch.setattr(external_breeze_worker, '_load_package',lambda *a:(loader,SimpleNamespace(_generate_audio=generate),runtime))
     monkeypatch.setattr(external_breeze_worker, '_read_reference_audio',lambda *a:{})
-    text = '一'*100+'。'+'二'*100+'。'
+    monkeypatch.setattr(external_breeze_worker, '_plan_audio_chunks',
+                        lambda text, *a: [text] if whole_reply else external_breeze_worker._audio_text_chunks(text))
+    text = '一'*100+'。'+separator+'二'*100+'。'
     external_breeze_worker._synthesize(dict(runtime_root=str(tmp_path),model_dir=str(tmp_path),
         reference_audio='reference.wav',reference_text='参考',instruction='自然说话',text=text,
         audio_only_unbounded=True),tmp_path/'out.wav',tmp_path/'status.json')
-    assert ''.join(generated) == text and len(generated) == 2
-    assert moves == ['cpu',device]
+    assert ''.join(''.join(generated).split()) == ''.join(text.split())
+    assert len(generated) == (1 if whole_reply else 2)
+    assert all(part == part.strip() for part in generated)
+    assert moves == ([] if whole_reply else ['cpu',device])
     assert bundle.model is None and bundle.patchers == []
 
 

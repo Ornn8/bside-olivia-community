@@ -18,6 +18,13 @@ def render_cover_reply(content, reply_text, output_path, *, source_audio,
                        tts_config_path, visual_config_path, worker_path, performance_video_path,
                        spoken_action_base_path=None, voice_performance_plan=None,
                        cover_lyrics="", cover_language="unknown", **unused):
+    from runtime.remote_pipeline import enabled
+    if render_video and enabled(environment):
+        from runtime.media.remote_materials import render_music_materials
+        return render_music_materials('cover_video', {'lyrics': cover_lyrics, 'language': cover_language}, output_path,
+            source_audio=source_audio, environment=environment, include_spoken=include_spoken, reply_text=reply_text,
+            performance_video_path=performance_video_path, official_reply_reference_path=official_reply_reference_path,
+            spoken_action_base_path=spoken_action_base_path, voice_performance_plan=voice_performance_plan)
     def path(key):
         return configured_media_path(environment, key)
 
@@ -62,7 +69,8 @@ def deliver_cover_video(audio, output_path, *, environment, metadata, include_sp
         latentsync_python_path=path("OLIVIA_LATENTSYNC_PYTHON"),
         latentsync_root=path("OLIVIA_LATENTSYNC_ROOT"), **common)
     if include_spoken:
-        if spoken_action_base_path is None or not spoken_action_base_path.is_file():
+        from runtime.remote_pipeline import enabled
+        if not enabled(environment) and (spoken_action_base_path is None or not spoken_action_base_path.is_file()):
             raise MusicReplyError("MUSIC_REPLY_SPOKEN_REFERENCE_UNAVAILABLE")
         render_reply_video(reply_text, normal_video_path, tts_config_path=tts_config_path,
                            visual_config_path=visual_config_path, worker_path=worker_path,

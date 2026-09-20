@@ -1220,7 +1220,7 @@ def _load_store_state() -> None:
                         _mark_media_not_requested(item)
                         needs_persist = True
                     if item.get("media_status") == "PROCESSING":
-                        item["media_status"] = "QUEUED"
+                        item.update(media_status="UNAVAILABLE", media_error_code="MEDIA_JOB_INTERRUPTED", media_retryable=True)
                         needs_persist = True
     if isinstance(loaded.get("settings"), dict):
         store.settings = loaded["settings"]
@@ -1347,6 +1347,19 @@ def _route_readiness(videos=None, *, cover=False) -> dict[str, bool]:
         videos = video_reply_settings_store.videos_snapshot()
         if video_reply_settings_store.saved_tier() == "video":
             videos["voice_reply"] = False
+    from runtime.remote_pipeline import enabled as remote_enabled, capabilities as remote_capabilities
+    if remote_enabled(environment):
+        try:
+            kinds = set(remote_capabilities(environment)['kinds'])
+        except Exception:
+            kinds = set()
+        voice = 'tts' in kinds
+        song_audio = ('cover' if cover else 'original') in kinds
+        speech_video = 'video' in kinds
+        song = song_audio and 'lipsync' in kinds and (not cover or 'separate' in kinds)
+        return {'voice_reply': speech_video if videos['voice_reply'] else voice,
+                'singing_video': song if videos['singing_video'] else song_audio,
+                'voice_song_video': song and speech_video if videos['voice_song_video'] else voice and song_audio}
     voice = _voice_reply_configured(environment)
     from runtime.media.ace_cover import cover_configured
     from runtime.media.original_song import original_configured
@@ -1393,6 +1406,9 @@ def _open_video_capability_source(capability: object, source: object) -> bool:
 def _video_reply_dependencies_ready() -> bool:
     environment = MappingProxyType(dict(_os.environ))
     try:
+        from runtime.remote_pipeline import enabled as remote_enabled
+        if remote_enabled(environment):
+            return any(_route_readiness().values())
         from runtime.media.ace_cover import cover_configured
         from runtime.media.original_song import original_configured
         return _voice_reply_configured(environment) or cover_configured(environment) or original_configured(environment)
@@ -3233,9 +3249,9 @@ async def route(
                 return err(503, 'PROACTIVE_LOGIN_UNAVAILABLE', _proactive_status())
         _refresh_proactive_context()
         return ok(_proactive_status())
-    if p == "/toy/cover/progress":
+    if p in {"/toy/cover/progress", "/toy/media/progress"}:
         letter = next((item for item in store.letters if item["letter_id"] == query.get("letter_id")), None)
-        if letter is None or letter.get("music_provider") != "ace_step_xl_cover":
+        if letter is None or (p == "/toy/cover/progress" and letter.get("music_provider") != "ace_step_xl_cover"):
             return err(404, "LETTER_NOT_FOUND", {})
         state = {"status": letter.get("media_status", "PENDING"), "error_code": letter.get("media_error_code", "")}
         root = _media_root()
@@ -4483,6 +4499,7 @@ def _record_published_media(letter: dict, *, reply_text: str, delivery_id: str,
 
 async def _render_media_job(letter_id: str, content: str, reply_text: str, reply_mode: str) -> None:
     """Render one media reply at a time and persist a relative artifact path."""
+    from runtime.cloud_service import CloudError
 
     letter = next((item for item in store.letters if item["letter_id"] == letter_id), None)
     if letter is None:
@@ -4520,7 +4537,8 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
         stage = "prepare"
         try:
             output_dir.mkdir(parents=True, exist_ok=True)
-            if video_enabled:
+            from runtime.remote_pipeline import enabled as remote_enabled
+            if video_enabled and not remote_enabled(environment):
                 require_breeze_hardware()
             def runtime_path(name: str) -> Path:
                 configured = configured_media_path(environment, name)
@@ -4575,13 +4593,13 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                 stage = "prepare"
                 music_duration_seconds = int(letter.get("music_duration_seconds", VIDEO_REPLY_MUSIC_DURATION_SECONDS))
                 performance_scene = _current_music_performance(environment)
-                if video_enabled and (performance_scene is None or not performance_scene.is_file()):
+                if video_enabled and not remote_enabled(environment) and (performance_scene is None or not performance_scene.is_file()):
                     raise MusicReplyError("MUSIC_PERFORMANCE_SCENE_NOT_CONFIGURED")
                 spoken_action_base = configured_media_path(
                     environment, "OLIVIA_ORDINARY_ACTION_BASE"
                 )
                 if (
-                    reply_mode == ReplyMode.MUSICAL_VIDEO.value and (spoken_action_base is None
+                    not remote_enabled(environment) and reply_mode == ReplyMode.MUSICAL_VIDEO.value and (spoken_action_base is None
                     or not spoken_action_base.is_file())
                 ):
                     raise MusicReplyError("MUSIC_REPLY_SPOKEN_REFERENCE_UNAVAILABLE")
@@ -4589,7 +4607,7 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                     environment, "OLIVIA_OFFICIAL_REPLY_REFERENCE"
                 )
                 if (
-                    reply_mode == ReplyMode.MUSICAL_VIDEO.value and (official_reply_reference is None
+                    not remote_enabled(environment) and reply_mode == ReplyMode.MUSICAL_VIDEO.value and (official_reply_reference is None
                     or not official_reply_reference.is_file())
                 ):
                     raise MusicReplyError("MUSIC_REPLY_TRANSITION_UNAVAILABLE")
@@ -4659,6 +4677,7 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                 path=output_path, components=components, presentation='video' if video_enabled else 'audio')
             _persist_media_state()
         except (
+            CloudError,
             ReplyMediaError,
             MusicReplyError,
             VoiceDirectionError,
@@ -4687,6 +4706,13 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                 _record_published_media(letter, reply_text=reply_text, delivery_id=delivery_id,
                     path=output_dir / f'{letter_id}-speech.wav', components=('speech',), presentation='audio')
             _persist_media_state()
+
+        except Exception as exc:
+            # A background worker must never leave a completed text reply stuck processing.
+            if still_current():
+                _record_media_job_failure(exc, stage, environment)
+                letter.update(media_status="UNAVAILABLE", media_error_code="MEDIA_PROVIDER_UNAVAILABLE", media_retryable=True)
+                _persist_media_state()
 
 
 def _schedule_media_job(letter_id: str, content: str, reply_text: str, reply_mode: str) -> None:
@@ -5115,8 +5141,15 @@ def _schedule_daily_life_exchange(letter: dict) -> None:
                     raise RuntimeError("DAILY_LIFE_BOUNDARY_UNAVAILABLE")
             letter["daily_life_status"] = "COMMITTED"
             letter.pop("daily_life_error_code", None)
-        except (OSError, RuntimeError, ValueError, TypeError, KeyError, sqlite3.Error):
+            letter.pop("daily_life_failure_reason", None)
+        except (OSError, RuntimeError, ValueError, TypeError, KeyError, sqlite3.Error) as exc:
             letter["daily_life_error_code"] = "DAILY_LIFE_EXCHANGE_UNAVAILABLE"
+            reason = str(exc)
+            # Persist only bounded machine codes, never model text or credentials.
+            letter["daily_life_failure_reason"] = (
+                reason if _re.fullmatch(r"DAILY_LIFE_[A-Z_]{1,64}", reason)
+                else "DAILY_LIFE_" + type(exc).__name__.upper()
+            )
         finally:
             _persist_store_state()
 

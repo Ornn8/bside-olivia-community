@@ -222,6 +222,15 @@ def test_b00_scanner_covers_space_separated_official_runtime_markers() -> None:
         assert marker_pattern.search(marker), marker
 
 
+def test_scanner_allows_only_the_pinned_local_scene_id(tmp_path):
+    import baseline_hardening_scan as scanner
+    path = tmp_path / 'runtime/reply/reply_media.py'
+    path.parent.mkdir(parents=True)
+    path.write_text("payload = {\n'scene_asset': 'official-reply-action-base-v1',\n}\nrequest = 'official-reply-token'\n", encoding='utf-8')
+    findings, _, _ = scanner.scan_runtime_dependencies(tmp_path, [path])
+    assert findings == ['runtime/reply/reply_media.py:4:official_request_poll_download_token_marker']
+
+
 def test_b00_scanner_allows_pinned_cors_metadata_but_rejects_forwarding(
     tmp_path: Path,
 ) -> None:

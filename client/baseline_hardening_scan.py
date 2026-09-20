@@ -297,6 +297,11 @@ def scan_runtime_dependencies(root: Path, files: list[Path]) -> tuple[list[str],
             if _is_pinned_cors_metadata(path, root, lines, line_no):
                 continue
             for label, pattern in RUNTIME_DEPENDENCY_PATTERNS:
+                # This is a pinned local scene identifier, not a network endpoint.
+                if (label == "official_request_poll_download_token_marker"
+                        and relative(path, root) == "runtime/reply/reply_media.py"
+                        and line.strip() == "'scene_asset': 'official-reply-action-base-v1',"):
+                    continue
                 if pattern.search(line):
                     findings.append(f"{relative(path, root)}:{line_no}:{label}")
     return findings, [name for name, _ in RUNTIME_DEPENDENCY_PATTERNS], len(runtime)

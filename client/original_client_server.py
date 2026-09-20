@@ -816,6 +816,7 @@ def create_original_client_server_runtime(
     health_profile_provider: Callable[[str], Mapping[str, object]] | None = None,
     task_snapshot_provider: Callable[[], Sequence[Mapping[str, object]]] | None = None,
     history_import_provider: Callable[[], Mapping[str, object]] | None = None,
+    cloud_service: object | None = None,
 ) -> OriginalClientServerRuntime:
     """Mount original-client adapters before the toy catch-all."""
 
@@ -861,6 +862,9 @@ def create_original_client_server_runtime(
             setup_service,
             trusted_origins=origins,
         )
+        if cloud_service is not None:
+            from original_client_cloud_api import mount_cloud_api
+            mount_cloud_api(app, cloud_service, setup_service)
         if capability_installer is not None:
             mount_original_client_capability_api(
                 app,
@@ -1211,6 +1215,12 @@ def create_configured_original_client_server_runtime(
     component_updater = _configured_component_updater(values)
     runtime_tail = getattr(server_module, "runtime_diagnostic_event_snapshot", None)
     health_profile = getattr(server_module, "_health_result", None)
+    from runtime.cloud_service import CloudService
+    from original_client_update_api import running_component_version
+    cloud_service = CloudService(
+        data_root, version=running_component_version().get('version') or 'unknown',
+        errors=runtime_tail if callable(runtime_tail) else lambda: (),
+    ) if data_root is not None else None
 
     def task_snapshot() -> tuple[Mapping[str, object], ...]:
         store = getattr(server_module, "store", None)
@@ -1256,6 +1266,7 @@ def create_configured_original_client_server_runtime(
         health_profile_provider=health_profile if callable(health_profile) else None,
         task_snapshot_provider=task_snapshot,
         history_import_provider=history_import_snapshot,
+        cloud_service=cloud_service,
     )
     install_reply_task_lifecycle = getattr(
         server_module,

@@ -242,12 +242,20 @@ class DailyLifeRuntime:
         scoped = getattr(gateway, "complete_scoped", None)
         budget = getattr(gateway, "timeout_seconds_for_scope", lambda scope, default: default)(
             GatewayRequestScope.BACKGROUND_REASONING, default=self.timeout_seconds)
-        call = scoped(messages, request_id=request_id, scope=GatewayRequestScope.BACKGROUND_REASONING) if scoped else gateway.complete(messages, request_id=request_id)
+        structured = getattr(gateway, "complete_structured_scoped", None)
+        if structured:
+            call = structured(messages, request_id=request_id, scope=GatewayRequestScope.BACKGROUND_REASONING,
+                              response_format={"type": "json_object"})
+        else:
+            call = scoped(messages, request_id=request_id, scope=GatewayRequestScope.BACKGROUND_REASONING) if scoped else gateway.complete(messages, request_id=request_id)
         result = await asyncio.wait_for(call, timeout=budget + 1)
         # Gateway.text is final output only; never read reasoning/tool/media fields.
         if not isinstance(result.text, str) or len(result.text) > 12000:
             raise ValueError("DAILY_LIFE_RESPONSE_INVALID")
-        payload = json.loads(result.text)
+        try:
+            payload = json.loads(result.text)
+        except json.JSONDecodeError:
+            raise ValueError("DAILY_LIFE_JSON_INVALID") from None
         if not isinstance(payload, dict):
             raise ValueError("DAILY_LIFE_RESPONSE_INVALID")
         return payload
@@ -412,6 +420,15 @@ class DailyLifeRuntime:
                     data["validation_error"] = code if code.startswith("DAILY_LIFE_") and len(code) < 80 else "DAILY_LIFE_RESPONSE_INVALID"
                     if isinstance(payload, dict):
                         data["rejected_candidate"] = payload
+                        if code == "DAILY_LIFE_RELATIONSHIP_EVIDENCE_INVALID" and isinstance(payload.get("relationship"), dict):
+                            relationship = payload["relationship"]
+                            data["validation_details"] = {"invalid_quotes": [
+                                field for field, source in (("user_quote", user_text), ("reply_quote", reply_text))
+                                if not isinstance(relationship.get(field), str)
+                                or not relationship[field].strip()
+                                or len(relationship[field]) > 240
+                                or relationship[field] not in source
+                            ]}
                         if code == "DAILY_LIFE_UPDATE_INVALID" and isinstance(payload.get("updates"), list):
                             # Report schema differences; never strip fields or
                             # accept the candidate without the store's checks.
@@ -428,7 +445,9 @@ class DailyLifeRuntime:
                             }
                     data["correction"] = (
                         "上次输出未保存。rejected_candidate 是被校验拒绝的候选，不是已发生的状态。"
-                        "按 validation_error 修正，重新输出完整 JSON；quote 逐字取本轮双方正文，"
+                        "按 validation_error 和 validation_details 修正，重新输出完整 JSON；"
+                        "quote 选取本轮对应正文中足以证明该判断的一段短而连续的原文，逐字复制，"
+                        "不得自行添加省略号、拼接不连续片段或改写。"
                         "不能复制 previous_state 的旧描述。保留本轮有依据的变化，未发生变化的旧事项不重写。"
                     )
             return False

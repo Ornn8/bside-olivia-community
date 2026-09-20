@@ -1,0 +1,3 @@
+Mozilla CA trust bundle distributed by certifi 2026.07.22
+Source: https://github.com/certifi/python-certifi
+Used in addition to OS trust roots. Update alongside client releases.
