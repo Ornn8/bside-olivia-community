@@ -26,7 +26,7 @@ def test_correspondence_makes_an_older_moment_historical_without_erasing_it(tmp_
     assert store.snapshot(NOW + timedelta(minutes=3)) == state
 
 
-def test_new_observation_is_current_and_delayed_or_future_exchanges_do_not_age_it(tmp_path):
+def test_statements_remain_reports_until_a_new_life_observation_is_published(tmp_path):
     store = DailyLifeStore(tmp_path / "life.sqlite3")
     quote = "我正在整理曲谱。"
     store.record_exchange("reply:current", "早。", quote, [], current_quote=quote,
@@ -34,8 +34,9 @@ def test_new_observation_is_current_and_delayed_or_future_exchanges_do_not_age_i
     store.record_exchange("reply:delayed", "你好。", "你好。", [], occurred_at=NOW)
     store.record_exchange("reply:future", "你好。", "你好。", [], occurred_at=NOW + timedelta(minutes=10))
     current = json.loads(store.reply_context("曲谱", now=NOW + timedelta(minutes=3)))
-    assert current["stale"] is False
-    assert current["current"]["source_id"] == "reply:current"
+    assert current["stale"] is True
+    assert current["current"] is None
+    assert current["previous_observations"][0]["source_id"] == "reply:current"
     later = json.loads(store.reply_context("曲谱", now=NOW + timedelta(minutes=11)))
     assert later["stale"] is True
     store.publish_day("day:new", {"location": "琴房", "activity": "整理曲谱", "note": "曲谱放在桌上。"},

@@ -342,14 +342,17 @@ asyncio.run(main())
     context = json.dumps(payload['calls'][-1], ensure_ascii=False)
     assert '只是我编的场景，不是真的' in context
     assert all(reply == '你已经问过七遍了，答案一直一样。' for reply in payload['stored_replies'])
-    assert '你已经问过七遍了' not in context
-    assert 'fact_recall' in context
+    # Keep even an erroneous sent reply as an attributed statement, so it can
+    # be corrected. Do not erase the assistant's words during a recall question.
+    assert '你已经问过七遍了' in context
+    old_replies = [m for m in payload['calls'][-1] if m['role'] == 'assistant']
+    assert old_replies and all('statement_only' in m['content'] for m in old_replies)
     # The real send pipeline must carry the attitude contract to the provider.
     assert '核对、重复提问、纠正记忆不能证明用户有恶意或心理问题' in context
     assert '也可以主动调侃、嘴硬或接着玩笑说下去' in context
     assert '不同意见和拒绝' in context
     assert '未被说明的个人经历保持未知' in context
-    assert '后续回合不等于又过一天' in context
+    assert '2026-' in context  # Native historical messages carry explicit times.
 
 
 @pytest.mark.parametrize('query, keep_reply', [

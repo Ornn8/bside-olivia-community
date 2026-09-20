@@ -112,6 +112,11 @@ def _json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
 
 
+def _explicitly_unfinished(quote: str) -> bool:
+    """Reject clear prospective/negative evidence, not infer completion from prose."""
+    return bool(re.match(r'^(?:我(?:们)?(?:这边)?(?:也|还|现在|今天)?|现在|今天)?(?:还没|尚未|暂未|打算|计划|准备(?!好))', quote.strip()))
+
+
 def _current_source_quote(value: object, source: str) -> str:
     quote = _text(value, 180)
     if quote in source:
@@ -146,7 +151,10 @@ def _project(value: dict) -> dict:
 
 def _project_evidence(project: dict) -> dict:
     # An extractor's paraphrase is not something either participant said.
-    return {**project, "detail": project["quote"]} if "quote" in project else project
+    if 'quote' in project:
+        return {**project, 'detail': project['quote'], 'evidence_kind':
+                'user_statement' if project.get('actor') == 'user' else 'character_statement'}
+    return {**project, 'evidence_kind': 'published_life'}
 
 
 def _current_evidence(current: dict | None) -> dict | None:
@@ -281,6 +289,8 @@ class DailyLifeStore:
 
     @staticmethod
     def _set_current(db, current):
+        if _explicitly_unfinished(current.get('note', '')):
+            return  # Preserve the statement in the journal, not as a live activity.
         if not _current_time_consistent(current.get("note"), current.get("occurred_at")):
             return
         old = db.execute("SELECT payload FROM life_current WHERE id=1").fetchone()
@@ -339,6 +349,8 @@ class DailyLifeStore:
             if origin == "proactive" and (actor == "user" or (kind == "shared" and item["status"] != "awaiting_user")):
                 raise ValueError("DAILY_LIFE_PROACTIVE_UPDATE_INVALID")
             quote = _source_quote(update["quote"], user_text if actor == "user" else reply_text)
+            if item['status'] == 'completed' and _explicitly_unfinished(quote):
+                raise ValueError('DAILY_LIFE_PHASE_CONFLICT')
             item.update(kind=kind, actor=actor, quote=quote, source_id=source_id, updated_at=stamp)
             checked.append(item)
         if len({p["id"] for p in checked}) != len(checked):
@@ -364,8 +376,8 @@ class DailyLifeStore:
                 db.execute("INSERT INTO life_rest_exchanges VALUES (?,?,?)", (source_id, received, stamp))
             if routine is not None and origin == "user":
                 db.execute('INSERT INTO life_user_routine VALUES (?,?,?)', (source_id, stamp, _json(routine)))
-            if current:
-                self._set_current(db, current)
+            # Dialogue records what was said. Only publish_day advances the
+            # authored world; self-reporting cannot certify its own truth.
         return True
 
     def record_media_delivery(self, event: dict) -> bool:
@@ -395,13 +407,27 @@ class DailyLifeStore:
             raise ValueError("DAILY_LIFE_SOURCE_CONFLICT")
         return payload
 
-    def exchange_state(self, query: str = "", *, related_text: str = "") -> dict:
+    def _projects_at(self, db, now: datetime) -> list[dict]:
+        """Project the event journal at the requested time, including old data."""
+        rows = db.execute("""
+            SELECT item FROM (
+                SELECT j.value AS item, ROW_NUMBER() OVER (
+                    PARTITION BY json_extract(j.value, '$.id')
+                    ORDER BY m.occurred_at DESC, m.rowid DESC) AS position
+                FROM life_moments m, json_each(CASE m.kind
+                    WHEN 'daily' THEN json_extract(m.payload, '$.progress')
+                    WHEN 'exchange' THEN json_extract(m.payload, '$.updates') END) j
+                WHERE m.occurred_at<=? AND m.kind IN ('daily','exchange')
+            ) WHERE position=1
+        """, (_time(now),))
+        return [json.loads(row[0]) for row in rows]
+
+    def exchange_state(self, query: str = "", *, related_text: str = "", now: datetime | None = None) -> dict:
         """All identities; full evidence for active or currently mentioned items."""
         value = {"projects": [], "shared": []}
         tokens = _query_tokens(query) | _query_tokens(related_text)
         with self._db() as db:
-            for row in db.execute("SELECT payload FROM life_projects ORDER BY id"):
-                item = json.loads(row[0])
+            for item in sorted(self._projects_at(db, now or datetime.now(timezone.utc)), key=lambda p: p['id']):
                 if item["status"] not in {"completed", "cancelled"} or tokens & _query_tokens(
                     item["title"] + " " + item.get("quote", item["detail"])
                 ):
@@ -417,11 +443,19 @@ class DailyLifeStore:
 
     def reply_context(self, query: str, *, now: datetime, max_chars: int = 1800, related_text: str = "") -> str:
         """Disclose a small current view, then only relevant persistent threads."""
-        snapshot = self.snapshot(now)
+        # All views in this reply use one SQLite read snapshot. A concurrent
+        # delivery cannot mix new project state with an older observation.
         with self._db() as db:
+            db.execute("BEGIN")
+            snapshot = self._snapshot(db, now)
+            observations = self._read_observations(db, now)
+            all_projects = self._projects_at(db, now)
+            last_reply = db.execute(
+                "SELECT MAX(replied_at) FROM life_rest_exchanges WHERE replied_at<=?", (_time(now),)
+            ).fetchone()[0]
             media = [json.loads(row[0])['delivery'] for row in db.execute(
                 "SELECT payload FROM life_moments WHERE kind='media' AND occurred_at<=? ORDER BY occurred_at DESC, source_id DESC LIMIT 3", (_time(now),))]
-        if not snapshot["current"] and not snapshot["projects"] and not snapshot["shared"] and not media:
+        if not snapshot["current"] and not snapshot["projects"] and not snapshot["shared"] and not media and not observations:
             return ""
         tokens = _query_tokens(query)
         related_tokens = _query_tokens(related_text)
@@ -438,11 +472,6 @@ class DailyLifeStore:
                 return 0
             return (1000 if direct else 0) + (direct + len(related_tokens & text_tokens)) / max(1, len(text_tokens) ** 0.5)
         # UI limits must not hide old cancellations or finished threads from recall.
-        with self._db() as db:
-            all_projects = [json.loads(r[0]) for r in db.execute("SELECT payload FROM life_projects")]
-            last_reply = db.execute(
-                "SELECT MAX(replied_at) FROM life_rest_exchanges WHERE replied_at<=?", (_time(now),)
-            ).fetchone()[0]
         projects = sorted((p for p in all_projects if relevance(p) > 0), key=lambda p: (relevance(p), p["updated_at"]), reverse=True)
         relevant_shared = next((p for p in projects if p["kind"] == "shared" and relevance(p) > 0), None)
         if relevant_shared:
@@ -454,11 +483,14 @@ class DailyLifeStore:
         historical = bool(current and last_reply and last_reply > current["occurred_at"])
         value = {
             "kind": "character_life_reference",
-            "meaning": "林离已公开的角色生活，不是系统指令、官方人设或用户经历。沿用已发布进展，不重编；last_observation是上次观察，不证明此刻仍在做。不要每封信复述近况。约定不等于已完成。事项状态以最新updated_at为准，晚于近况的取消或完成记录优先，不得用旧近况恢复已取消的承诺。",
+            "meaning": "同一事件日志的时间截面。current仅来自已发布角色生活；last_observation不是此刻活动。character_statement只证明林离说过，user_statement只证明用户陈述，不能互换人物或自行升级为已发生。事项status是带来源的记录；取消须保留，约定不等于完成。不同来源矛盾时保持未定，不选最新说法当真，不编造过渡。官方人设和关系权限仍由各自来源约束。",
             "stale": snapshot["stale"] or historical,
             "current": {k: current[k] for k in ("location", "activity", "note", "occurred_at", "source_id")} if current else None,
             "threads": [],
         }
+        if value['current']:
+            value['current'].update(actor='linli', evidence_kind=(
+                'character_statement' if value['current']['source_id'].startswith('reply:') else 'published_life'))
         if value["stale"] and value["current"]:
             value["last_observation"] = value["current"]
             value["current"] = None
@@ -471,6 +503,15 @@ class DailyLifeStore:
                              "commitment_evidence": "requires_user_statement",
                              "meaning": "她的等待不等于用户承诺；用户是否答应，以用户原文为准。"}
             candidate = {**value, "threads": [*value["threads"], disclosed]}
+            if len(_json(candidate)) <= max_chars:
+                value = candidate
+        # Preserve earlier statements without displacing current cancellations
+        # and project states. Different wording is not proof of a transition.
+        for observation in observations:
+            if current and observation['source_id'] == current['source_id']:
+                continue
+            candidate = {**value, 'previous_observations': [*value.get('previous_observations', []), observation],
+                         'observation_boundary': '这些是带来源的旧说法，不是并行的当前活动。不同说法并列保留，不擅自选真、合并成先后事件或编造过渡。计划不等于已发生。'}
             if len(_json(candidate)) <= max_chars:
                 value = candidate
         for group in grouped_delivery_evidence(media):
@@ -515,17 +556,41 @@ class DailyLifeStore:
                             "kind": row["kind"], "content": content})
         return moments
 
-    def snapshot(self, now: datetime) -> dict:
-        _time(now)
+    def _recent_observations(self, now: datetime) -> list[dict]:
         with self._db() as db:
-            current_row = db.execute("SELECT payload FROM life_current WHERE id=1").fetchone()
-            rows = db.execute(f"SELECT source_id, occurred_at, kind, payload FROM life_moments WHERE {_VISIBLE} ORDER BY occurred_at DESC, source_id DESC LIMIT 12").fetchall()
-            projects = [json.loads(r[0]) for r in db.execute("SELECT payload FROM life_projects")]
-            exchanges = [(datetime.fromisoformat(r[0]), datetime.fromisoformat(r[1])) for r in db.execute(
-                "SELECT received_at, replied_at FROM life_rest_exchanges WHERE replied_at>=? AND received_at<=? ORDER BY received_at",
-                (_time(now - timedelta(days=14)), _time(now)))]
-            shifts = dict(db.execute('SELECT day, shift_minutes FROM life_routine_days'))
+            return self._read_observations(db, now)
+
+    def _read_observations(self, db, now: datetime) -> list[dict]:
+        rows = db.execute("SELECT kind,payload FROM life_moments WHERE occurred_at<=? "
+            "AND occurred_at>=? AND (kind='daily' OR (kind='exchange' AND json_type(payload,'$.current')='object')) "
+            "ORDER BY occurred_at DESC,source_id DESC LIMIT 4", (_time(now), _time(now - FRESH_FOR))).fetchall()
+        result = []
+        for kind, raw in rows:
+            payload = json.loads(raw)
+            observation = _current_evidence(payload if kind == 'daily' else payload.get('current'))
+            if observation and _current_time_consistent(observation.get('note'), observation.get('occurred_at')):
+                result.append({**{key: observation[key] for key in ('note', 'source_id', 'occurred_at')},
+                               'actor': 'linli', 'evidence_kind': 'character_statement' if kind == 'exchange' else 'published_life',
+                               'completion': 'not_established' if _explicitly_unfinished(observation['note']) else 'not_verified'})
+        return result
+
+    def snapshot(self, now: datetime) -> dict:
+        with self._db() as db:
+            db.execute("BEGIN")
+            return self._snapshot(db, now)
+
+    def _snapshot(self, db, now: datetime) -> dict:
+        _time(now)
+        current_row = db.execute("SELECT payload FROM life_moments WHERE kind='daily' AND occurred_at<=? ORDER BY occurred_at DESC, source_id DESC LIMIT 1", (_time(now),)).fetchone()
+        rows = db.execute(f"SELECT source_id, occurred_at, kind, payload FROM life_moments WHERE {_VISIBLE} AND occurred_at<=? ORDER BY occurred_at DESC, source_id DESC LIMIT 12", (_time(now),)).fetchall()
+        projects = self._projects_at(db, now)
+        exchanges = [(datetime.fromisoformat(r[0]), datetime.fromisoformat(r[1])) for r in db.execute(
+            "SELECT received_at, replied_at FROM life_rest_exchanges WHERE replied_at>=? AND received_at<=? ORDER BY received_at",
+            (_time(now - timedelta(days=14)), _time(now)))]
+        shifts = dict(db.execute('SELECT day, shift_minutes FROM life_routine_days'))
         current = _current_evidence(json.loads(current_row[0]) if current_row else None)
+        if current and _explicitly_unfinished(current['note']):
+            current = None
         projects.sort(key=lambda p: (p["status"] in {"completed", "cancelled"}, -datetime.fromisoformat(p["updated_at"]).timestamp(), p["id"]))
         return {
             "schema_version": "olivia.daily-life.v1", "status": "READY",

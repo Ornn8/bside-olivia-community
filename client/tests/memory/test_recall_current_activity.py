@@ -73,7 +73,7 @@ def test_fresh_production_daily_life_remains_an_authorized_current_activity_sour
 
     check, result = _project(fragment)
 
-    assert check['use_boundaries']['current_activity_sources'] == ['s1']
+    assert [item['source'] for item in check['current_state']] == ['s1']
     # The writer still has the exact observation, not just an inaccessible ID.
     assert fragment in result[0]['content']
 
@@ -94,7 +94,7 @@ def test_fresh_production_daily_life_remains_an_authorized_current_activity_sour
 def test_old_or_indirect_activity_evidence_cannot_authorize_a_current_activity(fragment):
     check, _ = _project(fragment)
 
-    assert check['use_boundaries']['current_activity_sources'] == []
+    assert check['current_state'] == []
 
 
 def test_current_activity_ids_do_not_include_neighboring_world_history_or_rhythm():
@@ -105,4 +105,4 @@ def test_current_activity_ids_do_not_include_neighboring_world_history_or_rhythm
         _evidence(_life(stale=True, current=False, last_observation=True)),
     )
 
-    assert check['use_boundaries']['current_activity_sources'] == ['s2']
+    assert [item['source'] for item in check['current_state']] == ['s2']

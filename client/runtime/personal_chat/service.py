@@ -69,6 +69,21 @@ class PersonalChatService:
                 if row.get("delivery_status") == "DELIVERED":
                     await self.commit(row)
                     return
+                if row.get('delivery_status') == 'SKIPPED':
+                    return
+                position = self.rows.index(row)
+                if row.get('delivery_status') == 'GENERATED' and any(
+                    old is not row and old.get('delivery_status') == 'DELIVERED'
+                    and (float(old.get('created_at', 0)), index)
+                        > (float(row.get('created_at', 0)), position)
+                    for index, old in enumerate(self.rows)
+                ):
+                    # A disconnected channel can replay an unsent old draft
+                    # after this owner's conversation has moved on elsewhere.
+                    row.update(delivery_status='SKIPPED', letter_status='SKIPPED',
+                               error_code='PERSONAL_CHAT_STALE_REPLY')
+                    self.persist()
+                    return
                 if row.get("delivery_status") not in {"GENERATED", "FAILED", "GENERATING"}:
                     raise RuntimeError("PERSONAL_CHAT_DELIVERY_REQUIRES_ATTENTION")
             else:

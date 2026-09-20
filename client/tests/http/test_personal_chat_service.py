@@ -8,6 +8,32 @@ from runtime.personal_chat.service import PersonalChatService
 
 
 @pytest.mark.parametrize('channel', ['qq', 'wechat'])
+def test_stale_generated_reply_is_not_replayed_after_newer_delivery(channel):
+    async def scenario():
+        rows, sent = [], []
+        async def generate(event, row):
+            return 'reply ' + event.text
+        async def send(text):
+            sent.append(text)
+        async def commit(row):
+            pass
+        class Disconnected:
+            def is_available(self):
+                return False
+        service = PersonalChatService(rows, lambda: None, generate, commit, {channel: ('a', 'owner')})
+        old = PersonalMessage(channel, 'a', 'owner', 'old', 'old question')
+        with pytest.raises(RuntimeError, match='DISCONNECTED'):
+            await service.handle(old, Disconnected())
+        await service.handle(PersonalMessage(channel, 'a', 'owner', 'new', 'new question'), send)
+        restarted = PersonalChatService(json.loads(json.dumps(rows)), lambda: None, generate, commit, service.bindings)
+        await restarted.handle(old, send)
+        await restarted.handle(old, send)
+        assert sent == ['reply new question']
+        assert restarted.rows[0]['error_code'] == 'PERSONAL_CHAT_STALE_REPLY'
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('channel', ['qq', 'wechat'])
 def test_im_punctuation_and_new_proactive_id_do_not_repeat_content(channel):
     async def scenario():
         rows, sent = [], []

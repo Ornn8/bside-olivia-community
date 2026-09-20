@@ -28,12 +28,12 @@ def _value(*, status='confirmed', stage='completed', quote, topic='戒指'):
     }
 
 
-def test_character_acknowledgement_is_distinct_from_external_world_truth():
+def test_character_original_is_retained_without_assigning_experience_by_speaker():
     source = _history_source('我把戒指戴到你手上。', '那枚戒指我已经戴上了。')
     value = _validate(_value(quote='那枚戒指我已经戴上了。'), [source])
 
     finding = value['findings'][0]
-    assert finding['continuity_scope'] == 'character_acknowledged'
+    assert finding['continuity_scope'] == 'character_statement'
     assert finding['citations'][0]['matched_originals'][0]['speaker'] == 'linli'
 
     messages = (
@@ -42,7 +42,9 @@ def test_character_acknowledgement_is_distinct_from_external_world_truth():
     )
     projected = _project(messages, value, [source], max_input_chars=50000)
     system = projected[0]['content']
-    assert '"continuity_scope":"character_acknowledged"' in system
+    assert '"speaker":"linli"' in system
+    assert '那枚戒指我已经戴上了。' in system
+    assert '林离明确承认的共同经历应自然承接' in system
     assert '角色叙事连续性' in system
     assert '不证明现实世界客观事实' in system
     assert '不自动授予当前身体接触' in system

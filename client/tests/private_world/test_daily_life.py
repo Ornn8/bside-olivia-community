@@ -40,6 +40,67 @@ from runtime.private_world.daily_life import DailyLifeStore
 NOW = datetime(2026, 9, 5, 10, tzinfo=timezone.utc)
 
 
+def test_reply_context_retains_differing_statements_after_restart_without_inventing_resolution(tmp_path):
+    path = tmp_path / 'life.sqlite3'
+    life = DailyLifeStore(path)
+    for index, quote in enumerate(('我在吃青菜腐竹配饭', '我刚吃完小馄饨', '明天准备做饭')):
+        life.record_exchange(f'reply:dinner{index}:1', '晚饭吃什么？', quote, [],
+                             occurred_at=NOW + timedelta(minutes=index), current_quote=quote)
+    restarted = DailyLifeStore(path)
+    context = json.loads(restarted.reply_context('到底吃的什么？', now=NOW + timedelta(minutes=1)))
+    assert context['current'] is None
+    prior = context['previous_observations']
+    assert [item['note'] for item in prior] == ['我刚吃完小馄饨', '我在吃青菜腐竹配饭']
+    assert prior[0]['actor'] == 'linli'
+    assert prior[1]['source_id'] == 'reply:dinner0:1'
+    assert '明天准备做饭' not in json.dumps(context, ensure_ascii=False)
+
+
+@pytest.mark.parametrize('actor', ['user', 'linli'])
+def test_explicit_unfinished_quote_cannot_be_committed_as_completed(tmp_path, actor):
+    life = DailyLifeStore(tmp_path / 'life.sqlite3')
+    quote = '还没完成，准备明天继续'
+    update = dict(id='practice', title='练习', detail='练完了', status='completed',
+                  kind='shared', actor=actor, quote=quote)
+    with pytest.raises(ValueError, match='DAILY_LIFE_PHASE_CONFLICT'):
+        life.record_exchange('reply:unfinished:1', quote if actor == 'user' else '好',
+                             quote if actor == 'linli' else '好', [update], occurred_at=NOW)
+    assert not life.has_source('reply:unfinished:1')
+
+
+def test_planned_statement_stays_in_journal_without_becoming_current_activity(tmp_path):
+    life = DailyLifeStore(tmp_path / 'life.sqlite3')
+    life.record_exchange('reply:plan:1', '明天忙什么？', '我打算明天练琴', [],
+                         occurred_at=NOW, current_quote='我打算明天练琴')
+    assert life.snapshot(NOW)['current'] is None
+    assert life.has_source('reply:plan:1')
+    rows = json.loads(life.reply_context('明天忙什么？', now=NOW))['previous_observations']
+    assert rows[0]['note'] == '我打算明天练琴'
+    assert rows[0]['completion'] == 'not_established'
+
+
+def test_actual_completed_statement_still_updates_state(tmp_path):
+    life = DailyLifeStore(tmp_path / 'life.sqlite3')
+    quote = '我已经完成了练习'
+    life.record_exchange('reply:done:1', quote, '好', [dict(id='practice', title='练习', detail='完成练习',
+        status='completed', kind='shared', actor='user', quote=quote)], occurred_at=NOW)
+    assert life.exchange_state('练习')['shared'][0]['status'] == 'completed'
+
+
+def test_old_stored_plan_is_not_restored_as_live_activity(tmp_path):
+    path = tmp_path / 'life.sqlite3'
+    life = DailyLifeStore(path)
+    quote = '我这边也准备吃饭'
+    life.record_exchange('reply:legacy:1', '好', quote, [], occurred_at=NOW, current_quote=quote)
+    # Simulate a plan written to the current pointer by the preceding version.
+    with life._db() as db:
+        db.execute('INSERT OR REPLACE INTO life_current VALUES (1,?)', (json.dumps(dict(
+            location=None, activity=None, note=quote, source_id='reply:legacy:1', occurred_at=NOW.isoformat())),))
+    context = json.loads(DailyLifeStore(path).reply_context('饭吃了吗', now=NOW))
+    assert context['current'] is None
+    assert context['previous_observations'][0]['note'] == quote
+
+
 @pytest.mark.parametrize("actor", ["user", "linli"])
 def test_next_exchange_uses_verified_quote_without_rewriting_stored_summary(tmp_path, actor):
     life = DailyLifeStore(tmp_path / "life.sqlite3")
@@ -52,7 +113,7 @@ def test_next_exchange_uses_verified_quote_without_rewriting_stored_summary(tmp_
     }], occurred_at=NOW)
     stored = life.snapshot(NOW)["shared"][0]
     following = life.exchange_state()["shared"][0]
-    assert following == {**stored, "detail": quote}
+    assert following == {**stored, "detail": quote, "evidence_kind": "user_statement" if actor == "user" else "character_statement"}
     assert following["actor"] == actor
     assert summary not in json.dumps(life.exchange_state(), ensure_ascii=False)
     assert life.snapshot(NOW)["shared"][0] == stored
@@ -101,7 +162,7 @@ def test_her_waiting_is_not_projected_as_the_users_commitment(tmp_path, invitati
             "id": "picnic", "title": "野餐地点", "detail": quote,
             "status": status, "kind": "shared", "actor": "user", "quote": quote,
         }], occurred_at=NOW + timedelta(minutes=index + 1))
-        item = json.loads(life.reply_context("野餐地点怎么安排？", now=NOW))["threads"][0]
+        item = json.loads(life.reply_context("野餐地点怎么安排？", now=NOW + timedelta(minutes=index + 1)))["threads"][0]
         assert item["status"] == status
         assert item["actor"] == "user"
         assert "commitment_evidence" not in item
@@ -175,21 +236,18 @@ def test_same_letter_with_changed_text_is_not_silently_accepted(tmp_path):
         life.record_exchange("reply:one:1", "改掉原文", "你好呀", [], occurred_at=NOW)
 
 
-def test_new_reply_current_quote_supersedes_old_scene_without_inventing_location(tmp_path):
+def test_new_reply_quote_is_retained_without_certifying_a_new_scene(tmp_path):
     life = DailyLifeStore(tmp_path / "life.sqlite3")
     life.publish_day("day:old", {"location": "书桌", "activity": "看书", "note": "读两页。"}, [], occurred_at=NOW)
     life.record_exchange("reply:new:1", "你在忙什么？", "我现在在慢练左手。", [],
                          occurred_at=NOW + timedelta(minutes=30), current_quote="我现在在慢练左手。")
     snapshot = life.snapshot(NOW + timedelta(minutes=31))
-    assert snapshot["current"]["note"] == "我现在在慢练左手。"
-    assert snapshot["current"]["location"] is None
-    assert snapshot["current"]["activity"] is None
-    assert snapshot["current"]["source_id"] == "reply:new:1"
-    assert snapshot["moments"][-1]["content"]["note"] == "读两页。"
+    assert snapshot["current"]["source_id"] == "day:old"
     projected = json.loads(life.reply_context("你在哪？", now=NOW + timedelta(minutes=31)))
-    assert projected["current"]["location"] is None
-    assert projected["current"]["activity"] is None
-    assert projected["current"]["note"] == "我现在在慢练左手。"
+    assert projected["current"] is None
+    assert projected["last_observation"]["note"] == "读两页。"
+    assert projected["previous_observations"][0]["note"] == "我现在在慢练左手。"
+    assert projected["previous_observations"][0]["evidence_kind"] == "character_statement"
 
 
 def test_legacy_quote_placeholders_are_unknown_in_views_without_rewriting_history(tmp_path):
@@ -197,15 +255,15 @@ def test_legacy_quote_placeholders_are_unknown_in_views_without_rewriting_histor
     life.record_exchange("reply:legacy:1", "你好", "我刚把书放下。", [],
                          occurred_at=NOW, current_quote="我刚把书放下。")
     with life._db() as db:
-        current = json.loads(db.execute("SELECT payload FROM life_current WHERE id=1").fetchone()[0])
+        current = dict(location=None, activity=None, note="我刚把书放下。", source_id="reply:legacy:1", occurred_at=NOW.isoformat())
         current.update(location="她刚在信里说", activity="新的近况")
         moment = json.loads(db.execute("SELECT payload FROM life_moments WHERE source_id='reply:legacy:1'").fetchone()[0])
         moment["current"] = current
         raw = json.dumps(moment, ensure_ascii=False)
-        db.execute("UPDATE life_current SET payload=? WHERE id=1", (json.dumps(current, ensure_ascii=False),))
+        db.execute("INSERT OR REPLACE INTO life_current VALUES (1,?)", (json.dumps(current, ensure_ascii=False),))
         db.execute("UPDATE life_moments SET payload=? WHERE source_id='reply:legacy:1'", (raw,))
     views = [life.snapshot(NOW), life.history()]
-    assert views[0]["current"]["location"] is None
+    assert views[0]["current"] is None
     for view in views:
         quoted = view["moments"][0]["content"]["current"]
         assert quoted["location"] is None and quoted["activity"] is None
@@ -366,7 +424,8 @@ def test_invalid_extraction_gets_one_correction_without_partial_commit(tmp_path)
     life = DailyLifeRuntime(store, lambda: model, lambda: "")
     asyncio.run(life.consume_exchange("reply:correct:1", "在忙什么？", "我在读书，还没读完。", occurred_at=NOW))
     assert model.calls == 2
-    assert store.snapshot(NOW)["current"]["note"] == "我在读书"
+    assert store.snapshot(NOW)["current"] is None
+    assert store.history()["moments"][0]["content"]["current"]["note"] == "我在读书"
 
 
 @pytest.mark.parametrize("repair_quote", [True, False])
@@ -520,7 +579,7 @@ def test_exchange_cancels_original_item_outside_the_six_item_ui_window(tmp_path)
             "id": f"project-{index}", "title": title, "detail": quote,
             "status": "planned", "kind": "shared", "actor": "user", "quote": quote,
         }], occurred_at=NOW + timedelta(minutes=index))
-    assert "project-0" not in {p["id"] for p in store.snapshot(NOW)["shared"]}
+    assert "project-0" not in {p["id"] for p in store.snapshot(NOW + timedelta(minutes=7))["shared"]}
 
     class Model:
         async def complete(self, messages, **kwargs):
@@ -621,7 +680,7 @@ def test_compact_daily_identity_does_not_invent_a_quotation_speaker(tmp_path):
     identity = store.exchange_state()["projects"][0]
     assert identity["actor"] is None and "quote" not in identity
     assert identity["source_id"] == "day:old" and identity["updated_at"] == NOW.isoformat()
-    assert store.exchange_state("左手练习")["projects"][0] == store.snapshot(NOW)["projects"][0]
+    assert store.exchange_state("左手练习")["projects"][0] == {**store.snapshot(NOW)["projects"][0], "evidence_kind": "published_life"}
 
 
 @pytest.mark.parametrize("stored_count,user_text,status", [(0, "长信正文" * 150, "planned"), (20, "你好。", "planned"), (20, "你好。", "completed")])

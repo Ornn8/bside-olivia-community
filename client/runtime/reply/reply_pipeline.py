@@ -198,15 +198,6 @@ class ReplyPipeline:
                     request.request_id if isinstance(request, ReplyRequest) else "",
                     ReplyState.FAILED, error_code="CURRENT_TURN_INTERPRETATION_FAILED",
                 )
-        if generation_note and isinstance(prepared, ReplyRequest) and prepared.messages:
-            messages = [dict(message) for message in prepared.messages]
-            system = next((m for m in messages if m.get("role") == "system"), None)
-            if system is None:
-                messages.insert(0, {"role": "system", "content": generation_note})
-            else:
-                system["content"] += "\n\n" + generation_note
-            if sum(len(str(m.get("content", ""))) for m in messages) <= original_budget:
-                prepared = replace(prepared, messages=tuple(messages), max_input_chars=original_budget)
         if isinstance(prepared, ReplyRequest) and prepared.messages:
             from runtime.memory.recall_check import prepare_recall_messages
             adapter = getattr(getattr(self.orchestrator, 'gateway', None), 'adapter', None)
@@ -214,6 +205,22 @@ class ReplyPipeline:
             messages = await prepare_recall_messages(prepared.messages, gateway,
                 max_input_chars=prepared.max_input_chars, request_id=prepared.request_id)
             prepared = replace(prepared, messages=messages)
+        if isinstance(prepared, ReplyRequest) and prepared.messages:
+            from .fact_attribution import prepare_dialogue_messages
+            prepared = replace(prepared, messages=prepare_dialogue_messages(
+                prepared.messages, max_input_chars=prepared.max_input_chars))
+        if generation_note and isinstance(prepared, ReplyRequest) and prepared.messages:
+            # Finalize the delivery contract after history/recall projection.
+            # The current user input stays last; evidence cannot become the
+            # last instruction defining what the model is supposed to output.
+            from .fact_attribution import finalize_reply_messages
+            try:
+                messages = finalize_reply_messages(prepared.messages, generation_note,
+                                                   max_input_chars=original_budget)
+            except ValueError:
+                return PipelineResult(prepared.request_id, ReplyState.FAILED,
+                                      error_code='INPUT_TOO_LONG', retryable=False)
+            prepared = replace(prepared, messages=messages, max_input_chars=original_budget)
         candidate = await self.orchestrator.run(prepared)
         if candidate.state is not ReplyState.COMPLETED:
             return PipelineResult(
@@ -278,6 +285,13 @@ def _prepare_generation_request(
 
 def assemble_reply_messages(adapter, snapshot, context, content, *, max_input_chars, user_input=None):
     """One memory/world assembly for every user-facing reply and media plan."""
+    from .fact_attribution import prepare_dialogue_messages
+    messages, evidence, assembly_limit = _assemble_reply_evidence(adapter, snapshot, context, content,
+        max_input_chars=max_input_chars, user_input=user_input)
+    return prepare_dialogue_messages(messages, max_input_chars=assembly_limit), evidence
+
+
+def _assemble_reply_evidence(adapter, snapshot, context, content, *, max_input_chars, user_input=None):
     life = getattr(adapter, 'daily_life_fragments', None)
     recent = getattr(adapter, 'recent_letter_fragments', None)
     recent = recent(content) if callable(recent) else ()
@@ -292,10 +306,18 @@ def assemble_reply_messages(adapter, snapshot, context, content, *, max_input_ch
         life = life(content, recent_fragments=recent) if accepts_recent else life(content)
     else:
         life = ()
-    # Reserve the minimum explicit preflight status. Full findings are optional
-    # and must fit without cutting source text or essential persona state.
-    check_enabled = getattr(getattr(getattr(adapter, 'gateway', None), 'config', None), 'provider', None) in {'openai_compatible', 'openai'}
-    assembly_limit = max(1, max_input_chars - (256 if check_enabled else 0))
+    # All modes retain the same minimum turn context, including when the
+    # interpreter is disabled. Reserve the frozen current snapshot as well.
+    reserve = 512
+    for fragment in life:
+        if fragment.fragment_id == 'linli.daily-life':
+            try:
+                current = json.loads(fragment.text).get('current')
+                if isinstance(current, dict):
+                    reserve += len(json.dumps(current, ensure_ascii=False).replace('<', r'\u003c').replace('>', r'\u003e')) + 100
+            except (ValueError, AttributeError, TypeError):
+                pass
+    assembly_limit = max(1, max_input_chars - reserve)
     options = dict(snapshot=snapshot, context=context,
         user_input=content if user_input is None else user_input,
         max_units=assembly_limit, evidence_summaries=life,
@@ -308,11 +330,15 @@ def assemble_reply_messages(adapter, snapshot, context, content, *, max_input_ch
     hint = query_plan.fragment()
     if hint is not None:
         recent = (*recent, hint)
-    baseline = assemble_persona(history=recent, **options)
+    from runtime.reply.prompt_budget import PromptBudgetExceeded
+    try:
+        baseline = assemble_persona(history=recent, **options)
+    except PromptBudgetExceeded as error:
+        raise _RecallBudgetExceeded() from error
     available = max(0, assembly_limit - len(baseline.system_content) - len(baseline.user_content) - 256)
     if disabled:
         adapter._build_memory_prompt(content, max_chars=0)
-        return baseline.to_messages(), TrustedReviewEvidence()
+        return baseline.to_messages(), TrustedReviewEvidence(), assembly_limit
     from runtime.diagnostics.recall_trace import begin, selection as record_selection
     begin(adapter.memory_prompt_builder, query_plan.mode)
     build_memory_prompt = getattr(adapter, "_build_memory_prompt", None)
@@ -349,7 +375,7 @@ def assemble_reply_messages(adapter, snapshot, context, content, *, max_input_ch
         if 'history.memory.references' in included:
             if recall is not None:
                 record_selection(recall, memory.references)
-            return result.to_messages(), selection.trusted_evidence
+            return result.to_messages(), selection.trusted_evidence, assembly_limit
         available = available * 3 // 4
         if recall is None:
             break  # Legacy builders cannot be safely requeried during one generation.
@@ -371,8 +397,8 @@ def assemble_reply_messages(adapter, snapshot, context, content, *, max_input_ch
         except PromptBudgetExceeded as error:
             raise _RecallBudgetExceeded(_RecallBudgetExceeded.code) from error
         return ({'role': 'system', 'content': result.system_content + disclosure},
-                {'role': 'user', 'content': result.user_content}), TrustedReviewEvidence()
-    return baseline.to_messages(), TrustedReviewEvidence()
+                {'role': 'user', 'content': result.user_content}), TrustedReviewEvidence(), assembly_limit
+    return baseline.to_messages(), TrustedReviewEvidence(), assembly_limit
 
 
 def _life_source_ids(fragments) -> tuple[str, ...]:
@@ -388,6 +414,7 @@ def _life_source_ids(fragments) -> tuple[str, ...]:
         if not isinstance(value, dict):
             continue
         items = [value.get('current'), value.get('last_observation')]
+        items.extend(value.get('previous_observations', []) if isinstance(value.get('previous_observations'), list) else [])
         items.extend(value.get('threads', []) if isinstance(value.get('threads'), list) else [])
         for item in items:
             source = item.get('source_id') if isinstance(item, dict) else None

@@ -120,10 +120,10 @@ def test_song_checks_shared_evidence_and_preserves_lyric_contract(monkeypatch, s
     assert events[0][2:] == (gateway, 7000, None)
     assert events[-1][0] == 'complete'
     system = events[-1][1][0]['content']
-    assert 'exactly two keys: verse and chorus' in system
+    assert 'exactly two keys: verse and chorus' in events[-1][1][-2]['content']
     assert 'original-persona-and-evidence' in system
     assert system.endswith('checked-original-evidence')
-    assert json.loads(events[-1][1][1]['content'])['current_letter'] == 'song-letter'
+    assert json.loads(events[-1][1][-1]['content'])['current_letter'] == 'song-letter'
     assert sum(event[0] == 'check' for event in events) == 1
     if scoped:
         assert ('scope', GatewayRequestScope.SONG_CONTENT) in events
