@@ -15,11 +15,10 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from aiohttp import ClientError, ClientSession, ClientTimeout, web
-from llm_gateway import ManagedLLMConfig
+from llm_gateway import ManagedLLMConfig, PROVIDER_USER_AGENT, provider_request_headers
 from runtime.reply.model_capabilities import model_capabilities
 
 
-PROVIDER_USER_AGENT = "Olivia-Community/0.1"
 SETUP_STATUS_PATH = "/toy/setup/status"
 LLM_TEST_PATH = "/toy/setup/llm/test"
 LLM_MODELS_PATH = "/toy/setup/llm/models"
@@ -228,7 +227,7 @@ async def _probe_openai_compatible(base_url: str, model: str, api_key: str) -> N
                 f"{base_url}/chat/completions",
                 headers={
                     **({"Authorization": f"Bearer {api_key}"} if api_key else {}),
-                    "User-Agent": PROVIDER_USER_AGENT,
+                    **provider_request_headers(base_url),
                 },
                 json=body,
             ) as response:
