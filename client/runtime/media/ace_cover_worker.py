@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
 import gc
 import json
 import os
@@ -15,6 +16,11 @@ import uuid
 CAPTION = ("linli_voice, pop ballad, gentle and tender female singing in a natural "
            "low-to-mid vocal register, restrained delivery and a soft chorus. "
            "Pure solo acoustic piano accompaniment. No repeated high-note belting.")
+
+
+def generation_adapter(decoder, task_type):
+    # Original songs retain their adapter; covers use the same resident base weights.
+    return decoder.disable_adapter() if task_type == 'cover' else nullcontext()
 
 
 def check_offline_assets(root: Path) -> None:
@@ -177,7 +183,7 @@ def run(request_path, *, cache=None, resident_options=None):
         return
     params = GenerationParams(
         task_type=task_type, src_audio=str(source) if source is not None else None, reference_audio=request["reference"],
-        caption=request.get("caption", CAPTION), lyrics=lyrics, vocal_language=language, duration=duration,
+        caption='' if task_type == 'cover' else request.get("caption", CAPTION), lyrics=lyrics, vocal_language=language, duration=duration,
         **({key: request[key] for key in ("bpm", "keyscale", "timesignature")} if task_type == "text2music" else {}),
         audio_cover_strength=.8, cover_noise_strength=.08, inference_steps=50,
         guidance_scale=7., shift=1., infer_method="ode", sampler_mode="euler", seed=200717,
@@ -189,7 +195,7 @@ def run(request_path, *, cache=None, resident_options=None):
     torch.cuda.reset_peak_memory_stats()
     started = time.monotonic()
     raw_output = job / "raw" / uuid.uuid4().hex
-    with torch.inference_mode():
+    with torch.inference_mode(), generation_adapter(handler.model.decoder, task_type):
         result = generate_music(handler, None, params, GenerationConfig(
             batch_size=1, use_random_seed=False, seeds=[200717], audio_format="flac"), save_dir=str(raw_output),
             progress=lambda value, **_: progress("decoding" if value >= .8 else "generating", duration_seconds=duration))
@@ -208,6 +214,7 @@ def run(request_path, *, cache=None, resident_options=None):
              generation_seconds=time.monotonic() - started,
              peak_allocated_mib=torch.cuda.max_memory_allocated() / 2**20,
              quantized_layers=len(quantized), lora_layers=len(layers),
+             lora_enabled=task_type != 'cover',
              lyrics_source="provided" if request.get("lyrics") else "asr_unverified")
 
 
