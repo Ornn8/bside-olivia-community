@@ -152,6 +152,7 @@ async def run():
     await server.generate_reply('boundary-letter', letter['content'])
     await asyncio.gather(*tuple(server.daily_life_tasks.values()))
     assert letter['daily_life_status'] == 'PENDING'
+    assert letter['daily_life_failure_reason'] == 'DAILY_LIFE_BOUNDARY_UNAVAILABLE'
     assert not server.private_world_port.snapshot().active_boundaries
     server.private_world_relationship_committer.commit_boundaries = commit
     server._schedule_daily_life_exchange(letter)
@@ -164,6 +165,7 @@ async def run():
 asyncio.run(run())
 context = server.letters_adapter.build_reply_context(ReplyMode.TEXT_LETTER)
 assert letter['daily_life_status'] == 'COMMITTED', letter.get('daily_life_error_code')
+assert 'daily_life_failure_reason' not in letter
 assert context.private_behavior.active_boundaries[0].scope == reply
 assert len(server.private_world_port.snapshot().active_boundaries) == 1
 print('boundary_wiring_passed')

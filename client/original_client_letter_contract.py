@@ -286,6 +286,7 @@ def serialize_letter_summary(
         letter.get("reply_video_enabled") is True
         and str(letter.get("media_status") or "").upper() in {"FAILED", "UNAVAILABLE"}
     ):
+        payload["coverId"] = letter_id
         payload["audioStatus"] = str(letter.get("media_status") or "PENDING")
         payload["audioRevision"] = _safe_local_media_url(letter.get("reply_audio_url"))
 

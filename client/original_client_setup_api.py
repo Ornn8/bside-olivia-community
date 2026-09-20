@@ -79,6 +79,14 @@ PUBLIC_ROUTE_CONTRACT = {
         "response_fields": ["status", "skipped"],
     },
 }
+RELAY_ERROR_HTTP_STATUSES = {
+    "RELAY_NOT_CONFIGURED": [400],
+    "RELAY_AUTH_FAILED": [503],
+    "RELAY_PHONE_OFFLINE": [503],
+    "RELAY_ORDER_LIMIT": [503],
+    "RELAY_SLOTS_FULL": [503],
+    "RELAY_UNAVAILABLE": [503],
+}
 ERROR_HTTP_STATUSES = {
     "LLM_SETUP_CONFIRMATION_REQUIRED": [403],
     "LLM_SETUP_CONNECTION_FAILED": [503],
@@ -102,7 +110,8 @@ class LLMSetupError(RuntimeError):
     """Stable setup failure that never contains provider or credential data."""
 
     def __init__(self, code: str, *, status: int) -> None:
-        if code not in ERROR_HTTP_STATUSES or status not in ERROR_HTTP_STATUSES[code]:
+        allowed = ERROR_HTTP_STATUSES.get(code, RELAY_ERROR_HTTP_STATUSES.get(code, []))
+        if status not in allowed:
             raise ValueError("setup error contract is invalid")
         self.code = code
         self.status = status
@@ -195,6 +204,13 @@ def _api_key(value: object, *, allow_empty: bool = False) -> str:
 
 
 async def _probe_openai_compatible(base_url: str, model: str, api_key: str) -> None:
+    if api_key.startswith('olivia-') and model == 'qwen3.7-flash':
+        # A new zero-balance account must be able to connect before recharging.
+        from original_client_relay_api import relay_request
+        result = await relay_request(base_url, api_key, 'GET', '/models')
+        if model not in [item.get('id') for item in result.get('data', []) if isinstance(item, dict)]:
+            raise LLMSetupError('LLM_SETUP_CONNECTION_FAILED', status=503)
+        return
     body = {
         "model": model,
         "messages": [{"role": "user", "content": "Reply with OK."}],
@@ -706,6 +722,8 @@ def mount_original_client_setup_api(
             )
 
     app.middlewares.append(errors)
+    from original_client_relay_api import mount_relay_api
+    mount_relay_api(app, service)
     app.router.add_get(SETUP_STATUS_PATH, status)
     for path, handler in (
         (LLM_MODELS_PATH, models),

@@ -125,6 +125,17 @@ LETTER_DETAIL_MEDIA_ERROR_CODES: dict[str, dict[str, Any]] = {
     },
 }
 
+LETTER_DETAIL_MEDIA_ERROR_CODES.update({
+    code: {"status": "UNAVAILABLE", "retryable": True}
+    for code in (
+        "GPU_TLS_FAILED", "GPU_CONNECTION_TIMEOUT", "GPU_CONNECT_FAILED",
+        "GPU_CONNECTION_FAILED", "GPU_AUTH_FAILED", "GPU_QUEUE_FULL",
+        "GPU_REQUEST_FAILED", "GPU_TASK_TIMEOUT", "GPU_TASK_FAILED",
+        "GPU_DOWNLOAD_FAILED", "GPU_OUTPUT_INVALID", "GPU_SHARED_SCENE_MISSING",
+        "GPU_NOT_CONFIGURED", "GPU_CAPABILITY_UNAVAILABLE", "MEDIA_JOB_INTERRUPTED",
+    )
+})
+
 LETTER_DETAIL_MEDIA_CONTRACT: dict[str, Any] = {
     "fields": [
         "media_status",

@@ -141,7 +141,7 @@ def test_patch_adds_original_settings_management_and_preserves_existing_assets(
     ).replace("https://opencode.ai/zen/go/v1", "").replace(
         "https://dashscope.aliyuncs.com/compatible-mode/v1", ""
     )
-    assert "https://" not in without_provider_presets
+    assert "https://" not in without_provider_presets.replace("https://175.24.191.6/v1", "")
     assert "/toy/capabilities/mem0/import" not in bootstrap
 
 

@@ -1036,6 +1036,9 @@ class OpenAICompatibleAdapter(Gateway):
         # contract. Keep that existing wire protocol and caller validation.
         if response_format is not None and scope is GatewayRequestScope.PERSONAL_CHAT_JSON:
             return await self._structured_completion(messages, response_format, request, scope=scope)
+        if response_format is not None and scope is GatewayRequestScope.BACKGROUND_REASONING:
+            # The life runtime owns its one semantic correction attempt.
+            return await self._structured_completion(messages, response_format, request, scope=scope, attempts=1)
         if self._uses_official_review_responses(scope):
             normalized = validate_messages(messages, max_input_chars=self.config.max_input_chars)
             capabilities = model_capabilities(self.config.base_url, self.config.model, self.config.provider_options)
@@ -1087,6 +1090,9 @@ class OpenAICompatibleAdapter(Gateway):
         instruction = {'role': 'system', 'content': 'Return only JSON matching this schema. Preserve the supplied facts and frozen text. '
                        + json.dumps(schema, ensure_ascii=False)}
         current = [instruction, *messages]
+        if scope is GatewayRequestScope.BACKGROUND_REASONING and messages and messages[0]['role'] == 'system':
+            # Keep the long, stable system prefix first for upstream caching.
+            current = [{**messages[0], 'content': messages[0]['content'] + '\n' + instruction['content']}, *messages[1:]]
         official_review = self._uses_official_review_responses(scope)
         responses = self.config.api_style == 'responses' or official_review
         for attempt in range(attempts):
@@ -1184,7 +1190,6 @@ class OpenAICompatibleAdapter(Gateway):
             body["tools"] = converted
         else:
             body["tools"] = list(tools)
-        capabilities = model_capabilities(self.config.base_url, self.config.model, self.config.provider_options)
         if self.config.api_style != "chat_completions" or capabilities.tool_choice:
             body["tool_choice"] = tool_choice
         try:

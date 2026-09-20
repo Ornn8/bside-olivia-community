@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-SETTINGS_UI_VERSION = "p03.original-settings-manage.v34"
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v40"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
@@ -496,9 +496,12 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   };
 
   const requestSetup = async (path, body = null) => {
+    if (path === "/toy/relay/action" && !setupSessionToken) {
+      await requestSetup(SETUP_STATUS_PATH);
+    }
     const endpoint = new URL(path, apiBase);
     const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), 25000);
+    const timeout = window.setTimeout(() => controller.abort(), path === "/toy/cloud/action" ? 45000 : 25000);
     const options = {
       cache: "no-store",
       credentials: "omit",
@@ -520,7 +523,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       } catch (_error) {
         payload = null;
       }
-      if (!response.ok || !payload || typeof payload.status !== "string") {
+      if (!response.ok || !payload || (path !== "/toy/relay/action" && typeof payload.status !== "string")) {
         const error = new Error("setup-unavailable");
         error.code = payload && typeof payload.error_code === "string"
           ? payload.error_code
@@ -1387,7 +1390,162 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     return { wrapper, input };
   };
 
-  const renderLlmSetupPanel = async (panel, initialMode) => {
+  const mountRelayAccount = (panel) => {
+    panel.style.cssText = "display:grid;gap:20px;min-width:0";
+    const account = text("p", "正在读取账户…", "text-text-secondary text-body-m");
+    account.setAttribute("role", "status");
+    const controls = actions(); controls.style.cssText = "display:flex;flex-wrap:wrap;gap:12px";
+    const billing = document.createElement("section");
+    const identity = document.createElement("section");
+    identity.className = "olivia-account-key";
+    const key = setupInput("我的 Olivia Key", "password");
+    key.input.readOnly = true;
+    key.input.autocomplete = "off";
+    const errors = {RELAY_AUTH_FAILED:"Key 已失效，请检查或联系管理员。", RELAY_ORDER_LIMIT:"申请过于频繁，请稍后重试。", RELAY_NOT_CONFIGURED:"请先申请 Key，或导入已有 Key。"};
+    let busy = false;
+    const refresh = async () => {
+      const result = await requestSetup("/toy/relay/action", {action:"account"});
+      account.textContent = result.configured ? "已获取 · 本机加密保存" : "获取专属 Key，开启回信服务。";
+      claim.hidden = result.configured;
+      reveal.hidden = !result.configured;
+      key.wrapper.hidden = !result.configured;
+      key.input.value = result.key_prefix ? result.key_prefix + "…" : "";
+      copy.hidden = !result.configured;
+      billing.replaceChildren();
+      if (result.configured) mountRelayBalance(billing);
+    };
+    const run = async (action, payload = {}) => {
+      if (busy) return;
+      busy = true; setButtonsBusy([claim,reveal,copy],true);
+      account.textContent = "正在处理…";
+      try {
+        const result = await requestSetup("/toy/relay/action", {action});
+        if (action === "export_key") {
+          if (payload.display) { key.input.value=result.key; key.input.type="text"; account.textContent="Key 已显示，请妥善保管。"; }
+          else { await navigator.clipboard.writeText(result.key); account.textContent = "Key 已复制，请妥善保存，不要发给他人。"; }
+        } else { key.input.value=""; await refresh(); }
+      } catch (e) { account.textContent=errors[e.code] || "暂时无法完成，请重试。已有账户和余额不会因此丢失。"; }
+      finally {busy=false;setButtonsBusy([claim,reveal,copy],false);}
+    };
+    const claim = button("获取 Key", () => run("claim"));
+    const reveal = button("显示 Key", () => run("export_key", {display:true}));
+    const copy = button("复制 Key", () => run("export_key"));
+    claim.hidden=reveal.hidden=copy.hidden=true;
+    controls.append(claim,reveal,copy);
+    identity.append(key.wrapper,controls,account);
+    panel.append(identity,billing);
+    void refresh().catch(()=>{account.textContent="账户读取失败，请关闭后重试。";});
+  };
+
+  const mountRelayBalance = (panel) => {
+    const box = document.createElement("section"); box.setAttribute("data-olivia-relay-billing", "true");
+    box.style.cssText = "display:grid;grid-template-columns:minmax(0,1fr);min-width:0;max-width:100%;gap:16px";
+    const title = text("h3", "余额与调用量", "text-text-title text-title-m");
+    const balance = text("p", "读取已保存的 Olivia 服务账户。", "text-text-secondary text-body-m");
+    const usage = text("p", "调用量待读取。", "text-text-secondary text-body-m");
+    const metrics = document.createElement("div"); metrics.className="olivia-account-metrics";
+    const metric = label => {
+      const item=document.createElement("div");
+      const value=text("p","—","olivia-metric-value");
+      item.append(text("p",label,"olivia-metric-label"),value);metrics.append(item);return value;
+    };
+    const available=metric("可用余额");
+    const spent=metric("累计消费");
+    const calls=metric("调用次数");
+    const tokens=metric("总 Token");
+    const status = text("p", "", "text-text-secondary text-body-m"); status.setAttribute("role", "status");
+    const orderView = document.createElement("div"); orderView.style.cssText="display:grid;grid-template-columns:minmax(0,1fr);min-width:0;gap:12px";
+    const controls = actions(); controls.style.cssText="display:flex;flex-wrap:wrap;gap:12px;min-width:0";
+    let busy = false, active = null, generation = 0, shownSignature = "", pollTimer = null;
+    const select = document.createElement("select");
+    select.className = "rounded-3 border border-grey-5 bg-transparent px-4 py-2.5 text-text-body text-body-m";
+    select.setAttribute("aria-label", "充值面额");
+    for (const value of [10,20,50,100]) {
+      const option = document.createElement("option"); option.value = String(value*100);
+      option.textContent = `充值 ¥${value}`; select.append(option);
+    }
+    const errors = {RELAY_NOT_CONFIGURED:"请先申请 Key，或导入已有 Key。",
+      RELAY_AUTH_FAILED:"Key 已失效，请联系管理员。", RELAY_PHONE_OFFLINE:"收款服务暂时离线，请稍后再充值。",
+      RELAY_ORDER_LIMIT:"创建订单过于频繁，请稍后重试。", RELAY_SLOTS_FULL:"当前充值人数较多，请稍后重试。"};
+    const call = payload => requestSetup("/toy/relay/action", payload);
+    const enabled = () => { refresh.disabled=busy; create.disabled=busy || Boolean(active); select.disabled=busy || Boolean(active); };
+    const queuePoll = serial => {
+      if (pollTimer !== null) window.clearTimeout(pollTimer);
+      pollTimer = window.setTimeout(async () => {
+        if (!box.isConnected || serial !== generation) return;
+        try { const next=await call({action:"order_status"}); if (!box.isConnected || serial !== generation) return;
+          drawOrder(next); if (next.order?.state === "credited") await readBalance();
+        } catch (_) { if(box.isConnected && serial === generation) status.textContent="到账状态暂时无法更新，请点击刷新。请勿重复付款。"; }
+      },3000);
+    };
+    const drawOrder = data => {
+      const order = data.order;
+      const signature = JSON.stringify(order && [order.id, order.state, order.expires_at]);
+      // Keep the pending controls mounted so polling cannot steal keyboard focus.
+      if (order && order.state === "pending" && signature === shownSignature) { queuePoll(generation); return; }
+      shownSignature = signature; orderView.replaceChildren(); active = null;
+      const serial = ++generation;
+      if (!order) { enabled(); return; }
+      const credit = Number(order.credit_yuan).toFixed(2);
+      if (order.state === "credited") {
+        status.textContent = `充值已到账 ¥${credit}。`;
+        orderView.append(text("p", `已到账 ¥${credit}。`, "text-text-title text-body-m")); enabled(); return;
+      }
+      if (order.state === "expired") {
+        status.textContent = "付款金额已过期，请勿继续付款。";
+        orderView.append(text("p", "此付款金额已过期，请勿继续付款。已付款但未到账，请联系管理员核对。", "text-text-secondary text-body-m")); enabled(); return;
+      }
+      active = order;
+      select.value = String(Math.round(Number(order.credit_yuan)*100));
+      const amount = "¥"+(order.amount_cents/100).toFixed(2);
+      const pay = text("p", `请用微信支付 ${amount}`, "text-text-title text-title-m");
+      pay.style.cssText="font-size:24px;font-weight:600;line-height:1.4;font-variant-numeric:tabular-nums";
+      const countdown = text("p", "", "text-text-secondary text-body-m");
+      countdown.setAttribute("aria-live", "off");
+      const paid = text("p", `请扫描群内公告二维码，按上方金额支付。到账余额 ¥${credit}。`, "text-text-secondary text-body-m");
+      orderView.append(pay, paid, countdown);
+      status.textContent = `付款金额 ${amount}，到账余额 ¥${credit}。`;
+      const deadline = Date.now() + Math.max(0, order.expires_at-data.server_time)*1000;
+      const tick = () => {
+        if (!box.isConnected || serial !== generation) return;
+        const seconds = Math.max(0, Math.ceil((deadline-Date.now())/1000));
+        countdown.textContent = `有效时间 ${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,"0")} · 正在等待微信到账通知`;
+        if (!seconds) { pay.textContent="付款金额已过期，请勿继续付款。"; active=null; enabled(); return; }
+        window.setTimeout(tick,1000);
+      };
+      tick(); enabled();
+      queuePoll(serial);
+    };
+    const readBalance = async () => {
+      const data = await call({action:"balance"});
+      if (!box.isConnected) return;
+      if (data.billing_mode !== "money") throw {error_code:"RELAY_NOT_CONFIGURED"};
+      balance.textContent = `可用余额 ¥${Number(data.remaining_yuan).toFixed(4)} · 累计消费 ¥${Number(data.used_yuan).toFixed(4)}`;
+      balance.hidden=true;
+      available.textContent=`¥${Number(data.remaining_yuan).toFixed(4)}`;
+      spent.textContent=`¥${Number(data.used_yuan).toFixed(4)}`;
+      const counts = data.usage;
+      calls.textContent=counts ? counts.calls.toLocaleString() : "—";
+      tokens.textContent=counts ? counts.total_tokens.toLocaleString() : "—";
+      usage.textContent = counts ? `输入 ${counts.input_tokens.toLocaleString()} / 输出 ${counts.output_tokens.toLocaleString()} Token · 仅统计已结算调用` : "调用量暂不可用，请稍后刷新。";
+    };
+    const run = async work => { if(busy)return;busy=true;enabled();status.textContent="正在读取…";
+      try { await work();if(status.textContent==="正在读取…")status.textContent=""; }
+      catch(e) {status.textContent=errors[e.code || e.error_code] || "服务暂时无法连接，请重试；已付款请勿重复支付。";}
+      finally {busy=false;enabled();}
+    };
+    const refresh = button("刷新", () => run(async()=>{await readBalance();drawOrder(await call({action:"order_status"}));}));
+    const create = button("获取付款金额", () => run(async()=>{await readBalance();drawOrder(await call({action:"create_order",amount_cents:Number(select.value)}));}));
+    controls.append(select,create,refresh);
+    create.className += " olivia-primary-action";
+    const recharge = text("h3","账户充值","text-text-title text-title-m");
+    recharge.style.marginTop="12px";
+    box.append(title,metrics,balance,usage,recharge,controls,orderView,status);
+    panel.append(box);
+    void run(async()=>{await readBalance();drawOrder(await call({action:"order_status"}));});
+  };
+
+  const renderLlmSetupPanel = async (panel, initialMode, preferOlivia = false) => {
     panel.replaceChildren(
       text("h3", "大模型连接", "text-text-title text-title-m"),
       text("p", "API key 仅加密保存在这台电脑上，不会显示在页面或日志中。", "text-text-secondary text-body-m font-regular")
@@ -1401,6 +1559,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     }
     const provider = document.createElement("select");
     provider.className = "rounded-3 border border-grey-5 bg-transparent px-4 py-2.5 text-text-body text-body-m";
+    const oliviaBaseUrl = "https://175.24.191.6/v1";
+    const isOliviaEndpoint = value => value.trim().replace(/\/+$/, "") === oliviaBaseUrl;
     const qwenBaseUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1";
     const qwenModels = ["qwen3.8-max", "qwen3.8-flash"];
     const isDeepSeekEndpoint = (value) => /^https:\/\/api\.deepseek\.com(?:\/v1)?\/?$/i.test(value.trim());
@@ -1409,6 +1569,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       || /^https:\/\/[a-z0-9][a-z0-9-]*\.[a-z0-9-]+\.maas\.aliyuncs\.com\/compatible-mode\/v1\/?$/i.test(value.trim())
     );
     for (const [value, label] of [
+      ["olivia", "Olivia 回信服务"],
       ["deepseek", "DeepSeek 官方"],
       ["opencode-go", "OpenCode Go"],
       ["qwen", "阿里云百炼 Qwen"],
@@ -1440,14 +1601,23 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     );
     key.input.value = "";
     const inferProvider = () => {
+      if (isOliviaEndpoint(base.input.value)) return "olivia";
       if (isDeepSeekEndpoint(base.input.value)) return "deepseek";
       if (base.input.value === "https://opencode.ai/zen/go/v1") return "opencode-go";
       if (isQwenEndpoint(base.input.value)) return "qwen";
       return "custom";
     };
     provider.value = inferProvider();
+    if (preferOlivia) {
+      provider.value = "olivia";
+      base.input.value = oliviaBaseUrl;
+      model.input.value = "qwen3.7-flash";
+    }
     provider.addEventListener("change", () => {
-      if (provider.value === "deepseek") {
+      if (provider.value === "olivia") {
+        base.input.value = oliviaBaseUrl;
+        model.input.value = "qwen3.7-flash";
+      } else if (provider.value === "deepseek") {
         base.input.value = "https://api.deepseek.com";
         model.input.value = "deepseek-v4-pro";
       } else if (provider.value === "opencode-go") {
@@ -1461,8 +1631,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         model.input.value = qwenModels[0];
       }
       invalidateTest();
+      knownModels = [];
       updateModelControl();
-      if (provider.value === "deepseek" || provider.value === "qwen") void syncModels();
+      if (["deepseek", "qwen", "olivia"].includes(provider.value)) void syncModels();
     });
     const state = text("p", "请先测试连接。自定义本地接口无需 key 时可留空；需要鉴权时请填写 key。", "text-text-secondary text-body-m font-regular");
     state.setAttribute("aria-live", "polite");
@@ -1514,7 +1685,11 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       setButtonsBusy([testConnection, save], true);
       state.textContent = "正在安全保存……";
       try {
-        await requestSetup(LLM_SAVE_PATH, requestedConfig);
+        if (isOliviaEndpoint(requestedConfig.base_url) && requestedConfig.api_key) {
+          await requestSetup("/toy/relay/action", {action:"import_key", key:requestedConfig.api_key});
+        } else {
+          await requestSetup(LLM_SAVE_PATH, requestedConfig);
+        }
         key.input.value = "";
         setup.llm.key_configured = Boolean(requestedConfig.api_key) || setup.llm.key_configured;
         void syncModels();
@@ -1558,6 +1733,20 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     key.input.addEventListener("input", invalidateTest);
     const controls = actions();
     controls.append(testConnection, save);
+    const useAccountKey = button("使用我的 Olivia Key", async () => {
+      if (setupBusy) return;
+      setupBusy=true; useAccountKey.disabled=true;
+      state.textContent="正在连接 Olivia 回信服务…";
+      try {
+        await requestSetup("/toy/relay/action", {action:"connect"});
+        provider.value="olivia";base.input.value=oliviaBaseUrl;model.input.value="qwen3.7-flash";
+        key.input.value="";setup.llm.key_configured=true;
+        void syncModels();
+        state.textContent="已连接并保存 Olivia 回信服务，下一次发送生效。";
+      } catch (e) { state.textContent=e.code === "RELAY_NOT_CONFIGURED" ? "请先在「Olivia 账户」获取 Key。" : "连接失败，请检查 Key 或稍后重试。"; }
+      finally {setupBusy=false;useAccountKey.disabled=false;testedConfig=null;save.disabled=true;}
+    });
+    controls.append(useAccountKey);
     if (setup.llm.key_configured) {
       controls.append(removeKey);
     }
@@ -1573,17 +1762,18 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const updateModelControl = () => {
       const official = isDeepSeekEndpoint(base.input.value);
       const qwen = provider.value === "qwen";
-      model.input.hidden = official || qwen;
-      modelSelect.hidden = !official && !qwen;
+      const olivia = provider.value === "olivia";
+      model.input.hidden = official || qwen || olivia;
+      modelSelect.hidden = !official && !qwen && !olivia;
       refreshModels.hidden = !official;
-      modelStatus.hidden = !official && !qwen;
+      modelStatus.hidden = !official && !qwen && !olivia;
       const selected = model.input.value;
       modelSelect.replaceChildren();
-      const choices = qwen ? [...qwenModels, selected] : [selected, ...knownModels];
+      const choices = olivia ? ["qwen3.7-flash"] : qwen ? [...qwenModels, selected] : [selected, ...knownModels];
       for (const value of [...new Set(choices)].filter(Boolean)) {
         const option = document.createElement("option");
         option.value = value;
-        option.textContent = value;
+        option.textContent = olivia ? "Qwen3.8 Flash" : value;
         option.style.background = "#222426";
         modelSelect.append(option);
       }
@@ -1591,6 +1781,10 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     };
     const syncModels = async () => {
       updateModelControl();
+      if (provider.value === "olivia") {
+        modelStatus.textContent = "填写管理员分配的 Olivia 用户 Key，测试连接后保存。";
+        return;
+      }
       if (provider.value === "qwen") {
         modelStatus.textContent = "可选 qwen3.8-max 或 qwen3.8-flash；业务空间可填写专属 OpenAI 兼容地址。";
         return;
@@ -2011,7 +2205,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const loadDialogData = async (statusNode, panels, initialMode) => {
     if (panels.memory) panels.memory.__oliviaCompanionStatusNode = statusNode;
     const tasks = [
-      renderLlmSetupPanel(panels.llm, initialMode),
+      ...(panels.llm ? [renderLlmSetupPanel(panels.llm, initialMode)] : []),
       renderCapabilityPanel(panels.capability),
     ];
     if (initialMode) {
@@ -2445,7 +2639,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     header.style.justifyContent = "space-between";
     header.style.gap = "24px";
 
-    const heading = text("h2", initialMode ? "欢迎使用 Olivia" : "本地陪伴", "text-text-title text-headline-m");
+    const serviceMode = ["cloud", "gpu", "relay"].includes(initialPanel);
+    const heading = text("h2", serviceMode ? ({cloud:"云服务",gpu:"云端 GPU",relay:"回信服务"}[initialPanel]) : initialMode ? "欢迎使用 Olivia" : "本地陪伴", "text-text-title text-headline-m");
     heading.id = "olivia-companion-dialog-title";
     heading.style.margin = "0";
     const dismiss = () => {
@@ -2463,6 +2658,85 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       dismiss();
     });
     header.append(heading, close);
+
+    if (serviceMode) {
+      const content = document.createElement("div");
+      content.style.marginTop = "24px";
+      if (initialPanel === "relay") {
+        dialog.setAttribute("data-olivia-relay-dialog", "");
+        theme.textContent += `
+          [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] p { margin:0; }
+          [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] h3 { margin:0; font-size:16px;line-height:24px; }
+          [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] button { border-radius:10px !important; min-height:40px; }
+          [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] input,[data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] select { border-radius:10px !important; }
+          [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] button:focus-visible { outline:2px solid #ddd2bd;outline-offset:3px; }
+          [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] button:hover:not(:disabled) { filter:brightness(1.2); }
+          [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] .olivia-primary-action { background:#ded3bd !important;color:#202126 !important;border-color:#ded3bd !important; }
+          [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] .olivia-account-key { display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px 16px;align-items:end;padding:20px;background:#23252a;border-radius:12px; }
+          [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] .olivia-account-key > p { grid-column:1/-1;font-size:12px;color:#b9bcc4; }
+          [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] .olivia-account-metrics { display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:20px;padding:20px 0;border-bottom:1px solid #383b42; }
+          [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] .olivia-metric-label { font-size:12px;color:#b9bcc4;margin-bottom:8px; }
+          [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] .olivia-metric-value { font-size:24px;line-height:32px;font-weight:600;font-variant-numeric:tabular-nums;overflow-wrap:anywhere;color:#f1ece2; }
+          [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] [aria-pressed] { background:transparent !important;border:0 !important;border-radius:0 !important;border-bottom:2px solid transparent !important;padding:10px 4px !important; }
+          [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] [aria-pressed="true"] { border-bottom-color:#ded3bd !important;color:#f1ece2 !important; }
+          @media(max-width:700px) {
+            [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] .olivia-account-key { grid-template-columns:minmax(0,1fr); }
+            [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] .olivia-account-metrics { grid-template-columns:repeat(2,minmax(0,1fr));gap:16px; }
+          }
+        `;
+        dialog.style.height = "min(800px, calc(100vh - 80px))";
+        dialog.style.boxSizing = "border-box";
+        dialog.style.display = "flex";
+        dialog.style.flexDirection = "column";
+        dialog.style.overflow = "hidden";
+        header.style.flexShrink = "0";
+        content.style.cssText = "display:grid;grid-template-rows:auto minmax(0,1fr);min-height:0;flex:1;margin-top:24px";
+        const viewport = document.createElement("div");
+        viewport.style.cssText = "min-height:0;overflow-y:auto;overflow-x:hidden;scrollbar-gutter:stable;padding-right:12px";
+        const connection = document.createElement("section");
+        connection.style.cssText = "display:grid;gap:14px;min-width:0";
+        const account = document.createElement("section");
+        const navigation = actions();
+        navigation.style.cssText = "display:flex;flex-wrap:wrap;gap:12px;margin-bottom:24px";
+        const show = name => {
+          viewport.scrollTop = 0;
+          connection.hidden = name !== "connection";
+          connection.style.display = connection.hidden ? "none" : "grid";
+          account.hidden = name !== "account";
+          account.style.display = account.hidden ? "none" : "grid";
+          connectionTab.setAttribute("aria-pressed", String(name === "connection"));
+          accountTab.setAttribute("aria-pressed", String(name === "account"));
+          connectionTab.style.background = name === "connection" ? "#374151" : "";
+          accountTab.style.background = name === "account" ? "#374151" : "";
+        };
+        const connectionTab = button("模型调用", () => show("connection"));
+        const accountTab = button("Olivia 账户", () => show("account"));
+        navigation.append(connectionTab, accountTab);
+        viewport.append(connection, account);
+        content.append(navigation, viewport);
+        void renderLlmSetupPanel(connection, false, true);
+        mountRelayAccount(account);
+        show("connection");
+      } else {
+        (initialPanel === "gpu" ? mountGPUSettings : mountCloudService)(content);
+      }
+      dialog.append(header, content);
+      backdrop.append(theme, dialog);
+      const opener = document.activeElement;
+      close.addEventListener("click", () => opener?.focus());
+      backdrop.addEventListener("keydown", event => {
+        if (event.key === "Escape") { dismiss(); opener?.focus(); }
+        if (event.key === "Tab") {
+          const items = Array.from(dialog.querySelectorAll('button,input,select,textarea,a[href]')).filter(item => !item.disabled && !item.hidden && item.getClientRects().length);
+          const first = items[0], last = items[items.length - 1];
+          if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+          else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+        }
+      });
+      document.body.append(backdrop);
+      close.focus();
+      return;
+    }
 
     const status = text(
       "p",
@@ -2563,7 +2837,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       }
     });
     document.body.append(backdrop);
-    showPanel(initialPanel);
+    showPanel(definitions.some(item => item.id === initialPanel) ? initialPanel : definitions[0].id);
     close.focus();
     loadDialogData(status, panelNodes, initialMode);
   };
@@ -2991,6 +3265,226 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     refreshVideoReplySetting=()=>container.isConnected ? hydrate() : Promise.resolve(); void hydrate();
   };
 
+  const mountGPUSettings = (section) => {
+    const box = document.createElement("div"); box.className = "flex flex-col gap-4 text-text-body text-body-m";
+    box.setAttribute("data-olivia-gpu-settings", "true");
+    box.append(text("div", "媒体生成服务", "text-text-body text-title-m"),
+      text("p", "选择云端后，生成所需的回信文字和素材会发送到你指定的服务。聊天模型仍使用原来的设置。", "text-text-secondary text-body-m"));
+    const field = (label, input) => {
+      const row = document.createElement("label"); row.className = "flex flex-col gap-2";
+      input.className = "rounded-3 px-4 py-3";
+      input.style.cssText = "background:transparent;color:inherit;border:1px solid #8886;width:100%;box-sizing:border-box";
+      row.append(text("span", label), input); box.append(row); return input;
+    };
+    const mode = field("生成位置", document.createElement("select"));
+    for (const [value, label] of [["local","本机 GPU"],["remote","云端 GPU"]]) {
+      const option = document.createElement("option"); option.value=value; option.textContent=label; mode.append(option);
+    }
+    const url = field("服务地址", document.createElement("input")); url.type="url"; url.placeholder="填写完整的 HTTPS 服务地址";
+    const key = field("API Key", document.createElement("input")); key.type="password"; key.autocomplete="new-password";
+    key.placeholder="点击领取测试 Key 自动保存，也可手动填写";
+    const state = text("p", "正在读取…", "text-text-secondary text-body-m"); state.setAttribute("role","status");
+    const controls=actions(); let busy=false, loaded=false, savedURL="", hasKey=false;
+    const billing = document.createElement("div");
+    billing.setAttribute("data-olivia-gpu-billing", "true");
+    billing.setAttribute("aria-live", "polite");
+    billing.style.cssText="display:flex;flex-direction:column;gap:24px;line-height:1.6";
+    const hint = value => text("p", value, "text-text-secondary text-body-m");
+    const clearBilling = () => { billing.replaceChildren(hint("连接后可查看余额与消费记录。")); };
+    const refreshBilling = async () => {
+      if (busy) return;
+      clearBilling();
+      if (!hasKey || !savedURL || url.value.trim()!==savedURL || key.value.trim()) {
+        billing.replaceChildren(text("p", "请先保存连接设置，再读取该账户的账单。")); return;
+      }
+      busy=true; billingRefresh.disabled=true; setButtonsBusy(Array.from(controls.querySelectorAll("button")),true);
+      mode.disabled=url.disabled=key.disabled=true;
+      billing.replaceChildren(text("p", "正在读取账单…"));
+      try {
+        const account = await requestSetup("/toy/generation/action", {action:"billing_account"});
+        const yuan = cents => "¥"+(cents/100).toFixed(2);
+        const summary=document.createElement("div");summary.style.cssText="display:flex;align-items:baseline;justify-content:space-between;gap:16px;flex-wrap:wrap";
+        const balance=text("p",yuan(account.balance_cents));balance.style.cssText="font-size:32px;font-weight:600;line-height:1.2;font-variant-numeric:tabular-nums";
+        summary.append(balance,hint(`累计消费 ${yuan(account.spent_cents)}`));
+        const history=document.createElement("div");
+        const historyTitle=text("h4","最近消费");historyTitle.style.cssText="font-size:16px;font-weight:600;margin:0 0 8px";
+        history.append(historyTitle);
+        billing.replaceChildren(summary,hint("测试额度，不涉及真实扣款。"),history);
+        if (!account.charges.length) history.append(hint("还没有消费记录。"));
+        const names={tts:"语音生成",video:"视频生成",lipsync:"口型生成",cover:"歌曲翻唱",original:"原创歌曲",separate:"人声分离"};
+        for (const charge of account.charges.slice(0,20)) {
+          const stages=Array.isArray(charge.stages)?charge.stages:[];
+          const kind=stages.length>1?"video":stages[0]?.kind;
+          const row=document.createElement("div");row.style.cssText="display:flex;align-items:center;justify-content:space-between;gap:16px;padding:16px 0;border-bottom:1px solid #8884";
+          const label=document.createElement("div");label.append(text("p",names[kind]||"媒体生成"));
+          if(charge.refunded_cents)label.append(hint("已退回 "+yuan(charge.refunded_cents)));
+          const amount=text("p","−"+yuan(charge.amount_cents));amount.style.cssText="font-variant-numeric:tabular-nums;white-space:nowrap";
+          row.append(label,amount);history.append(row);
+        }
+        if (account.charges.length>20) history.append(hint("显示最近 20 笔消费。"));
+        billing.append(hint("消费记录在生成完成后更新。"));
+      } catch (_error) { billing.replaceChildren(hint("余额暂时无法读取，请稍后刷新。")); }
+      finally { busy=false; billingRefresh.disabled=false; mode.disabled=url.disabled=key.disabled=false; setButtonsBusy(Array.from(controls.querySelectorAll("button")),false); }
+    };
+    const billingSection=document.createElement("section");billingSection.style.cssText="margin-top:16px;padding-top:24px;border-top:1px solid #8884";
+    const billingHeader=document.createElement("div");billingHeader.style.cssText="display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:24px";
+    const billingTitle=text("h3","账户余额");billingTitle.style.cssText="font-size:18px;font-weight:600;margin:0";
+    const billingRefresh=button("刷新账单",refreshBilling);
+    billingHeader.append(billingTitle,billingRefresh);billingSection.append(billingHeader,billing);
+    clearBilling();
+    const errors={GPU_NOT_CONFIGURED:"请填写服务地址和 API Key；更换地址时需填写对应的 Key。",
+      CLOUD_URL_INVALID:"请填写完整的 HTTPS 服务地址，不要附加接口路径。",
+      GPU_KEY_INVALID:"API Key 格式不正确，请重新粘贴。", GPU_SETTINGS_SAVE_FAILED:"设置保存失败，原配置未改变。",
+      GPU_SETTINGS_UNAVAILABLE:"原连接设置无法读取，请重新填写。",
+      GPU_CONNECTION_FAILED:"无法连接 GPU 服务，请检查网络与服务地址后重试。",
+      GPU_TLS_FAILED:"HTTPS 证书校验失败。请核对电脑日期时间，并检查 Windows 证书更新；将此错误码发给管理员。",
+      GPU_CONNECTION_TIMEOUT:"连接 GPU 服务超时，请检查网络后重试。",
+      GPU_CONNECT_FAILED:"无法建立网络连接，请检查防火墙、网络与服务地址。",
+      GPU_AUTH_FAILED:"Key 验证未通过，请重新复制完整 Key。",
+      GPU_QUEUE_FULL:"当前生成队列已满，请稍后重试，无需更换 Key。",
+      GPU_CLAIM_DISABLED:"该服务尚未开放自助领取，请联系管理员。",
+      GPU_CLAIM_REVOKED:"此匿名身份已停用，请联系管理员。",
+      GPU_CLAIM_LIMIT:"本轮测试领取名额已满，请联系管理员。",
+      GPU_CLAIM_FAILED:"领取未成功，请检查服务地址或稍后重试。",
+      GPU_IDENTITY_STORAGE_FAILED:"匿名身份无法读取或保存，未创建新身份，请检查本机数据目录。",
+      GPU_ENCRYPTION_TOOL_MISSING:"找不到 Windows PowerShell，无法加密保存 Key。请将错误码发给管理员。",
+      GPU_ENCRYPTION_FAILED:"Windows 用户加密失败，Key 未保存。请将错误码发给管理员。",
+      GPU_SETTINGS_PERMISSION_DENIED:"没有权限写入客户端数据目录，原配置未改变。请检查目录权限或安全软件拦截。",
+      GPU_SETTINGS_WRITE_FAILED:"配置文件写入失败，原配置未改变。请检查磁盘剩余空间与文件占用。",
+      GPU_REQUEST_FAILED:"GPU 服务请求未成功，请核对 Key 或联系管理员。",
+      GPU_RESPONSE_INVALID:"GPU 服务返回的数据不兼容，请联系管理员。",
+      LLM_SETUP_UNAVAILABLE:"本机服务响应异常，请更新补丁并完全退出后重启客户端。"};
+    const render = data => {
+      clearBilling();
+      loaded=true; mode.value=data.route; url.value=data.url; savedURL=data.url; hasKey=data.has_key; key.value="";
+      key.placeholder=hasKey ? "已保存，留空保留；更换地址时须重新填写" : "填写该服务提供的 API Key";
+      state.textContent=data.error_code ? (errors[data.error_code] || data.error_code) :
+        (data.route==="remote" ? "已启用云端生成。设置对后续任务生效。" : "当前使用本机生成。");
+    };
+    const perform = async action => {
+      if (busy || (!loaded && action!=="settings_status")) return;
+      busy=true; setButtonsBusy(Array.from(controls.querySelectorAll("button")),true);
+      mode.disabled=url.disabled=key.disabled=true; state.textContent="正在处理…";
+      try {
+        if (!setupSessionToken) await requestSetup(SETUP_STATUS_PATH);
+        const body={action};
+        if (action==="settings_save" || action==="settings_test") Object.assign(body,{url:url.value.trim(),key:key.value.trim()});
+        if (action==="settings_save") body.route=mode.value;
+        if (action==="settings_claim") body.url=url.value.trim();
+        const result=await requestSetup("/toy/generation/action",body);
+        if (action==="settings_test") {
+          const names={tts:"语音",video:"视频",cover:"翻唱",original:"歌曲",lipsync:"口型视频",separate:"人声分离",image:"图片"};
+          state.textContent="连接成功，可用功能："+result.kinds.map(k=>names[k]||k).join("、")+"。尚未保存设置。";
+        } else { render(result); if(action==="settings_claim") state.textContent="测试 Key 已领取并加密保存，云端生成已启用。重复领取会保留同一身份。"; if(action!=="settings_status") void refreshVideoReplySetting(); }
+      } catch(error) {
+        const code = typeof error.code === 'string' && /^[A-Z][A-Z0-9_]{0,95}$/.test(error.code) ? error.code : 'GPU_LOCAL_API_UNAVAILABLE';
+        state.textContent=(errors[code] || '本机配置服务连接失败，请完全退出客户端后重启。')+`（${code}）`;
+      }
+      finally {busy=false;mode.disabled=url.disabled=key.disabled=false;setButtonsBusy(Array.from(controls.querySelectorAll("button")),false);}
+    };
+    url.addEventListener("input",()=>{clearBilling();key.placeholder=hasKey && url.value.trim()===savedURL ? "留空保留已保存的 Key" : "请填写此地址对应的 API Key";});
+    key.addEventListener("input",clearBilling);
+    controls.append(button("领取测试 Key",()=>perform("settings_claim")),button("测试连接",()=>perform("settings_test")),button("保存生成设置",()=>perform("settings_save")),
+      button("清除连接",()=>perform("settings_clear")),button("重新读取",()=>perform("settings_status")));
+    box.append(controls,state,text("p","Key 使用 Windows 当前用户加密保存，不会在页面回显。云端不可用时任务会报错，不会自动切换到本机。","text-text-secondary text-caption-m"));
+    box.append(billingSection); section.append(box); void perform("settings_status").then(()=>{if(hasKey)return refreshBilling();});
+  };
+
+  const mountCloudService = (section) => {
+    const box = document.createElement("div");
+    box.className = "flex flex-col gap-4 text-text-body text-body-m";
+    box.setAttribute("data-olivia-cloud-service", "true");
+    const state = text("p", "读取云服务设置…", "text-text-secondary text-body-m");
+    state.setAttribute("role", "status");
+    const field = (label, type, placeholder) => {
+      const row = document.createElement("label"); row.className = "flex flex-col gap-2";
+      const input = document.createElement("input"); input.type = type; input.placeholder = placeholder;
+      input.className = "rounded-3 px-4 py-3";
+      input.style.cssText = "background:transparent;color:inherit;border:1px solid #8886;width:100%;box-sizing:border-box";
+      row.append(text("span", label), input); box.append(row); return input;
+    };
+    box.append(text("div", "云服务（可选）", "text-text-body text-title-m"),
+      text("p", "登录后每 15 分钟发送客户端版本和操作系统，用于连接状态与支持。信件、记忆及世界状态保留本地。", "text-text-secondary text-body-m"));
+    const url = field("服务地址", "url", "填写 HTTPS 服务地址"); url.autocomplete = "url";
+    const username = field("云服务账号", "text", "由服务管理员提供"); username.autocomplete = "username";
+    const password = field("密码", "password", "密码不保存在本地"); password.autocomplete = "current-password";
+    const consentLabel = document.createElement("label");
+    const consent = document.createElement("input"); consent.type = "checkbox";
+    consentLabel.append(consent, text("span", " 同意连接服务并发送上述版本信息")); box.append(consentLabel);
+    const reports = document.createElement("div"), releases = document.createElement("div");
+    let busy = false;
+    const controls = actions();
+    const request = async (body) => {
+      if (!setupSessionToken) await requestSetup(SETUP_STATUS_PATH);
+      return requestSetup("/toy/cloud/action", body);
+    };
+    const render = (data) => {
+      if (document.activeElement !== url) url.value = data.url || "";
+      if (document.activeElement !== username) username.value = data.username || "";
+      state.textContent = data.signed_in
+        ? `已登录 ${data.username}。${data.last_sync ? "最近连接：" + new Date(data.last_sync * 1000).toLocaleString() : "等待首次同步"}。待发送报告 ${data.pending_reports} 份。`
+        : "未登录云服务，本地功能可正常使用。";
+      if (data.error_code) state.textContent += ` ${data.error_code}`;
+      reports.replaceChildren(); releases.replaceChildren();
+      if (data.signed_in) {
+        reports.append(text("div", "待上报预览", "text-text-body text-label-l"));
+        const codes = data.report_preview || [];
+        reports.append(text("p", codes.length ? codes.map(r => `${r.error_code} · ${r.app_version} · ${r.os_family}`).join("\n") : "本次运行暂无可上报的错误代码。"));
+        const agree = document.createElement("input"); agree.type = "checkbox";
+        const label = document.createElement("label"); label.append(agree, text("span", " 同意上传以上错误代码、版本、操作系统及随机报告编号，不上传原始日志"));
+        const send = button("发送以上报告", () => perform({action:"report", consent:agree.checked, codes:codes.map(r=>r.error_code)}));
+        send.disabled = true; agree.addEventListener("change", () => {send.disabled = !agree.checked || !codes.length;});
+        reports.append(label, send);
+        for (const receipt of data.receipts || []) reports.append(text("p", `${receipt.error_code}：报告编号 ${receipt.id}`));
+      }
+      releases.append(text("div", "版本与公告", "text-text-body text-label-l"));
+      for (const item of data.publications || []) {
+        const card = document.createElement("div"); card.style.cssText = "padding:12px 0;border-bottom:1px solid #8884";
+        card.append(text("strong", item.title), text("p", item.body));
+        if (item.kind === "release") {
+          card.append(text("p", `版本 ${item.version} · 最低版本 ${item.minimum_version || "未指定"}`));
+          try {
+            const target = new URL(item.download_url);
+            if (target.protocol === "https:" && !target.username && !target.password) {
+              const link = document.createElement("a"); link.href = target.href; link.target = "_blank"; link.rel = "noopener noreferrer"; link.textContent = "下载补丁";
+              card.append(link, text("p", `SHA-256：${item.sha256}`), button("导入已下载的补丁", () => openDialog(false, "update")));
+            }
+          } catch (_) {}
+        }
+        releases.append(card);
+      }
+      if (!(data.publications || []).length) releases.append(text("p", data.signed_in ? "尚无已获取的版本或公告。" : "登录后查看。"));
+    };
+    const perform = async body => {
+      if (busy) return; busy = true; setButtonsBusy(Array.from(controls.querySelectorAll("button")), true);
+      state.textContent = "正在处理…";
+      try { render(await request(body)); }
+      catch (error) {state.textContent = `云服务暂不可用：${error.code || "CLOUD_UNAVAILABLE"}。本地功能不受影响。`;}
+      finally {password.value = ""; busy = false; setButtonsBusy(Array.from(controls.querySelectorAll("button")), false);}
+    };
+    const confirmDelete=document.createElement("input"); confirmDelete.type="checkbox";
+    const confirmLabel=document.createElement("label");
+    confirmLabel.append(confirmDelete,text("span", " 确认删除云端诊断或注销账号（注销需重新输入密码）"));
+    box.append(confirmLabel);
+    controls.append(button("登录", () => perform({action:"login", url:url.value.trim(), username:username.value.trim(), password:password.value, consent:consent.checked})),
+      button("退出云服务", () => perform({action:"logout"})), button("刷新状态", () => perform({action:"status"})),
+      button("删除云端诊断", () => {
+        if (confirmDelete.checked) {
+          confirmDelete.checked=false;
+          void perform({action:"delete_reports", confirm:true});
+        } else state.textContent="请先勾选删除确认。本地诊断不会删除。";
+      }),
+      button("注销云账号", () => {
+        if (confirmDelete.checked) {
+          confirmDelete.checked=false;
+          void perform({action:"delete_account", confirm:true, password:password.value});
+        } else state.textContent="请先勾选注销确认并重新输入密码。本地信件和记忆不会删除。";
+      }));
+    box.append(text("p", "退出仅停止后续同步，不删除服务器数据。诊断删除或注销后，备份副本按备份周期到期清除。", "text-text-secondary text-body-m"));
+    box.append(controls, state, reports, releases); section.append(box);
+    void perform({action:"status"});
+  };
+
   const mountDiagnosticExport = (section) => {
     const row = document.createElement("div");
     row.className = "flex items-center justify-between px-0 py-3 rounded-3";
@@ -3294,6 +3788,28 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   };
 
   let scheduled = false;
+  const mountServiceButtons = () => {
+    if (document.querySelector('[data-olivia-service-buttons]')) return;
+    const badge = Array.from(document.querySelectorAll('span,div,button')).find(node =>
+      node.children.length === 0 && node.textContent.trim() === 'Resonance Edition');
+    if (!badge) return;
+    const group = document.createElement('div');
+    group.setAttribute('data-olivia-service-buttons', '');
+    group.setAttribute('aria-label', '云端服务设置');
+    group.style.cssText = 'display:inline-flex;align-items:center;gap:8px;margin-right:8px;flex-shrink:0;-webkit-app-region:no-drag';
+    for (const [label, panel] of [['云服务','cloud'], ['云端 GPU','gpu'], ['回信服务','relay']]) {
+      const entry = button(label, () => openDialog(false, panel));
+      entry.style.cssText = 'font:inherit;font-size:14px;line-height:20px;padding:5px 12px;white-space:nowrap;border:1px solid #686a70;border-radius:8px;background:#242426;color:#f9fafb;cursor:pointer;-webkit-app-region:no-drag';
+      entry.setAttribute('aria-haspopup', 'dialog');
+      group.append(entry);
+    }
+    badge.parentElement.style.display = 'flex';
+    badge.parentElement.style.flexDirection = 'row';
+    badge.parentElement.style.alignItems = 'center';
+    badge.parentElement.style.flexWrap = 'nowrap';
+    badge.style.flexShrink = '0';
+    badge.before(group);
+  };
   const constrainLetterInputs = () => {
     const matches = new Set(
       Array.from(
@@ -3372,6 +3888,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       mountMainNavigation();
       mountLocalSongEntry();
       mountShell();
+      mountServiceButtons();
       maybeOpenInitialSetup();
     });
   };
@@ -3497,12 +4014,17 @@ BOOTSTRAP_JAVASCRIPT = r'''
       const id=this.getAttribute('cover-id');if(!id||!coverApi||this.coverBusy)return;
       this.coverBusy=true;
       try{
-        const endpoint=new URL('/toy/cover/progress',coverApi);endpoint.searchParams.set('letter_id',id);
+        const endpoint=new URL('/toy/media/progress',coverApi);endpoint.searchParams.set('letter_id',id);
         const response=await fetch(endpoint,{cache:'no-store',credentials:'omit'});if(!response.ok)return;
         const data=(await response.json()).data;const status=this.querySelector('.voice-status');if(!status||!data)return;
         const labels={loading:'正在准备翻唱…',transcribing:'正在识别原曲歌词…',loading_model:'正在加载翻唱模型…',generating:'林离正在翻唱…',decoding:'正在保存歌曲音频…',completed:'歌曲已完成，正在准备回信…'};
         const errors={COVER_LYRICS_REQUIRED:'未能识别歌词，请补充原曲歌词后重新寄信。',COVER_RUNTIME_UNAVAILABLE:'翻唱组件尚未准备完整，请检查本地组件。',COVER_GENERATION_TIMEOUT:'这次翻唱等待超时，可以手动重试。',COVER_SOURCE_REQUIRED:'这封信缺少原曲音频，请重新选择后寄信。'};
-        if(['FAILED','UNAVAILABLE'].includes(data.status))status.textContent=errors[data.error_code]||'这次翻唱未能完成，文字回信已保留。';
+        const cloudErrors={GPU_TLS_FAILED:'云端证书校验失败，请更新补丁并检查电脑时间。',GPU_CONNECTION_TIMEOUT:'云端连接超时，本次生成已停止等待。',GPU_CONNECT_FAILED:'无法连接云端，本次生成未完成。',GPU_CONNECTION_FAILED:'云端连接中断，本次生成未完成。',GPU_AUTH_FAILED:'云端 Key 验证失败，请检查云端 GPU 设置。',GPU_QUEUE_FULL:'云端队列已满，本次任务未进入队列。',GPU_TASK_TIMEOUT:'云端任务等待超时，已停止等待。',GPU_TASK_FAILED:'云端生成失败。',GPU_DOWNLOAD_FAILED:'生成结果下载失败。',GPU_SHARED_SCENE_MISSING:'视频素材与云端不匹配，请联系管理员。',MEDIA_JOB_INTERRUPTED:'上次生成已中断，未自动重复提交。'};
+        if(['FAILED','UNAVAILABLE'].includes(data.status)) {
+          const code=typeof data.error_code==='string'&&/^[A-Z][A-Z0-9_]{0,95}$/.test(data.error_code)?data.error_code:'';
+          status.textContent=(cloudErrors[code]||errors[code]||'本次媒体生成未完成。')+' 文字回信已保留。'+(code?`（${code}）`:'');
+          clearInterval(this.coverTimer);
+        }
         else if(data.status!=='COMPLETED'&&labels[data.stage])status.textContent=labels[data.stage];
       }catch(_){}finally{this.coverBusy=false}
     }

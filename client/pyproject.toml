@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bside-olivia-local"
-version = "1.2.25"
+version = "1.2.26"
 description = "Local HTTP and media-state prototype for BSide Olivia Lin"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -64,6 +64,8 @@ py-modules = [
     "original_client_media_http",
     "original_client_server",
     "original_client_setup_api",
+    "original_client_cloud_api",
+    "original_client_relay_api",
     "original_client_settings_ui",
     "original_client_update_api",
     "original_client_video_capability_api",

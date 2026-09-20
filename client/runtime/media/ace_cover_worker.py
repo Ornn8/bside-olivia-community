@@ -17,6 +17,27 @@ CAPTION = ("linli_voice, pop ballad, gentle and tender female singing in a natur
            "Pure solo acoustic piano accompaniment. No repeated high-note belting.")
 
 
+def check_offline_assets(root: Path) -> None:
+    """Validate only this pipeline's XL, text encoder and VAE; never install at request time."""
+    checkpoints = root / 'checkpoints'
+    model = checkpoints / 'acestep-v15-xl-sft'
+    try:
+        index = json.loads((model / 'model.safetensors.index.json').read_text(encoding='utf-8'))
+        shards = set(index['weight_map'].values())
+        if not shards or any(Path(name).name != name for name in shards):
+            raise ValueError('Invalid shards')
+        required = [model / name for name in shards]
+        required += [model / 'config.json', model / 'silence_latent.pt',
+                     checkpoints / 'Qwen3-Embedding-0.6B/model.safetensors',
+                     checkpoints / 'Qwen3-Embedding-0.6B/config.json',
+                     checkpoints / 'vae/diffusion_pytorch_model.safetensors',
+                     checkpoints / 'vae/config.json']
+        if any(not path.is_file() or path.stat().st_size == 0 for path in required):
+            raise ValueError('Missing assets')
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise RuntimeError('ACE_OFFLINE_ASSETS_MISSING') from exc
+
+
 def transcribe_cover_source(source: Path, model_path: Path, ffmpeg: str) -> tuple[str, str]:
     """Read source lyrics locally without loading ACE or generating any music."""
     if not model_path.is_file():
@@ -46,12 +67,56 @@ def transcribe_cover_source(source: Path, model_path: Path, ffmpeg: str) -> tupl
         torch.cuda.empty_cache()
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("request", type=Path)
-    args = parser.parse_args()
-    request = json.loads(args.request.read_text(encoding="utf-8"))
-    job = args.request.parent
+def load_models(root, request, *, resident=False):
+    import torch
+    from peft import PeftModel
+    from torchao.quantization import Int8WeightOnlyConfig, quantize_
+    from acestep.handler import AceStepHandler
+    check_offline_assets(root)
+    handler = AceStepHandler()
+    # The upstream check also downloads default Turbo/LM models unused by this
+    # fixed XL pipeline. Required files were validated above; stay offline.
+    handler._ensure_models_present = lambda **kwargs: None
+    status, ready = handler.initialize_service(
+        project_root=str(root), config_path="acestep-v15-xl-sft", device="cuda",
+        use_flash_attention=False, compile_model=False, offload_to_cpu=True,
+        offload_dit_to_cpu=True, quantization=None, use_mlx_dit=False)
+    if not ready:
+        raise RuntimeError("COVER_MODEL_LOAD_FAILED")
+    handler.text_encoder.to(dtype=torch.bfloat16)
+    handler.model.decoder = PeftModel.from_pretrained(
+        handler.model.decoder.to("cpu"), request["voice_lora"], is_trainable=False).to(dtype=torch.bfloat16)
+    if request.get('_resident_adapters'):
+        for name,path in request['_resident_adapters'].items():
+            handler.model.decoder.load_adapter(path,adapter_name=name,is_trainable=False)
+        handler.model.decoder.to(dtype=torch.bfloat16)
+    handler.model.eval()
+    layers = [m for m in handler.model.decoder.modules() if hasattr(m, "lora_A") and len(m.lora_A)]
+    if not layers:
+        raise RuntimeError("COVER_LORA_NOT_LOADED")
+    for layer in layers:
+        layer.scale_layer(1.0)
+    quantize_(handler.model.decoder, Int8WeightOnlyConfig(), filter_fn=lambda m, n:
+              isinstance(m, torch.nn.Linear) and not {"lora_A", "lora_B"}.intersection(n.split(".")))
+    quantized = [m for m in handler.model.decoder.modules()
+                 if isinstance(m, torch.nn.Linear) and hasattr(m.weight, "tensor_impl")]
+    if not quantized or not all(m.weight.tensor_impl.get_plain()[0].dtype == torch.int8 for m in quantized):
+        raise RuntimeError("COVER_INT8_NOT_LOADED")
+    if not all(m.lora_A["default"].weight.dtype == torch.bfloat16 for m in layers):
+        raise RuntimeError("COVER_LORA_DTYPE_INVALID")
+    if resident:
+        handler.offload_to_cpu=False
+        handler.offload_dit_to_cpu=False
+        handler.model.to('cuda')
+        handler.text_encoder.to('cuda')
+        handler.vae.to('cuda')
+    return handler, quantized, layers
+
+
+def run(request_path, *, cache=None, resident_options=None):
+    request = json.loads(Path(request_path).read_text(encoding='utf-8'))
+    request.update(resident_options or {})
+    job = Path(request_path).parent
 
     if request.get("operation") == "transcribe":
         os.environ.update(HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1")
@@ -100,30 +165,16 @@ def main() -> None:
         progress("transcribing")
         lyrics, language = transcribe_cover_source(source, Path(request["asr_model"]), request["ffmpeg"])
     progress("loading_model")
-    handler = AceStepHandler()
-    status, ready = handler.initialize_service(
-        project_root=str(root), config_path="acestep-v15-xl-sft", device="cuda",
-        use_flash_attention=False, compile_model=False, offload_to_cpu=True,
-        offload_dit_to_cpu=True, quantization=None, use_mlx_dit=False)
-    if not ready:
-        raise RuntimeError("COVER_MODEL_LOAD_FAILED")
-    handler.text_encoder.to(dtype=torch.bfloat16)
-    handler.model.decoder = PeftModel.from_pretrained(
-        handler.model.decoder.to("cpu"), request["voice_lora"], is_trainable=False).to(dtype=torch.bfloat16)
-    handler.model.eval()
-    layers = [m for m in handler.model.decoder.modules() if hasattr(m, "lora_A") and len(m.lora_A)]
-    if not layers:
-        raise RuntimeError("COVER_LORA_NOT_LOADED")
-    for layer in layers:
-        layer.scale_layer(1.0)
-    quantize_(handler.model.decoder, Int8WeightOnlyConfig(), filter_fn=lambda m, n:
-              isinstance(m, torch.nn.Linear) and not {"lora_A", "lora_B"}.intersection(n.split(".")))
-    quantized = [m for m in handler.model.decoder.modules()
-                 if isinstance(m, torch.nn.Linear) and hasattr(m.weight, "tensor_impl")]
-    if not quantized or not all(m.weight.tensor_impl.get_plain()[0].dtype == torch.int8 for m in quantized):
-        raise RuntimeError("COVER_INT8_NOT_LOADED")
-    if not all(m.lora_A["default"].weight.dtype == torch.bfloat16 for m in layers):
-        raise RuntimeError("COVER_LORA_DTYPE_INVALID")
+    if cache is not None and 'models' in cache:
+        handler,quantized,layers=cache['models']
+    else:
+        handler,quantized,layers=load_models(root,request,resident=cache is not None)
+        if cache is not None:cache['models']=(handler,quantized,layers)
+    if cache is not None:
+        handler.model.decoder.set_adapter(request.get('_resident_adapter','default'))
+    if cache is not None and request.get('_preload_only'):
+        progress('ready')
+        return
     params = GenerationParams(
         task_type=task_type, src_audio=str(source) if source is not None else None, reference_audio=request["reference"],
         caption=request.get("caption", CAPTION), lyrics=lyrics, vocal_language=language, duration=duration,
@@ -158,6 +209,13 @@ def main() -> None:
              peak_allocated_mib=torch.cuda.max_memory_allocated() / 2**20,
              quantized_layers=len(quantized), lora_layers=len(layers),
              lyrics_source="provided" if request.get("lyrics") else "asr_unverified")
+
+
+def main():
+    parser=argparse.ArgumentParser()
+    parser.add_argument('request',type=Path)
+    args=parser.parse_args()
+    run(args.request)
 
 
 if __name__ == "__main__":

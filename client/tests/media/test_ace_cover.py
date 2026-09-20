@@ -8,6 +8,23 @@ from runtime.media import ace_cover
 from runtime.media.cover_upload import source_path
 
 
+def test_offline_xl_assets_reject_missing_shards_without_requiring_default_models(tmp_path):
+    from runtime.media.ace_cover_worker import check_offline_assets
+    files = ['acestep-v15-xl-sft/config.json', 'acestep-v15-xl-sft/silence_latent.pt',
+             'Qwen3-Embedding-0.6B/config.json', 'Qwen3-Embedding-0.6B/model.safetensors',
+             'vae/config.json', 'vae/diffusion_pytorch_model.safetensors']
+    for name in files:
+        path = tmp_path / 'checkpoints' / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b'fixture')
+    model = tmp_path / 'checkpoints/acestep-v15-xl-sft'
+    (model / 'model.safetensors.index.json').write_text(json.dumps({'weight_map': {'layer': 'shard.safetensors'}}))
+    with pytest.raises(RuntimeError, match='ACE_OFFLINE_ASSETS_MISSING'):
+        check_offline_assets(tmp_path)
+    (model / 'shard.safetensors').write_bytes(b'fixture')
+    check_offline_assets(tmp_path)
+
+
 def test_portable_paths_follow_installation_and_ignore_cwd(tmp_path, monkeypatch):
     environment = {"OLIVIA_PROJECT_ROOT": str(tmp_path), "OLIVIA_LOCAL_DATA_ROOT": "install/data"}
     paths = ace_cover.cover_paths(environment)

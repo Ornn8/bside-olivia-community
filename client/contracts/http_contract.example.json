@@ -4,7 +4,9 @@
   "base_path": "/toy",
   "routes": {
     "/health": {
-      "methods": ["GET"],
+      "methods": [
+        "GET"
+      ],
       "capability": "core.health",
       "state": "available",
       "read_only": true,
@@ -12,7 +14,9 @@
       "evidence": "local"
     },
     "/toy/letter/legacy/import": {
-      "methods": ["POST"],
+      "methods": [
+        "POST"
+      ],
       "capability": "letters.legacy_import",
       "state": "available",
       "read_only": false,
@@ -20,7 +24,10 @@
       "evidence": "local-extension"
     },
     "/toy/letter/legacy/local-import": {
-      "methods": ["GET", "POST"],
+      "methods": [
+        "GET",
+        "POST"
+      ],
       "capability": "letters.legacy_import",
       "state": "available",
       "read_only": false,
@@ -28,7 +35,10 @@
       "evidence": "local-extension"
     },
     "/toy/letter/legacy/official-import": {
-      "methods": ["GET", "POST"],
+      "methods": [
+        "GET",
+        "POST"
+      ],
       "capability": "letters.official_import",
       "state": "available",
       "read_only": false,
@@ -36,7 +46,10 @@
       "evidence": "local-extension"
     },
     "/toy/settings/video-reply": {
-      "methods": ["GET", "POST"],
+      "methods": [
+        "GET",
+        "POST"
+      ],
       "capability": "settings.video_reply",
       "state": "available",
       "read_only": false,
@@ -44,7 +57,9 @@
       "evidence": "local-extension"
     },
     "/toy/diagnostics/export": {
-      "methods": ["GET"],
+      "methods": [
+        "GET"
+      ],
       "capability": "support.diagnostics",
       "state": "available",
       "read_only": true,
@@ -56,7 +71,9 @@
     "core.health": {
       "status": "available",
       "provider": "local-http",
-      "required_for": ["core"]
+      "required_for": [
+        "core"
+      ]
     },
     "llm.gateway": {
       "status": "degraded",
@@ -93,26 +110,62 @@
   },
   "profiles": {
     "core": {
-      "required_capabilities": ["core.health"],
+      "required_capabilities": [
+        "core.health"
+      ],
       "optional_capabilities": []
     },
     "llm": {
       "required_capabilities": [],
-      "optional_capabilities": ["llm.gateway", "llm.streaming"]
+      "optional_capabilities": [
+        "llm.gateway",
+        "llm.streaming"
+      ]
     }
   },
   "letter_detail_generation": {
-    "fields": ["letter_status", "error_code", "retryable"],
+    "fields": [
+      "letter_status",
+      "error_code",
+      "retryable"
+    ],
     "error_codes": {
-      "MEMORY_UNAVAILABLE": {"status": "FAILED", "retryable": true},
-      "LLM_UNAVAILABLE": {"status": "FAILED", "retryable": true},
-      "LLM_TIMEOUT": {"status": "FAILED", "retryable": true},
-      "LLM_INTERRUPTED": {"status": "FAILED", "retryable": true},
-      "LLM_PROVIDER_REJECTED": {"status": "FAILED", "retryable": false},
-      "LLM_PROTOCOL_ERROR": {"status": "FAILED", "retryable": false},
-      "LLM_REPLY_LENGTH_INVALID": {"status": "FAILED", "retryable": false},
-      "REPLY_QUALITY_BLOCKED": {"status": "FAILED", "retryable": false},
-      "PERSONA_NOT_READY": {"status": "FAILED", "retryable": false}
+      "MEMORY_UNAVAILABLE": {
+        "status": "FAILED",
+        "retryable": true
+      },
+      "LLM_UNAVAILABLE": {
+        "status": "FAILED",
+        "retryable": true
+      },
+      "LLM_TIMEOUT": {
+        "status": "FAILED",
+        "retryable": true
+      },
+      "LLM_INTERRUPTED": {
+        "status": "FAILED",
+        "retryable": true
+      },
+      "LLM_PROVIDER_REJECTED": {
+        "status": "FAILED",
+        "retryable": false
+      },
+      "LLM_PROTOCOL_ERROR": {
+        "status": "FAILED",
+        "retryable": false
+      },
+      "LLM_REPLY_LENGTH_INVALID": {
+        "status": "FAILED",
+        "retryable": false
+      },
+      "REPLY_QUALITY_BLOCKED": {
+        "status": "FAILED",
+        "retryable": false
+      },
+      "PERSONA_NOT_READY": {
+        "status": "FAILED",
+        "retryable": false
+      }
     }
   },
   "letter_detail_media": {
@@ -134,11 +187,46 @@
       "UNAVAILABLE"
     ],
     "error_codes": {
-      "BREEZE_TTS_10GB_VRAM_REQUIRED": {"status": "UNAVAILABLE", "retryable": true},
-      "BREEZE_TTS_GPU_CAPABILITY_UNVERIFIED": {"status": "UNAVAILABLE", "retryable": true},
-      "BREEZE_TTS_NVIDIA_GPU_REQUIRED": {"status": "UNAVAILABLE", "retryable": true},
-      "BREEZE_TTS_ROCM_UNAVAILABLE": {"status": "UNAVAILABLE", "retryable": true},
-      "MEDIA_PROVIDER_UNAVAILABLE": {"status": "UNAVAILABLE", "retryable": true},
+      "BREEZE_TTS_ROCM_UNAVAILABLE": {
+        "status": "UNAVAILABLE",
+        "retryable": true
+      },
+      "COVER_SOURCE_REQUIRED": {
+        "status": "FAILED",
+        "retryable": false
+      },
+      "COVER_LYRICS_REQUIRED": {
+        "status": "FAILED",
+        "retryable": false
+      },
+      "COVER_RUNTIME_UNAVAILABLE": {
+        "status": "UNAVAILABLE",
+        "retryable": true
+      },
+      "COVER_GENERATION_FAILED": {
+        "status": "FAILED",
+        "retryable": true
+      },
+      "COVER_GENERATION_TIMEOUT": {
+        "status": "FAILED",
+        "retryable": true
+      },
+      "BREEZE_TTS_10GB_VRAM_REQUIRED": {
+        "status": "UNAVAILABLE",
+        "retryable": true
+      },
+      "BREEZE_TTS_GPU_CAPABILITY_UNVERIFIED": {
+        "status": "UNAVAILABLE",
+        "retryable": true
+      },
+      "BREEZE_TTS_NVIDIA_GPU_REQUIRED": {
+        "status": "UNAVAILABLE",
+        "retryable": true
+      },
+      "MEDIA_PROVIDER_UNAVAILABLE": {
+        "status": "UNAVAILABLE",
+        "retryable": true
+      },
       "TTS_CONTENT_GATE_UNAVAILABLE": {
         "status": "UNAVAILABLE",
         "retryable": true
@@ -146,6 +234,66 @@
       "TTS_CONTENT_GATE_REJECTED": {
         "status": "FAILED",
         "retryable": false
+      },
+      "GPU_TLS_FAILED": {
+        "status": "UNAVAILABLE",
+        "retryable": true
+      },
+      "GPU_CONNECTION_TIMEOUT": {
+        "status": "UNAVAILABLE",
+        "retryable": true
+      },
+      "GPU_CONNECT_FAILED": {
+        "status": "UNAVAILABLE",
+        "retryable": true
+      },
+      "GPU_CONNECTION_FAILED": {
+        "status": "UNAVAILABLE",
+        "retryable": true
+      },
+      "GPU_AUTH_FAILED": {
+        "status": "UNAVAILABLE",
+        "retryable": true
+      },
+      "GPU_QUEUE_FULL": {
+        "status": "UNAVAILABLE",
+        "retryable": true
+      },
+      "GPU_REQUEST_FAILED": {
+        "status": "UNAVAILABLE",
+        "retryable": true
+      },
+      "GPU_TASK_TIMEOUT": {
+        "status": "UNAVAILABLE",
+        "retryable": true
+      },
+      "GPU_TASK_FAILED": {
+        "status": "UNAVAILABLE",
+        "retryable": true
+      },
+      "GPU_DOWNLOAD_FAILED": {
+        "status": "UNAVAILABLE",
+        "retryable": true
+      },
+      "GPU_OUTPUT_INVALID": {
+        "status": "UNAVAILABLE",
+        "retryable": true
+      },
+      "GPU_SHARED_SCENE_MISSING": {
+        "status": "UNAVAILABLE",
+        "retryable": true
+      },
+      "GPU_NOT_CONFIGURED": {
+        "status": "UNAVAILABLE",
+        "retryable": true
+      },
+      "GPU_CAPABILITY_UNAVAILABLE": {
+        "status": "UNAVAILABLE",
+        "retryable": true
+      },
+      "MEDIA_JOB_INTERRUPTED": {
+        "status": "UNAVAILABLE",
+        "retryable": true
       }
     }
   },
