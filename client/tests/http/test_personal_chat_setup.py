@@ -29,6 +29,27 @@ class _Server:
         self.persist_calls += 1
 
 
+@pytest.mark.parametrize('initial,additional', [('wechat', 'qq'), ('qq', 'wechat')])
+def test_selected_channel_can_add_other_channel_without_losing_binding(tmp_path, initial, additional):
+    from runtime.personal_chat import setup
+    server = _Server(tmp_path)
+    server.store.letters = [dict(letter_id='invite', origin='proactive', proactive_kind='contact_invitation',
+        letter_status='COMPLETED', published_at=1, contact_setup_choice=initial),
+        dict(letter_id='reply', letter_status='COMPLETED', published_at=2,
+             contact_invitation_id='invite', content=initial, contact_choice={'choice': initial, 'quote': initial})]
+    assert setup._selected_channels(server) == {initial}
+    assert setup._store_setup_choice(server, additional) == ['qq', 'wechat']
+    assert setup._selected_channels(server) == {'qq', 'wechat'}
+    assert server.persist_calls == 1
+    assert setup._store_setup_choice(server, additional) == ['qq', 'wechat']
+    # A subsequent explicit refusal must still close access after setup.
+    server.store.letters.append(dict(letter_id='later-reply', letter_status='COMPLETED',
+        published_at=server.store.letters[0]['contact_setup_choice_at'] + 1,
+        contact_invitation_id='invite', content='later',
+        contact_choice={'choice': 'later', 'quote': 'later'}))
+    assert setup._selected_channels(server) == set()
+
+
 def test_wechat_qr_is_rendered_locally_and_rejects_foreign_targets() -> None:
     from runtime.personal_chat.setup import _qr_data_url
 
