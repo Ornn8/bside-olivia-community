@@ -1665,7 +1665,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         await requestSetup(LLM_TEST_PATH, requestedConfig);
         testedConfig = requestedConfig;
       } catch (_error) {
-        state.textContent = "连接失败，请检查地址、模型和 API key。";
+        state.textContent = _error.code === 'LLM_SETUP_REGION_OPT_IN_REQUIRED'
+          ? 'OpenCode 要求先授权使用中国托管模型。请在 OpenCode 账户的 Go 页面开启后重新测试。'
+          : "连接失败，请检查地址、模型和 API key。";
         save.disabled = true;
       } finally {
         setupBusy = false;
@@ -2988,6 +2990,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         const response=await fetch(new URL('/toy/cover/lyrics',apiBase),{method:'POST',credentials:'omit',signal:controller.signal,
           headers:{'Content-Type':'application/json',[CONFIRM_HEADER]:CONFIRM_VALUE},body:JSON.stringify({source_id:state.material.cover_source_id})});
         const result=await response.json();if(!response.ok||result.code!==0)throw Error('asr');
+        if(result.data.deferred){state.lyricsOnServer=true;status.textContent='云端将在生成时识别歌词，也可手动填写。';return}
         lyrics.value=result.data.lyrics;state.material.cover_language=result.data.language||'unknown';status.textContent='歌词已自动识别，请核对并修正。';
       }catch{status.textContent='未能识别歌词。原曲已保留，可手动填写或重新识别。'}
       finally{clearTimeout(timer);state.busy=false;update()}
@@ -2996,11 +2999,11 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const labelRow=document.createElement('div');labelRow.className='olivia-cover-row';labelRow.append(text('span','歌词'),recognize);
     const options=document.createElement('div');options.className='olivia-cover-options';
     for(const [mode,label] of [['audio','音频回信'],['video','视频回信']]){const item=button(label,()=>{state.output=mode;for(const node of options.children)node.setAttribute('aria-pressed',String(node===item))});item.setAttribute('aria-pressed',String(mode==='audio'));options.append(item)}
-    const update=()=>{choose.disabled=remove.disabled=lyrics.disabled=state.busy;remove.hidden=!state.material;recognize.disabled=state.busy||!state.material};
+    const update=()=>{choose.disabled=remove.disabled=lyrics.disabled=state.busy;remove.hidden=!state.material;recognize.hidden=state.lyricsOnServer===true;recognize.disabled=state.busy||!state.material};
     state.materialForSend=()=>{
       if(state.busy)throw Error('原曲还在准备中，请稍候再寄出。');
       if(!state.material)throw Error('请先选择原曲。');
-      if(!lyrics.value.trim()){lyrics.focus();throw Error('请填写或识别歌词后再寄出。')}
+      if(!lyrics.value.trim()&&!state.lyricsOnServer){lyrics.focus();throw Error('请填写或识别歌词后再寄出。')}
       return {...state.material,cover_lyrics:lyrics.value,cover_output:state.output};
     };
     file.onchange=async()=>{
@@ -3013,7 +3016,10 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         audio.pause();if(objectUrl)URL.revokeObjectURL(objectUrl);objectUrl=URL.createObjectURL(selected);audio.src=objectUrl;player.hidden=false;
         state.material={cover_source_id:result.data.source_id,filename:selected.name,cover_language:'unknown'};lyrics.value='';filename.textContent=selected.name;choose.textContent='更换原曲';syncCoverText();
         state.busy=false;
-        if(result.data.asr_available)await transcribe();else status.textContent='原曲已上传。请导入歌词识别组件，或手动填写歌词。';
+        state.lyricsOnServer=result.data.lyrics_on_server===true;
+        lyrics.placeholder=state.lyricsOnServer?'可留空，由云端生成时识别；也可手动填写歌词。':'选择原曲后自动识别，也可手动填写歌词。';
+        if(state.lyricsOnServer)status.textContent='原曲已准备好。歌词可留空，由云端生成时识别。';
+        else if(result.data.asr_available)await transcribe();else status.textContent='原曲已上传。请导入歌词识别组件，或手动填写歌词。';
       }catch{status.textContent='上传失败，请检查音频文件后重新选择。之前的草稿和原曲仍保留。'}
       finally{state.busy=false;file.value='';update()}
     };
