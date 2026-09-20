@@ -95,6 +95,18 @@ def _route(*, context=None, **overrides):
     return result, gateway
 
 
+def test_portable_tool_schema_keeps_duplicate_validation_local():
+    result, gateway = _route(
+        context=RoutingContext(voice_reply_available=True),
+        mode="voice_reply", request_disposition="fulfill",
+        music_contexts=["explicit_voice_reply_request", "explicit_voice_reply_request"],
+    )
+    schema = gateway.requests[0]["tools"][0]["function"]["parameters"]
+    assert "uniqueItems" not in schema["properties"]["music_contexts"]
+    assert result.status == "unavailable"
+    assert result.diagnostic["failure_detail"] == "route_contexts"
+
+
 def test_spoken_only_video_mode_fails_closed_to_text():
     result, _ = _route(
         mode="spoken_video",

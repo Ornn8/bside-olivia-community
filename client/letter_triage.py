@@ -122,8 +122,9 @@ _ROUTER_TOOL = {
                 },
                 "music_contexts": {
                     "type": "array",
+                    "description": "媒体请求事实，不仅是音乐。用户要求语音或亲口说话时包含 explicit_voice_reply_request，即使 music_role 和 music_intent 为 none；明确要求视频必须另加 explicit_video_output_request，只说话的视频再加 explicit_video_reply_request。fulfill/refuse/defer 必须有对应的 explicit 请求标记。不要重复标记。",
                     "items": {"type": "string", "enum": sorted(_ALLOWED_MUSIC_CONTEXTS)},
-                    "uniqueItems": True,
+                    # Enforce uniqueness locally; some tool decoders reject this keyword.
                     "maxItems": len(_ALLOWED_MUSIC_CONTEXTS),
                 },
                 "music_role": {
