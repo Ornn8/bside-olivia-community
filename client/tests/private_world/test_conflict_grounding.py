@@ -41,7 +41,8 @@ def test_conflict_requires_user_conduct_independent_of_generated_reproach(tmp_pa
     assert len(requests) == 2
     signal = store.exchange_relationship("reply:case:1", user, reply)
     assert (signal is None) == (conduct == "none" or target != "linli")
-    assert store.snapshot(now)["current"]["note"] == "我正在读书。"
+    assert store.snapshot(now)["current"] is None
+    assert store.history()["moments"][0]["content"]["current"]["note"] == "我正在读书。"
     assert not asyncio.run(runtime.consume_exchange("reply:case:1", user, reply, occurred_at=now))
     assert len(requests) == 2
 

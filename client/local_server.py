@@ -846,17 +846,11 @@ class LetterAdapter:
     def recent_letter_fragments(self, content: str = "") -> tuple[UntrustedFragment, ...]:
         if self.recent_letters is None:
             return ()
-        from runtime.personal_chat.presentation import CURRENT
-        if CURRENT.get() is not None:
-            from runtime.personal_chat.context import chat_context
-            recent, historical = chat_context(self.recent_letters(), query=content,
-                now=self._now(),
-                excluded_sources=self._memory_source_exclusions())
-            return tuple(UntrustedFragment(name, text) for name, text in
-                         (('chat.recent', recent), ('chat.historical', historical)) if text)
-        from runtime.reply.recent_correspondence import recent_correspondence
-        text = recent_correspondence(self.recent_letters(), query=content, excluded_sources=self._memory_source_exclusions())
-        return (UntrustedFragment("letters.recent", text),) if text else ()
+        from runtime.reply.conversation_context import conversation_context
+        recent, historical = conversation_context(self.recent_letters(), query=content,
+            now=self._now(), excluded_sources=self._memory_source_exclusions())
+        return tuple(UntrustedFragment(name, text) for name, text in
+                     (('chat.recent', recent), ('chat.historical', historical)) if text)
 
     @staticmethod
     def _memory_source_exclusions() -> tuple[str, ...]:
@@ -2959,7 +2953,10 @@ async def _proactive_complete(intent: dict, *, planning: bool, mode: str = 'text
     packet = {'opportunity': intent, 'previous_user_letter': query,
               'previous_linli_letter': source.get('reply_text', ''),
               'now': datetime.now(timezone.utc).isoformat()}
-    messages = ({'role': 'system', 'content': (assembled[0]['content'] + '\n' if assembled else '') + task},
+    # Preserve the complete shared context, including native dialogue roles.
+    # Only the current task changes: an opportunity is not a new user message.
+    history = assembled[:-1] if assembled and assembled[-1].get('role') == 'user' else assembled
+    messages = (*history,
                 {'role': 'user', 'content': json.dumps(packet, ensure_ascii=False)})
     gateway = letters_adapter.gateway
     request_id = 'proactive:' + intent['id'] + (':plan' if planning else ':body')
@@ -2970,6 +2967,9 @@ async def _proactive_complete(intent: dict, *, planning: bool, mode: str = 'text
             max_input_chars=getattr(letters_adapter, 'config', LLM_CONFIG).max_input_chars,
             request_id=request_id,
         )
+    from runtime.reply.fact_attribution import finalize_reply_messages
+    messages = finalize_reply_messages(messages, task,
+        max_input_chars=getattr(letters_adapter, 'config', LLM_CONFIG).max_input_chars)
     scope = GatewayRequestScope.PROACTIVE_PLANNING if planning else GatewayRequestScope.BACKGROUND_REASONING
     result = await asyncio.wait_for(gateway.complete_scoped(
         messages, request_id=request_id,

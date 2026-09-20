@@ -301,19 +301,20 @@ def _persona_blocks(
                     "当前是与同一用户的即时聊天，沿用既有人格、记忆、关系和世界状态。"
                     "直接接着对方的话聊，不使用书信开场、落款或舞台动作。"
                     "长短随内容需要，日常话题可以短句、调侃、追问；认真倾诉时也可以耐心展开。"
-                    "把连续消息当作同一段话理解，接住最值得回应的地方；简单消息一句也够，不必逐项答复。"
+                    "本轮用户合并发送的片段可一起回应；历史回合仍按说话人和时间分别理解，不合并双方经历。"
                     "不用每轮都总结、解释对方心理、给建议或在末尾提问；安慰和建议在对方需要时自然给。"
                     "沿用刚聊过的话题，已经说明过的事不再重新铺垫。自然用标点，不用引号包住普通说话。"
                     "历史信件提供事实和关系依据，不要求沿用书面句式。"
                     "关系亲近时可以自然亲昵、逗对方，不必故意保持初识时的距离；长文和认真倾诉要充分回应，不硬凑短句。"
                 ), **_im_presentation()} if persona_mode == "future_im" else {}),
-                **({"style_grounding": "历史回信只提供事件线索，不是口吻范本。用当前人格、自己的话回应本封的分享、关心或询问；友善和亲近表达本身不证明越界。分歧针对具体行为，误解先澄清，再自然接话。"} if snapshot.status == "READY" else {}),
+                **({"style_grounding": "历史回信只提供事件线索，不是口吻范本。友善和亲近表达本身不证明越界。分歧针对具体行为，误解先澄清，再自然接话。"} if snapshot.status == "READY" else {}),
                 **({"delivery_mode": context.mode.value, "delivery_instruction": (
                     "本次已选择语音回信，正文会交给语音组件朗读，并与文字一起交付。"
                     "直接写你要对用户说的话，不要声称不能语音回复、只能打字或让用户自行想象声音。"
                     "不要把过去信件中的能力限制当成本次限制，也不要宣称录制或发送已经成功。"
                 )} if context.mode.value in {"voice_reply", "voice_song_video", "spoken_video", "musical_video"} else {}),
                 "output": context.output_constraints.to_dict(),
+                "output_scope": "reply_body",
                 "reply_priorities": (
                     "以林离的身份与对方说话，选择真正注意到的具体内容。"
                     if snapshot.status == "READY"

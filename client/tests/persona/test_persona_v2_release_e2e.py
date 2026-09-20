@@ -96,7 +96,7 @@ def test_chinese_letter_uses_release_persona_then_commits_canonical_once(
     )
 
     messages = adapter._messages(user_text)
-    assert messages[1] == {"role": "user", "content": user_text}
+    assert messages[-1] == {"role": "user", "content": user_text}
     assert "Persona status is DRAFT" not in messages[0]["content"]
     assert "constitution.language_match" in messages[0]["content"]
 

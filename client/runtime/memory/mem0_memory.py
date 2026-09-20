@@ -28,6 +28,7 @@ from urllib.parse import urlsplit
 from runtime.memory.bounded_daemon_call import BoundedDaemonCall
 from .recall import RecallResult
 from runtime.reply.model_capabilities import model_capabilities
+from runtime.reply.fact_attribution import FACT_ATTRIBUTION_BOUNDARY
 from .conversation_memory_port import (
     ConversationMemoryPort,
     ConversationMemoryRecord,
@@ -84,7 +85,8 @@ _HISTORY_EXTRACTION_VERSION_KEY = "history_extraction_version"
 _HISTORY_EXTRACTION_VERSION = "relationship-v2"
 _HISTORY_USER_ACTOR = "user"
 _HISTORY_LINLI_ACTOR = "linli"
-_MEMORY_FACT_BOUNDARY = (
+
+_MEMORY_FACT_BOUNDARY = FACT_ATTRIBUTION_BOUNDARY + (
     "只保留原文明示的事实与具体限定，保留说话者、否定、疑问和不确定性。"
     "用户说过不等于双方经历过；回信中的附和不构成独立佐证。"
     "不得推导持续往来、再次表达、情感依赖、感情强度、心理动机、因果或对方此前是否知情；"

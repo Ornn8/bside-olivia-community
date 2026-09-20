@@ -293,7 +293,7 @@ Lyrics contract:
 - Preserve facts from the current exchange without copying it line by line.
 - Do not diagnose, lecture, demand trust, force optimism, invent past events, or copy known songs.
 
-Trusted persona profile follows. Its ordinary letter output format is replaced only by this JSON contract:"""
+Use the trusted persona profile supplied above. Its ordinary letter output format is replaced only by this JSON contract:"""
 
 
 def _runtime_path(value: str) -> Path:
@@ -307,11 +307,15 @@ def _planning_messages(
     config: GatewayConfig,
     reply_adapter=None,
 ) -> tuple[dict[str, str], ...]:
+    from runtime.reply.fact_attribution import finalize_reply_messages
     contract = _planner_contract(duration_seconds)
+    def finalize(messages):
+        return finalize_reply_messages(messages, contract,
+            max_input_chars=config.max_input_chars - _PLANNER_REPAIR_RESERVE_CHARS)
     if reply_adapter is not None:
         messages = reply_adapter.reply_context_messages(user_input, mode=ReplyMode.MUSICAL_VIDEO,
             max_input_chars=config.max_input_chars - len(contract) - 1 - _PLANNER_REPAIR_RESERVE_CHARS)
-        return ({'role': 'system', 'content': contract + '\n' + messages[0]['content']}, messages[1])
+        return finalize(messages)
     if not config.persona_v2_enabled:
         legacy_path = (
             _runtime_path(config.persona_file)
@@ -322,10 +326,10 @@ def _planning_messages(
             legacy_path,
             feature_enabled=config.feature_enabled,
         ).snapshot().system_prompt
-        return (
-            {"role": "system", "content": f"{contract}\n{persona}"},
+        return finalize((
+            {"role": "system", "content": persona},
             {"role": "user", "content": user_input},
-        )
+        ))
 
     loaded = load_persona(_runtime_path(config.persona_v2_file))
     if not loaded.ready:
@@ -342,10 +346,10 @@ def _planning_messages(
             config.max_input_chars - len(prefix) - _PLANNER_REPAIR_RESERVE_CHARS
         ),
     )
-    return (
-        {"role": "system", "content": prefix + assembly.system_content},
+    return finalize((
+        {"role": "system", "content": assembly.system_content},
         {"role": "user", "content": assembly.user_content},
-    )
+    ))
 
 
 def plan_song_content(
@@ -382,6 +386,9 @@ def plan_song_content(
         plan_messages = await prepare_recall_messages(
             plan_messages, active_gateway, max_input_chars=gateway_config.max_input_chars,
         )
+        from runtime.reply.fact_attribution import finalize_reply_messages
+        plan_messages = finalize_reply_messages(plan_messages, _planner_contract(duration),
+            max_input_chars=gateway_config.max_input_chars)
         if callable(complete_scoped):
             return await complete_scoped(plan_messages, scope=GatewayRequestScope.SONG_CONTENT)
         return await active_gateway.complete(plan_messages)

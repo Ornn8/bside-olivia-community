@@ -137,7 +137,12 @@ def test_send_cites_legacy_without_mixing_it_into_current_memory(tmp_path, monke
         assert result["code"] == 0
         rendered_messages = "\n".join(message["content"] for message in gateway.messages)
         assert gateway.messages[-1]["content"] == "synthetic source"
-        assert rendered_messages.count("<untrusted_history>") == 1
+        # Shared dialogue can add another history fragment. Legacy evidence
+        # must still appear exactly once and remain inside its untrusted block.
+        import re
+        history_blocks = re.findall(r"<untrusted_history>(.*?)</untrusted_history>",
+                                    rendered_messages, re.S)
+        assert sum("LEGACY_LETTERS_REFERENCE_ONLY" in block for block in history_blocks) == 1
         assert r"\u003cMEMORY_CONTEXT_UNTRUSTED_DATA\u003e" in rendered_messages
         assert r"\u003c/MEMORY_CONTEXT_UNTRUSTED_DATA\u003e" in rendered_messages
         assert MEMORY_CONTEXT_BEGIN not in rendered_messages

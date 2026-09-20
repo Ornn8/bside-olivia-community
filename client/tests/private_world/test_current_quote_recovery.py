@@ -13,7 +13,8 @@ def test_current_quote_recovers_entire_sentence_including_qualification(tmp_path
     sentence = '我准备继续练那首曲子，不过今天手指不舒服的话就先停下。'
     life.record_exchange('reply:recovery:1', '今天忙什么？', '刚吃完饭。' + sentence,
                          [], occurred_at=NOW, current_quote='我准备继续练那首曲子。')
-    current = life.snapshot(NOW)['current']
+    assert life.snapshot(NOW)['current'] is None
+    current = life.history()['moments'][0]['content']['current']
     assert current['note'] == sentence
     assert current['source_id'] == 'reply:recovery:1'
     assert current['activity'] is None
@@ -48,7 +49,7 @@ def test_current_meal_claim_outside_its_local_window_is_not_published(tmp_path):
     assert moment["content"]["current"] is None
 
 
-def test_current_meal_claim_inside_its_local_window_can_be_published(tmp_path):
+def test_current_meal_claim_inside_its_local_window_is_retained_as_statement(tmp_path):
     life = DailyLifeStore(tmp_path / "life.sqlite3")
     # 10:32 UTC = 18:32 in Shanghai/Beijing time.
     now = datetime(2026, 9, 18, 10, 32, tzinfo=timezone.utc)
@@ -57,7 +58,8 @@ def test_current_meal_claim_inside_its_local_window_can_be_published(tmp_path):
         "reply:meal:2", "吃晚饭了吗？", quote, [],
         occurred_at=now, current_quote=quote,
     )
-    assert life.snapshot(now)["current"]["note"] == quote
+    assert life.snapshot(now)["current"] is None
+    assert life.history()["moments"][0]["content"]["current"]["note"] == quote
 
 
 def test_existing_bad_meal_observation_from_older_version_is_hidden(tmp_path):
