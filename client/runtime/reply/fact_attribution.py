@@ -203,7 +203,7 @@ def prepare_dialogue_messages(messages, *, max_input_chars):
         return original
     result[current:current] = dialogue
     # Keep the current-turn boundary adjacent to the input, after older dialogue
-    # and evidence, rather than burying it before a long historical window.
+    # and evidence, rather than burying it before a long dialogue window.
     result.insert(current + len(dialogue), {'role': 'system', 'content': note})
     result = compact_evidence(result)
     if sum(len(m.get('content', '')) for m in result) > max_input_chars:

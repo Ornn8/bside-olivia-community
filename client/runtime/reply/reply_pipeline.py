@@ -210,7 +210,7 @@ class ReplyPipeline:
             prepared = replace(prepared, messages=prepare_dialogue_messages(
                 prepared.messages, max_input_chars=prepared.max_input_chars))
         if generation_note and isinstance(prepared, ReplyRequest) and prepared.messages:
-            # Finalize the delivery contract after history/recall projection.
+            # Finalize the delivery contract after dialogue/recall projection.
             # The current user input stays last; evidence cannot become the
             # last instruction defining what the model is supposed to output.
             from .fact_attribution import finalize_reply_messages
@@ -307,7 +307,7 @@ def _assemble_reply_evidence(adapter, snapshot, context, content, *, max_input_c
     else:
         life = ()
     # All modes retain the same minimum turn context, including when the
-    # interpreter is disabled. Reserve the frozen current snapshot as well.
+    # interpreter is disabled. Reserve the frozen current state as well.
     reserve = 512
     for fragment in life:
         if fragment.fragment_id == 'linli.daily-life':

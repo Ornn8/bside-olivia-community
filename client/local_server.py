@@ -2953,7 +2953,7 @@ async def _proactive_complete(intent: dict, *, planning: bool, mode: str = 'text
     packet = {'opportunity': intent, 'previous_user_letter': query,
               'previous_linli_letter': source.get('reply_text', ''),
               'now': datetime.now(timezone.utc).isoformat()}
-    # Preserve the complete shared snapshot, including native dialogue roles.
+    # Preserve the complete shared context, including native dialogue roles.
     # Only the current task changes: an opportunity is not a new user message.
     history = assembled[:-1] if assembled and assembled[-1].get('role') == 'user' else assembled
     messages = (*history,

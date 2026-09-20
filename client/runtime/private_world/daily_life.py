@@ -443,7 +443,7 @@ class DailyLifeStore:
 
     def reply_context(self, query: str, *, now: datetime, max_chars: int = 1800, related_text: str = "") -> str:
         """Disclose a small current view, then only relevant persistent threads."""
-        # All views in this reply use one SQLite read snapshot. A concurrent
+        # All views in this reply use one SQLite read transaction. A concurrent
         # delivery cannot mix new project state with an older observation.
         with self._db() as db:
             db.execute("BEGIN")

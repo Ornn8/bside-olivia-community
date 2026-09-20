@@ -101,7 +101,7 @@ def _sources(messages):
                             group = json.loads(line)
                             group = [record for record in group if isinstance(record.get('text'), str)]
                             if not group:
-                                continue  # References resolve to originals already in native history.
+                                continue  # References resolve to originals already in native dialogue.
                             scope = ('retrieved_summary' if all(record.get('evidence_scope') == 'retrieved_summary'
                                      for record in group) else 'historical_exchange')
                             add(scope, group)
