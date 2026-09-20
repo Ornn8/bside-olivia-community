@@ -54,6 +54,7 @@ def test_media_failure_logs_only_stage_type_and_safe_code(tmp_path, failure_stag
     env = {"OLIVIA_LOCAL_DATA_ROOT": str(tmp_path)}
     if remote:
         env['OLIVIA_GPU_ROUTE'] = 'remote'
+        env['OLIVIA_TTS_CONFIG'] = 'obsolete-relative-config.json'
     namespace = {
         "Mapping": dict, "Path": Path, "json": json, "_re": re,
         "VIDEO_REPLY_MUSIC_DURATION_SECONDS": 110,

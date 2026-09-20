@@ -24,6 +24,9 @@ def recognize_lyrics(root: Path, source_id: object, environment) -> dict:
     cached = source.parent / 'lyrics.private.json'
     if cached.is_file():
         return json.loads(cached.read_text(encoding='utf-8'))
+    from runtime.remote_pipeline import enabled
+    if enabled(environment):
+        return {'lyrics': '', 'language': 'unknown', 'deferred': True}
     if not _ASR_LOCK.acquire(blocking=False):
         raise ValueError('COVER_TRANSCRIPTION_BUSY')
     try:

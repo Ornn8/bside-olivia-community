@@ -52,3 +52,16 @@ def test_shared_manifest_rejects_escape(tmp_path):
     outside = tmp_path / 'outside.wav'; outside.write_bytes(b'private')
     with pytest.raises(ValueError): manifest(root, ['voice=../outside.wav'])
     with pytest.raises(ValueError): manifest(root, ['same=voice.wav', 'same=voice.wav'])
+
+
+def test_cloud_settings_never_probe_local_models(tmp_path, monkeypatch):
+    from runtime.media import music_reply
+    monkeypatch.setattr(music_reply, '_breeze_hardware_status', lambda: pytest.fail('local GPU probe'))
+    monkeypatch.setattr(music_reply, 'resolve_ffmpeg_executable', lambda _: Path(__file__))
+    monkeypatch.setattr(remote_pipeline, 'capabilities', lambda _: {'kinds': ['video', 'original_video']})
+    env = {'OLIVIA_GPU_ROUTE': 'remote'}
+    result = music_reply.video_reply_dependency_status(env, performance_video_path=None)
+    assert result['ready'] is True
+    assert {d['id'] for d in result['dependencies']} == {'cloud_video', 'cloud_music', 'ffmpeg'}
+    monkeypatch.setattr(remote_pipeline, 'capabilities', lambda _: {'kinds': []})
+    assert not music_reply.video_reply_dependency_status(env, performance_video_path=None)['ready']

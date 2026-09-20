@@ -90,6 +90,7 @@ RELAY_ERROR_HTTP_STATUSES = {
 ERROR_HTTP_STATUSES = {
     "LLM_SETUP_CONFIRMATION_REQUIRED": [403],
     "LLM_SETUP_CONNECTION_FAILED": [503],
+    "LLM_SETUP_REGION_OPT_IN_REQUIRED": [403],
     "LLM_SETUP_CONTENT_TYPE_INVALID": [415],
     "LLM_SETUP_DPAPI_FAILED": [503],
     "LLM_SETUP_DPAPI_UNAVAILABLE": [503],
@@ -232,6 +233,15 @@ async def _probe_openai_compatible(base_url: str, model: str, api_key: str) -> N
                 json=body,
             ) as response:
                 if not 200 <= response.status < 300:
+                    if response.status == 403 and urlsplit(base_url).hostname == 'opencode.ai':
+                        raw = await response.content.read(8193)
+                        try:
+                            detail = json.loads(raw) if len(raw) <= 8192 else {}
+                        except (ValueError, UnicodeError):
+                            detail = {}
+                        error = detail.get('error') if isinstance(detail, dict) else None
+                        if isinstance(error, dict) and error.get('type') == 'RegionError':
+                            raise LLMSetupError('LLM_SETUP_REGION_OPT_IN_REQUIRED', status=403)
                     raise LLMSetupError("LLM_SETUP_CONNECTION_FAILED", status=503)
                 payload = await response.json(content_type=None)
     except LLMSetupError:

@@ -373,6 +373,29 @@ def video_reply_dependency_status(
 ) -> dict[str, object]:
     """Describe the complete speech-plus-music closure without exposing local paths."""
 
+    from runtime.remote_pipeline import enabled, capabilities
+    if enabled(env):
+        try:
+            kinds = set(capabilities(env)['kinds'])
+        except Exception:
+            kinds = set()
+        try:
+            ffmpeg_ready = resolve_ffmpeg_executable(env).is_file()
+        except LatentSyncReplyError:
+            ffmpeg_ready = False
+        dependencies = [
+            {'id': name, 'label': label, 'state': 'ready' if ready else 'missing',
+             'install_mode': 'remote' if name != 'ffmpeg' else 'managed', 'sources': [],
+             'source_summary': '云端服务' if name != 'ffmpeg' else '本地素材组装'}
+            for name, label, ready in (
+                ('cloud_video', '云端语音视频', 'video' in kinds),
+                ('cloud_music', '云端音乐视频', 'original_video' in kinds),
+                ('ffmpeg', '本地音视频工具', ffmpeg_ready))]
+        missing = [d['id'] for d in dependencies if d['state'] != 'ready']
+        return {'ready': not missing, 'music_ready': not missing,
+                'ordinary_missing_dependencies': [x for x in missing if x != 'cloud_music'],
+                'dependencies': dependencies}
+
     def configured(name: str) -> Path | None:
         return configured_media_path(env, name)
 

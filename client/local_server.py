@@ -1929,8 +1929,11 @@ async def handler(request: web.Request):
                     stream.write(chunk)
             duration = await asyncio.to_thread(validate_upload, raw, audio, _os.environ)
             from runtime.media.ace_cover import cover_paths
-            asr = cover_paths(_os.environ)["asr_model"]
+            from runtime.remote_pipeline import enabled as remote_enabled
+            cloud_lyrics = remote_enabled(_os.environ)
+            asr = None if cloud_lyrics else cover_paths(_os.environ)["asr_model"]
             return web.json_response(ok({"source_id": source_id, "duration_seconds": duration,
+                                         "lyrics_on_server": cloud_lyrics,
                                          "asr_available": bool(asr and asr.is_file())}), headers=CORS_HEADERS(request))
         except (ValueError, OSError) as exc:
             raw.unlink(missing_ok=True)
@@ -4197,8 +4200,10 @@ async def route(
                 if not isinstance(lyrics, str) or len(lyrics) > 30000 or not isinstance(language, str) or not _re.fullmatch(r"[a-z]{2,8}", language):
                     raise ValueError("COVER_LYRICS_INVALID")
                 from runtime.media.ace_cover import cover_paths
-                asr = cover_paths(_os.environ)["asr_model"]
-                if not lyrics.strip() and not (asr and asr.is_file()):
+                from runtime.remote_pipeline import enabled as remote_enabled
+                cloud_lyrics = remote_enabled(_os.environ)
+                asr = None if cloud_lyrics else cover_paths(_os.environ)["asr_model"]
+                if not cloud_lyrics and not lyrics.strip() and not (asr and asr.is_file()):
                     raise ValueError("COVER_LYRICS_REQUIRED")
                 import wave
                 try:
@@ -4541,6 +4546,8 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
             if video_enabled and not remote_enabled(environment):
                 require_breeze_hardware()
             def runtime_path(name: str) -> Path:
+                if remote_enabled(environment):
+                    return Path()
                 configured = configured_media_path(environment, name)
                 if configured is None and environment.get(name, "").strip():
                     raise ReplyMediaError("MEDIA_PROVIDER_UNAVAILABLE")

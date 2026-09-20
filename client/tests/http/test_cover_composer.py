@@ -18,6 +18,15 @@ def audio_file(path):
         wav.writeframes(b'\0\0' * 1600)
 
 
+def test_remote_lyrics_deferred_without_local_asr(tmp_path, monkeypatch):
+    from runtime.media import ace_cover
+    source_id = 'a' * 32
+    audio_file(tmp_path / 'cover-inputs' / source_id / 'source.wav')
+    monkeypatch.setattr(ace_cover, 'cover_paths', lambda _: pytest.fail('local ASR lookup'))
+    assert cover_upload.recognize_lyrics(tmp_path, source_id, {'OLIVIA_GPU_ROUTE': 'remote'}) == {
+        'lyrics': '', 'language': 'unknown', 'deferred': True}
+
+
 def test_lyrics_recognition_is_separate_cached_and_portable(tmp_path, monkeypatch):
     from runtime.media import ace_cover
     source_id = 'a' * 32
@@ -44,7 +53,8 @@ def test_lyrics_recognition_is_separate_cached_and_portable(tmp_path, monkeypatc
 
 @pytest.mark.parametrize('tier', ['text', 'audio', 'video'])
 @pytest.mark.parametrize('output', ['audio', 'video'])
-def test_attached_cover_preflight_keeps_text_and_confirmed_mode(tmp_path, monkeypatch, tier, output):
+@pytest.mark.parametrize('remote', [False, True])
+def test_attached_cover_preflight_keeps_text_and_confirmed_mode(tmp_path, monkeypatch, tier, output, remote):
     import local_server as server
     settings = VideoReplySettingsStore.initialize(tmp_path)
     settings.mutate_tier('video_reply_setting:cover', tier)
@@ -59,6 +69,8 @@ def test_attached_cover_preflight_keeps_text_and_confirmed_mode(tmp_path, monkey
     monkeypatch.setattr(server, '_route_readiness', lambda *a, **kw: dict.fromkeys(REPLY_ROUTES, kw.get('cover', False)))
     monkeypatch.setattr(server, '_classify_managed_route', lambda *a: pytest.fail('explicit attachment needs no model guess'))
     monkeypatch.setenv('OLIVIA_LOCAL_DATA_ROOT', str(tmp_path))
+    if remote:
+        monkeypatch.setenv('OLIVIA_GPU_ROUTE', 'remote')
     source_id = 'a' * 32
     audio_file(tmp_path / 'cover-inputs' / source_id / 'source.wav')
     async def run():
@@ -67,7 +79,7 @@ def test_attached_cover_preflight_keeps_text_and_confirmed_mode(tmp_path, monkey
         preview = preview['data']
         assert preview['requested_route'] == 'singing_video'
         assert preview['video_enabled'] == (output == 'video')
-        material = {'cover_source_id': source_id, 'cover_output': output, 'cover_lyrics': '人工修正后的歌词', 'route_preview_token': preview['token']}
+        material = {'cover_source_id': source_id, 'cover_output': output, 'cover_lyrics': '' if remote else '人工修正后的歌词', 'route_preview_token': preview['token']}
         if preview['needs_confirmation']: material['route_allow_once'] = 'singing_video'
         if preview['needs_video_confirmation']: material['route_video_once'] = 'singing_video'
         bad = await server.route('POST', '/toy/letter/send', {'content': '今天想听这首歌', 'material': {**material, 'cover_output': 'video' if output == 'audio' else 'audio'}}, {}, defer_reply=True)
@@ -77,7 +89,7 @@ def test_attached_cover_preflight_keeps_text_and_confirmed_mode(tmp_path, monkey
         assert accepted['code'] == 0, accepted
         saved = server.store.letters[0]
         assert saved['content'] == '今天想听这首歌'
-        assert saved['material']['cover_lyrics'] == '人工修正后的歌词'
+        assert saved['material']['cover_lyrics'] == ('' if remote else '人工修正后的歌词')
         assert saved['route_preflight']['reply_mode'] == 'singing_video'
         assert settings.saved_tier() == tier
     asyncio.run(run())
