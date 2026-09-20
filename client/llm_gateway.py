@@ -31,6 +31,16 @@ from runtime.reply.model_request_policy import reasoning_request_parameters
 PROVIDER_USER_AGENT = "Olivia-Community/0.1"
 
 
+def provider_request_headers(base_url: str, *, session_id: str | None = None) -> dict[str, str]:
+    """Identify Olivia honestly and keep Go routing stable per conversation."""
+    headers = {"User-Agent": PROVIDER_USER_AGENT}
+    endpoint = urlsplit(base_url)
+    if (endpoint.scheme == 'https' and endpoint.hostname == 'opencode.ai'
+            and endpoint.path.rstrip('/') == '/zen/go/v1'):
+        headers['x-opencode-session'] = session_id or str(uuid.uuid4())
+    return headers
+
+
 ALLOWED_ROLES = frozenset({"system", "user", "assistant"})
 SUPPORTED_API_STYLES = frozenset({"chat_completions", "responses"})
 MANAGED_LLM_SCHEMA_VERSION = 3
@@ -778,6 +788,9 @@ class OpenAICompatibleAdapter(Gateway):
         self.config = config
         self.stream_enabled = bool(config.stream)
         self._key_resolver = key_resolver
+        # One runtime connection serves this owner's conversation across turns.
+        # Independent adapters and setup probes must not share routing identity.
+        self._provider_session_id = str(uuid.uuid4())
 
     def _key(self) -> str | None:
         if self._key_resolver is not None:
@@ -804,7 +817,7 @@ class OpenAICompatibleAdapter(Gateway):
         headers = {
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": PROVIDER_USER_AGENT,
+            **provider_request_headers(self.config.base_url, session_id=self._provider_session_id),
         }
         if key:
             headers["Authorization"] = "Bearer " + key
