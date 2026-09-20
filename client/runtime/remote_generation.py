@@ -1,4 +1,4 @@
-"""Optional independent GPU task protocol; no account-service cookies or retries."""
+"""Independent GPU task protocol with bounded retries for status reads only."""
 import json
 import re
 import asyncio
@@ -94,7 +94,7 @@ class RemoteGeneration:
                     if response.status in (401, 403): raise CloudError('GPU_AUTH_FAILED', 502)
                     if response.status == 429: raise CloudError('GPU_QUEUE_FULL', 429)
                     if response.status not in (200, 201, 202):
-                        raise CloudError('GPU_REQUEST_FAILED', 502)
+                        raise CloudError('GPU_REQUEST_FAILED', response.status)
                     raw = bytearray()
                     async for chunk in response.content.iter_chunked(16384):
                         raw.extend(chunk)
@@ -218,7 +218,7 @@ class RemoteGeneration:
                 await self.request('cancel', {'task_id': task['task_id']})
                 raise CloudError('GPU_TASK_TIMEOUT', 504)
             await asyncio.sleep(1)
-            task = await self.request('status', {'task_id': task['task_id']})
+            task = await self._status(task['task_id'])
         if receipt and task['status'] in ('failed', 'cancelled'):
             receipt.unlink(missing_ok=True)
         result = await self._download(task, output, validate=validate)
@@ -227,9 +227,20 @@ class RemoteGeneration:
             await acknowledge_result(self, task['task_id'], output)
         return result
 
+    async def _status(self, task_id):
+        for attempt in range(5):
+            try:
+                return await self.request('status', {'task_id': task_id})
+            except CloudError as exc:
+                transient = exc.code in ('GPU_CONNECT_FAILED', 'GPU_CONNECTION_TIMEOUT', 'GPU_CONNECTION_FAILED')
+                transient |= exc.code == 'GPU_REQUEST_FAILED' and exc.status in (502, 503, 504)
+                if not transient or attempt == 4:
+                    raise
+                await asyncio.sleep(2 ** (attempt + 1))
+
     async def download_task(self, task_id, output, *, validate=None):
         """Recover an existing result without submitting or charging another job."""
-        task = await self.request('status', {'task_id': task_id})
+        task = await self._status(task_id)
         return await self._download(task, output, validate=validate)
 
     async def _download(self, task, output, *, validate=None):
