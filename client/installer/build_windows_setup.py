@@ -167,6 +167,7 @@ RELEASE_INSTALLER_FILES = {
     "installer/configure.py",
     "installer/Create-Shortcut.ps1",
     "installer/assets/olivia.ico",
+    "installer/assets/wechat-payment.jpeg",
     "installer/full_patch.py",
     "installer/full-patch-manifest.json",
     "installer/Install.ps1",

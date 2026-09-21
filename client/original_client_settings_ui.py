@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import base64
+from pathlib import Path
 
-SETTINGS_UI_VERSION = "p03.original-settings-manage.v43"
+
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v44"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
@@ -1522,15 +1525,19 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       pay.style.cssText="font-size:24px;font-weight:600;line-height:1.4;font-variant-numeric:tabular-nums";
       const countdown = text("p", "", "text-text-secondary text-body-m");
       countdown.setAttribute("aria-live", "off");
-      const paid = text("p", `请扫描群内公告二维码，按上方金额支付。到账余额 ¥${credit}。`, "text-text-secondary text-body-m");
-      orderView.append(pay, paid, countdown);
+      const qr = document.createElement("img");
+      qr.src = "__OLIVIA_WECHAT_PAYMENT_QR__";
+      qr.alt = "微信收款码，收款人 Ornn，请按订单显示金额付款";
+      qr.style.cssText = "display:block;width:280px;max-width:100%;height:auto;margin:12px auto;border-radius:12px";
+      const paid = text("p", `请用微信扫描下方收款码，准确支付 ${amount}（含小数），请勿取整。到账余额 ¥${credit}。`, "text-text-secondary text-body-m");
+      orderView.append(pay, paid, qr, countdown);
       status.textContent = `付款金额 ${amount}，到账余额 ¥${credit}。`;
       const deadline = Date.now() + Math.max(0, order.expires_at-data.server_time)*1000;
       const tick = () => {
         if (!box.isConnected || serial !== generation) return;
         const seconds = Math.max(0, Math.ceil((deadline-Date.now())/1000));
         countdown.textContent = `有效时间 ${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,"0")} · 正在等待微信到账通知`;
-        if (!seconds) { pay.textContent="付款金额已过期，请勿继续付款。"; active=null; enabled(); return; }
+        if (!seconds) { pay.textContent="付款金额已过期，请勿继续付款。"; qr.remove(); paid.hidden=true; active=null; enabled(); return; }
         window.setTimeout(tick,1000);
       };
       tick(); enabled();
@@ -4269,5 +4276,12 @@ BOOTSTRAP_JAVASCRIPT = r'''
   customElements.define('olivia-letter-audio',LetterAudio);
 })();
 ''' + BOOTSTRAP_JAVASCRIPT
+
+BOOTSTRAP_JAVASCRIPT = BOOTSTRAP_JAVASCRIPT.replace(
+    "__OLIVIA_WECHAT_PAYMENT_QR__",
+    "data:image/jpeg;base64," + base64.b64encode(
+        (Path(__file__).parent / "installer/assets/wechat-payment.jpeg").read_bytes()
+    ).decode("ascii"),
+)
 
 __all__ = ["BOOTSTRAP_JAVASCRIPT", "SETTINGS_UI_VERSION"]
