@@ -42,6 +42,31 @@ def test_claim_retry_reuses_encrypted_key_and_connects(tmp_path, monkeypatch):
     asyncio.run(scenario())
 
 
+def test_relay_loads_bundled_roots_when_system_store_is_empty(monkeypatch):
+    import ssl
+    import original_client_relay_api as relay
+    empty = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    monkeypatch.setattr(ssl, 'create_default_context', lambda: empty)
+    class Session:
+        def __init__(self, **kwargs): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): pass
+        def request(self, *args, **kwargs):
+            context = kwargs.get('ssl')
+            assert isinstance(context, ssl.SSLContext)
+            assert context.cert_store_stats()['x509_ca'] > 100
+            assert context.check_hostname
+            assert context.verify_mode == ssl.CERT_REQUIRED
+            raise TimeoutError()
+    monkeypatch.setattr(relay, 'ClientSession', Session)
+    async def scenario():
+        try:
+            await relay.relay_request(relay.RELAY_BASE, 'olivia-synthetic', 'POST', '/accounts', {})
+        except LLMSetupError as error:
+            assert error.code == 'RELAY_TIMEOUT'
+    asyncio.run(scenario())
+
+
 def test_relay_transport_failures_are_distinguishable_without_secret_leaks(monkeypatch):
     import original_client_relay_api as relay
     from aiohttp import ClientSSLError, ClientConnectionError

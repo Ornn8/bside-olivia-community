@@ -4,6 +4,7 @@ import asyncio
 import secrets
 from aiohttp import ClientSession, ClientTimeout, ClientError, ClientSSLError, ClientConnectionError, web
 from original_client_setup_api import LLMSetupError, _authorize, _body, _headers, SESSION_HEADER
+from runtime.remote_generation import gpu_tls_context
 
 RELAY_BASE = 'https://175.24.191.6/v1'
 
@@ -14,7 +15,8 @@ async def relay_request(base, key, method, path, payload=None):
     try:
         async with ClientSession(timeout=ClientTimeout(total=20)) as session:
             async with session.request(method, base.rstrip('/')+path, json=payload,
-                                       headers={'Authorization':'Bearer '+key}, allow_redirects=False) as response:
+                                       headers={'Authorization':'Bearer '+key}, allow_redirects=False,
+                                       ssl=gpu_tls_context()) as response:
                 raw = bytearray()
                 async for chunk in response.content.iter_chunked(8192):
                     raw.extend(chunk)
