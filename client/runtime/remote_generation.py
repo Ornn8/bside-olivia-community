@@ -69,6 +69,7 @@ class RemoteGeneration:
             payload = data
             headers['Idempotency-Key'] = data['request_id']
             headers['X-Olivia-Max-Charge-Cents'] = str(500 if data['kind'] in ('video', 'lipsync', 'cover_video', 'original_video') else 100)
+            headers['X-Olivia-Congestion-Policy'] = 'queue-2-v1'
             path, method = '/v1/tasks', 'POST'
         elif action == 'capabilities' and data == {}:
             path, method = '/v1/capabilities', 'GET'

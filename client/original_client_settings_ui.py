@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-SETTINGS_UI_VERSION = "p03.original-settings-manage.v42"
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v43"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
@@ -3197,7 +3197,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     catch(error){error.config=config;error.message=error.code==='GPU_INSUFFICIENT_BALANCE'?'Olivia 可用余额不足。音频需预留 ¥1，视频需预留 ¥5，请先充值。草稿已保留。':'无法核对云端生成费用，请检查云端连接后重试。草稿已保留。';throw error;}
     if(quote.paid){
       const cap=(quote.max_charge_cents/100).toFixed(2);
-      if(!await confirmAction(`本次云端生成将从 Olivia 余额预留 ¥${cap}，本次最多收费 ¥${cap}。成功后按实际占用结算，多余金额释放；失败全退。回信文字另按 Token 计费。确认寄出？`)){
+      const congestionNotice='提交时，某类资源已有至少 2 个任务排队，该阶段费用加收 25%；只对拥挤阶段加价，提交后价格锁定，总费用仍不超过上述上限。';
+      if(!await confirmAction(`本次云端生成将从 Olivia 余额预留 ¥${cap}，本次最多收费 ¥${cap}。${congestionNotice}成功后按实际占用结算，多余金额释放；失败全退。回信文字另按 Token 计费。确认寄出？`)){
         throw Object.assign(new Error('已取消发送，草稿保留。'),{config,code:'ERR_CANCELED',__CANCEL__:true});
       }
     }

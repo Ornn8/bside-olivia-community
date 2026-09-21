@@ -16,6 +16,7 @@ def test_status_transient_failure_does_not_resubmit(tmp_path, monkeypatch, failu
             if request.path == '/v1/capabilities':
                 return web.json_response({'kinds': ['tts'], 'shared_assets': []})
             if request.path == '/v1/tasks':
+                assert request.headers['X-Olivia-Congestion-Policy'] == 'queue-2-v1'
                 submitted.append(await request.json())
                 return web.json_response({'task_id': 'existing', 'status': 'running'})
             if request.path == '/v1/tasks/existing':
