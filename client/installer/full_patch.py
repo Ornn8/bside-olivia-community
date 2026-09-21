@@ -144,6 +144,7 @@ PAYLOAD_REQUIRED_RELATIVE_FILES = {
     "installer/patch_native_user_settings.py",
     "installer/start_hidden.vbs.txt",
     "installer/assets/olivia.ico",
+    "installer/assets/wechat-payment.jpeg",
     "installer/mem0-capability-manifest.json",
     "installer/video-capability-manifest.json",
     "installer/cosyvoice-windows-audio.patch.json",

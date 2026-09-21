@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bside-olivia-local"
-version = "1.2.32"
+version = "1.2.33"
 description = "Local HTTP and media-state prototype for BSide Olivia Lin"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -113,7 +113,7 @@ include = [
 contracts = ["*.json"]
 "contracts.asset_baseline" = ["*.json"]
 control_center = ["static/*.html", "static/*.css", "static/*.js"]
-installer = ["video-capability-manifest.json"]
+installer = ["video-capability-manifest.json", "assets/wechat-payment.jpeg"]
 linli_character = [
     "persona_release_v2.json",
     "persona_release_provenance_v2.json",
