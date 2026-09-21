@@ -65,6 +65,35 @@ def test_choice_needs_original_user_evidence():
         validate_choice({'choice': 'wechat', 'quote': '我同意'}, '你猜我会选什么')
 
 
+def test_delayed_old_letter_cannot_undo_later_settings_choice():
+    invitation = dict(letter_id='invite', origin='proactive', proactive_kind='contact_invitation',
+                      letter_status='COMPLETED', published_at=1000,
+                      contact_setup_choice='both', contact_setup_choice_at=3000)
+    answer = dict(row('old', 2000), published_at=4000, content='先不了',
+                  contact_invitation_id='invite', contact_choice={'choice':'later','quote':'先不了'})
+    restored = json.loads(json.dumps([invitation, answer]))
+    assert status(restored, LOW)['channels'] == ['qq', 'wechat']
+
+
+def test_channel_acceptance_adds_without_removing_existing_channel():
+    invitation = dict(letter_id='invite', origin='proactive', proactive_kind='contact_invitation',
+                      letter_status='COMPLETED', published_at=1000,
+                      contact_setup_choice='wechat', contact_setup_choice_at=1500)
+    answer = dict(row('new', 2000), content='QQ也加上', contact_invitation_id='invite',
+                  contact_choice={'choice':'qq','quote':'QQ也加上'})
+    assert status([invitation, answer], LOW)['channels'] == ['qq', 'wechat']
+
+
+def test_choice_order_follows_user_letters_not_reply_completion_order():
+    invitation = dict(letter_id='invite', origin='proactive', proactive_kind='contact_invitation',
+                      letter_status='COMPLETED', published_at=1000)
+    old = dict(row('old', 2000), published_at=5000, content='先不了',
+               contact_invitation_id='invite', contact_choice={'choice':'later','quote':'先不了'})
+    new = dict(row('new', 3000), published_at=4000, content='微信吧',
+               contact_invitation_id='invite', contact_choice={'choice':'wechat','quote':'微信吧'})
+    assert status([invitation, old, new], LOW)['channels'] == ['wechat']
+
+
 @pytest.mark.parametrize('now', [2001, 30 * 86400])
 def test_qualified_invitation_is_due_even_when_qualifying_letters_are_old(now):
     rows = [row('a', 1000), row('b', 2000)]

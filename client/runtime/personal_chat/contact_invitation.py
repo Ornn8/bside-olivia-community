@@ -75,12 +75,20 @@ def status(rows, snapshot):
         selected = invitation.get("contact_setup_choice")
         if selected not in {"qq", "wechat", "both"}:
             selected = None
-        for row in completed:
+        # Choice chronology follows the user's action, not delayed reply completion.
+        for row in sorted(completed, key=lambda r: r.get('created_at', r.get('published_at', 0))):
             if (row.get("contact_invitation_id") == invitation["letter_id"]
-                    and row.get('published_at', row.get('created_at', 0)) >= invitation.get('contact_setup_choice_at', 0)):
+                    and row.get('created_at', row.get('published_at', 0)) >= invitation.get('contact_setup_choice_at', 0)):
                 candidate = validate_choice(row.get("contact_choice"), row.get("content", ""))
                 if candidate:
-                    selected = candidate["choice"]
+                    choice = candidate["choice"]
+                    if choice in {"qq", "wechat", "both"}:
+                        channels = ({"qq", "wechat"} if selected == "both" else
+                                    {selected} if selected in {"qq", "wechat"} else set())
+                        channels.update({"qq", "wechat"} if choice == "both" else {choice})
+                        selected = "both" if len(channels) == 2 else choice
+                    else:
+                        selected = choice
         return {"state": selected or "invited", "invitation_id": invitation["letter_id"],
                 "channels": ["qq", "wechat"] if selected == "both" else [selected] if selected in {"qq", "wechat"} else []}
     inflight = next((r for r in rows

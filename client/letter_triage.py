@@ -29,7 +29,7 @@ ROUTER_SYSTEM_PROMPT = """你负责判断林离本次回信的形式。routing_c
 明确只要音频、不要画面时加入 explicit_audio_output_request。能力档位是上限；允许视频不代表每封都要视频，普通聊天仍优先文字。
 否定、引用别人的请求、过去的请求、假设和询问功能不算本轮请求。用户明确不要音乐时不得生成歌曲。
 无明确请求：普通聊天和具体问题优先文字；声音能实质增加陪伴感时语音；歌曲本身能完成表达时唱歌；既需要具体口头回应又需要歌曲表达才组合。不能仅凭难过、晚安、想你触发歌曲。组合门槛最高。
-长文回复优先语音：如果用户希望详细聊聊、需要逐项回应多个问题，或预计回复需要较长篇幅，在语音可用且 automatic_routes 允许 voice_reply 时优先选择 voice_reply，并设置 voice_materially_better=true、direct_response_sufficient=false、character_willing=true。纯语音不限制时长，不为凑进视频时长压缩正文；不要因此添加视频或歌曲。用户明确只要文字时仍选择 text_letter，纯文字档位不得自动开启语音。
+长文回复优先语音：如果用户希望详细聊聊、需要逐项回应多个问题，或预计回复需要较长篇幅，在语音可用且 automatic_routes 允许 voice_reply 时优先选择 voice_reply，并设置 voice_materially_better=true、direct_response_sufficient=false、character_willing=true。自动选择语音不等于用户明确请求语音，此时 request_disposition=none，不添加 explicit 请求标记。纯语音不限制时长，不为凑进视频时长压缩正文；不要因此添加视频或歌曲。用户明确只要文字时仍选择 text_letter，纯文字档位不得自动开启语音。
 语音需 voice_reply_available；唱歌需 musical_video_available；组合两者都需。能力不足选 text_letter 并 defer，但保留请求事实，不假装生成成功。
 没有明确请求时媒体须 direct_response_sufficient=false、character_willing=true。语音须 voice_materially_better=true；唱歌须 music_materially_better=true 且 music_role=performance/adaptation/spontaneous_motif，与 music_intent=perform/adapt/compose 对应；组合两项 materially_better 都为 true。
 music_role 为 none/discussion/reference/performance/adaptation/spontaneous_motif；music_intent 为 none/discuss/perform/adapt/compose。纯语音不使用音乐，role 和 intent 均为 none。
@@ -318,6 +318,10 @@ def _validated_result(
             "adaptation" if uses_music and intent == "adapt" else "performance" if uses_music else "none",
             "fulfill" if available else "defer",
         )
+    # Some providers label an automatic voice choice as fulfilling the letter.
+    # No explicit media evidence means no explicit request; all voice guards below still apply.
+    if mode == "voice_reply" and disposition == "fulfill":
+        disposition = "none"
     if disposition in {"fulfill", "refuse", "defer"}:
         return _invalid_result("route_disposition")
 
