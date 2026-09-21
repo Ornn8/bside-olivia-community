@@ -6,7 +6,7 @@ import base64
 from pathlib import Path
 
 
-SETTINGS_UI_VERSION = "p03.original-settings-manage.v46"
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v47"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
@@ -2884,16 +2884,30 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       return payload.data;
     } finally { window.clearTimeout(timeout); }
   };
-  const confirmReplyRoute = (route, ready, video = false) => new Promise((resolve) => {
+  const confirmReplyRoute = (route, ready, video = false, readiness = {}) => new Promise((resolve) => {
+    const cloudUnavailable = !ready && readiness.backend === 'remote';
+    const cloudMessages = {
+      GPU_NOT_CONFIGURED: '请在“云端 GPU”中配置连接。',
+      GPU_TLS_FAILED: '无法验证云端证书，请检查系统时间和网络。',
+      GPU_CONNECTION_TIMEOUT: '云端检查超时，请稍后重试。',
+      GPU_CONNECT_FAILED: '无法连接云端服务，请检查网络后重试。',
+      GPU_CONNECTION_FAILED: '云端连接中断，请重试。',
+      GPU_AUTH_FAILED: '云端认证失败，请检查“云端 GPU”中的账户配置。',
+      GPU_RESPONSE_INVALID: '云端返回异常，请重试。',
+      GPU_QUEUE_FULL: '云端繁忙，请稍后重试。',
+      GPU_CAPABILITY_UNAVAILABLE: '云端当前未提供所需生成能力，请稍后重试。',
+    };
     const dialog = document.createElement("dialog");
     dialog.setAttribute("aria-label", "确认回信形式");
     dialog.setAttribute("data-olivia-route-confirm", "");
     dialog.style.cssText = "position:fixed;inset:0;margin:auto;background:#191a1c;color:#ded9d1;border:1px solid #66696f;border-radius:16px;padding:28px;max-width:480px;max-height:calc(100% - 48px);overflow:auto;width:calc(100% - 48px);box-sizing:border-box;font-family:inherit;";
-    const title = text("h3", ready ? "本次开启回信形式？" : "需要准备回信组件", "text-title-m");
+    const title = text("h3", ready ? "本次开启回信形式？" : cloudUnavailable ? "云端生成暂不可用" : "需要准备回信组件", "text-title-m");
     title.style.marginBottom = "12px";
     const explanation = text("p", ready
       ? `这封信请求了${REPLY_ROUTE_LABELS[route]}${video ? "视频" : ""}，但你已关闭该形式。可以仅为这封信开启，长期设置保持不变。`
-      : `这封信请求了${REPLY_ROUTE_LABELS[route]}，当前缺少所需组件。请先在本地组件中准备好，再发送。`, "text-body-m font-regular");
+      : cloudUnavailable
+        ? `${cloudMessages[readiness.error_code] || '云端能力检查失败，请稍后重试。'}（${Object.hasOwn(cloudMessages, readiness.error_code) ? readiness.error_code : 'GPU_REQUEST_FAILED'}）信件尚未寄出，草稿已保留。`
+        : `这封信请求了${REPLY_ROUTE_LABELS[route]}，当前缺少所需组件。请先在本地组件中准备好，再发送。`, "text-body-m font-regular");
     explanation.style.cssText = "margin-bottom:20px;line-height:1.7;";
     const shade = document.createElement("style");
     shade.textContent = "dialog[data-olivia-route-confirm]::backdrop{background:rgba(0,0,0,.6)}";
@@ -2902,6 +2916,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const finish = (accepted) => { dialog.close(); dialog.remove(); previous?.focus(); resolve(accepted); };
     const controls = actions();
     controls.append(button("返回修改", () => finish(false)));
+    if (cloudUnavailable) controls.append(button("重新检查", () => finish('retry')));
     if (ready) controls.append(button("仅本次开启并发送", () => finish(true)));
     dialog.append(controls);
     dialog.addEventListener("cancel", (event) => { event.preventDefault(); finish(false); });
@@ -3127,11 +3142,17 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     let attachment=null;
     try{if(editor && editor.mode!=='letter')attachment=editor.materialForSend()}
     catch(error){error.config=config;throw error}
-    try { preview = await routeRequest("/toy/letter/route-preview", {content: body.content,
+    try { do { preview = await routeRequest("/toy/letter/route-preview", {content: body.content,
       ...(attachment?.original_output ? {original_output:attachment.original_output,music_options:attachment.music_options} :
-        attachment ? {cover_source_id:attachment.cover_source_id,cover_output:attachment.cover_output} : {})}); }
+        attachment ? {cover_source_id:attachment.cover_source_id,cover_output:attachment.cover_output} : {})});
+      if (!preview.requested_route || preview.ready || preview.readiness?.backend !== 'remote') break;
+      if (await confirmReplyRoute(preview.requested_route, false, preview.needs_video_confirmation, preview.readiness) !== 'retry') {
+        throw Object.assign(new Error('已取消发送，信件内容保留'), {name:'CanceledError',code:'ERR_CANCELED',__CANCEL__:true});
+      }
+    } while (true); }
     catch (error) {
       error.config = config;
+      if (error.__CANCEL__) throw error;
       if (!/^[A-Z][A-Z0-9_]{0,95}$/.test(error.message || "")) {
         const clientCode = error.name === "AbortError" ? "REPLY_ROUTE_CLIENT_TIMEOUT"
           : error instanceof TypeError ? "REPLY_ROUTE_CLIENT_CONNECTION"
