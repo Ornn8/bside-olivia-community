@@ -113,7 +113,9 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
       [data-olivia-personal-chat-setup] .olivia-chat-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
       [data-olivia-personal-chat-setup] .olivia-chat-name{font-size:14px;font-weight:600;color:var(--color-text-body,#eee)}
       [data-olivia-personal-chat-setup] .olivia-chat-state{font-size:12px;color:var(--color-text-secondary,#aaa)}
-      [data-olivia-personal-chat-setup] .olivia-chat-action{border:1px solid rgba(255,255,255,.18);border-radius:8px;padding:7px 12px;background:rgba(255,255,255,.07);color:inherit;cursor:pointer}
+      [data-olivia-personal-chat-setup] .olivia-chat-action{border:1px solid #686a70;border-radius:8px;padding:7px 12px;background:#292a2d;color:#f1eee8;font:inherit;cursor:pointer}
+      [data-olivia-personal-chat-setup] .olivia-chat-action:hover:not(:disabled){background:#383a3f}
+      [data-olivia-personal-chat-setup] .olivia-chat-action:focus-visible{outline:2px solid #ded9d1;outline-offset:3px}
       [data-olivia-personal-chat-setup] .olivia-chat-action:disabled{opacity:.45;cursor:default}
       [data-olivia-personal-chat-setup] .olivia-chat-fields{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
       [data-olivia-personal-chat-setup] .olivia-chat-input{min-width:0;border:1px solid rgba(255,255,255,.14);border-radius:8px;padding:8px 10px;background:rgba(0,0,0,.18);color:inherit;outline:none}

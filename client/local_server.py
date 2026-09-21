@@ -1336,7 +1336,7 @@ async def _classify_managed_route(content: str, routes: dict[str, bool]) -> Tria
     return result
 
 
-def _route_readiness(videos=None, *, cover=False) -> dict[str, bool]:
+def _route_readiness(videos=None, *, cover=False, diagnostic=None) -> dict[str, bool]:
     environment = dict(_os.environ)
     from runtime.media.music_reply import musical_reply_configured
     if videos is None:
@@ -1344,11 +1344,20 @@ def _route_readiness(videos=None, *, cover=False) -> dict[str, bool]:
         if video_reply_settings_store.saved_tier() == "video":
             videos["voice_reply"] = False
     from runtime.remote_pipeline import enabled as remote_enabled, capabilities as remote_capabilities
+    if diagnostic is not None:
+        diagnostic.clear()
+        diagnostic['backend'] = 'remote' if remote_enabled(environment) else 'local'
     if remote_enabled(environment):
         try:
             kinds = set(remote_capabilities(environment)['kinds'])
-        except Exception:
+        except Exception as exc:
             kinds = set()
+            if diagnostic is not None:
+                from runtime.cloud_service import CloudError
+                allowed = {'GPU_NOT_CONFIGURED', 'GPU_TLS_FAILED', 'GPU_CONNECTION_TIMEOUT',
+                           'GPU_CONNECT_FAILED', 'GPU_CONNECTION_FAILED', 'GPU_AUTH_FAILED',
+                           'GPU_RESPONSE_INVALID', 'GPU_REQUEST_FAILED', 'GPU_QUEUE_FULL'}
+                diagnostic['error_code'] = exc.code if isinstance(exc, CloudError) and exc.code in allowed else 'GPU_REQUEST_FAILED'
         voice = 'tts' in kinds
         song_audio = ('cover' if cover else 'original') in kinds
         speech_video = 'video' in kinds
@@ -3742,14 +3751,19 @@ async def route(
         requested = explicitly_requested_route(decision)
         explicit_video = bool({"explicit_video_reply_request", "explicit_video_output_request"}.intersection(decision.music_contexts))
         video_confirmation = bool(requested and explicit_video and not preview_videos[requested])
-        ready = await asyncio.to_thread(_route_readiness, {**preview_videos, requested: True}) if video_confirmation else await asyncio.to_thread(_route_readiness)
+        readiness = {}
         selected_video = preview_videos.get(requested, False)
         if video_reply_settings_store.saved_tier() is not None or body.get('cover_source_id') or body.get('original_output'):
             from runtime.video_reply_settings import routed_video
             selected_mode = requested or decision.reply_mode
             selected_video = routed_video(selected_mode, decision.music_contexts, {**preview_videos, **({requested: True} if video_confirmation else {})})
             ready = await asyncio.to_thread(_route_readiness, {**preview_videos, selected_mode: selected_video},
+                                          diagnostic=readiness,
                                           **({"cover": True} if body.get('cover_source_id') else {}))
+        else:
+            ready = await asyncio.to_thread(_route_readiness, {**preview_videos, requested: True}, diagnostic=readiness) if video_confirmation else await asyncio.to_thread(_route_readiness, diagnostic=readiness)
+        if requested and not ready.get(requested) and readiness.get('backend') == 'remote':
+            readiness.setdefault('error_code', 'GPU_CAPABILITY_UNAVAILABLE')
         token = str(uuid.uuid4())
         now = time.monotonic()
         for key, value in list(_reply_route_previews.items()):
@@ -3763,7 +3777,7 @@ async def route(
                    "requires_cover_audio": bool(body.get("cover_source_id")),
                    "needs_confirmation": bool(requested and not routes[requested]),
                    "needs_video_confirmation": video_confirmation,
-                   "ready": ready.get(requested, True), "reply_mode": decision.reply_mode})
+                   "ready": ready.get(requested, True), "readiness": readiness, "reply_mode": decision.reply_mode})
 
     if p == "/toy/settings/video-reply":
         if method == "GET":
@@ -4206,14 +4220,20 @@ async def route(
                 if video_once != requested:
                     return err(409, "REPLY_VIDEO_CONFIRM_REQUIRED", {"error_code": "REPLY_VIDEO_CONFIRM_REQUIRED", "requested_route": requested})
                 videos[requested] = True
-            ready = await asyncio.to_thread(_route_readiness, videos) if video_once is not None else await asyncio.to_thread(_route_readiness)
+            readiness = {}
             if video_reply_settings_store.saved_tier() is not None or material.get('cover_source_id') or material.get('original_output'):
                 from runtime.video_reply_settings import routed_video
                 selected_mode = requested or route_decision.reply_mode
                 ready = await asyncio.to_thread(_route_readiness,
                     {**videos, selected_mode: routed_video(selected_mode, route_decision.music_contexts, videos)},
+                    diagnostic=readiness,
                     **({'cover': True} if material.get('cover_source_id') else {}))
+            else:
+                ready = await asyncio.to_thread(_route_readiness, videos, diagnostic=readiness) if video_once is not None else await asyncio.to_thread(_route_readiness, diagnostic=readiness)
             if requested and not ready.get(requested):
+                if readiness.get('backend') == 'remote':
+                    code = readiness.get('error_code', 'GPU_CAPABILITY_UNAVAILABLE')
+                    return err(503, code, {'error_code': code})
                 return err(409, "VIDEO_REPLY_DEPENDENCIES_MISSING", {"error_code": "VIDEO_REPLY_DEPENDENCIES_MISSING"})
             if once is not None and (once != requested or preview_token is None):
                 return err(400, "REPLY_ROUTE_OVERRIDE_INVALID", {})
