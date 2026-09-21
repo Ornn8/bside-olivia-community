@@ -76,7 +76,8 @@ def status(rows, snapshot):
         if selected not in {"qq", "wechat", "both"}:
             selected = None
         for row in completed:
-            if row.get("contact_invitation_id") == invitation["letter_id"]:
+            if (row.get("contact_invitation_id") == invitation["letter_id"]
+                    and row.get('published_at', row.get('created_at', 0)) >= invitation.get('contact_setup_choice_at', 0)):
                 candidate = validate_choice(row.get("contact_choice"), row.get("content", ""))
                 if candidate:
                     selected = candidate["choice"]

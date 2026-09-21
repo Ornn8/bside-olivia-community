@@ -75,8 +75,8 @@ def test_enabled_v2_uses_persona_assembly_and_separate_user_message() -> None:
 
     messages = adapter._messages("synthetic current letter")
 
-    assert tuple(message["role"] for message in messages) == ("system", "user")
-    assert messages[1]["content"] == "synthetic current letter"
+    assert tuple(message["role"] for message in messages) == ("system", "system", "user")
+    assert messages[-1]["content"] == "synthetic current letter"
     assert "<constitution>" in messages[0]["content"]
     assert "<mode_constraints>" in messages[0]["content"]
     assert "synthetic current letter" not in messages[0]["content"]

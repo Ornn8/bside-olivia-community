@@ -191,7 +191,7 @@ def test_planner_accepts_only_lyrics_and_fixes_musical_direction_locally(extra):
     assert plan.semantic_plan.dynamic_arc is SongDynamicArc.SOFT_GENTLE_RISE_SETTLE
     assert plan.semantic_plan.ending is SongEnding.LINGERING_PIANO_CADENCE
     assert plan.lyrics == payload['lyrics']
-    assert 'exactly two keys: verse and chorus' in gateway.calls[0][0]['content']
+    assert 'exactly two keys: verse and chorus' in gateway.calls[0][-2]['content']
 
 
 @pytest.mark.parametrize(

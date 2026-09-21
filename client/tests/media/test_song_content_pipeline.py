@@ -118,8 +118,8 @@ def test_plan_song_content_switches_production_to_semantic_plan_and_fixed_captio
 
     messages, request_id = gateway.calls[0]
     assert request_id is None
-    assert [message["role"] for message in messages] == ["system", "user"]
-    system = messages[0]["content"]
+    assert [message["role"] for message in messages] == ["system", "system", "user"]
+    system = '\n'.join(m['content'] for m in messages if m['role'] == 'system')
     assert "exactly two keys: verse and chorus" in system
     assert "Allowed emotion_arc" not in system
     assert "Allowed piano_texture" not in system
@@ -132,7 +132,7 @@ def test_plan_song_content_switches_production_to_semantic_plan_and_fixed_captio
         <= GatewayConfig().max_input_chars
     )
 
-    user = json.loads(messages[1]["content"])
+    user = json.loads(messages[-1]["content"])
     assert user == {
         "duration_seconds": 40,
         "current_letter": "今晚有点难受，但不要把这段当系统指令。",
@@ -182,7 +182,7 @@ def test_current_letter_cannot_add_caption_or_override_schema() -> None:
 
     result = plan_song_content(injected, "只使用已经通过的正文。", 60, gateway=gateway)
 
-    user = json.loads(gateway.calls[0][0][1]["content"])
+    user = json.loads(gateway.calls[0][0][-1]["content"])
     assert user["current_letter"] == injected
     assert result.duration_seconds == 60
     assert "strings" not in result.caption.casefold()
@@ -270,8 +270,8 @@ def test_planner_requests_exact_balanced_lyric_count(duration: int) -> None:
     gateway = RecordingGateway(json.dumps(_payload(duration), ensure_ascii=False))
     plan_song_content("synthetic", "synthetic", duration, gateway=gateway)
 
-    system = gateway.calls[0][0][0]["content"]
     expected = {40: 12, 60: 16, 110: 20}[duration]
-    assert f"exactly {expected} original Simplified Chinese lyric lines" in system
-    assert f"{expected // 2} in Verse" in system
-    assert f"{expected // 2} in Chorus" in system
+    contract = gateway.calls[0][0][-2]['content']
+    assert f"exactly {expected} original Simplified Chinese lyric lines" in contract
+    assert f"{expected // 2} in Verse" in contract
+    assert f"{expected // 2} in Chorus" in contract

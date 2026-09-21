@@ -31,6 +31,16 @@ from runtime.reply.model_request_policy import reasoning_request_parameters
 PROVIDER_USER_AGENT = "Olivia-Community/0.1"
 
 
+def provider_request_headers(base_url: str, *, session_id: str | None = None) -> dict[str, str]:
+    """Identify Olivia honestly and keep Go routing stable per conversation."""
+    headers = {"User-Agent": PROVIDER_USER_AGENT}
+    endpoint = urlsplit(base_url)
+    if (endpoint.scheme == 'https' and endpoint.hostname == 'opencode.ai'
+            and endpoint.path.rstrip('/') == '/zen/go/v1'):
+        headers['x-opencode-session'] = session_id or str(uuid.uuid4())
+    return headers
+
+
 ALLOWED_ROLES = frozenset({"system", "user", "assistant"})
 SUPPORTED_API_STYLES = frozenset({"chat_completions", "responses"})
 MANAGED_LLM_SCHEMA_VERSION = 3
@@ -802,6 +812,9 @@ class OpenAICompatibleAdapter(Gateway):
         self.config = config
         self.stream_enabled = bool(config.stream)
         self._key_resolver = key_resolver
+        # One runtime connection serves this owner's conversation across turns.
+        # Independent adapters and setup probes must not share routing identity.
+        self._provider_session_id = str(uuid.uuid4())
 
     def _key(self) -> str | None:
         if self._key_resolver is not None:
@@ -828,7 +841,7 @@ class OpenAICompatibleAdapter(Gateway):
         headers = {
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": PROVIDER_USER_AGENT,
+            **provider_request_headers(self.config.base_url, session_id=self._provider_session_id),
         }
         if key:
             headers["Authorization"] = "Bearer " + key
@@ -1096,11 +1109,42 @@ class OpenAICompatibleAdapter(Gateway):
             max_reasoning=max_reasoning,
             scope=scope,
         )
+        if response_format is not None:
+            # Interpretation callers (including recall) own partial-result
+            # validation. Send their contract without adding a repair call or
+            # discarding all valid evidence when a single item is invalid.
+            caps = model_capabilities(self.config.base_url, self.config.model, self.config.provider_options)
+            spec = response_format.get('json_schema', response_format)
+            schema = {'type': 'object'} if response_format.get('type') == 'json_object' else spec.get('schema')
+            if not isinstance(schema, Mapping):
+                raise InvalidGatewayInput('INVALID_RESPONSE_SCHEMA')
+            wire = None
+            if caps.json_schema and response_format.get('type') != 'json_object':
+                normalized = {'name': spec.get('name', 'structured_reply'),
+                              'strict': spec.get('strict', False), 'schema': dict(schema)}
+                wire = ({'type': 'json_schema', **normalized} if self.config.api_style == 'responses'
+                        else {'type': 'json_schema', 'json_schema': normalized})
+            else:
+                if response_format.get('type') != 'json_object':
+                    instruction = {'role': 'system', 'content': 'Return only JSON matching this schema: '
+                        + json.dumps(schema, ensure_ascii=False, separators=(',', ':'))}
+                    current = [dict(message) for message in messages]
+                    index = next((i for i in range(len(current) - 1, -1, -1)
+                                  if current[i].get('role') == 'user'), len(current))
+                    current.insert(index, instruction)
+                    body = self._body(current, stream=False, max_reasoning=max_reasoning, scope=scope)
+                if caps.json_mode:
+                    wire = {'type': 'json_object'}
+            if wire is not None:
+                if self.config.api_style == 'responses':
+                    body['text'] = {'format': wire}
+                else:
+                    body['response_format'] = wire
         if scope is GatewayRequestScope.BACKGROUND_REASONING:
             data = await self._post_json(body, request, background_reasoning=True)
         else:
             data = await self._post_json(body, request, max_reasoning=max_reasoning)
-        if _extract_finish_reason(data) == "length":
+        if _extract_finish_reason(data) == "length" or data.get('status') in {'incomplete', 'failed'}:
             raise ProviderProtocolError()
         text = _extract_response_text(data)
         if not text:

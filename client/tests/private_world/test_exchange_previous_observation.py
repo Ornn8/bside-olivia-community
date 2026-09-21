@@ -19,7 +19,7 @@ def test_extractor_receives_only_observations_available_at_receipt(tmp_path, min
     store.publish_day("day:fixture", {
         "location": "家里", "activity": "洗好了画笔", "note": "画笔都洗好了。",
     }, [], occurred_at=NOW + timedelta(minutes=minutes))
-    observed = store.snapshot(NOW)["current"]
+    observed = store.snapshot(NOW + timedelta(minutes=10))["current"]
     captured = []
 
     class Gateway:

@@ -42,7 +42,8 @@ def test_boundary_growth_needs_user_evidence_not_new_reply_condition(tmp_path, u
     if signal:
         assert signal["kind"] == "boundary_respected"
         assert signal["user_quote"] == user
-    assert store.snapshot(now)["current"]["note"] == "我正在读书。"
+    assert store.snapshot(now)["current"] is None
+    assert store.history()["moments"][0]["content"]["current"]["note"] == "我正在读书。"
     assert not asyncio.run(runtime.consume_exchange("reply:positive:1", user, reply, occurred_at=now))
     assert len(calls) == 2
 

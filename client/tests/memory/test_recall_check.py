@@ -27,6 +27,7 @@ def history_messages():
 def finding(*, source='s0', quote='周五只是计划，还没有登记。'):
     return {'reply_intent': 'recall_question', 'direct_questions': ['周五的登记办好了吗'],
         'findings': [{'topic': '登记', 'status': 'confirmed', 'event_stage': 'planned',
+        'event': {'actor': 'linli', 'action': '登记', 'when': '周五'},
         'finding': '双方曾计划周五去登记，记录没有证明已完成。',
         'citations': [{'source': source, 'quote': quote}]}]}
 
@@ -67,15 +68,15 @@ def test_valid_quote_retains_originals_and_adds_interpretation_only():
     assert result[1] == before[1]
     check = projected(result)
     assert check['status'] == 'checked'
-    assert check['reply_intent'] == 'recall_question'
-    assert check['direct_questions'] == ['周五的登记办好了吗']
+    assert check['current_turn']['intent'] == 'recall_question'
+    assert check['current_turn']['questions'] == ['周五的登记办好了吗']
     assert check['interpretation_only'] is True
-    item = check['findings'][0]
-    assert item['finding'] == finding()['findings'][0]['finding']
-    assert item['citations'][0]['matched_originals'] == [
-        {'citation': 'first:linli', 'speaker': 'linli', 'occurred_at': None,
-         'context': '周五只是计划，还没有登记。'}]
-    assert check['source_scopes'] == {'s0': 'historical_exchange'}
+    item = check['events'][0]
+    assert 'finding' not in item
+    assert item['originals'] == ['o0']
+    assert check['originals']['o0'] == {'source':'s0', 'scope': 'historical_exchange',
+        'quote':'周五只是计划，还没有登记。',
+        'records':[{'citation':'first:linli','speaker':'linli','occurred_at':None}]}
     assert len(gateway.calls) == 1
     prompt, kwargs = gateway.calls[0]
     assert kwargs['request_id'] == 'recall-check:test-request'
@@ -84,7 +85,7 @@ def test_valid_quote_retains_originals_and_adds_interpretation_only():
     assert all('original_references' not in source for source in packet['sources'])
     assert packet['sources'][-1] == {'source': 'current', 'scope': 'current_user_statement',
                                    'text': before[-1]['content']}
-    assert '蓝色杯子已经收到了。' in packet['sources'][1]['text']
+    assert any(record['text'] == '蓝色杯子已经收到了。' for record in packet['sources'][1]['text'])
 
 
 def test_checked_context_keeps_conflicting_quotes_recent_chat_and_selected_originals():
@@ -100,8 +101,8 @@ def test_checked_context_keeps_conflicting_quotes_recent_chat_and_selected_origi
     result = prepare(messages, Gateway(value))
     check = projected(result)
     assert check['status'] == 'checked'
-    assert check['findings'][0]['status'] == 'conflicting'
-    assert len(check['findings'][0]['citations']) == 2
+    assert check['events'][0]['disputed'] is True
+    assert len(check['events'][0]['originals']) == 2
     assert recent in result[0]['content'] and canon in result[0]['content']
     assert '蓝色杯子已经收到了。' in result[0]['content']
     assert '[ORIGINAL_CORRESPONDENCE_UNTRUSTED]' in result[0]['content']
@@ -130,7 +131,7 @@ def test_quote_from_another_source_is_rejected_even_when_present_in_window():
     result = prepare(messages, gateway)
 
     assert projected(result)['status'] == 'unavailable'
-    assert projected(result)['findings'] == []
+    assert projected(result)['events'] == []
     assert result[0]['content'].startswith(messages[0]['content'])
     assert len(gateway.calls) == 1
 
@@ -166,7 +167,7 @@ def test_invalid_check_degrades_explicitly_without_altering_originals(text):
     result = prepare(messages, gateway)
 
     assert projected(result)['status'] == 'unavailable'
-    assert projected(result)['findings'] == []
+    assert projected(result)['events'] == []
     assert messages == before
     assert result[0]['content'].startswith(before[0]['content'])
     assert result[1] == before[1]
@@ -226,7 +227,10 @@ def test_no_history_avoids_preflight(system):
 
     result = prepare(messages, gateway)
 
-    assert result == tuple(messages)
+    assert result[-1] == messages[-1]
+    assert result[0]['content'].startswith(system)
+    if '<evidence_use>' in system:
+        assert projected(result)['reason'] == 'no_history'
     assert gateway.calls == []
 
 
@@ -234,7 +238,9 @@ def test_non_live_test_gateway_does_not_gain_an_extra_generation():
     gateway = Gateway()
     gateway.config = SimpleNamespace(provider='mock')
     messages = history_messages()
-    assert prepare(messages, gateway) == tuple(messages)
+    result = prepare(messages, gateway)
+    assert projected(result)['reason'] == 'not_enabled'
+    assert result[-1] == messages[-1]
     assert gateway.calls == []
 
 
@@ -242,14 +248,15 @@ def test_large_interpretation_is_explicitly_unavailable_when_only_marker_fits():
     messages = history_messages()
     value = finding()
     value['findings'] *= 12
+    value['findings'][0]['event']['action'] = '具体计划' * 50
     gateway = Gateway(value)
 
-    result = prepare(messages, gateway, budget=2000)
+    result = prepare(messages, gateway, budget=5000)
 
     assert len(gateway.calls) == 1
     assert projected(result)['status'] == 'unavailable'
     assert projected(result)['reason'] == 'capacity'
-    assert sum(len(message['content']) for message in result) <= 2000
+    assert sum(len(message['content']) for message in result) <= 5000
     assert result[0]['content'].startswith(messages[0]['content'])
 
 
@@ -300,8 +307,8 @@ def test_recent_chat_accepts_decoded_quotes_and_newlines(channel, speaker):
 
     check = projected(result)
     assert check['status'] == 'checked'
-    assert check['findings'][0]['citations'] == [{'source': 's0', 'quote': quote}]
-    assert check['source_scopes'] == {'s0': 'correspondence_or_memory'}
+    assert check['events'][0]['originals'] == ['o0']
+    assert check['originals']['o0'] == {'source': 's0', 'quote': quote, 'scope': 'correspondence_or_memory'}
     assert messages == before
     assert result[0]['content'].startswith(before[0]['content'])
     assert len(gateway.calls) == 1
@@ -314,8 +321,8 @@ def test_sharing_is_not_projected_as_a_demand_to_verify_every_memory():
     value.update(reply_intent='sharing', direct_questions=[])
     result = prepare(messages, Gateway(value))
     assert projected(result)['status'] == 'checked'
-    assert projected(result)['reply_intent'] == 'sharing'
-    assert projected(result)['direct_questions'] == []
+    assert projected(result)['current_turn']['intent'] == 'sharing'
+    assert projected(result)['current_turn']['questions'] == []
 
 
 def test_check_cannot_invent_a_question_on_behalf_of_the_user():
@@ -332,13 +339,10 @@ def test_invalid_topic_does_not_discard_other_verified_topics_or_promote_bad_cit
     result = prepare(history_messages(), Gateway(value))
     check = projected(result)
     assert check['status'] == 'partial'
-    assert check['findings'][0]['status'] == 'confirmed'
-    assert check['findings'][0]['citations'][0]['matched_originals'][0]['citation'] == 'first:linli'
-    invalid = check['findings'][1]
-    assert invalid['status'] == 'uncertain'
-    assert invalid['event_stage'] == 'unknown'
-    assert invalid['citations'] == []
-    assert '收到蓝色杯子' not in invalid['finding']
+    assert check['events'][0]['interpretation']['assessment'] == 'confirmed'
+    assert check['originals']['o0']['source'] == 's0'
+    assert len(check['events']) == 1
+    assert len(check['originals']) == 1
     assert 's159' not in result[0]['content']
 
 
@@ -349,6 +353,6 @@ def test_decoded_recent_chat_quote_still_cannot_cite_a_different_source():
     result = prepare(messages, gateway)
 
     assert projected(result)['status'] == 'unavailable'
-    assert projected(result)['findings'] == []
+    assert projected(result)['events'] == []
     assert result[0]['content'].startswith(messages[0]['content'])
     assert len(gateway.calls) == 1

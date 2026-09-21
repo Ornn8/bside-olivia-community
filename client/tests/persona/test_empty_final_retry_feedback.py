@@ -123,7 +123,9 @@ def test_real_adapter_empty_stop_reaches_reviewer_feedback(monkeypatch, second_e
     assert focus[1]["messages"][0]["content"] == focus[0]["messages"][0]["content"] + FEEDBACK
     assert focus[1]["messages"][1:] == focus[0]["messages"][1:]
     assert all(body["thinking"] == {"type": "enabled"} and body["reasoning_effort"] == "max"
-               and "response_format" not in body for _,body in bodies)
+               for _, body in bodies)
+    assert all(body.get('response_format') == ({'type': 'json_object'} if layer == 'autonomy_life' else None)
+               for layer, body in bodies)
     assert "PRIVATE_SYNTHETIC_REASONING" not in json.dumps(bodies)
     if second_empty:
         assert result.error_code == "REVIEWER_UNAVAILABLE"

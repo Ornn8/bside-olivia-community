@@ -61,8 +61,10 @@ def test_one_generation_call_metadata_does_not_reach_review():
     result=asyncio.run(pipeline.run(ReplyRequest(messages=({'role':'system','content':'按人设写信。'},{'role':'user','content':'今天怎么样？'})),context))
     assert writer.calls==1 and result.rewrite_calls==0
     assert result.text=='今天练琴很顺。' and result.sticker_id=='linli-07'
-    assert '[[sticker:' in writer.messages[0]['content']
-    assert 'linli-27' not in writer.messages[0]['content']
+    assert writer.messages[-2]['role'] == 'system'
+    assert '[[sticker:' in writer.messages[-2]['content']
+    assert 'linli-27' not in writer.messages[-2]['content']
+    assert writer.messages[-1] == {'role': 'user', 'content': '今天怎么样？'}
 
 
 def test_persisted_metadata_is_only_exposed_after_publication():

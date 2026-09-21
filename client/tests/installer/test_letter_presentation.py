@@ -40,7 +40,9 @@ def test_one_call_body_never_contains_signature_or_sticker():
     assert writer.calls == 1
     assert result.text == '第一段。\n\n第二段。'
     assert result.signature == '阿离' and result.sticker_id == 'linli-07'
-    assert '用户自己的名字' in writer.messages[0]['content']
+    assert writer.messages[-2]['role'] == 'system'
+    assert '用户自己的名字' in writer.messages[-2]['content']
+    assert writer.messages[-1] == {'role': 'user', 'content': '阿离，今天怎么样？'}
 
 
 def test_signature_is_only_displayed_on_published_new_letters():

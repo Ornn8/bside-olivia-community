@@ -4,6 +4,15 @@ from datetime import datetime, timezone
 from runtime.personal_chat.context import chat_context
 
 
+def test_recent_dialogue_uses_capacity_before_older_retrieval():
+    rows = [dict(letter_id=str(i), delivery_status='DELIVERED', channel='qq',
+                 created_at=i, content='用户原文' * 130, reply_text='角色原文' * 130)
+            for i in range(4)]
+    recent, historical = chat_context(rows, query='原文', now=datetime.now(timezone.utc))
+    assert len(json.loads(recent)['letters']) == 4
+    assert len(recent) + len(historical) <= 6000
+
+
 def test_current_chat_clock_does_not_reuse_old_receipt():
     import local_server
     from runtime.personal_chat.presentation import CURRENT
