@@ -107,6 +107,40 @@ def test_portable_tool_schema_keeps_duplicate_validation_local():
     assert result.diagnostic["failure_detail"] == "route_contexts"
 
 
+def test_automatic_voice_accepts_fulfill_metadata_without_inventing_explicit_request():
+    from letter_triage import explicitly_requested_route
+    result, gateway = _route(
+        context=RoutingContext(voice_reply_available=True),
+        mode="voice_reply", reason_code="detailed_chat_voice_priority",
+        emotion_level="mixed", request_disposition="fulfill",
+        direct_response_sufficient=False, voice_materially_better=True,
+    )
+    assert result.status == "completed"
+    assert result.reply_mode == "voice_reply"
+    assert result.request_disposition == "none"
+    assert result.music_contexts == ()
+    assert explicitly_requested_route(result) is None
+    assert len(gateway.requests) == 1
+
+
+@pytest.mark.parametrize("overrides", [
+    {"direct_response_sufficient": True},
+    {"voice_materially_better": False},
+    {"character_willing": False},
+    {"music_materially_better": True},
+    {"context": RoutingContext(voice_reply_available=False)},
+    {"request_disposition": "refuse"},
+    {"request_disposition": "defer"},
+])
+def test_automatic_voice_metadata_compatibility_keeps_media_guards(overrides):
+    args = dict(context=RoutingContext(voice_reply_available=True),
+                mode="voice_reply", request_disposition="fulfill",
+                direct_response_sufficient=False, voice_materially_better=True)
+    args.update(overrides)
+    result, _ = _route(**args)
+    assert result.status == "unavailable"
+
+
 def test_spoken_only_video_mode_fails_closed_to_text():
     result, _ = _route(
         mode="spoken_video",

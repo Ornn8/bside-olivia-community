@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-SETTINGS_UI_VERSION = "p03.original-settings-manage.v42"
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v43"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
@@ -2958,6 +2958,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         .olivia-compose-navigation{display:flex;gap:12px;grid-row:1}
         .olivia-compose-navigation button{padding:10px 22px}
         .olivia-compose-grid>.olivia-compose-body,.olivia-compose-music{grid-row:2;grid-column:1;min-height:0;overflow:auto;width:100%!important;box-sizing:border-box}
+        .olivia-compose-grid>.olivia-compose-body{overflow:hidden}
+        .olivia-compose-grid .mail-box-write-dialog-content{width:100%;height:100%;min-width:0;min-height:0;margin:0;aspect-ratio:auto;box-sizing:border-box;padding:16px 142px 16px 16px;overflow:hidden}
+        .olivia-compose-grid .mail-box-write-dialog-content-textarea{display:block;width:100%;height:100%;min-width:0;min-height:0;margin:0;box-sizing:border-box;overflow-x:hidden;overflow-y:auto;overflow-wrap:anywhere}
         .olivia-compose-music{display:grid;grid-template-rows:auto minmax(0,1fr);gap:20px;overflow:hidden}
         .olivia-music-tabs{display:flex;gap:24px;border-bottom:1px solid #45464b}
         .olivia-music-tabs button{padding:0 0 12px;border:0!important;border-radius:0;background:transparent!important;color:#b8b9bf;min-height:38px}
