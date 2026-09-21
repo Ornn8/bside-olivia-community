@@ -6,7 +6,7 @@ import base64
 from pathlib import Path
 
 
-SETTINGS_UI_VERSION = "p03.original-settings-manage.v44"
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v45"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
@@ -2449,35 +2449,13 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     backdrop.addEventListener("keydown", (event) => { if (event.key === "Escape") backdrop.remove(); });
     document.body.append(backdrop); close.focus(); renderLocalSongs(panel);
   };
-  const syncMusicMode = () => {
-    const select = document.querySelector('[data-olivia-music-mode]');
-    if (!select) return;
-    const player = window.__oliviaMusicPlayback;
-    select.disabled = !player;
-    select.value = player?.mode === "shuffle" ? "shuffle" : "repeat";
-  };
-  window.addEventListener("olivia-music-mode-changed", syncMusicMode);
   const mountLocalSongEntry = () => {
     if (window.location.hash.split("?")[0] !== "#/studio") {
-      document.querySelector('[data-olivia-music-mode]')?.remove();
       document.querySelector('[data-olivia-local-songs-entry]')?.remove(); return;
     }
     if (document.querySelector('[data-olivia-local-songs-entry]')) return;
     const navigation = document.querySelector('[data-olivia-main-navigation]');
     if (!navigation) return;
-    const mode = document.createElement("select");
-    mode.dataset.oliviaMusicMode = "";
-    mode.setAttribute("aria-label", "曲库播放方式");
-    for (const [value, label] of [["repeat", "顺序播放"], ["shuffle", "随机播放"]]) {
-      const option = document.createElement("option");
-      option.value = value; option.textContent = label; mode.append(option);
-    }
-    Object.assign(mode.style, {minHeight: "36px", borderRadius: "18px", padding: "0 12px",
-      background: "#18191b", color: "#dcd7cf", border: "1px solid #666", flexShrink: "0"});
-    mode.addEventListener("change", () => {
-      window.__oliviaMusicPlayback?.setMode(mode.value); syncMusicMode();
-    });
-    navigation.append(mode); syncMusicMode();
     const entry = button("导入本地演奏", openLocalSongs);
     entry.dataset.oliviaLocalSongsEntry = "";
     Object.assign(entry.style, {whiteSpace: "nowrap", flexShrink: "0", minHeight: "36px"});

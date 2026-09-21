@@ -56,31 +56,27 @@ window.__oliviaLocalSongCatalog.songs.value=[];O({event:'ended'});assert.equal(f
     assert result.returncode == 0, result.stderr
 
 
-def test_music_selector_clicks_and_route_lifecycle(tmp_path):
+def test_local_music_entry_clicks_and_route_lifecycle(tmp_path):
     browser = Path('C:/Program Files/Google/Chrome/Application/chrome.exe')
     if not browser.is_file():
         pytest.skip('Headless Chromium unavailable')
     source = BOOTSTRAP_JAVASCRIPT
-    ui = source[source.index('  const syncMusicMode ='):source.index('  const isSettingsRoute =')]
+    ui = source[source.index('  const mountLocalSongEntry ='):source.index('  const isSettingsRoute =')]
     page = tmp_path / 'music.html'
     page.write_text('''<!doctype html><meta charset="utf-8">
 <nav data-olivia-main-navigation></nav><pre id="result"></pre><script>
 const button=(label,fn)=>{const b=document.createElement('button');b.textContent=label;b.onclick=fn;return b};
-const openLocalSongs=()=>{};
+let opened=0;const openLocalSongs=()=>{opened++};
 ''' + ui + '''
 const check=(ok,label)=>{if(!ok)throw Error(label)};
 try {
 location.hash='#/studio';mountLocalSongEntry();
-let select=document.querySelector('select');check(select.disabled,'wait for native store');
-window.__oliviaMusicPlayback={mode:'repeat',setMode(mode){this.mode=mode}};
-window.dispatchEvent(new Event('olivia-music-mode-changed'));
-check(!select.disabled&&select.value==='repeat','default sequential');
-check([...select.options].map(o=>o.textContent).join(',')==='顺序播放,随机播放','labels');
-select.value='shuffle';select.dispatchEvent(new Event('change'));
-check(window.__oliviaMusicPlayback.mode==='shuffle','native mode changed');
-mountLocalSongEntry();check(document.querySelectorAll('select').length===1,'no duplicate');
-location.hash='#/collection';mountLocalSongEntry();check(!document.querySelector('select'),'remove');
-location.hash='#/studio';mountLocalSongEntry();check(document.querySelector('select').value==='shuffle','retain native state');
+let entry=document.querySelector('[data-olivia-local-songs-entry]');
+check(entry.textContent==='导入本地演奏','local import exists');entry.click();check(opened===1,'opens library');
+check(!document.querySelector('select'),'mode uses native toolbar');
+mountLocalSongEntry();check(document.querySelectorAll('button').length===1,'no duplicate');
+location.hash='#/collection';mountLocalSongEntry();check(!document.querySelector('button'),'remove');
+location.hash='#/studio';mountLocalSongEntry();check(document.querySelector('button'),'restore entry');
 document.getElementById('result').textContent='PASS';
 }catch(e){document.getElementById('result').textContent='FAIL:'+e.message}
 </script>''', encoding='utf-8')
@@ -90,3 +86,28 @@ document.getElementById('result').textContent='PASS';
                              '--dump-dom', page.as_uri()], capture_output=True, text=True,
                             encoding='utf-8', errors='replace', timeout=60)
     assert '<pre id="result">PASS</pre>' in result.stdout, result.stdout[-2000:]
+
+
+def test_native_mode_button_works_offline_and_upgrades_existing_patch(tmp_path):
+    # Native toolbar fragment, executed with the offline flag enabled. The
+    # existing store handler owns the state; the button must not add a player.
+    fragment = '''o(t)?Y("",!0):(r(),_("div",{key:0,class:"w-8 h-8 flex items-center justify-center cursor-pointer hover:bg-grey-1 rounded-1",onClick:g},[o(l)===o(ot).Repeat?(r(),F(A,{key:0,type:"repeat"})):o(l)===o(ot).Shuffle?(r(),F(A,{key:1,type:"shuffle"})):o(l)===o(ot).Single?(r(),F(A,{key:2,type:"repeatsingle",class:"text-headline-m text-info hover:text-info-hover active:text-info-active"})):Y("",!0)])),o(t)?Y("",!0):(r(),_("div",{key:1},[]))'''
+    source = 'window.__oliviaMusicPlayback={};function render(){return ['+fragment+']}'
+    patched = patch_music_playback(source)
+    assert patched != source
+    assert patch_music_playback(patched) == patched
+    script = '''const assert=require('node:assert/strict');global.window={};
+const t=true,ot={Repeat:'repeat',Shuffle:'shuffle',Single:'single'},A='icon';
+let l='repeat';const o=x=>x,r=()=>{},Y=()=>null;
+const _=(tag,props,children,flag,dynamic)=>({tag,props,children,flag,dynamic}),F=_;
+const g=()=>{l=l==='repeat'?'shuffle':'repeat'};
+''' + patched + '''
+let button=render()[0];assert.equal(button.tag,'button');
+assert.equal(button.props['aria-label'],'顺序播放');
+assert.deepEqual(button.dynamic,['title','aria-label']);
+button.props.onClick();button=render()[0];assert.equal(l,'shuffle');
+assert.equal(button.props['aria-label'],'随机播放');assert.match(button.props.title,/切换为顺序/);
+button.props.onClick();assert.equal(l,'repeat');
+'''
+    result = subprocess.run([shutil.which('node'), '-e', script], capture_output=True, text=True, encoding='utf-8')
+    assert result.returncode == 0, result.stderr
