@@ -74,13 +74,15 @@ def test_missing_shared_spoken_scene_fails_before_submission(tmp_path, monkeypat
     assert error.value.code == 'GPU_SHARED_SCENE_MISSING'
 
 
-def test_billing_reads_server_amounts_and_rejects_invalid_money():
+@pytest.mark.parametrize('mode', ['simulation', 'money'])
+def test_billing_reads_server_amounts_and_rejects_invalid_money(mode):
     async def scenario():
-        account = {'mode': 'simulation', 'currency': 'CNY', 'opening_cents': 10000,
+        account = {'mode': mode, 'currency': 'CNY', 'opening_cents': 10000,
                    'balance_cents': 9985, 'spent_cents': 15,
                    'charges': [{'task_id': 'task-1', 'amount_cents': 15,
                                 'pricing_version': 'test-v1', 'stages': []}]}
-        prices = {'billing_enabled': False, 'pricing': None}
+        prices = {'billing_enabled': mode == 'money', 'pricing': {'mode': mode, 'currency': 'CNY',
+            'version': 'test-v1', 'base_micros_per_hour': 3600000, 'utilization': '1', 'multipliers': {'lipsync': '1.25'}}}
         async def handler(request):
             assert request.method == 'GET'
             assert request.headers['Authorization'] == 'Bearer synthetic'

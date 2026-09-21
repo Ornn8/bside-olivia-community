@@ -10,6 +10,34 @@ import sys
 import subprocess
 import time
 import uuid
+from contextlib import contextmanager
+
+
+@contextmanager
+def singing_only(decoder, enabled):
+    """The original rank-128 adapter concatenates structure then singing (64 each)."""
+    if not enabled:
+        yield
+        return
+    import torch
+    saved = []
+    try:
+        with torch.no_grad():
+            for layer in decoder.modules():
+                for name in decoder.active_adapters:
+                    if hasattr(layer, 'lora_B') and name in layer.lora_B:
+                        weight = layer.lora_B[name].weight
+                        if weight.shape[1] != 128:
+                            raise RuntimeError('ORIGINAL_ADAPTER_LAYOUT_INVALID')
+                        saved.append((weight, weight[:, :64].clone()))
+                        weight[:, :64].zero_()
+        if not saved:
+            raise RuntimeError('ORIGINAL_ADAPTER_NOT_LOADED')
+        yield
+    finally:
+        with torch.no_grad():
+            for weight, original in saved:
+                weight[:, :64].copy_(original)
 
 
 CAPTION = ("linli_voice, pop ballad, gentle and tender female singing in a natural "
@@ -138,9 +166,6 @@ def run(request_path, *, cache=None, resident_options=None):
     import numpy as np
     import soundfile as sf
     import torch
-    from peft import PeftModel
-    from torchao.quantization import Int8WeightOnlyConfig, quantize_
-    from acestep.handler import AceStepHandler
     from acestep.inference import GenerationConfig, GenerationParams, generate_music
 
     torch.set_num_threads(4)
@@ -172,27 +197,54 @@ def run(request_path, *, cache=None, resident_options=None):
         if cache is not None:cache['models']=(handler,quantized,layers)
     if cache is not None:
         handler.model.decoder.set_adapter(request.get('_resident_adapter','default'))
+    needs_lm = task_type == 'text2music' and any(request.get(k, False) for k in
+        ('thinking', 'use_cot_metas', 'use_cot_caption', 'use_cot_language'))
+    music_lm = None
+    lm_path = root / 'checkpoints' / 'acestep-5Hz-lm-1.7B'
+    if needs_lm or (request.get('_preload_only') and lm_path.is_dir()):
+        if cache is not None and 'music_lm' in cache:
+            music_lm = cache['music_lm']
+        else:
+            if not lm_path.is_dir():
+                raise RuntimeError('ORIGINAL_PLANNING_MODEL_MISSING')
+            from acestep.llm_inference import LLMHandler
+            music_lm = LLMHandler()
+            _, ready = music_lm.initialize(checkpoint_dir=str(root / 'checkpoints'),
+                lm_model_path=lm_path.name, backend='pt', device='cuda',
+                offload_to_cpu=False, dtype=torch.bfloat16)
+            if not ready:
+                raise RuntimeError('ORIGINAL_PLANNING_MODEL_LOAD_FAILED')
+            if cache is not None:
+                cache['music_lm'] = music_lm
     if cache is not None and request.get('_preload_only'):
         progress('ready')
         return
     params = GenerationParams(
         task_type=task_type, src_audio=str(source) if source is not None else None, reference_audio=request["reference"],
-        caption=request.get("caption", CAPTION), lyrics=lyrics, vocal_language=language, duration=duration,
+        caption='' if task_type == 'cover' else request.get("caption", CAPTION), lyrics=lyrics, vocal_language=language, duration=duration,
         **({key: request[key] for key in ("bpm", "keyscale", "timesignature")} if task_type == "text2music" else {}),
-        audio_cover_strength=.8, cover_noise_strength=.08, inference_steps=50,
+        audio_cover_strength=request.get('audio_cover_strength', .6) if task_type == 'cover' else .8,
+        cover_noise_strength=request.get('cover_noise_strength', .25) if task_type == 'cover' else .08, inference_steps=50,
         guidance_scale=7., shift=1., infer_method="ode", sampler_mode="euler", seed=200717,
         thinking=False, use_cot_metas=False, use_cot_caption=False,
         use_cot_language=False, use_cot_lyrics=False, dcw_enabled=False)
+    if task_type == 'text2music':
+        for name, default in dict(guidance_scale=7., inference_steps=50, seed=200717,
+                thinking=False, use_cot_metas=False, use_cot_caption=False,
+                use_cot_language=False, use_adg=True).items():
+            setattr(params, name, request.get(name, default))
     params.instruction = handler.generate_instruction(task_type=task_type)
     (job / "generation.private.json").write_text(json.dumps(params.to_dict(), ensure_ascii=False), encoding="utf-8")
     progress("generating", duration_seconds=duration)
     torch.cuda.reset_peak_memory_stats()
     started = time.monotonic()
     raw_output = job / "raw" / uuid.uuid4().hex
-    with torch.inference_mode():
-        result = generate_music(handler, None, params, GenerationConfig(
-            batch_size=1, use_random_seed=False, seeds=[200717], audio_format="flac"), save_dir=str(raw_output),
-            progress=lambda value, **_: progress("decoding" if value >= .8 else "generating", duration_seconds=duration))
+    with singing_only(handler.model.decoder, task_type == 'text2music'), torch.inference_mode():
+        torch.manual_seed(params.seed)
+        torch.cuda.manual_seed_all(params.seed)
+        result = generate_music(handler, music_lm if needs_lm else None, params, GenerationConfig(
+            batch_size=1, use_random_seed=False, seeds=[params.seed], audio_format="flac"), save_dir=str(raw_output),
+            progress=lambda value, *args, **_: progress("decoding" if value >= .8 else "generating", duration_seconds=duration))
     if not result.success:
         print(str(result.error), file=sys.stderr, flush=True)
         raise RuntimeError("COVER_GENERATION_FAILED")
@@ -208,6 +260,7 @@ def run(request_path, *, cache=None, resident_options=None):
              generation_seconds=time.monotonic() - started,
              peak_allocated_mib=torch.cuda.max_memory_allocated() / 2**20,
              quantized_layers=len(quantized), lora_layers=len(layers),
+             lora_enabled=True,
              lyrics_source="provided" if request.get("lyrics") else "asr_unverified")
 
 

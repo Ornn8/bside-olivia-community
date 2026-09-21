@@ -12,13 +12,48 @@ def mount_cloud_api(app, service, setup, gpu_settings=None):
     from runtime.gpu_settings import GPUSettings
     gpu_settings = gpu_settings or GPUSettings(service.path.parent)
     gpu_settings.load()
-    # Independent GPU credentials; never inherit account-service authentication.
+    from runtime.music_settings import MusicSettings
+    music_settings = MusicSettings(service.path.parent)
+    music_settings.load()
+    # Only explicit selection shares Olivia credentials; custom servers never receive them.
     async def generation(request):
         origin = _authorize(request, confirm=True)
         setup.require_session(request.headers.get(SESSION_HEADER, ''))
         body = await _body(request)
         operation = body.pop('action', None)
         try:
+            if operation == 'settings_use_olivia':
+                if body:
+                    raise CloudError('GPU_REQUEST_INVALID', 400)
+                getter = app.get('olivia_relay_stored_key')
+                key = getter() if getter else None
+                if not key:
+                    raise CloudError('RELAY_NOT_CONFIGURED', 400)
+                url = 'https://175.24.191.6'
+                await gpu_settings.test(url, key)
+                return web.json_response(gpu_settings.save('remote', url, key), headers=_headers(origin))
+            if operation == 'billing_quote':
+                if set(body) != {'video'} or type(body['video']) is not bool:
+                    raise CloudError('GPU_REQUEST_INVALID', 400)
+                if gpu_settings.environment.get('OLIVIA_GPU_ROUTE') != 'remote':
+                    return web.json_response({'status': 'OK', 'paid': False}, headers=_headers(origin))
+                api = RemoteGeneration(gpu_settings.environment.get('OLIVIA_GPU_API_URL', ''), gpu_settings.environment.get('OLIVIA_GPU_API_KEY', ''))
+                caps = await api.request('capabilities', {})
+                paid = caps.get('billing_enabled') is True
+                result = {'status': 'OK', 'paid': paid}
+                if paid:
+                    amount = caps.get('reservation_cents', {}).get('video' if body['video'] else 'audio')
+                    if type(amount) is not int or amount != (500 if body['video'] else 100):
+                        raise CloudError('GPU_RESPONSE_INVALID', 502)
+                    account = await api.request('billing_account', {})
+                    if account['balance_cents'] < amount:
+                        raise CloudError('GPU_INSUFFICIENT_BALANCE', 402)
+                    result.update(max_charge_cents=amount, balance_cents=account['balance_cents'])
+                return web.json_response(result, headers=_headers(origin))
+            if operation == 'music_settings_status' and not body:
+                return web.json_response(music_settings.status(), headers=_headers(origin))
+            if operation == 'music_settings_save' and set(body) == {'options'}:
+                return web.json_response(music_settings.save(body['options']), headers=_headers(origin))
             if operation == 'settings_status' and not body:
                 return web.json_response(gpu_settings.status(), headers=_headers(origin))
             if operation == 'settings_save' and set(body) == {'route', 'url', 'key'}:

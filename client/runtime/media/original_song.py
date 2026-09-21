@@ -38,6 +38,8 @@ def render_original_reply(content, reply_text, output_path, *, environment,
     if not enabled(environment) and not original_configured(environment):
         raise MusicReplyError("ORIGINAL_RUNTIME_UNAVAILABLE")
     audio = output_path.with_name(output_path.stem + "-original.wav") if render_video else output_path
+    from runtime.media.music_options import from_environment, generation_parameters
+    music_options = from_environment(environment)
     try:
         planner_options = {"gateway": gateway} if gateway is not None else {}
         if reply_adapter is not None:
@@ -49,13 +51,12 @@ def render_original_reply(content, reply_text, output_path, *, environment,
         raise MusicReplyError("SONG_CONTENT_UNAVAILABLE") from exc
     if render_video and enabled(environment):
         from runtime.media.remote_materials import render_music_materials
-        return render_music_materials('original_video', {'lyrics': plan.lyrics}, output_path,
+        return render_music_materials('original_video', {'lyrics': plan.lyrics, 'music_options': music_options}, output_path,
             environment=environment, include_spoken=include_spoken, reply_text=reply_text, **video_options)
     try:
-        metadata = generate('original', {'lyrics': plan.lyrics}, audio, environment=environment) if enabled(environment) else generate_ace(None, audio, environment=environment, paths=original_paths(environment),
+        metadata = generate('original', {'lyrics': plan.lyrics, 'music_options': music_options}, audio, environment=environment) if enabled(environment) else generate_ace(None, audio, environment=environment, paths=original_paths(environment),
             lyrics=plan.lyrics, language="zh", task_type="text2music",
-            parameters={"caption": CAPTION, "duration": 110, "bpm": 68,
-                        "keyscale": "Bb major", "timesignature": "4"})
+            parameters=generation_parameters(music_options, CAPTION))
     except CoverError as exc:
         raise MusicReplyError(str(exc)) from None
     if not render_video:

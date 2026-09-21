@@ -11,7 +11,7 @@ def test_offline_mailbox_loads_and_only_allows_local_letter_requests(tmp_path):
     _repair_mailbox_write_access(tmp_path)
     source=main.read_text(encoding='utf-8')
     assert 'p.value||d.fetchMailList' not in source
-    helper=source[source.index('function oliviaLocalMailboxRequest'):source.index('Te.interceptors.request.use')]
+    helper=source[source.index('function oliviaLocalMailboxRequest'):source.index('Te.interceptors.response.use')]
     script='const document={querySelector:()=>({dataset:{apiBase:"http://127.0.0.1:18999/"}})};'+helper+'''
 const check=(url,baseURL)=>oliviaLocalMailboxRequest({url,baseURL});
 console.log(JSON.stringify([

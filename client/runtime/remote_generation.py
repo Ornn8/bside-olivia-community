@@ -68,6 +68,7 @@ class RemoteGeneration:
                 raise CloudError('GPU_REQUEST_INVALID', 400)
             payload = data
             headers['Idempotency-Key'] = data['request_id']
+            headers['X-Olivia-Max-Charge-Cents'] = str(500 if data['kind'] in ('video', 'lipsync', 'cover_video', 'original_video') else 100)
             path, method = '/v1/tasks', 'POST'
         elif action == 'capabilities' and data == {}:
             path, method = '/v1/capabilities', 'GET'
@@ -92,6 +93,8 @@ class RemoteGeneration:
             async with ClientSession(timeout=ClientTimeout(total=20), trust_env=False, connector=TCPConnector(ssl=gpu_tls_context())) as session:
                 async with session.request(method, self.url + path, data=encoded, headers=headers, allow_redirects=False) as response:
                     if response.status in (401, 403): raise CloudError('GPU_AUTH_FAILED', 502)
+                    if response.status == 402: raise CloudError('GPU_INSUFFICIENT_BALANCE', 402)
+                    if response.status == 428: raise CloudError('GPU_BILLING_CONSENT_REQUIRED', 428)
                     if response.status == 429: raise CloudError('GPU_QUEUE_FULL', 429)
                     if response.status not in (200, 201, 202):
                         raise CloudError('GPU_REQUEST_FAILED', response.status)
@@ -105,10 +108,10 @@ class RemoteGeneration:
                 def money(value):
                     return type(value) is int and abs(value) <= 9007199254740991
                 if action == 'billing_prices':
-                    if result.get('billing_enabled') is not False or 'pricing' not in result: raise ValueError()
+                    if type(result.get('billing_enabled')) is not bool or 'pricing' not in result: raise ValueError()
                     tariff = result['pricing']
                     if tariff is not None:
-                        if (not isinstance(tariff, dict) or tariff.get('mode') != 'simulation'
+                        if (not isinstance(tariff, dict) or tariff.get('mode') != ('money' if result['billing_enabled'] else 'simulation')
                                 or tariff.get('currency') != 'CNY' or not isinstance(tariff.get('version'), str)
                                 or not money(tariff.get('base_micros_per_hour')) or tariff['base_micros_per_hour'] < 0
                                 or not isinstance(tariff.get('utilization'), str)
@@ -117,7 +120,7 @@ class RemoteGeneration:
                         for value in tariff['multipliers'].values():
                             if not isinstance(value, str) or not re.fullmatch(r'[0-9]+(?:\.[0-9]+)?', value): raise ValueError()
                 else:
-                    if (result.get('mode') != 'simulation' or result.get('currency') != 'CNY'
+                    if (result.get('mode') not in ('simulation', 'money') or result.get('currency') != 'CNY'
                             or not all(money(result.get(k)) for k in ('opening_cents', 'balance_cents', 'spent_cents'))
                             or not isinstance(result.get('charges'), list)): raise ValueError()
                     for charge in result['charges']:

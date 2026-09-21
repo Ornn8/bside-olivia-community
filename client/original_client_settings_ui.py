@@ -3,10 +3,30 @@
 from __future__ import annotations
 
 
-SETTINGS_UI_VERSION = "p03.original-settings-manage.v40"
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v42"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
+
+  window.__oliviaExplainRelayFailure = payload => {
+    const data = payload?.data || payload;
+    const messages = {
+      LLM_QUOTA_EXHAUSTED: "大模型服务余额或额度不足，请检查中转账户；重复寄信不会恢复额度。",
+      LLM_AUTH_FAILED: "大模型服务认证失败，请检查当前账户或 Key 是否有效。",
+      LLM_USAGE_PENDING: "这次模型请求中断，用量正在等待核对。请保留诊断包，暂勿反复寄信。",
+      LLM_REQUEST_DUPLICATE: "这次请求已经提交，请先查看原信件状态，避免重复寄出。"
+    };
+    const message = messages[data?.error_code] || messages[payload?.message];
+    if (!message || document.getElementById("olivia-relay-error")) return;
+    const box = document.createElement("div");
+    box.id = "olivia-relay-error"; box.setAttribute("role", "alert");
+    box.style.cssText = "position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:2147483647;max-width:calc(100vw - 48px);padding:16px 20px;border:1px solid #777;border-radius:12px;background:#202124;color:#f3f0e8;box-shadow:0 4px 24px #0008;line-height:1.6";
+    const text = document.createElement("span"); text.textContent = message;
+    const close = document.createElement("button"); close.type = "button";
+    close.textContent = "知道了"; close.style.cssText = "margin-left:16px;padding:4px 12px;cursor:pointer";
+    close.addEventListener("click", () => box.remove());
+    box.append(text, close); document.body.append(box);
+  };
 
   const loader = document.currentScript;
   const rawApiBase = loader && loader.dataset ? loader.dataset.apiBase : "";
@@ -496,7 +516,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   };
 
   const requestSetup = async (path, body = null) => {
-    if (path === "/toy/relay/action" && !setupSessionToken) {
+    if ((path === "/toy/relay/action" || path === "/toy/generation/action") && !setupSessionToken) {
       await requestSetup(SETUP_STATUS_PATH);
     }
     const endpoint = new URL(path, apiBase);
@@ -2934,11 +2954,41 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         .olivia-cover-time{font-size:12px;font-variant-numeric:tabular-nums;color:#b8b9bf}
         .olivia-cover-options{display:flex;gap:8px;flex-wrap:wrap}
         .olivia-compose-hint{margin:16px 0 0;color:#b8b9bf;font-size:13px}
+        .olivia-compose-grid,.olivia-compose-grid[data-mode=cover]{display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr);height:clamp(340px,56vh,560px);gap:20px;transition:none;color-scheme:dark}
+        .olivia-compose-navigation{display:flex;gap:12px;grid-row:1}
+        .olivia-compose-navigation button{padding:10px 22px}
+        .olivia-compose-grid>.olivia-compose-body,.olivia-compose-music{grid-row:2;grid-column:1;min-height:0;overflow:auto;width:100%!important;box-sizing:border-box}
+        .olivia-compose-music{display:grid;grid-template-rows:auto minmax(0,1fr);gap:20px;overflow:hidden}
+        .olivia-music-tabs{display:flex;gap:24px;border-bottom:1px solid #45464b}
+        .olivia-music-tabs button{padding:0 0 12px;border:0!important;border-radius:0;background:transparent!important;color:#b8b9bf;min-height:38px}
+        .olivia-music-tabs button[aria-pressed=true]{color:#f0eade;box-shadow:inset 0 -2px #ded9d1}
+        .olivia-compose-original,.olivia-compose-music>.olivia-compose-cover{grid-row:2;grid-column:1;overflow:auto;min-height:0;padding:0 12px 12px 0;box-sizing:border-box;width:100%!important;scrollbar-gutter:stable}
+        .olivia-compose-original{display:flex;flex-direction:column;gap:24px}
+        .olivia-original-intent{display:flex;flex-direction:column;gap:10px}
+        .olivia-original-intent textarea{width:100%;min-height:100px;resize:vertical;padding:14px 16px;border:1px solid #686a70;border-radius:12px;background:#191a1c;color:#ded9d1;box-sizing:border-box;font:inherit;line-height:1.6}
+        .olivia-original-intent small{color:#b8b9bf;font-size:13px}
+        .olivia-compose-original [data-olivia-music-settings]{border:0!important;padding:0!important}
+        .olivia-compose-original [data-olivia-music-settings] input:not([type=checkbox]),.olivia-compose-original [data-olivia-music-settings] textarea,.olivia-compose-original [data-olivia-music-settings] select{background:#191a1c!important;border-color:#686a70!important;color:#ded9d1!important}
+        .olivia-compose-original [data-olivia-music-settings] textarea{min-height:82px}
+        .olivia-compose-original [data-olivia-music-settings] summary{padding:12px 0;cursor:pointer;border-top:1px solid #45464b}
+        .olivia-compose-original [data-olivia-music-settings] button{padding:8px 16px}
+        .olivia-compose-original .olivia-cover-options{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+        .olivia-compose-original .olivia-cover-options button{padding:8px 16px}
+        .olivia-compose-grid button:hover:not(:disabled){border-color:#ded9d1}
+        .olivia-compose-grid .olivia-compose-body{transition:none!important}
+        .olivia-compose-grid .olivia-compose-body[hidden]{visibility:hidden!important;opacity:0!important;transition:none!important}
+        .olivia-compose-original [data-olivia-music-settings] label>span>span{display:block;color:#b8b9bf;font-size:13px;line-height:1.6;margin-top:3px}
+        .olivia-compose-original [data-olivia-music-settings] label>small{color:#b8b9bf;font-size:13px}
+        .olivia-compose-original [data-olivia-music-settings] form{gap:18px!important}
+        .olivia-compose-navigation button,.olivia-music-tabs button{transition:background-color .2s ease,color .2s ease,border-color .2s ease,box-shadow .2s ease}
+        @keyframes olivia-compose-enter{from{opacity:.35;transform:translateY(7px)}to{opacity:1;transform:translateY(0)}}
+        .olivia-compose-grid>.olivia-compose-body:not([hidden]),.olivia-compose-music:not([hidden]),.olivia-compose-original:not([hidden]),.olivia-compose-music>.olivia-compose-cover:not([hidden]){animation:olivia-compose-enter .24s cubic-bezier(.16,1,.3,1) both}
+        @media(prefers-reduced-motion:reduce){.olivia-compose-grid *{animation:none!important;transition:none!important}}
         @media(max-width:700px){.olivia-compose-grid{--rail:84px;--gap:8px}.olivia-compose-pane>button{font-size:12px;padding:8px 4px}.olivia-compose-cover{gap:12px}.olivia-compose-cover textarea{padding:12px}}
         @media(prefers-reduced-motion:reduce){.olivia-compose-grid,.olivia-compose-grid .olivia-compose-body{transition:none!important}}
       `;document.head.append(style);
     }
-    const state={mode:'letter',draft:input.value,material:null,busy:false,output:'audio'};
+    const state={mode:'letter',musicMode:'original',draft:input.value,material:null,busy:false,output:'audio'};
     composerCovers.set(input,state);
     const frame=paper.parentElement;
     const grid=document.createElement('div');grid.className='olivia-compose-grid';grid.dataset.mode='letter';
@@ -2950,17 +3000,29 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const select=mode=>{
       if(mode===state.mode)return;
       if(state.mode==='letter')state.draft=input.value;
-      state.mode=mode;grid.dataset.mode=mode;
-      frame.hidden=mode!=='letter';frame.inert=mode!=='letter';cover.hidden=mode!=='cover';cover.inert=mode!=='cover';
-      normal.setAttribute('aria-expanded',String(mode==='letter'));sing.setAttribute('aria-expanded',String(mode==='cover'));
-      if(mode==='letter'){audio.pause();setValue(state.draft)}else syncCoverText();
+      state.mode=mode;if(mode!=='letter')state.musicMode=mode;grid.dataset.mode=mode;
+      frame.hidden=mode!=='letter';frame.inert=mode!=='letter';music.hidden=mode==='letter';music.inert=mode==='letter';
+      cover.hidden=mode!=='cover';cover.inert=mode!=='cover';original.hidden=mode!=='original';original.inert=mode!=='original';
+      normal.setAttribute('aria-expanded',String(mode==='letter'));sing.setAttribute('aria-expanded',String(mode!=='letter'));
+      originalTab.setAttribute('aria-pressed',String(mode==='original'));coverTab.setAttribute('aria-pressed',String(mode==='cover'));
+      if(mode==='letter'){audio.pause();setValue(state.draft)}else if(mode==='original'){audio.pause();syncOriginalText()}else syncCoverText();
     };
     state.select=select;
-    const normal=button('普通信件',()=>select('letter')),sing=button('翻唱歌曲',()=>select('cover'));
+    const normal=button('普通信件',()=>select('letter')),sing=button('演唱与翻唱',()=>select(state.musicMode));
     normal.setAttribute('aria-expanded','true');sing.setAttribute('aria-expanded','false');
-    frame.before(grid);left.append(normal,frame);right.append(sing,cover);grid.append(left,right);cover.hidden=true;cover.inert=true;
+    const music=document.createElement('div');music.className='olivia-compose-music';music.hidden=true;music.inert=true;
+    const tabs=document.createElement('div');tabs.className='olivia-music-tabs';tabs.setAttribute('aria-label','歌曲类型');
+    const originalTab=button('原创演唱',()=>select('original')),coverTab=button('歌曲翻唱',()=>select('cover'));tabs.append(originalTab,coverTab);
+    const original=document.createElement('div');original.className='olivia-compose-original';original.hidden=true;
+    const intentLabel=document.createElement('label');intentLabel.className='olivia-original-intent';
+    const intent=document.createElement('textarea');intent.maxLength=8000;intent.rows=3;intent.placeholder='想听什么主题？写下故事、心情，或想对林离说的话…';
+    intentLabel.append(text('strong','这次想听她唱什么？'),intent,text('small','林离会根据你的想法写词并演唱，完成后送到信箱。'));
+    const syncOriginalText=()=>{if(state.mode==='original')setValue('请为我原创演唱一首歌曲。'+intent.value.trim())};intent.addEventListener('input',syncOriginalText);
+    original.append(intentLabel);const musicControls=mountMusicSettings(original,true);
+    const navigation=document.createElement('div');navigation.className='olivia-compose-navigation';navigation.append(normal,sing);
+    frame.before(grid);music.append(tabs,original,cover);grid.append(navigation,frame,music);cover.hidden=true;cover.inert=true;
     // Keep full-width content mounted so switching cannot reflow the paper or resize the dialog.
-    const sizeBodies=()=>{const css=getComputedStyle(grid);grid.style.setProperty('--body-width',Math.max(0,grid.clientWidth-parseFloat(css.getPropertyValue('--rail'))-parseFloat(css.columnGap))+'px')};
+    const sizeBodies=()=>{grid.style.setProperty('--body-width',grid.clientWidth+'px')};
     sizeBodies();const bodyResize=new ResizeObserver(sizeBodies);bodyResize.observe(grid);
     const status=text('p','选择原曲后自动识别歌词，你可以修改后再寄出。');status.setAttribute('role','status');
     const file=document.createElement('input');file.type='file';file.accept='.wav,.flac,.mp3,.m4a,.ogg';file.hidden=true;
@@ -2998,13 +3060,27 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const recognize=button('重新识别',()=>void transcribe());
     const labelRow=document.createElement('div');labelRow.className='olivia-cover-row';labelRow.append(text('span','歌词'),recognize);
     const options=document.createElement('div');options.className='olivia-cover-options';
+    const coverParameters=document.createElement('details');coverParameters.append(text('summary','翻唱参数'));
+    const coverFields={};
+    for(const [name,title,value,help] of [
+      ['audio_cover_strength','原曲保留强度',0.6,'控制对原曲的保留程度，推荐 0.6。'],
+      ['cover_noise_strength','翻唱噪声',0.25,'控制生成时加入的噪声强度，推荐 0.25；不是音量或降噪。']]){
+      const row=document.createElement('label');row.style.cssText='display:grid;grid-template-columns:1fr 90px;gap:8px;margin:12px 0';
+      const field=document.createElement('input');field.type='number';field.min='0';field.max='1';field.step='0.01';field.value=String(value);field.required=true;field.name=name;
+      field.style.cssText='width:100%;padding:8px;border:1px solid #8886;border-radius:8px;background:transparent;color:inherit';
+      field.setAttribute('aria-label',title);const note=text('small',help);note.style.gridColumn='1 / -1';
+      row.append(text('span',title),field,note);coverParameters.append(row);coverFields[name]=field;
+    }
+    coverParameters.append(button('恢复推荐参数',()=>{coverFields.audio_cover_strength.value='0.6';coverFields.cover_noise_strength.value='0.25'}));
     for(const [mode,label] of [['audio','音频回信'],['video','视频回信']]){const item=button(label,()=>{state.output=mode;for(const node of options.children)node.setAttribute('aria-pressed',String(node===item))});item.setAttribute('aria-pressed',String(mode==='audio'));options.append(item)}
     const update=()=>{choose.disabled=remove.disabled=lyrics.disabled=state.busy;remove.hidden=!state.material;recognize.hidden=state.lyricsOnServer===true;recognize.disabled=state.busy||!state.material};
     state.materialForSend=()=>{
+      if(state.mode==='original')return {original_output:state.originalOutput||'audio',music_options:musicControls.read()};
       if(state.busy)throw Error('原曲还在准备中，请稍候再寄出。');
       if(!state.material)throw Error('请先选择原曲。');
       if(!lyrics.value.trim()&&!state.lyricsOnServer){lyrics.focus();throw Error('请填写或识别歌词后再寄出。')}
-      return {...state.material,cover_lyrics:lyrics.value,cover_output:state.output};
+      const cover_options={};for(const [name,field] of Object.entries(coverFields)){if(!field.reportValidity())throw Error('翻唱参数请填写 0 到 1 之间的数值。');cover_options[name]=Number(field.value);}
+      return {...state.material,cover_lyrics:lyrics.value,cover_output:state.output,cover_options};
     };
     file.onchange=async()=>{
       const selected=file.files[0];if(!selected)return;
@@ -3023,13 +3099,18 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       }catch{status.textContent='上传失败，请检查音频文件后重新选择。之前的草稿和原曲仍保留。'}
       finally{state.busy=false;file.value='';update()}
     };
-    cover.append(status,sourceRow,player,labelRow,lyrics,options,text('p','翻唱完成后会出现在信箱中，也可收藏到曲库。'));
+    cover.append(status,sourceRow,player,labelRow,lyrics,coverParameters,options,text('p','翻唱完成后会出现在信箱中，也可收藏到曲库。'));
+    const originalOutput=document.createElement('div');originalOutput.className='olivia-cover-options';
+    originalOutput.append(text('span','回信形式'));
+    for(const [value,label] of [['audio','音频回信'],['video','视频回信']]){const item=button(label,()=>{state.originalOutput=value;for(const node of originalOutput.querySelectorAll('button'))node.setAttribute('aria-pressed',String(node===item))});item.setAttribute('aria-pressed',String(value==='audio'));originalOutput.append(item)}
+    original.append(originalOutput);
     const hint=text('p','切换保留内容 · 寄出当前展开的内容');hint.className='olivia-compose-hint';grid.after(hint);update();
     const shell=owner.closest('[role="dialog"],.el-dialog')||owner.parentElement;
     const clear=Array.from(shell.querySelectorAll('button')).find(node=>node.textContent.trim()==='清空');
     clear?.addEventListener('click',event=>{
-      if(state.mode!=='cover')return;
+      if(state.mode==='letter')return;
       event.preventDefault();event.stopImmediatePropagation();
+      if(state.mode==='original'){intent.value='';syncOriginalText();return}
       if(state.busy){status.textContent='原曲仍在准备中，请完成后再清空。';return}
       remove.click();status.textContent='翻唱内容已清空，普通信件草稿保留。';
     },true);
@@ -3050,10 +3131,11 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     let preview;
     const editor=coverComposer?.isConnected && coverComposer.value===body.content ? composerCovers.get(coverComposer) : null;
     let attachment=null;
-    try{if(editor?.mode==='cover')attachment=editor.materialForSend()}
+    try{if(editor && editor.mode!=='letter')attachment=editor.materialForSend()}
     catch(error){error.config=config;throw error}
     try { preview = await routeRequest("/toy/letter/route-preview", {content: body.content,
-      ...(attachment ? {cover_source_id:attachment.cover_source_id,cover_output:attachment.cover_output} : {})}); }
+      ...(attachment?.original_output ? {original_output:attachment.original_output,music_options:attachment.music_options} :
+        attachment ? {cover_source_id:attachment.cover_source_id,cover_output:attachment.cover_output} : {})}); }
     catch (error) {
       error.config = config;
       if (!/^[A-Z][A-Z0-9_]{0,95}$/.test(error.message || "")) {
@@ -3075,6 +3157,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         LLM_AUTH_FAILED:"大模型服务认证失败，请检查 API Key 和访问权限。",
         LLM_RATE_LIMITED:"大模型服务请求过于频繁，请稍后重试。",
         LLM_TIMEOUT:"大模型服务响应超时，请稍后重试。",
+        LLM_USAGE_PENDING:"这次模型请求中断，用量等待核对，请暂勿反复寄信并保留诊断包。",
+        LLM_REQUEST_DUPLICATE:"这次请求已经提交，请先查看原信件状态。",
         REPLY_ROUTE_INVALID_RESULT:"大模型返回的回信形式无法识别，请重试；若持续出现，请导出诊断包。",
         MEM0_EMBEDDING_CACHE_UNAVAILABLE:"长期记忆模型尚未安装或校验未通过。请打开本地陪伴的长期记忆页面，安装或修复模型后重试。",
         MEM0_IMPORT_FAILED:"长期记忆运行组件缺失或无法加载。请在本地陪伴中修复长期记忆组件后重试。",
@@ -3108,6 +3192,15 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     }
     delete material.route_allow_once;
     delete material.route_video_once;
+    let quote={paid:false};
+    try{if(preview.reply_mode!=='text_letter')quote=await requestSetup('/toy/generation/action',{action:'billing_quote',video:preview.video_enabled===true});}
+    catch(error){error.config=config;error.message=error.code==='GPU_INSUFFICIENT_BALANCE'?'Olivia 可用余额不足。音频需预留 ¥1，视频需预留 ¥5，请先充值。草稿已保留。':'无法核对云端生成费用，请检查云端连接后重试。草稿已保留。';throw error;}
+    if(quote.paid){
+      const cap=(quote.max_charge_cents/100).toFixed(2);
+      if(!await confirmAction(`本次云端生成将从 Olivia 余额预留 ¥${cap}，本次最多收费 ¥${cap}。成功后按实际占用结算，多余金额释放；失败全退。回信文字另按 Token 计费。确认寄出？`)){
+        throw Object.assign(new Error('已取消发送，草稿保留。'),{config,code:'ERR_CANCELED',__CANCEL__:true});
+      }
+    }
     if (once) material.route_allow_once = once;
     if (videoOnce) material.route_video_once = videoOnce;
     config.data = {...body, material};
@@ -3271,6 +3364,72 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     refreshVideoReplySetting=()=>container.isConnected ? hydrate() : Promise.resolve(); void hydrate();
   };
 
+  const mountMusicSettings = (section, composer=false) => {
+    const panel=document.createElement("section");
+    panel.setAttribute("data-olivia-music-settings","true");
+    panel.style.cssText="border-top:1px solid #8884;padding-top:24px;display:flex;flex-direction:column;gap:16px";
+    if(!composer)panel.append(text("h3","原创音乐","text-title-m"),text("p","调整下一首原创歌曲。保留演唱风格和参考音色，不影响翻唱。","text-text-secondary text-body-m"));
+    const form=document.createElement("form");form.style.cssText="display:flex;flex-direction:column;gap:16px";
+    const fields={};let defaults=null,busy=false;
+    const field=(parent,name,label,type,help)=>{
+      const row=document.createElement("label");row.style.cssText="display:flex;flex-direction:column;gap:8px";
+      const input=document.createElement(type==="textarea"?"textarea":type==="select"?"select":"input");
+      if(type!=="textarea" && type!=="select")input.type=type;
+      input.name=name;fields[name]=input;
+      if(type==="checkbox") {
+        row.style.flexDirection="row";row.style.alignItems="flex-start";input.style.cssText="width:18px;height:18px;margin-top:4px;accent-color:#dcd3bf;flex-shrink:0";
+        const copy=document.createElement("span");copy.append(text("strong",label),text("span",help,"block text-text-secondary text-caption-m"));row.append(input,copy);
+      } else {
+        input.style.cssText="width:100%;box-sizing:border-box;padding:12px;border-radius:12px;border:1px solid #8886;background:#111827;color:inherit;font:inherit";
+        row.append(text("span",label),input);if(help)row.append(text("small",help,"text-text-secondary"));
+      }
+      parent.append(row);return input;
+    };
+    const caption=field(form,"caption","音乐描述","textarea","描述曲风、乐器、氛围和唱法；留空使用默认风格，歌词仍由信件生成。");
+    caption.rows=3;caption.maxLength=3000;caption.placeholder="例如：舒缓的钢琴民谣，自然轻声演唱，副歌温暖舒展";
+    field(form,"use_cot","丰富编曲描述","checkbox","生成前补充音乐描述，可能改变乐器和编曲。");
+    field(form,"thinking","先规划旋律","checkbox","先规划音乐再生成；耗时更长，部分歌曲的人声音量可能不稳定。");
+    const advanced=document.createElement("details");advanced.append(text("summary","音乐参数"));
+    const grid=document.createElement("div");grid.style.cssText="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px;margin-top:16px";
+    for(const [name,label,min,max,step,help] of [
+      ["guidance_scale","描述遵循强度（CFG）",1,15,.5,"推荐 7；更高不一定更好。"],
+      ["inference_steps","生成步数",8,100,1,"默认 50，增加步数会增加耗时。"],
+      ["bpm","速度（每分钟拍数）",30,240,1,"数值越大，节奏越快。"],
+      ["seed","随机种子",0,2147483647,1,"固定种子便于对照，换个数字尝试新旋律。"]]) {
+      const input=field(grid,name,label,"number",help);input.min=min;input.max=max;input.step=step;input.required=true;
+    }
+    const key=field(grid,"keyscale","调性","select");
+    for(const note of ["C","C#","Db","D","D#","Eb","E","F","F#","Gb","G","G#","Ab","A","A#","Bb","B"])
+      for(const [mode,label] of [["major","大调"],["minor","小调"]]) {const opt=document.createElement("option");opt.value=note+" "+mode;opt.textContent=note+" "+label;key.append(opt);}
+    const meter=field(grid,"timesignature","每小节拍数","select");
+    for(const value of ["2","3","4","6"]){const opt=document.createElement("option");opt.value=value;opt.textContent=value+" 拍";meter.append(opt);}
+    advanced.append(grid);form.append(advanced);
+    field(advanced,"use_adg","自适应音质引导","checkbox","根据生成状态调整引导，推荐保持开启。");
+    const status=text("p","正在读取音乐设置…","text-text-secondary text-body-m");status.setAttribute("role","status");
+    const controls=actions();
+    const fill=options=>{for(const [name,input] of Object.entries(fields)){if(input.type==="checkbox")input.checked=options[name];else input.value=options[name];}};
+    const setBusy=value=>{busy=value;for(const el of form.querySelectorAll("input,textarea,select,button"))el.disabled=value;};
+    const load=async()=>{
+      if(busy)return;setBusy(true);
+      try{if(!setupSessionToken)await requestSetup(SETUP_STATUS_PATH);
+        const result=await requestSetup("/toy/generation/action",{action:"music_settings_status"});defaults=result.defaults;
+        fill(result.options||defaults);status.textContent=result.error_code?"原设置无法读取，请检查参数。":composer?"约 110 秒 · 参数随这封信生效":"当前设置用于下一首原创歌曲，时长约 110 秒。";
+      }catch(_){status.textContent="音乐设置读取失败，请重新读取。";}finally{setBusy(false);save.disabled=!defaults;}
+    };
+    const save=button("保存音乐设置",async()=>{
+      if(busy||!defaults||!form.reportValidity())return;
+      const options={};for(const [name,input] of Object.entries(fields))options[name]=input.type==="checkbox"?input.checked:input.type==="number"?Number(input.value):input.value;
+      setBusy(true);
+      try{await requestSetup("/toy/generation/action",{action:"music_settings_save",options});status.textContent="已保存，对下一首原创歌曲生效。";}
+      catch(_){status.textContent="保存失败，请检查参数后重试；原设置未改动。";}finally{setBusy(false);}
+    });save.disabled=true;
+    if(!composer)controls.append(save);
+    controls.append(button("恢复推荐参数",()=>{if(!busy&&defaults){fill(defaults);status.textContent=composer?"已恢复推荐参数。":"已填入推荐参数，保存后生效。";}}));
+    if(!composer)controls.append(button("重新读取",load));
+    form.addEventListener("submit",event=>event.preventDefault());form.append(controls,status);panel.append(form);section.append(panel);void load();
+    return {read:()=>{if(busy||!defaults)throw Error('音乐参数尚未读取，请稍候或重新打开写信窗口。');if(!form.reportValidity())throw Error('请检查音乐参数。');const options={};for(const [name,input] of Object.entries(fields))options[name]=input.type==='checkbox'?input.checked:input.type==='number'?Number(input.value):input.value;return options;}};
+  };
+
   const mountGPUSettings = (section) => {
     const box = document.createElement("div"); box.className = "flex flex-col gap-4 text-text-body text-body-m";
     box.setAttribute("data-olivia-gpu-settings", "true");
@@ -3315,7 +3474,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         const history=document.createElement("div");
         const historyTitle=text("h4","最近消费");historyTitle.style.cssText="font-size:16px;font-weight:600;margin:0 0 8px";
         history.append(historyTitle);
-        billing.replaceChildren(summary,hint("测试额度，不涉及真实扣款。"),history);
+        billing.replaceChildren(summary,hint(account.mode==='money'?"与回信服务共用 Olivia 充值余额。音频最多 ¥1、视频最多 ¥5，按实际占用结算，失败不收费。":"测试额度，不涉及真实扣款。"),history);
+        if(account.mode==='money'&&account.held_cents>0)billing.insertBefore(hint("预留中 "+yuan(account.held_cents)+"，任务结算后释放差额；上方为当前可用余额。"),history);
         if (!account.charges.length) history.append(hint("还没有消费记录。"));
         const names={tts:"语音生成",video:"视频生成",lipsync:"口型生成",cover:"歌曲翻唱",original:"原创歌曲",separate:"人声分离"};
         for (const charge of account.charges.slice(0,20)) {
@@ -3339,6 +3499,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     billingHeader.append(billingTitle,billingRefresh);billingSection.append(billingHeader,billing);
     clearBilling();
     const errors={GPU_NOT_CONFIGURED:"请填写服务地址和 API Key；更换地址时需填写对应的 Key。",
+      RELAY_NOT_CONFIGURED:"请先到回信服务的 Olivia 账户页获取或导入 Key。",
+      GPU_INSUFFICIENT_BALANCE:"Olivia 可用余额不足，请到回信服务的 Olivia 账户页充值。音频需预留 ¥1，视频需预留 ¥5。",
       CLOUD_URL_INVALID:"请填写完整的 HTTPS 服务地址，不要附加接口路径。",
       GPU_KEY_INVALID:"API Key 格式不正确，请重新粘贴。", GPU_SETTINGS_SAVE_FAILED:"设置保存失败，原配置未改变。",
       GPU_SETTINGS_UNAVAILABLE:"原连接设置无法读取，请重新填写。",
@@ -3390,7 +3552,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     };
     url.addEventListener("input",()=>{clearBilling();key.placeholder=hasKey && url.value.trim()===savedURL ? "留空保留已保存的 Key" : "请填写此地址对应的 API Key";});
     key.addEventListener("input",clearBilling);
-    controls.append(button("领取测试 Key",()=>perform("settings_claim")),button("测试连接",()=>perform("settings_test")),button("保存生成设置",()=>perform("settings_save")),
+    controls.append(button("使用我的 Olivia Key",()=>perform("settings_use_olivia")),button("测试连接",()=>perform("settings_test")),button("保存生成设置",()=>perform("settings_save")),
       button("清除连接",()=>perform("settings_clear")),button("重新读取",()=>perform("settings_status")));
     box.append(controls,state,text("p","Key 使用 Windows 当前用户加密保存，不会在页面回显。云端不可用时任务会报错，不会自动切换到本机。","text-text-secondary text-caption-m"));
     box.append(billingSection); section.append(box); void perform("settings_status").then(()=>{if(hasKey)return refreshBilling();});
@@ -4026,6 +4188,8 @@ BOOTSTRAP_JAVASCRIPT = r'''
         const labels={loading:'正在准备翻唱…',transcribing:'正在识别原曲歌词…',loading_model:'正在加载翻唱模型…',generating:'林离正在翻唱…',decoding:'正在保存歌曲音频…',completed:'歌曲已完成，正在准备回信…'};
         const errors={COVER_LYRICS_REQUIRED:'未能识别歌词，请补充原曲歌词后重新寄信。',COVER_RUNTIME_UNAVAILABLE:'翻唱组件尚未准备完整，请检查本地组件。',COVER_GENERATION_TIMEOUT:'这次翻唱等待超时，可以手动重试。',COVER_SOURCE_REQUIRED:'这封信缺少原曲音频，请重新选择后寄信。'};
         const cloudErrors={GPU_TLS_FAILED:'云端证书校验失败，请更新补丁并检查电脑时间。',GPU_CONNECTION_TIMEOUT:'云端连接超时，本次生成已停止等待。',GPU_CONNECT_FAILED:'无法连接云端，本次生成未完成。',GPU_CONNECTION_FAILED:'云端连接中断，本次生成未完成。',GPU_AUTH_FAILED:'云端 Key 验证失败，请检查云端 GPU 设置。',GPU_QUEUE_FULL:'云端队列已满，本次任务未进入队列。',GPU_TASK_TIMEOUT:'云端任务等待超时，已停止等待。',GPU_TASK_FAILED:'云端生成失败。',GPU_DOWNLOAD_FAILED:'生成结果下载失败。',GPU_SHARED_SCENE_MISSING:'视频素材与云端不匹配，请联系管理员。',MEDIA_JOB_INTERRUPTED:'上次生成已中断，未自动重复提交。'};
+        cloudErrors.GPU_INSUFFICIENT_BALANCE='Olivia 可用余额不足，本次媒体任务未入队。请充值后重试。';
+        cloudErrors.GPU_BILLING_CONSENT_REQUIRED='请更新收费版客户端，确认费用上限后再生成。';
         if(['FAILED','UNAVAILABLE'].includes(data.status)) {
           const code=typeof data.error_code==='string'&&/^[A-Z][A-Z0-9_]{0,95}$/.test(data.error_code)?data.error_code:'';
           status.textContent=(cloudErrors[code]||errors[code]||'本次媒体生成未完成。')+' 文字回信已保留。'+(code?`（${code}）`:'');

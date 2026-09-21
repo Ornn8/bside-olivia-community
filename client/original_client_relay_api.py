@@ -120,5 +120,7 @@ def mount_relay_api(app, setup):
 
     async def options(request):
         return web.Response(status=204, headers=_headers(_authorize(request, confirm=False), preflight=True))
+    # Backend-only accessor: reuse the encrypted account key without exposing it to the page.
+    app['olivia_relay_stored_key'] = stored_key
     app.router.add_post('/toy/relay/action', action)
     app.router.add_options('/toy/relay/action', options)

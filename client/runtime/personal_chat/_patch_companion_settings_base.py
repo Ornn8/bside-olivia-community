@@ -440,6 +440,11 @@ def _repair_mailbox_write_access(root: Path) -> str:
         'He(()=>{d.fetchMailList(!0),d.startPolling()})',
     )
     route_anchor = 'Te.interceptors.request.use(e=>{const t=Ie();if(t.isOfflineMode&&!oliviaLocalMailboxRequest(e))'
+    relay_hook = 'Te.interceptors.response.use(e=>{window.__oliviaExplainRelayFailure?.(e.data||e);return e},e=>{window.__oliviaExplainRelayFailure?.(e.response?.data);return Promise.reject(e)});'
+    if '__oliviaExplainRelayFailure' not in source:
+        request_anchor = 'Te.interceptors.request.use('
+        if request_anchor in source:
+            source = source.replace(request_anchor, relay_hook + request_anchor, 1)
     source = source.replace(route_anchor,
         'Te.interceptors.request.use(async e=>{if(oliviaLocalMailboxRequest(e)&&window.__oliviaPrepareLetterRoute)e=await window.__oliviaPrepareLetterRoute(e);const t=Ie();if(t.isOfflineMode&&!oliviaLocalMailboxRequest(e))')
     source = source.replace(

@@ -165,6 +165,22 @@
       "PERSONA_NOT_READY": {
         "status": "FAILED",
         "retryable": false
+      },
+      "LLM_QUOTA_EXHAUSTED": {
+        "status": "FAILED",
+        "retryable": false
+      },
+      "LLM_AUTH_FAILED": {
+        "status": "FAILED",
+        "retryable": false
+      },
+      "LLM_USAGE_PENDING": {
+        "status": "FAILED",
+        "retryable": false
+      },
+      "LLM_REQUEST_DUPLICATE": {
+        "status": "FAILED",
+        "retryable": false
       }
     }
   },

@@ -144,6 +144,57 @@ def test_settings_api_is_session_protected_and_changes_generation_route(tmp_path
             assert result.status==200 and 'private-test-key' not in await result.text()
             assert env['OLIVIA_GPU_API_URL']=='https://chosen.example'
             assert env['OLIVIA_GPU_API_KEY']=='private-test-key'
+            music={'action':'music_settings_save','options':{'guidance_scale':7,'use_cot':True,'caption':'synthetic piano'}}
+            assert (await client.post(route,json=music)).status==403
+            saved=await client.post(route,json=music,headers=headers)
+            assert saved.status==200
+            assert (await saved.json())['options']['use_cot'] is True
+            invalid=await client.post(route,json={'action':'music_settings_save','options':{'seed':-1}},headers=headers)
+            assert invalid.status==400
+            current=await (await client.post(route,json={'action':'music_settings_status'},headers=headers)).json()
+            assert current['options']['caption']=='synthetic piano'
             assert (await client.post(route,json={'action':'settings_clear'},headers=headers)).status==200
             assert env=={'OLIVIA_GPU_ROUTE':'local'}
     asyncio.run(scenario())
+
+
+def test_paid_quote_and_explicit_shared_key_never_forward_to_custom_host(tmp_path, monkeypatch):
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+    from original_client_cloud_api import mount_cloud_api
+    from original_client_setup_api import LLMSetupService, mount_original_client_setup_api
+    from runtime.cloud_service import CloudService
+    calls=[]
+    available=[500]
+    async def remote(self, action, data):
+        calls.append((self.url,self.token,action))
+        if action=='capabilities':
+            return {'kinds':['tts','video'],'billing_enabled':True,'reservation_cents':{'audio':100,'video':500}}
+        return {'balance_cents':available[0]}
+    monkeypatch.setattr('runtime.remote_generation.RemoteGeneration.request',remote)
+    async def scenario():
+        env={};gpu=settings(tmp_path,env);app=web.Application();setup=LLMSetupService(tmp_path)
+        mount_original_client_setup_api(app,setup,trusted_origins=('https://client.example',))
+        app['olivia_relay_stored_key']=lambda:'olivia-synthetic-shared'
+        mount_cloud_api(app,CloudService(tmp_path),setup,gpu)
+        async with TestClient(TestServer(app)) as client:
+            info=await (await client.get('/toy/setup/status',headers={'Origin':'https://client.example'})).json()
+            headers={'Origin':'https://client.example','X-Olivia-Setup-Action':'confirmed','X-Olivia-Setup-Session':info['session_token']}
+            path='/toy/generation/action'
+            assert (await client.post(path,json={'action':'settings_use_olivia'})).status==403
+            local=await (await client.post(path,json={'action':'billing_quote','video':True},headers=headers)).json()
+            assert local=={'status':'OK','paid':False} and not calls
+            result=await client.post(path,json={'action':'settings_use_olivia'},headers=headers)
+            assert result.status==200 and 'olivia-synthetic-shared' not in await result.text()
+            assert env['OLIVIA_GPU_API_URL']=='https://175.24.191.6'
+            assert env['OLIVIA_GPU_API_KEY']=='olivia-synthetic-shared'
+            for video,expected in [(True,500),(False,100)]:
+                quote=await (await client.post(path,json={'action':'billing_quote','video':video},headers=headers)).json()
+                assert quote['paid'] and quote['max_charge_cents']==expected
+            available[0]=99
+            denied=await client.post(path,json={'action':'billing_quote','video':False},headers=headers)
+            assert denied.status==402
+            assert (await denied.json())['error_code']=='GPU_INSUFFICIENT_BALANCE'
+            assert (await client.post(path,json={'action':'settings_use_olivia','url':'https://other.example'},headers=headers)).status==400
+    asyncio.run(scenario())
+    assert all(url=='https://175.24.191.6' and key=='olivia-synthetic-shared' for url,key,_ in calls)

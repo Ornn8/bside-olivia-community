@@ -14,7 +14,7 @@ def test_gpu_form_tests_candidate_and_clears_saved_key(tmp_path, monkeypatch):
     monkeypatch.setattr(RemoteGeneration, 'request', capabilities)
     service = GPUSettings(tmp_path, environment={})
     responses = {'settings_status': service.status(),
-                 'settings_claim': dict(service.status(), route='remote', url='https://new.example', has_key=True),
+                 'settings_use_olivia': dict(service.status(), route='remote', url='https://new.example', has_key=True),
                  'settings_test': asyncio.run(service.test('https://new.example', 'test-key')),
                  'settings_clear': service.status()}
     responses.update(billing_prices={'status': 'OK', 'pricing': None}, billing_account={'status': 'OK',
@@ -66,10 +66,11 @@ const fetch=async(path,options)=>{
  assert.equal(inputs[1].value,'');assert.equal(refreshes,1);
  await click('清除连接');assert.equal(mode.value,'local');assert.equal(inputs[0].value,'');
  inputs[0].value='https://new.example';
- await click('领取测试 Key');
- assert.deepEqual(requests.at(-1),{action:'settings_claim',url:'https://new.example'});
+ assert.ok(!buttons.some(b=>b.textContent==='领取测试 Key'));
+ await click('使用我的 Olivia Key');
+ assert.deepEqual(requests.at(-1),{action:'settings_use_olivia'});
  assert.equal(inputs[1].value,'');assert.equal(mode.value,'remote');
- assert.ok(root.querySelectorAll('p').some(p=>p.textContent.startsWith('测试 Key 已领取')));
+ assert.ok(root.querySelectorAll('p').some(p=>p.textContent.startsWith('已启用云端生成')));
  await click('刷新账单');
  assert.ok(root.querySelectorAll('p').some(p=>p.textContent==='¥99.85'));
  assert.ok(root.querySelectorAll('p').some(p=>p.textContent==='语音生成'));

@@ -36,13 +36,20 @@ audio without a 300-second truncation. Source lyrics can be supplied, or locally
 transcribed; transcription is not a promise of correct lyrics. Failed/empty
 transcription requests source lyrics instead of inventing them.
 
-Generation uses cover strength 0.8, noise 0.08, 50 steps, guidance 7, shift 1,
+Generation uses cover strength 0.6, cover_noise_strength 0.25, an empty caption,
+50 configured steps, guidance 7, shift 1,
 ODE/Euler and seed 200717. Only the timbre LoRA is loaded at scale 1.0; decoder
 base linear weights are INT8, LoRA weights BF16, with CPU/DiT offload. Auxiliary
-LM, CoT metadata and artist/style LoRAs are disabled. No initial separation or
+LM, all CoT options, DCW and artist/style LoRAs are disabled. No initial separation or
 second voice-conversion pass is performed. Video delivery separates the finished
 cover for the existing lip-sync renderer's vocal conditioning; playback retains
 the untouched cover mix. Pure audio delivery needs no separator or lip-sync runtime.
+
+The accepted singing-voice adapter is checkpoint-5000. Higher
+`cover_noise_strength` starts closer to source audio; it is not the amount of
+noise added. Source-conditioned initialization truncates the sampling schedule,
+so 50 configured steps does not mean every cover executes 50 denoising steps.
+These defaults were accepted on a 30-second audition, not validated for every song.
 
 `media/<output-stem>-cover-stages` holds local progress and private provider
 artifacts. Failed generation is not automatically retried. A completed cover

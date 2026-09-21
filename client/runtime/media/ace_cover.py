@@ -46,19 +46,21 @@ def ace_paths_configured(paths) -> bool:
 
 
 def generate_cover(source: Path | None, output: Path, *, environment: Mapping[str, str],
-                   lyrics: str = "", language: str = "unknown") -> dict[str, object]:
+                   lyrics: str = "", language: str = "unknown", cover_options=None) -> dict[str, object]:
+    from runtime.media.cover_options import validate
+    options = validate({} if cover_options is None else cover_options)
     if source is None or not source.is_file():
         raise CoverError("COVER_SOURCE_REQUIRED")
     from runtime.remote_pipeline import enabled, generate
     if enabled(environment):
-        return generate('cover', {'lyrics': lyrics, 'language': language}, output,
+        return generate('cover', {'lyrics': lyrics, 'language': language, 'cover_options': options}, output,
                         environment=environment, assets={'source_asset': source})
     if not cover_configured(environment):
         raise CoverError("COVER_RUNTIME_UNAVAILABLE")
     paths = cover_paths(environment)
     if not lyrics.strip() and not (paths["asr_model"] and paths["asr_model"].is_file()):
         raise CoverError("COVER_LYRICS_REQUIRED")
-    return generate_ace(source, output, environment=environment, paths=paths, lyrics=lyrics, language=language)
+    return generate_ace(source, output, environment=environment, paths=paths, lyrics=lyrics, language=language, parameters=options)
 
 
 def generate_ace(source, output, *, environment, paths, lyrics, language,
