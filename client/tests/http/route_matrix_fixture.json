@@ -1,0 +1,960 @@
+[
+  {
+    "case": "greeting",
+    "capability": "text",
+    "content": "晚上好，今天过得怎么样？",
+    "arguments": [
+      {
+        "mode": "text_letter",
+        "reason_code": "greeting_no_request",
+        "emotion_level": "normal",
+        "music_contexts": [],
+        "music_role": "none",
+        "music_intent": "none",
+        "request_disposition": "none",
+        "direct_response_sufficient": true,
+        "voice_materially_better": false,
+        "music_materially_better": false,
+        "character_willing": true
+      }
+    ]
+  },
+  {
+    "case": "daily",
+    "capability": "text",
+    "content": "我刚下班到家，准备做晚饭。",
+    "arguments": [
+      {
+        "mode": "text_letter",
+        "reason_code": "daily_chat_no_media_available",
+        "emotion_level": "normal",
+        "music_contexts": [],
+        "music_role": "none",
+        "music_intent": "none",
+        "request_disposition": "none",
+        "direct_response_sufficient": true,
+        "voice_materially_better": false,
+        "music_materially_better": false,
+        "character_willing": true
+      }
+    ]
+  },
+  {
+    "case": "question",
+    "capability": "text",
+    "content": "家里只有鸡蛋和番茄，怎么做一顿简单的晚饭？",
+    "arguments": [
+      {
+        "mode": "text_letter",
+        "reason_code": "simple_cooking_query",
+        "emotion_level": "normal",
+        "music_contexts": [],
+        "music_role": "none",
+        "music_intent": "none",
+        "request_disposition": "none",
+        "direct_response_sufficient": true,
+        "voice_materially_better": false,
+        "music_materially_better": false,
+        "character_willing": true
+      }
+    ]
+  },
+  {
+    "case": "emotion",
+    "capability": "text",
+    "content": "今天工作不太顺利，有点难过，想跟你聊聊天。",
+    "arguments": [
+      {
+        "mode": "text_letter",
+        "reason_code": "no_voice_or_music_available",
+        "emotion_level": "high",
+        "music_contexts": [
+          "emotion_music_fit"
+        ],
+        "music_role": "none",
+        "music_intent": "none",
+        "request_disposition": "defer",
+        "direct_response_sufficient": false,
+        "voice_materially_better": false,
+        "music_materially_better": false,
+        "character_willing": true
+      }
+    ]
+  },
+  {
+    "case": "goodnight",
+    "capability": "text",
+    "content": "我要睡觉了，晚安。",
+    "arguments": [
+      {
+        "mode": "text_letter",
+        "reason_code": "sleep_wish_no_media",
+        "emotion_level": "normal",
+        "music_contexts": [],
+        "music_role": "none",
+        "music_intent": "none",
+        "request_disposition": "none",
+        "direct_response_sufficient": true,
+        "voice_materially_better": false,
+        "music_materially_better": false,
+        "character_willing": true
+      }
+    ]
+  },
+  {
+    "case": "long_chat",
+    "capability": "text",
+    "content": "想和你详细聊聊最近的生活，工作很累，睡不好，也不知道怎么安排休息，能逐项陪我分析一下吗？",
+    "arguments": [
+      {
+        "mode": "text_letter",
+        "reason_code": "no_voice_available",
+        "emotion_level": "high",
+        "music_contexts": [
+          "current_work_relevance"
+        ],
+        "music_role": "none",
+        "music_intent": "none",
+        "request_disposition": "defer",
+        "direct_response_sufficient": false,
+        "voice_materially_better": true,
+        "music_materially_better": false,
+        "character_willing": true
+      }
+    ]
+  },
+  {
+    "case": "text_only",
+    "capability": "text",
+    "content": "只用文字回复我，不要语音也不要唱歌。今天练琴顺利吗？",
+    "arguments": [
+      {
+        "mode": "text_letter",
+        "reason_code": "user_requested_text_only",
+        "emotion_level": "normal",
+        "music_contexts": [
+          "current_work_relevance"
+        ],
+        "music_role": "none",
+        "music_intent": "none",
+        "request_disposition": "none",
+        "direct_response_sufficient": true,
+        "voice_materially_better": false,
+        "music_materially_better": false,
+        "character_willing": true
+      }
+    ]
+  },
+  {
+    "case": "voice",
+    "capability": "text",
+    "content": "能用语音亲口跟我说声晚安吗？",
+    "arguments": [
+      {
+        "mode": "text_letter",
+        "reason_code": "voice_unavailable_deferred_request",
+        "emotion_level": "normal",
+        "music_contexts": [
+          "explicit_voice_reply_request"
+        ],
+        "music_role": "none",
+        "music_intent": "none",
+        "request_disposition": "defer",
+        "direct_response_sufficient": false,
+        "voice_materially_better": true,
+        "music_materially_better": false,
+        "character_willing": true
+      }
+    ]
+  },
+  {
+    "case": "video",
+    "capability": "text",
+    "content": "给我录一段视频，聊聊你今天做了什么，不用唱歌。",
+    "arguments": [
+      {
+        "mode": "text_letter",
+        "reason_code": "voice_unavailable",
+        "emotion_level": "normal",
+        "music_contexts": [
+          "explicit_voice_reply_request",
+          "explicit_video_output_request"
+        ],
+        "music_role": "none",
+        "music_intent": "none",
+        "request_disposition": "defer",
+        "direct_response_sufficient": false,
+        "voice_materially_better": true,
+        "music_materially_better": false,
+        "character_willing": true
+      }
+    ]
+  },
+  {
+    "case": "song",
+    "capability": "text",
+    "content": "请给我唱一首歌。",
+    "arguments": [
+      {
+        "mode": "singing_video",
+        "reason_code": "music_unavailable_defer",
+        "emotion_level": "normal",
+        "music_contexts": [
+          "explicit_voice_and_song_request",
+          "explicit_video_output_request"
+        ],
+        "music_role": "performance",
+        "music_intent": "perform",
+        "request_disposition": "defer",
+        "direct_response_sufficient": false,
+        "voice_materially_better": false,
+        "music_materially_better": false,
+        "character_willing": true
+      }
+    ]
+  },
+  {
+    "case": "combined",
+    "capability": "text",
+    "content": "先跟我说几句话，再唱一首歌给我听。",
+    "arguments": [
+      {
+        "mode": "text_letter",
+        "reason_code": "capability_unavailable",
+        "emotion_level": "normal",
+        "music_contexts": [
+          "explicit_voice_and_song_request",
+          "explicit_video_output_request"
+        ],
+        "music_role": "none",
+        "music_intent": "none",
+        "request_disposition": "defer",
+        "direct_response_sufficient": false,
+        "voice_materially_better": false,
+        "music_materially_better": false,
+        "character_willing": true
+      }
+    ]
+  },
+  {
+    "case": "praise",
+    "capability": "text",
+    "content": "你刚才翻唱的歌真好听，我很喜欢。",
+    "arguments": [
+      {
+        "mode": "text_letter",
+        "reason_code": "appreciation_no_request",
+        "emotion_level": "high",
+        "music_contexts": [
+          "current_work_relevance"
+        ],
+        "music_role": "reference",
+        "music_intent": "none",
+        "request_disposition": "none",
+        "direct_response_sufficient": false,
+        "voice_materially_better": true,
+        "music_materially_better": false,
+        "character_willing": true
+      }
+    ]
+  },
+  {
+    "case": "music_discussion",
+    "capability": "text",
+    "content": "你觉得这首歌的歌词写得怎么样？我只是想讨论一下，不用唱。",
+    "arguments": [
+      {
+        "mode": "text_letter",
+        "reason_code": "discuss_lyrics_no_music",
+        "emotion_level": "normal",
+        "music_contexts": [
+          "music_discussion"
+        ],
+        "music_role": "discussion",
+        "music_intent": "discuss",
+        "request_disposition": "none",
+        "direct_response_sufficient": true,
+        "voice_materially_better": false,
+        "music_materially_better": false,
+        "character_willing": true
+      }
+    ]
+  },
+  {
+    "case": "past_request",
+    "capability": "text",
+    "content": "昨天让你唱歌，你唱得很好，今天不用唱了，我们聊聊吧。",
+    "arguments": [
+      {
+        "mode": "text_letter",
+        "reason_code": "no_media_available",
+        "emotion_level": "normal",
+        "music_contexts": [],
+        "music_role": "none",
+        "music_intent": "none",
+        "request_disposition": "none",
+        "direct_response_sufficient": false,
+        "voice_materially_better": false,
+        "music_materially_better": false,
+        "character_willing": true
+      }
+    ]
+  },
+  {
+    "case": "capability_question",
+    "capability": "text",
+    "content": "你能发语音和唱歌吗？我先问问，暂时不用生成。",
+    "arguments": [
+      {
+        "mode": "text_letter",
+        "reason_code": "query_capability_no_request",
+        "emotion_level": "normal",
+        "music_contexts": [],
+        "music_role": "none",
+        "music_intent": "none",
+        "request_disposition": "none",
+        "direct_response_sufficient": true,
+        "voice_materially_better": false,
+        "music_materially_better": false,
+        "character_willing": true
+      }
+    ]
+  },
+  {
+    "case": "greeting",
+    "capability": "voice",
+    "content": "晚上好，今天过得怎么样？",
+    "arguments": [
+      {
+        "mode": "voice_reply",
+        "reason_code": "daily_greeting_voice",
+        "emotion_level": "normal",
+        "music_contexts": [],
+        "music_role": "none",
+        "music_intent": "none",
+        "request_disposition": "none",
+        "direct_response_sufficient": false,
+        "voice_materially_better": true,
+        "music_materially_better": false,
+        "character_willing": true
+      }
+    ]
+  },
+  {
+    "case": "daily",
+    "capability": "voice",
+    "content": "我刚下班到家，准备做晚饭。",
+    "arguments": [
+      {
+        "mode": "voice_reply",
+        "reason_code": "evening_chatter_voice",
+        "emotion_level": "normal",
+        "music_contexts": [],
+        "music_role": "none",
+        "music_intent": "none",
+        "request_disposition": "none",
+        "direct_response_sufficient": false,
+        "voice_materially_better": true,
+        "music_materially_better": false,
+        "character_willing": true
+      }
+    ]
+  },
+  {
+    "case": "question",
+    "capability": "voice",
+    "content": "家里只有鸡蛋和番茄，怎么做一顿简单的晚饭？",
+    "arguments": [
+      {
+        "mode": "text_letter",
+        "reason_code": "simple_cooking_query",
+        "emotion_level": "normal",
+        "music_contexts": [],
+        "music_role": "none",
+        "music_intent": "none",
+        "request_disposition": "none",
+        "direct_response_sufficient": true,
+        "voice_materially_better": false,
+        "music_materially_better": false,
+        "character_willing": true
+      }
+    ]
+  },
+  {
+    "case": "emotion",
+    "capability": "voice",
+    "content": "今天工作不太顺利，有点难过，想跟你聊聊天。",
+    "arguments": [
+      {
+        "mode": "voice_reply",
+        "reason_code": "emotional_companionship",
+        "emotion_level": "mixed",
+        "music_contexts": [
+          "emotion_music_fit"
+        ],
+        "music_role": "none",
+        "music_intent": "none",
+        "request_disposition": "none",
+        "direct_response_sufficient": false,
+        "voice_materially_better": true,
+        "music_materially_better": false,
+        "character_willing": true
+      }
+    ]
+  },
+  {
+    "case": "goodnight",
+    "capability": "voice",
+    "content": "我要睡觉了，晚安。",
+    "arguments": [
+      {
+        "mode": "voice_reply",
+        "reason_code": "goodnight_voice",
+        "emotion_level": "normal",
+        "music_contexts": [],
+        "music_role": "none",
+        "music_intent": "none",
+        "request_disposition": "none",
+        "direct_response_sufficient": false,
+        "voice_materially_better": true,
+        "music_materially_better": false,
+        "character_willing": true
+      }
+    ]
+  },
+  {
+    "case": "long_chat",
+    "capability": "voice",
+    "content": "想和你详细聊聊最近的生活，工作很累，睡不好，也不知道怎么安排休息，能逐项陪我分析一下吗？",
+    "arguments": [
+      {
+        "mode": "voice_reply",
+        "reason_code": "detailed_chat_voice_preferred",
+        "emotion_level": "mixed",
+        "music_contexts": [],
+        "music_role": "none",
+        "music_intent": "none",
+        "request_disposition": "none",
+        "direct_response_sufficient": false,
+        "voice_materially_better": true,
+        "music_materially_better": false,
+        "character_willing": true
+      }
+    ]
+  },
+  {
+    "case": "text_only",
+    "capability": "voice",
+    "content": "只用文字回复我，不要语音也不要唱歌。今天练琴顺利吗？",
+    "arguments": [
+      {
+        "mode": "text_letter",
+        "reason_code": "user_requested_text_only",
+        "emotion_level": "normal",
+        "music_contexts": [
+          "current_work_relevance"
+        ],
+        "music_role": "none",
+        "music_intent": "none",
+        "request_disposition": "none",
+        "direct_response_sufficient": true,
+        "voice_materially_better": false,
+        "music_materially_better": false,
+        "character_willing": true
+      }
+    ]
+  },
+  {
+    "case": "voice",
+    "capability": "voice",
+    "content": "能用语音亲口跟我说声晚安吗？",
+    "arguments": [
+      {
+        "mode": "voice_reply",
+        "reason_code": "explicit_voice_request",
+        "emotion_level": "normal",
+        "music_contexts": [
+          "explicit_voice_reply_request"
+        ],
+        "music_role": "none",
+        "music_intent": "none",
+        "request_disposition": "fulfill",
+        "direct_response_sufficient": false,
+        "voice_materially_better": true,
+        "music_materially_better": false,
+        "character_willing": true
+      }
+    ]
+  },
+  {
+    "case": "video",
+    "capability": "voice",
+    "content": "给我录一段视频，聊聊你今天做了什么，不用唱歌。",
+    "arguments": [
+      {
+        "mode": "voice_reply",
+        "reason_code": "explicit_voice_request_no_song",
+        "emotion_level": "normal",
+        "music_contexts": [
+          "explicit_voice_reply_request",
+          "explicit_video_output_request"
+        ],
+        "music_role": "none",
+        "music_intent": "none",
+        "request_disposition": "fulfill",
+        "direct_response_sufficient": false,
+        "voice_materially_better": true,
+        "music_materially_better": false,
+        "character_willing": true
+      }
+    ]
+  },
+  {
+    "case": "song",
+    "capability": "voice",
+    "content": "请给我唱一首歌。",
+    "arguments": [
+      {
+        "mode": "text_letter",
+        "reason_code": "singing_video_unavailable",
+        "emotion_level": "normal",
+        "music_contexts": [
+          "explicit_voice_and_song_request"
+        ],
+        "music_role": "performance",
+        "music_intent": "perform",
+        "request_disposition": "defer",
+        "direct_response_sufficient": false,
+        "voice_materially_better": false,
+        "music_materially_better": false,
+        "character_willing": true
+      }
+    ]
+  },
+  {
+    "case": "combined",
+    "capability": "voice",
+    "content": "先跟我说几句话，再唱一首歌给我听。",
+    "arguments": [
+      {
+        "mode": "voice_song_video",
+        "reason_code": "explicit_voice_and_song_request_unavailable",
+        "emotion_level": "normal",
+        "music_contexts": [
+          "explicit_voice_and_song_request"
+        ],
+        "music_role": "performance",
+        "music_intent": "perform",
+        "request_disposition": "defer",
+        "direct_response_sufficient": false,
+        "voice_materially_better": false,
+        "music_materially_better": false,
+        "character_willing": true
+      }
+    ]
+  },
+  {
+    "case": "praise",
+    "capability": "voice",
+    "content": "你刚才翻唱的歌真好听，我很喜欢。",
+    "arguments": [
+      {
+        "mode": "text_letter",
+        "reason_code": "music_appreciation_no_request",
+        "emotion_level": "high",
+        "music_contexts": [
+          "current_work_relevance"
+        ],
+        "music_role": "reference",
+        "music_intent": "none",
+        "request_disposition": "none",
+        "direct_response_sufficient": true,
+        "voice_materially_better": false,
+        "music_materially_better": false,
+        "character_willing": true
+      }
+    ]
+  },
+  {
+    "case": "music_discussion",
+    "capability": "voice",
+    "content": "你觉得这首歌的歌词写得怎么样？我只是想讨论一下，不用唱。",
+    "arguments": [
+      {
+        "mode": "text_letter",
+        "reason_code": "music_discussion_no_music_generation",
+        "emotion_level": "normal",
+        "music_contexts": [
+          "music_discussion"
+        ],
+        "music_role": "discussion",
+        "music_intent": "discuss",
+        "request_disposition": "none",
+        "direct_response_sufficient": true,
+        "voice_materially_better": false,
+        "music_materially_better": false,
+        "character_willing": true
+      }
+    ]
+  },
+  {
+    "case": "past_request",
+    "capability": "voice",
+    "content": "昨天让你唱歌，你唱得很好，今天不用唱了，我们聊聊吧。",
+    "arguments": [
+      {
+        "mode": "text_letter",
+        "reason_code": "user_refuses_music",
+        "emotion_level": "normal",
+        "music_contexts": [],
+        "music_role": "none",
+        "music_intent": "none",
+        "request_disposition": "refuse",
+        "direct_response_sufficient": true,
+        "voice_materially_better": false,
+        "music_materially_better": false,
+        "character_willing": true
+      }
+    ]
+  },
+  {
+    "case": "capability_question",
+    "capability": "voice",
+    "content": "你能发语音和唱歌吗？我先问问，暂时不用生成。",
+    "arguments": [
+      {
+        "mode": "text_letter",
+        "reason_code": "user_inquiry_no_generation",
+        "emotion_level": "normal",
+        "music_contexts": [
+          "music_discussion"
+        ],
+        "music_role": "discussion",
+        "music_intent": "discuss",
+        "request_disposition": "none",
+        "direct_response_sufficient": true,
+        "voice_materially_better": false,
+        "music_materially_better": false,
+        "character_willing": true
+      }
+    ]
+  },
+  {
+    "case": "greeting",
+    "capability": "all",
+    "content": "晚上好，今天过得怎么样？",
+    "arguments": [
+      {
+        "mode": "text_letter",
+        "reason_code": "simple_greeting",
+        "emotion_level": "normal",
+        "music_contexts": [],
+        "music_role": "none",
+        "music_intent": "none",
+        "request_disposition": "none",
+        "direct_response_sufficient": true,
+        "voice_materially_better": false,
+        "music_materially_better": false,
+        "character_willing": true
+      }
+    ]
+  },
+  {
+    "case": "daily",
+    "capability": "all",
+    "content": "我刚下班到家，准备做晚饭。",
+    "arguments": [
+      {
+        "mode": "text_letter",
+        "reason_code": "daily_update_no_request",
+        "emotion_level": "normal",
+        "music_contexts": [],
+        "music_role": "none",
+        "music_intent": "none",
+        "request_disposition": "none",
+        "direct_response_sufficient": false,
+        "voice_materially_better": true,
+        "music_materially_better": false,
+        "character_willing": true
+      }
+    ]
+  },
+  {
+    "case": "question",
+    "capability": "all",
+    "content": "家里只有鸡蛋和番茄，怎么做一顿简单的晚饭？",
+    "arguments": [
+      {
+        "mode": "text_letter",
+        "reason_code": "simple_cooking_query",
+        "emotion_level": "normal",
+        "music_contexts": [],
+        "music_role": "none",
+        "music_intent": "none",
+        "request_disposition": "none",
+        "direct_response_sufficient": true,
+        "voice_materially_better": false,
+        "music_materially_better": false,
+        "character_willing": true
+      }
+    ]
+  },
+  {
+    "case": "emotion",
+    "capability": "all",
+    "content": "今天工作不太顺利，有点难过，想跟你聊聊天。",
+    "arguments": [
+      {
+        "mode": "voice_reply",
+        "reason_code": "comfort_chat",
+        "emotion_level": "mixed",
+        "music_contexts": [
+          "emotion_music_fit"
+        ],
+        "music_role": "none",
+        "music_intent": "none",
+        "request_disposition": "none",
+        "direct_response_sufficient": false,
+        "voice_materially_better": true,
+        "music_materially_better": false,
+        "character_willing": true
+      }
+    ]
+  },
+  {
+    "case": "goodnight",
+    "capability": "all",
+    "content": "我要睡觉了，晚安。",
+    "arguments": [
+      {
+        "mode": "text_letter",
+        "reason_code": "simple_greeting",
+        "emotion_level": "normal",
+        "music_contexts": [],
+        "music_role": "none",
+        "music_intent": "none",
+        "request_disposition": "none",
+        "direct_response_sufficient": true,
+        "voice_materially_better": false,
+        "music_materially_better": false,
+        "character_willing": true
+      }
+    ]
+  },
+  {
+    "case": "long_chat",
+    "capability": "all",
+    "content": "想和你详细聊聊最近的生活，工作很累，睡不好，也不知道怎么安排休息，能逐项陪我分析一下吗？",
+    "arguments": [
+      {
+        "mode": "voice_reply",
+        "reason_code": "detailed_chat_analysis",
+        "emotion_level": "mixed",
+        "music_contexts": [],
+        "music_role": "none",
+        "music_intent": "none",
+        "request_disposition": "none",
+        "direct_response_sufficient": false,
+        "voice_materially_better": true,
+        "music_materially_better": false,
+        "character_willing": true
+      }
+    ]
+  },
+  {
+    "case": "text_only",
+    "capability": "all",
+    "content": "只用文字回复我，不要语音也不要唱歌。今天练琴顺利吗？",
+    "arguments": [
+      {
+        "mode": "text_letter",
+        "reason_code": "user_requested_text_only",
+        "emotion_level": "normal",
+        "music_contexts": [
+          "current_work_relevance"
+        ],
+        "music_role": "none",
+        "music_intent": "none",
+        "request_disposition": "none",
+        "direct_response_sufficient": true,
+        "voice_materially_better": false,
+        "music_materially_better": false,
+        "character_willing": true
+      }
+    ]
+  },
+  {
+    "case": "voice",
+    "capability": "all",
+    "content": "能用语音亲口跟我说声晚安吗？",
+    "arguments": [
+      {
+        "mode": "voice_reply",
+        "reason_code": "explicit_voice_greeting_request",
+        "emotion_level": "normal",
+        "music_contexts": [
+          "explicit_voice_reply_request"
+        ],
+        "music_role": "none",
+        "music_intent": "none",
+        "request_disposition": "fulfill",
+        "direct_response_sufficient": false,
+        "voice_materially_better": true,
+        "music_materially_better": false,
+        "character_willing": true
+      }
+    ]
+  },
+  {
+    "case": "video",
+    "capability": "all",
+    "content": "给我录一段视频，聊聊你今天做了什么，不用唱歌。",
+    "arguments": [
+      {
+        "mode": "voice_reply",
+        "reason_code": "explicit_video_no_music",
+        "emotion_level": "normal",
+        "music_contexts": [
+          "explicit_video_output_request",
+          "explicit_voice_reply_request"
+        ],
+        "music_role": "none",
+        "music_intent": "none",
+        "request_disposition": "fulfill",
+        "direct_response_sufficient": false,
+        "voice_materially_better": true,
+        "music_materially_better": false,
+        "character_willing": true
+      }
+    ]
+  },
+  {
+    "case": "song",
+    "capability": "all",
+    "content": "请给我唱一首歌。",
+    "arguments": [
+      {
+        "mode": "singing_video",
+        "reason_code": "explicit_song_request",
+        "emotion_level": "normal",
+        "music_contexts": [
+          "explicit_performance_or_adaptation_request",
+          "explicit_video_output_request"
+        ],
+        "music_role": "performance",
+        "music_intent": "perform",
+        "request_disposition": "fulfill",
+        "direct_response_sufficient": false,
+        "voice_materially_better": false,
+        "music_materially_better": true,
+        "character_willing": true
+      }
+    ]
+  },
+  {
+    "case": "combined",
+    "capability": "all",
+    "content": "先跟我说几句话，再唱一首歌给我听。",
+    "arguments": [
+      {
+        "mode": "voice_song_video",
+        "reason_code": "explicit_voice_and_song_request",
+        "emotion_level": "normal",
+        "music_contexts": [
+          "explicit_voice_and_song_request"
+        ],
+        "music_role": "performance",
+        "music_intent": "perform",
+        "request_disposition": "fulfill",
+        "direct_response_sufficient": false,
+        "voice_materially_better": true,
+        "music_materially_better": true,
+        "character_willing": true
+      }
+    ]
+  },
+  {
+    "case": "praise",
+    "capability": "all",
+    "content": "你刚才翻唱的歌真好听，我很喜欢。",
+    "arguments": [
+      {
+        "mode": "text_letter",
+        "reason_code": "appreciation_no_request",
+        "emotion_level": "high",
+        "music_contexts": [
+          "current_work_relevance"
+        ],
+        "music_role": "reference",
+        "music_intent": "none",
+        "request_disposition": "none",
+        "direct_response_sufficient": true,
+        "voice_materially_better": false,
+        "music_materially_better": false,
+        "character_willing": true
+      }
+    ]
+  },
+  {
+    "case": "music_discussion",
+    "capability": "all",
+    "content": "你觉得这首歌的歌词写得怎么样？我只是想讨论一下，不用唱。",
+    "arguments": [
+      {
+        "mode": "text_letter",
+        "reason_code": "music_discussion_text",
+        "emotion_level": "normal",
+        "music_contexts": [
+          "music_discussion"
+        ],
+        "music_role": "discussion",
+        "music_intent": "discuss",
+        "request_disposition": "none",
+        "direct_response_sufficient": true,
+        "voice_materially_better": false,
+        "music_materially_better": false,
+        "character_willing": true
+      }
+    ]
+  },
+  {
+    "case": "past_request",
+    "capability": "all",
+    "content": "昨天让你唱歌，你唱得很好，今天不用唱了，我们聊聊吧。",
+    "arguments": [
+      {
+        "mode": "text_letter",
+        "reason_code": "explicit_no_music_text_preference",
+        "emotion_level": "normal",
+        "music_contexts": [],
+        "music_role": "none",
+        "music_intent": "none",
+        "request_disposition": "none",
+        "direct_response_sufficient": true,
+        "voice_materially_better": false,
+        "music_materially_better": false,
+        "character_willing": true
+      }
+    ]
+  },
+  {
+    "case": "capability_question",
+    "capability": "all",
+    "content": "你能发语音和唱歌吗？我先问问，暂时不用生成。",
+    "arguments": [
+      {
+        "mode": "text_letter",
+        "reason_code": "query_capability_no_request",
+        "emotion_level": "normal",
+        "music_contexts": [],
+        "music_role": "none",
+        "music_intent": "none",
+        "request_disposition": "none",
+        "direct_response_sufficient": true,
+        "voice_materially_better": false,
+        "music_materially_better": false,
+        "character_willing": true
+      }
+    ]
+  }
+]

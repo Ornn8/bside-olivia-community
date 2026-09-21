@@ -14,10 +14,10 @@ from runtime.video_reply_settings import VideoReplySettingsStore
 @pytest.mark.parametrize("change,detail", [
     ({"extra": "private-letter"}, "route_fields"),
     ({"reason_code": "private-invalid-reason"}, "route_values"),
-    ({"music_role": "performance"}, "route_contexts"),
+    ({"music_contexts": ["unknown"]}, "route_contexts"),
     ({"direct_response_sufficient": "true"}, "route_booleans"),
-    ({"request_disposition": "fulfill"}, "route_disposition"),
-    ({"mode": "voice_reply"}, "route_voice_constraints"),
+    ({"request_disposition": "unknown"}, "route_values"),
+    ({"mode": "unknown"}, "route_values"),
 ])
 def test_qwen_route_validation_reason_survives_export(change, detail):
     from llm_gateway import GatewayConfig, OpenAICompatibleAdapter
