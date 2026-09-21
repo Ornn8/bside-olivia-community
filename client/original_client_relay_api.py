@@ -2,7 +2,7 @@
 from urllib.parse import urlsplit
 import asyncio
 import secrets
-from aiohttp import ClientSession, ClientTimeout, ClientError, web
+from aiohttp import ClientSession, ClientTimeout, ClientError, ClientSSLError, ClientConnectionError, web
 from original_client_setup_api import LLMSetupError, _authorize, _body, _headers, SESSION_HEADER
 
 RELAY_BASE = 'https://175.24.191.6/v1'
@@ -22,6 +22,8 @@ async def relay_request(base, key, method, path, payload=None):
                         raise ValueError('oversize')
                 import json
                 data = json.loads(raw)
+                if not isinstance(data, dict):
+                    raise ValueError('shape')
                 if response.status != 200:
                     code = data.get('error', {}).get('code', 'RELAY_UNAVAILABLE')
                     # Do not expose arbitrary upstream bodies or credentials.
@@ -30,13 +32,19 @@ async def relay_request(base, key, method, path, payload=None):
                              '监听手机离线，暂停新订单。':'RELAY_PHONE_OFFLINE',
                              '创建订单过于频繁，请稍后重试。':'RELAY_ORDER_LIMIT',
                              '当前充值人数较多，暂时没有可用金额，请稍后重试。':'RELAY_SLOTS_FULL'}
-                    raise LLMSetupError(known.get(code, 'RELAY_UNAVAILABLE'), status=503)
-                if not isinstance(data, dict):
-                    raise ValueError('shape')
+                    raise LLMSetupError(known.get(code, 'RELAY_SERVICE_REJECTED'), status=503)
                 return data
     except LLMSetupError:
         raise
-    except (ClientError, TimeoutError, ValueError, TypeError, AttributeError):
+    except ClientSSLError:
+        raise LLMSetupError('RELAY_TLS_FAILED', status=503) from None
+    except TimeoutError:
+        raise LLMSetupError('RELAY_TIMEOUT', status=503) from None
+    except ClientConnectionError:
+        raise LLMSetupError('RELAY_CONNECTION_FAILED', status=503) from None
+    except (ValueError, TypeError, AttributeError):
+        raise LLMSetupError('RELAY_RESPONSE_INVALID', status=503) from None
+    except ClientError:
         raise LLMSetupError('RELAY_UNAVAILABLE', status=503) from None
 
 
@@ -79,7 +87,7 @@ def mount_relay_api(app, setup):
                     config = setup._config()
                     active = setup._active_key_path()
                     active_key = setup._unprotect(active.read_text(encoding='utf-8').strip()) if active else None
-                    return web.json_response({'configured':bool(key) and not pending_path.exists(), 'key_prefix':key[:15] if key else '',
+                    return web.json_response({'configured':bool(key) and not pending_path.exists(), 'registration_pending':bool(key) and pending_path.exists(), 'key_prefix':key[:15] if key and not pending_path.exists() else '',
                         'connected':bool(key) and key == active_key and config.base_url.rstrip('/') == RELAY_BASE and config.model == 'qwen3.7-flash'}, headers=_headers(origin))
                 if operation == 'claim':
                     if not key:

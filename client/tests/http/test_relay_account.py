@@ -24,7 +24,10 @@ def test_claim_retry_reuses_encrypted_key_and_connects(tmp_path, monkeypatch):
             first=await client.post('/toy/relay/action',headers=headers,json={'action':'claim'})
             assert first.status == 503
             pending=await client.post('/toy/relay/action',headers=headers,json={'action':'account'})
-            assert (await pending.json())['configured'] is False
+            pending_data=await pending.json()
+            assert pending_data['configured'] is False
+            assert pending_data['registration_pending'] is True
+            assert pending_data['key_prefix'] == ''
             second=await client.post('/toy/relay/action',headers=headers,json={'action':'claim'})
             assert second.status == 200
             assert calls[0] == calls[1]
@@ -36,4 +39,31 @@ def test_claim_retry_reuses_encrypted_key_and_connects(tmp_path, monkeypatch):
             assert connected.status == 200
             exported=await client.post('/toy/relay/action',headers=headers,json={'action':'export_key'})
             assert (await exported.json())['key'] == calls[0]
+    asyncio.run(scenario())
+
+
+def test_relay_transport_failures_are_distinguishable_without_secret_leaks(monkeypatch):
+    import original_client_relay_api as relay
+    from aiohttp import ClientSSLError, ClientConnectionError
+    failures = [(TimeoutError('private endpoint'), 'RELAY_TIMEOUT'),
+                (ClientSSLError(None, OSError('private certificate')), 'RELAY_TLS_FAILED'),
+                (ClientConnectionError('private endpoint'), 'RELAY_CONNECTION_FAILED'),
+                (ValueError('private response'), 'RELAY_RESPONSE_INVALID')]
+    class Session:
+        def __init__(self, **kwargs): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): pass
+        def request(self, *args, **kwargs): raise failure
+    monkeypatch.setattr(relay, 'ClientSession', Session)
+    async def scenario():
+        nonlocal failure
+        for failure, expected in failures:
+            try:
+                await relay.relay_request(relay.RELAY_BASE,'olivia-synthetic','POST','/accounts',{})
+            except LLMSetupError as error:
+                assert error.code == expected
+                assert 'private' not in str(error)
+            else:
+                raise AssertionError('failure was swallowed')
+    failure = None
     asyncio.run(scenario())
