@@ -31,10 +31,10 @@ def test_regrouped_replay_keeps_original_ids_and_only_new_messages_generate():
     asyncio.run(scenario())
 
 
-def test_long_reply_not_truncated_and_listening_preference_persists():
+def test_long_reply_not_truncated_and_old_listening_preference_does_not_block_voice():
     long = '这件事我们可以慢慢说。' * 100
     text, mode, pref = parse(long + '\n[[delivery:voice|keep]]', 'text_only')
-    assert text == long and mode == 'text' and pref == 'text_only'
+    assert text == long and mode == 'voice' and pref == 'voice_ok'
     assert parse('好，听你说。[[delivery:voice|voice_ok]]', pref)[1:] == ('voice','voice_ok')
 
 

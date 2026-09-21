@@ -63,8 +63,6 @@ async def generate(server, event, row):
     from .initiative import letter_invitation_allowed
     allowed = letter_invitation_allowed(server.store.personal_chats, getattr(server.store, 'letters', []),
                                          datetime.now().timestamp())
-    previous = next((r.get('listening_preference', 'voice_ok') for r in reversed(server.store.personal_chats)
-                     if r.get('delivery_status') == 'DELIVERED' and 'listening_preference' in r), 'voice_ok')
     voice_available = event.channel != 'wechat' and bool(row.get('voice_available')) and server._voice_reply_configured(os.environ)
     context = adapter.build_reply_context(ReplyMode.FUTURE_IM, future_im_enabled=True)
     from .stickers import choices, extract
@@ -76,7 +74,7 @@ async def generate(server, event, row):
         delayed_delivery = sent_at is not None and (received_at - sent_at).total_seconds() > 60
     except (TypeError, ValueError):
         pass
-    presentation = CURRENT.set({'voice_available': voice_available, 'listening_preference': previous,
+    presentation = CURRENT.set({'voice_available': voice_available, 'listening_preference': 'voice_ok',
                                 'structured': True, 'decision_now': datetime.now(LOCAL).isoformat(),
                                 'due_followup': row.get('followup_quote'),
                                 'channel': event.channel, 'incoming_format': event.input_kind,
@@ -103,7 +101,6 @@ async def generate(server, event, row):
         text, mode = decision['text'].strip(), decision['delivery']
         from .mailbox_notice import attach_notice
         text = attach_notice(getattr(server.store, 'letters', []), row, text)
-        preference = previous if decision['listening'] == 'keep' else decision['listening']
         for kind, until in [('initiative', 'pause_until'), ('letter', 'letter_until')]:
             if decision[kind] != 'keep':
                 row[kind + '_preference'] = decision[kind]
@@ -119,7 +116,7 @@ async def generate(server, event, row):
         if not voice_available:
             mode = 'text'
         row['presentation_status'] = 'VALIDATED'
-        row.update(requested_format=mode, listening_preference=preference)
+        row.update(requested_format=mode, listening_preference='voice_ok')
         if mode == 'voice' and voice_available and text != '[[skip]]':
             from runtime.media.voice_direction import TextOnlyVoicePlan
             path = server._state_root() / 'media' / (event.exchange_id + '.wav')

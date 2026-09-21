@@ -150,7 +150,7 @@ def test_letter_invitation_shared_history_and_decline():
     raw = '等你忙完。[[chat:text|text_only|pause|pause|no]]'
     assert parse_social(raw, row, False) == '等你忙完。'
     assert row == {'letter_invitation': False, 'initiative_preference': 'pause', 'letter_preference': 'pause'}
-    assert parse(raw) == ('等你忙完。', 'text', 'text_only')
+    assert parse(raw) == ('等你忙完。', 'text', 'voice_ok')
 
 
 def test_proactive_skip_never_sends_or_commits_and_delivery_has_no_fake_user():
