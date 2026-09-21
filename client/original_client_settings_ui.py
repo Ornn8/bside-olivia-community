@@ -6,7 +6,7 @@ import base64
 from pathlib import Path
 
 
-SETTINGS_UI_VERSION = "p03.original-settings-manage.v45"
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v46"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
@@ -1425,10 +1425,12 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     key.input.readOnly = true;
     key.input.autocomplete = "off";
     const errors = {RELAY_AUTH_FAILED:"Key 已失效，请检查或联系管理员。", RELAY_ORDER_LIMIT:"申请过于频繁，请稍后重试。", RELAY_NOT_CONFIGURED:"请先申请 Key，或导入已有 Key。"};
+    Object.assign(errors, {RELAY_TLS_FAILED:"无法验证回信服务证书，请检查系统时间和网络代理。", RELAY_TIMEOUT:"连接回信服务超时，请稍后重试。", RELAY_CONNECTION_FAILED:"无法连接回信服务，请检查网络或代理。", RELAY_RESPONSE_INVALID:"回信服务返回了无法识别的响应，请稍后重试。"});
     let busy = false;
     const refresh = async () => {
       const result = await requestSetup("/toy/relay/action", {action:"account"});
-      account.textContent = result.configured ? "已获取 · 本机加密保存" : "获取专属 Key，开启回信服务。";
+      account.textContent = result.configured ? "已获取 · 本机加密保存" : result.registration_pending ? "Key 已在本机准备，但服务端注册尚未完成。请点击重试，仍使用同一个 Key。" : "获取专属 Key，开启回信服务。";
+      claim.textContent = result.registration_pending ? "重试注册" : "获取 Key";
       claim.hidden = result.configured;
       reveal.hidden = !result.configured;
       key.wrapper.hidden = !result.configured;
@@ -1447,7 +1449,10 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           if (payload.display) { key.input.value=result.key; key.input.type="text"; account.textContent="Key 已显示，请妥善保管。"; }
           else { await navigator.clipboard.writeText(result.key); account.textContent = "Key 已复制，请妥善保存，不要发给他人。"; }
         } else { key.input.value=""; await refresh(); }
-      } catch (e) { account.textContent=errors[e.code] || "暂时无法完成，请重试。已有账户和余额不会因此丢失。"; }
+      } catch (e) {
+        const code=e.name==='AbortError'?'RELAY_TIMEOUT':e instanceof TypeError?'RELAY_LOCAL_CONNECTION_FAILED':/^[A-Z][A-Z0-9_]{0,95}$/.test(e.code||'')?e.code:'RELAY_UNAVAILABLE';
+        account.textContent=(errors[code] || "暂时无法完成，请重试。已有账户和余额不会因此丢失。")+`（${code}）`;
+      }
       finally {busy=false;setButtonsBusy([claim,reveal,copy],false);}
     };
     const claim = button("获取 Key", () => run("claim"));
@@ -2673,6 +2678,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         dialog.setAttribute("data-olivia-relay-dialog", "");
         theme.textContent += `
           [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] p { margin:0; }
+          [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] [hidden] { display:none !important; }
           [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] h3 { margin:0; font-size:16px;line-height:24px; }
           [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] button { border-radius:10px !important; min-height:40px; }
           [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] input,[data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] select { border-radius:10px !important; }
