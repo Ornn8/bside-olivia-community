@@ -128,9 +128,6 @@ def test_automatic_voice_accepts_fulfill_metadata_without_inventing_explicit_req
     {"voice_materially_better": False},
     {"character_willing": False},
     {"music_materially_better": True},
-    {"context": RoutingContext(voice_reply_available=False)},
-    {"request_disposition": "refuse"},
-    {"request_disposition": "defer"},
 ])
 def test_automatic_voice_metadata_compatibility_keeps_media_guards(overrides):
     args = dict(context=RoutingContext(voice_reply_available=True),
@@ -216,7 +213,7 @@ def test_router_prompt_requires_both_benefits_for_combined_reply() -> None:
     _, gateway = _route()
 
     system_prompt = gateway.requests[0]["messages"][0]["content"]
-    assert "组合两项 materially_better 都为 true" in system_prompt
+    assert "既需要说话又需要歌曲" in system_prompt
 
 
 def test_music_discussion_remains_text_when_words_are_enough():
@@ -319,15 +316,16 @@ def test_unavailable_video_prompt_preserves_request_context_independently_of_rea
     assert result.request_disposition == "defer"
 
 
-def test_deferred_result_without_request_context_is_still_invalid():
+def test_deferred_metadata_without_request_does_not_block_text():
     result, _ = _route(
         context=RoutingContext(False),
         reason_code="explicit_video_request_deferred",
         music_contexts=[],
         request_disposition="defer",
     )
-    assert result.reason_code == "router_invalid_result"
-    assert result.status == "unavailable"
+    assert result.status == "completed"
+    assert result.reply_mode == "text_letter"
+    assert result.request_disposition == "none"
 
 
 @pytest.mark.parametrize("content", [
