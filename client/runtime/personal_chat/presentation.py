@@ -3,6 +3,17 @@ from contextvars import ContextVar
 import re
 
 CURRENT = ContextVar('personal_chat_presentation', default=None)
+VOICE_POLICY = (
+    'QQ在voice_available为true时，可以适当增加选择voice的机会：日常闲聊、问候、分享近况、'
+    '轻松陪伴和亲昵回应都可以自然地用语音，不必等待用户主动要求。'
+    '这只是提高语音使用倾向，不是默认每次发语音；结合当轮语境、表达意愿和最近的交流方式，'
+    '让文字与语音自然穿插，不按固定比例凑次数，也不机械交替。'
+    '长篇分析、步骤、地址、代码、数字等需要反复查看的内容，或用户本轮明确要求文字时选择text；'
+    '不为发语音删减重要内容。用户可以将语音转文字，不因开会、上课或不便收听建立持续禁用语音的状态，'
+    '也不沿用历史listening_preference限制；listening保持keep。'
+    '世界状态不适合说话或voice_available为false时用text。'
+    '微信只发文字和表情，不发音频文件或拨电话。'
+)
 INSTRUCTION = (
     '这是熟人之间的日常聊天，亲昵程度沿用实际关系；关系高时自然关心、逗对方、表达想念，'
     '不必每次解释关系边界，也不凭渠道自动认定恋爱关系。'
@@ -10,9 +21,6 @@ INSTRUCTION = (
     '本轮正文末尾必须另起一行写完整控制标记 [[chat:text|keep|keep|keep|no]]。'
     '五项依次为：本次载体text/voice；听语音偏好keep/text_only/voice_ok；主动打扰偏好keep/pause/open；'
     '邀请写信偏好keep/pause/open；本轮有无主动邀请写信yes/no。偏好仅随用户明确表达改变，否则keep。'
-    '语音适合用户主动想听、温柔陪伴或轻松亲昵的几句话；不必固定频率或每次跟随用户消息类型。'
-    '长篇分析、步骤、地址、数字等需要反复查看时优先文字，不为发语音删减重要内容。'
-    '用户在开会、上课或明确不便收听时用文字，直到用户表示方便；世界状态不适合说话时也用文字。'
     'voice_available为false时用文字。不要在正文承诺语音已经送达；标记由应用处理，不会发给用户。'
     '微信渠道只发文字与表情图片，不承诺发送语音文件或拨打电话；声音体验留在林离软件。'
     'sticker_choices非空时，可按本轮语境从中选一张合适的表情，在正文后、chat标记前附 [[sticker:编号]]；'
@@ -30,7 +38,7 @@ INSTRUCTION = (
     '这些标记也由应用去除。没有合适契机就不邀请，不为了用功能而生造话题。'
     'proactive为true时，当前输入仅是应用唤醒提示，不是用户发言；结合真实记忆和世界状态判断是否有新鲜、自然的话想主动说。'
     '不要重新回复上次已回答的话，不编造用户刚说话、共同经历或承诺。不值得打扰时只输出 [[skip]]。'
-)
+) + VOICE_POLICY
 
 
 def parse_social(text, row, allowed):
@@ -63,5 +71,4 @@ def parse(text, previous='voice_ok'):
     clean = re.sub(r'\[\[delivery:[^\]\r\n]*\]\]', '', text).strip()
     clean = re.sub(r'\[\[chat:[^\]\r\n]*\]\]', '', clean).strip()
     mode, preference = marker[-1] if marker else ('text', 'keep')
-    preference = previous if preference == 'keep' else preference
-    return clean, 'text' if preference == 'text_only' else mode, preference
+    return clean, mode, 'voice_ok'
