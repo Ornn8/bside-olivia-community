@@ -2748,6 +2748,10 @@ def test_contract_and_fixture_artifacts_are_versioned_and_sanitized() -> None:
         "error_codes": {
             "MEMORY_UNAVAILABLE": {"status": "FAILED", "retryable": True},
             "LLM_UNAVAILABLE": {"status": "FAILED", "retryable": True},
+            "LLM_QUOTA_EXHAUSTED": {"status": "FAILED", "retryable": False},
+            "LLM_AUTH_FAILED": {"status": "FAILED", "retryable": False},
+            "LLM_USAGE_PENDING": {"status": "FAILED", "retryable": False},
+            "LLM_REQUEST_DUPLICATE": {"status": "FAILED", "retryable": False},
             "LLM_TIMEOUT": {"status": "FAILED", "retryable": True},
             "LLM_INTERRUPTED": {"status": "FAILED", "retryable": True},
             "LLM_PROVIDER_REJECTED": {"status": "FAILED", "retryable": False},

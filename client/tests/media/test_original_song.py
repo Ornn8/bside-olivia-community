@@ -33,8 +33,16 @@ def test_original_audio_has_no_source_and_preserves_approved_parameters(tmp_path
     assert request['caption'] == original_song.CAPTION
     assert '68 BPM' not in request['caption']
     assert request['reference'] == str(paths['reference'])
+    assert request['guidance_scale'] == 7 and request['use_adg'] is True
+    assert request['thinking'] is False and request['use_cot_caption'] is False
     original_song.render_original_reply('letter', 'reply', output, environment={}, render_video=False)
     assert len(calls) == 1
+    original_song.render_original_reply('letter', 'reply', output,
+        environment={'OLIVIA_ORIGINAL_MUSIC_OPTIONS':json.dumps({'caption':'new caption', 'guidance_scale':9,
+            'thinking':True, 'use_cot':True, 'seed':42})}, render_video=False)
+    assert len(calls) == 2
+    assert calls[-1]['caption']=='new caption' and calls[-1]['seed']==42
+    assert calls[-1]['thinking'] and calls[-1]['use_cot_caption']
 
 
 def test_original_video_uses_full_mix_without_separator_or_voice_conversion(tmp_path, monkeypatch):

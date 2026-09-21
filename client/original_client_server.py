@@ -1213,7 +1213,11 @@ def create_configured_original_client_server_runtime(
     capability_installer = _configured_capability_installer(values, data_root)
     video_capability_installer = _configured_video_capability_installer(values, data_root)
     component_updater = _configured_component_updater(values)
-    runtime_tail = getattr(server_module, "runtime_diagnostic_event_snapshot", None)
+    server_runtime_tail = getattr(server_module, "runtime_diagnostic_event_snapshot", None)
+    def runtime_tail():
+        from runtime.diagnostics.failure_context import failure_snapshot
+        existing = server_runtime_tail() if callable(server_runtime_tail) else ()
+        return (tuple(existing) + failure_snapshot())[-200:]
     health_profile = getattr(server_module, "_health_result", None)
     from runtime.cloud_service import CloudService
     from original_client_update_api import running_component_version

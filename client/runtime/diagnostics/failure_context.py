@@ -1,8 +1,13 @@
 """Finite failure metadata; never retain exception text or request content."""
+from collections import deque
+import uuid
+
+_RECENT_FAILURES = deque(maxlen=40)
 
 STAGES = {"configuration", "request", "http_response", "response_json", "tool_parse", "route_validation", "internal",
           "structured_completion", "structured_validation", "tool_completion"}
 CODES = {"PROVIDER_QUOTA_EXHAUSTED", "PROVIDER_TIMEOUT", "PROVIDER_PROTOCOL", "PROVIDER_UNAVAILABLE", "PROVIDER_RETRYABLE", "PROVIDER_REJECTED", "GATEWAY_OTHER"}
+CODES |= {'PROVIDER_USAGE_PENDING', 'PROVIDER_REQUEST_DUPLICATE', 'PROVIDER_AUTH_FAILED'}
 KINDS = {"TimeoutError", "TypeError", "ValueError", "AttributeError", "RuntimeError", "ClientConnectorError", "ClientConnectorCertificateError", "ClientConnectorSSLError", "ServerDisconnectedError", "ClientPayloadError", "OTHER"}
 DETAILS = {"invalid_json", "invalid_response_shape", "missing_tools", "invalid_tool_entry", "invalid_tool_name", "invalid_tool_arguments"}
 DETAILS |= {'structured_truncated', 'structured_validation_failed', 'tool_truncated',
@@ -18,6 +23,12 @@ DETAILS |= {
 
 def project_failure_context(source):
     result = {}
+    raw = source.get('provider_request_id')
+    if isinstance(raw, str):
+        try:
+            result['provider_request_id'] = str(uuid.UUID(raw))
+        except ValueError:
+            pass
     for key, allowed in (("failure_stage", STAGES), ("failure_detail", DETAILS), ("provider_code", CODES), ("exception_type", KINDS)):
         value = source.get(key)
         if isinstance(value, str) and value in allowed:
@@ -49,4 +60,13 @@ def exception_context(exc, stage="request"):
         "provider_code": code if isinstance(code, str) and code in CODES else "GATEWAY_OTHER",
         "http_status": getattr(exc, "status", None),
         "exception_type": kind if kind in KINDS else "OTHER",
+        "provider_request_id": getattr(exc, 'provider_request_id', None),
     })
+
+
+def record_failure(exc):
+    _RECENT_FAILURES.append({'event': 'provider_failure', **exception_context(exc)})
+
+
+def failure_snapshot():
+    return tuple(dict(item) for item in _RECENT_FAILURES)

@@ -169,6 +169,18 @@
             },
             "COVER_SOURCE_REQUIRED": {
               "$ref": "#/$defs/generation_error"
+            },
+            "LLM_QUOTA_EXHAUSTED": {
+              "$ref": "#/$defs/generation_error"
+            },
+            "LLM_AUTH_FAILED": {
+              "$ref": "#/$defs/generation_error"
+            },
+            "LLM_USAGE_PENDING": {
+              "$ref": "#/$defs/generation_error"
+            },
+            "LLM_REQUEST_DUPLICATE": {
+              "$ref": "#/$defs/generation_error"
             }
           }
         }

@@ -60,6 +60,8 @@ PAYLOAD_EXTRA_DIRS = (
 PAYLOAD_EXTRA_FILES = (
     "runtime/cloud_service.py",
     "runtime/gpu_settings.py",
+    "runtime/music_settings.py",
+    "runtime/media/music_options.py",
     "runtime/remote_generation.py",
     "runtime/remote_pipeline.py",
     "runtime/gpu_cleanup.py",

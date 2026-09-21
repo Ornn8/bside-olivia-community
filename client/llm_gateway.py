@@ -72,22 +72,46 @@ class ProviderUnavailable(GatewayError):
 
 
 async def _check_provider_quota(response) -> None:
-    """Classify billing errors locally without exposing the provider response."""
-    if response.status == 402:
-        raise GatewayError('PROVIDER_QUOTA_EXHAUSTED', retryable=False, status=402)
-    if response.status not in (400, 403, 429):
+    """Classify known terminal failures before the generic HTTP retry policy."""
+    if response.status < 400:
         return
+    error = {}
     try:
         body = await response.text()
         error = json.loads(body).get('error', {}) if len(body) <= 16384 else {}
         if not isinstance(error, dict):
-            return
+            error = {}
         identifiers = {str(error.get(key, '')).lower() for key in ('code', 'type')}
-        exhausted = bool(identifiers & {'insufficient_quota', 'insufficient_balance', 'quota_exceeded', 'credit_balance_too_low'})
     except (ValueError, TypeError, AttributeError):
+        identifiers = set()
+    code = None
+    if response.status == 402 or identifiers & {'insufficient_quota', 'insufficient_balance', 'quota_exceeded', 'credit_balance_too_low'}:
+        code = 'PROVIDER_QUOTA_EXHAUSTED'
+    elif identifiers & {'upstream_unavailable_usage_pending', 'usage_unavailable'}:
+        code = 'PROVIDER_USAGE_PENDING'
+    elif identifiers & {'request_already_submitted'}:
+        code = 'PROVIDER_REQUEST_DUPLICATE'
+    elif identifiers & {'invalid_api_key'}:
+        code = 'PROVIDER_AUTH_FAILED'
+    elif identifiers & {'upstream_rejected', 'upstream_not_configured'}:
+        code = 'PROVIDER_REJECTED'
+    if code:
+        exc = GatewayError(code, retryable=False, status=response.status)
+        _record_provider_failure(exc, response)
+        raise exc
+
+
+def _record_provider_failure(exc, response=None):
+    from runtime.diagnostics.failure_context import record_failure
+    if getattr(exc, '_failure_recorded', False):
         return
-    if exhausted:
-        raise GatewayError('PROVIDER_QUOTA_EXHAUSTED', retryable=False, status=response.status)
+    try:
+        raw = response.headers.get('X-Request-ID', '')
+        exc.provider_request_id = str(uuid.UUID(raw))
+    except (AttributeError, ValueError, TypeError):
+        pass
+    record_failure(exc)
+    exc._failure_recorded = True
 
 
 class ProviderTimeout(GatewayError):
@@ -890,8 +914,13 @@ class OpenAICompatibleAdapter(Gateway):
             body.update(capabilities.reasoning_parameters(False))
         return body
 
-    async def _retry_wait(self, attempt: int) -> None:
+    async def _retry_wait(self, attempt: int, response=None) -> None:
         delay = self.config.retry_backoff_seconds * (attempt + 1)
+        if response is not None:
+            try:
+                delay = max(delay, min(60, max(0, float(response.headers.get('Retry-After', 0)))))
+            except (ValueError, TypeError, AttributeError):
+                pass
         if delay:
             await asyncio.sleep(delay)
 
@@ -914,6 +943,7 @@ class OpenAICompatibleAdapter(Gateway):
         )
         for attempt in range(self.config.max_retries + 1):
             diagnostic_stage = "request"
+            response = None
             response_status = None
             usage = None
             outcome = "error"
@@ -931,7 +961,7 @@ class OpenAICompatibleAdapter(Gateway):
                         await _check_provider_quota(response)
                         if status == 429 or status >= 500:
                             if attempt < self.config.max_retries:
-                                await self._retry_wait(attempt)
+                                await self._retry_wait(attempt, response)
                                 continue
                             raise ProviderRetryableError(status)
                         if status >= 400:
@@ -966,6 +996,7 @@ class OpenAICompatibleAdapter(Gateway):
                 exc.diagnostic_stage = diagnostic_stage
                 if exc.status is None:
                     exc.status = response_status
+                _record_provider_failure(exc, response)
                 raise
             except asyncio.TimeoutError:
                 outcome = "timeout"
@@ -1277,6 +1308,7 @@ class OpenAICompatibleAdapter(Gateway):
         )
         for attempt in range(self.config.max_retries + 1):
             usage = None
+            response = None
             terminal_finish_reason = None
             buffered = []
             outcome = "error"
@@ -1292,7 +1324,7 @@ class OpenAICompatibleAdapter(Gateway):
                         await _check_provider_quota(response)
                         if status == 429 or status >= 500:
                             if attempt < self.config.max_retries:
-                                await self._retry_wait(attempt)
+                                await self._retry_wait(attempt, response)
                                 continue
                             raise ProviderRetryableError(status)
                         if status >= 400:
@@ -1316,6 +1348,13 @@ class OpenAICompatibleAdapter(Gateway):
                                     break
                                 raise ProviderProtocolError() from None
                             if isinstance(data, Mapping):
+                                if data.get('error'):
+                                    error = data['error']
+                                    if isinstance(error, Mapping) and error.get('code') in {'usage_unavailable', 'upstream_unavailable_usage_pending'}:
+                                        exc = GatewayError('PROVIDER_USAGE_PENDING', retryable=False, status=status)
+                                        _record_provider_failure(exc, response)
+                                        raise exc
+                                    raise ProviderProtocolError()
                                 usage = data.get("usage") or (data.get("response", {}).get("usage") if isinstance(data.get("response"), Mapping) else None) or usage
                             if terminal_finish_reason is not None:
                                 continue
@@ -1330,7 +1369,7 @@ class OpenAICompatibleAdapter(Gateway):
                             if finish_reason:
                                 terminal_finish_reason = finish_reason
                                 # Usage may arrive in a final choices=[] event after finish_reason.
-                                if not body.get("stream_options", {}).get("include_usage"):
+                                if not body.get("stream_options", {}).get("include_usage") and not response.headers.get("X-Request-ID"):
                                     break
                         outcome = "response"
                         if terminal_finish_reason == "length":
@@ -1350,6 +1389,7 @@ class OpenAICompatibleAdapter(Gateway):
                             )
                         return
             except ProviderProtocolError as exc:
+                _record_provider_failure(exc, response)
                 if not exc.retryable:
                     raise
                 if attempt < self.config.max_retries:
