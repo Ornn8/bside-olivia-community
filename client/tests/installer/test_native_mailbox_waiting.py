@@ -33,6 +33,45 @@ if(!failed)throw Error("cancellation bypassed");})().catch(e=>{console.error(e);
     subprocess.run([shutil.which("node"), "-e", script], capture_output=True, text=True, check=True)
 
 
+def test_open_letter_stays_visible_until_background_detail_is_ready(tmp_path):
+    # Native list rows carry no body. Refresh must not publish that incomplete
+    # row or reset detailLoaded while the detail request is still in flight.
+    source = '''
+async function z(B){const K=t.value.find(ye=>ye.id===B);K&&(K.detailLoaded=!1,K.sent.content="");const W=await nm(B);t.value[0]=W;return W}
+async function poll(re){const ye=0,Ee=t.value[ye];Ee.detailLoaded&&(re.detailLoaded=!0,re.sent.content=Ee.sent.content);t.value[ye]=re,Ee.detailLoaded&&await z(re.id)}
+'''
+    main = tmp_path / MAIN_JS_0627
+    main.parent.mkdir(parents=True)
+    main.write_text('/*'+MAILBOX_WRITE_ANCHOR_0627+'*/\n'+source, encoding='utf-8')
+    _repair_mailbox_write_access(tmp_path)
+    patched = main.read_text(encoding='utf-8')
+    script = '''
+const assert=require('node:assert/strict');
+const original={id:'letter',detailLoaded:true,sent:{content:'user'},received:{content:'reply',signature:'Lin',audioUrl:'audio'}};
+const t={value:[original]};let resolve,reject;
+const nm=()=>new Promise((ok,fail)=>{resolve=ok;reject=fail});
+''' + patched + '''
+(async()=>{
+  const summary=()=>({id:'letter',sent:{content:''},received:{content:''}});
+  const pending=poll(summary());
+  assert.equal(t.value[0],original);
+  assert.equal(original.detailLoaded,true);
+  assert.equal(original.sent.content,'user');
+  assert.equal(original.received.content,'reply');
+  const fresh={...original,received:{...original.received,content:'new reply'}};
+  resolve(fresh);await pending;assert.equal(t.value[0],fresh);
+  const failed=poll(summary());reject(Error('offline'));
+  await assert.rejects(failed,/offline/);assert.equal(t.value[0],fresh);
+  assert.equal(fresh.detailLoaded,true);
+  const unread={id:'new',sent:{content:''}};t.value=[unread];
+  const updated={id:'new',sent:{content:''},letterStatus:2};await poll(updated);
+  assert.equal(t.value[0],updated);
+})().catch(e=>{console.error(e);process.exitCode=1});
+'''
+    result = subprocess.run([shutil.which('node'), '-e', script], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
 def test_native_waiting_card_stays_visible_and_blocks_click_until_reply():
     # Verbatim footer and sidebar render from native 0.0.9.627. Execute the
     # patched render/event functions, including a direct disabled-button click.

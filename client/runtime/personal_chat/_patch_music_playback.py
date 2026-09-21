@@ -2,6 +2,7 @@
 
 
 def patch_music_playback(source: str) -> str:
+    source = _patch_native_mode_button(source)
     if 'window.__oliviaMusicPlayback=' in source:
         return source
     anchors = {
@@ -40,4 +41,16 @@ return{isSongAvailable:a,isPlaying:ao(m)''',
         return source
     for anchor, replacement in anchors.items():
         source = source.replace(anchor, replacement, 1)
+    return source
+
+
+def _patch_native_mode_button(source: str) -> str:
+    # The native studio toolbar hides mode switching in offline mode. Reuse
+    # its existing handler/icons beside Play, including on already-patched apps.
+    before = 'o(t)?Y("",!0):(r(),_("div",{key:0,class:"w-8 h-8 flex items-center justify-center cursor-pointer hover:bg-grey-1 rounded-1",onClick:g},['
+    after = '(r(),_("button",{key:0,type:"button",title:o(l)===o(ot).Shuffle?"随机播放，点击切换为顺序播放":"顺序播放，点击切换为随机播放","aria-label":o(l)===o(ot).Shuffle?"随机播放":"顺序播放",class:"w-8 h-8 flex items-center justify-center cursor-pointer hover:bg-grey-1 rounded-1",onClick:g},['
+    end = 'type:"repeatsingle",class:"text-headline-m text-info hover:text-info-hover active:text-info-active"})):Y("",!0)])),o(t)?Y("",!0):(r(),_("div",{key:1'
+    if source.count(before) == 1 and source.count(end) == 1:
+        source = source.replace(before, after, 1).replace(
+            end, end.replace('Y("",!0)]))', 'Y("",!0)],8,["title","aria-label"]))'), 1)
     return source

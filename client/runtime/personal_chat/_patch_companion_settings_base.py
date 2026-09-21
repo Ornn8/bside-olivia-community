@@ -355,6 +355,19 @@ def _repair_native_mail_icons(source: str) -> str:
     return source.replace(native, native.replace('o(a).iconBgClass])}', 'o(a).iconBgClass]),style:o(a).iconStyle}').removesuffix(',2)') + ',6)', 1)
 
 
+def _repair_native_letter_refresh(source: str) -> str:
+    # Keep the current paper mounted during a detail refresh. List responses
+    # contain only summaries; publish the complete replacement after success.
+    source = source.replace(
+        'const K=t.value.find(ye=>ye.id===B);K&&(K.detailLoaded=!1,K.sent.content="");const W=',
+        'const W=',
+    )
+    return source.replace(
+        't.value[ye]=re,Ee.detailLoaded&&await z(re.id)',
+        'Ee.detailLoaded?await z(re.id):t.value[ye]=re',
+    )
+
+
 def _repair_mailbox_write_access(root: Path) -> str:
     from runtime.personal_chat._patch_music_playback import patch_music_playback
 
@@ -366,6 +379,7 @@ def _repair_mailbox_write_access(root: Path) -> str:
     # otherwise initializes/resets to zero until its account-driven refresh,
     # leaving a fresh local session unable to open the composer.
     source_before_quota = source
+    source = _repair_native_letter_refresh(source)
     source = patch_music_playback(source)
     # Expose the existing native router for the world page and settings entry.
     router_anchor = 'const Db=async()=>'
