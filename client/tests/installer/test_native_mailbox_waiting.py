@@ -20,7 +20,7 @@ def test_native_send_interceptor_waits_for_route_consent_and_patch_is_idempotent
     assert _repair_mailbox_write_access(tmp_path) == "ALREADY_PATCHED"
     assert main.read_text(encoding="utf-8") == source
     # Execute the real patched interceptor, stopping before the unrelated render fixture.
-    script = '''let interceptor;const Te={interceptors:{request:{use:f=>interceptor=f}}};
+    script = '''let interceptor;const Te={interceptors:{request:{use:f=>interceptor=f},response:{use:()=>{}}}};
 const document={querySelector:()=>({dataset:{apiBase:"http://127.0.0.1:8899"}})};
 const Ie=()=>({isOfflineMode:false});let calls=0;
 const window={__oliviaPrepareLetterRoute:async e=>{await Promise.resolve();calls++;return {...e,confirmed:true}}};
