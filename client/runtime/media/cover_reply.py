@@ -17,11 +17,13 @@ def render_cover_reply(content, reply_text, output_path, *, source_audio,
                        normal_video_path, song_video_path, official_reply_reference_path,
                        tts_config_path, visual_config_path, worker_path, performance_video_path,
                        spoken_action_base_path=None, voice_performance_plan=None,
-                       cover_lyrics="", cover_language="unknown", **unused):
+                       cover_lyrics="", cover_language="unknown", cover_options=None, **unused):
+    from runtime.media.cover_options import validate
+    options = validate({} if cover_options is None else cover_options)
     from runtime.remote_pipeline import enabled
     if render_video and enabled(environment):
         from runtime.media.remote_materials import render_music_materials
-        return render_music_materials('cover_video', {'lyrics': cover_lyrics, 'language': cover_language}, output_path,
+        return render_music_materials('cover_video', {'lyrics': cover_lyrics, 'language': cover_language, 'cover_options': options}, output_path,
             source_audio=source_audio, environment=environment, include_spoken=include_spoken, reply_text=reply_text,
             performance_video_path=performance_video_path, official_reply_reference_path=official_reply_reference_path,
             spoken_action_base_path=spoken_action_base_path, voice_performance_plan=voice_performance_plan)
@@ -31,7 +33,7 @@ def render_cover_reply(content, reply_text, output_path, *, source_audio,
     audio = output_path.with_name(output_path.stem + "-cover.wav") if render_video else output_path
     try:
         metadata = generate_cover(source_audio, audio, environment=environment,
-                                  lyrics=cover_lyrics, language=cover_language)
+                                  lyrics=cover_lyrics, language=cover_language, cover_options=options)
     except CoverError as exc:
         _persist_provider_failure(str(exc), "provider=ace_step_xl; stage=cover; attempts=1", environment)
         raise MusicReplyError(str(exc)) from None

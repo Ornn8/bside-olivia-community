@@ -42,8 +42,12 @@ if(params.has('verify'))(async()=>{
  let canceled=0;document.querySelector('[role=dialog]').addEventListener('cancel',()=>canceled++);
  document.querySelector('input[type=file]').dispatchEvent(new Event('cancel',{bubbles:true}));assert(canceled===0&&state.mode==='cover'&&grid.isConnected,'file cancel stays open');
  await testFile();const lyrics=document.querySelector('[aria-label="翻唱歌词"]');assert(asr==='ready'?lyrics.value.includes('晚风'):lyrics.value==='', 'recognition state');
- lyrics.value='人工修正歌词';assert(state.materialForSend().cover_output==='audio','default audio');document.querySelector('.olivia-compose-cover .olivia-cover-options button:last-child').click();
+ lyrics.value='人工修正歌词';assert(state.materialForSend().cover_output==='audio','default audio');
+ assert(state.materialForSend().cover_options.audio_cover_strength===.6&&state.materialForSend().cover_options.cover_noise_strength===.25,'cover defaults');
+ document.querySelector('[name=audio_cover_strength]').value='.4';document.querySelector('[name=cover_noise_strength]').value='.2';
+ document.querySelector('.olivia-compose-cover .olivia-cover-options button:last-child').click();
  config=await window.__oliviaPrepareLetterRoute({url:'/toy/letter/send',data:{content:input.value}});assert(config.data.material.cover_output==='video'&&config.data.material.cover_lyrics==='人工修正歌词','cover send');assert(config.data.content==='请翻唱《原曲》。','cover own content');
+ assert(config.data.material.cover_options.audio_cover_strength===.4&&config.data.material.cover_options.cover_noise_strength===.2,'custom cover parameters submitted');
  state.select('letter');assert(input.value===draft,'restore ordinary draft');config=await window.__oliviaPrepareLetterRoute({url:'/toy/letter/send',data:{content:input.value}});assert(!config.data.material.cover_source_id,'no cover leak');
  state.select('cover');assert(lyrics.value==='人工修正歌词','retain corrected lyrics');uploadFails=true;await testFile('失败.wav');assert(state.material.filename==='原曲.wav'&&lyrics.value==='人工修正歌词','failed replacement preserves old source');
  document.getElementById('clear').click();assert(!state.material&&lyrics.value===''&&state.draft===draft,'clear cover only');state.select('letter');assert(input.value===draft,'clear did not erase letter');

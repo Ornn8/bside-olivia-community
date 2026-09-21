@@ -3171,6 +3171,8 @@ def _original_request_route(material):
 
 
 def _cover_request_route(material):
+    from runtime.media.cover_options import validate
+    validate(material.get('cover_options', {}))
     from runtime.media.cover_upload import source_path
     from letter_triage import TriageResult
     source_path(_local_data_root(), material.get('cover_source_id'))
@@ -4675,7 +4677,8 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                         raise MusicReplyError("COVER_SOURCE_REQUIRED") from None
                     music_renderer = render_cover_reply
                     cover_options = {"source_audio": cover_source, "cover_lyrics": material.get("cover_lyrics", ""),
-                                     "cover_language": material.get("cover_language", "unknown")}
+                                     "cover_language": material.get("cover_language", "unknown"),
+                                     "cover_options": material.get("cover_options", {})}
                 render_metadata = await asyncio.to_thread(music_renderer,
                     content,
                     reply_text,

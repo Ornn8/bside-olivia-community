@@ -62,6 +62,7 @@ PAYLOAD_EXTRA_FILES = (
     "runtime/gpu_settings.py",
     "runtime/music_settings.py",
     "runtime/media/music_options.py",
+    "runtime/media/cover_options.py",
     "runtime/remote_generation.py",
     "runtime/remote_pipeline.py",
     "runtime/gpu_cleanup.py",

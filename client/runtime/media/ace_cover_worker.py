@@ -223,8 +223,8 @@ def run(request_path, *, cache=None, resident_options=None):
         task_type=task_type, src_audio=str(source) if source is not None else None, reference_audio=request["reference"],
         caption='' if task_type == 'cover' else request.get("caption", CAPTION), lyrics=lyrics, vocal_language=language, duration=duration,
         **({key: request[key] for key in ("bpm", "keyscale", "timesignature")} if task_type == "text2music" else {}),
-        audio_cover_strength=.6 if task_type == 'cover' else .8,
-        cover_noise_strength=.25 if task_type == 'cover' else .08, inference_steps=50,
+        audio_cover_strength=request.get('audio_cover_strength', .6) if task_type == 'cover' else .8,
+        cover_noise_strength=request.get('cover_noise_strength', .25) if task_type == 'cover' else .08, inference_steps=50,
         guidance_scale=7., shift=1., infer_method="ode", sampler_mode="euler", seed=200717,
         thinking=False, use_cot_metas=False, use_cot_caption=False,
         use_cot_language=False, use_cot_lyrics=False, dcw_enabled=False)
