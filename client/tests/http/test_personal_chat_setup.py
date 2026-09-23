@@ -29,6 +29,37 @@ class _Server:
         self.persist_calls += 1
 
 
+def test_qq_start_returns_while_dependencies_are_preparing(tmp_path, monkeypatch):
+    import threading
+    from runtime.personal_chat import setup, napcat_installer
+    release = threading.Event()
+    calls = []
+    def prepare(_root):
+        calls.append(1)
+        release.wait(5)
+        raise napcat_installer.NapCatSetupError('NAPCAT_DEPENDENCY_REPAIR_FAILED')
+    monkeypatch.setattr(setup, '_selected_channels', lambda _server: {'qq'})
+    monkeypatch.setattr(napcat_installer, 'ensure_shell', prepare)
+    async def scenario():
+        app = web.Application()
+        setup.install_setup_routes(app, _Server(tmp_path))
+        async with TestClient(TestServer(app)) as client:
+            headers = {setup.CONFIRM_HEADER: setup.CONFIRM_VALUE}
+            try:
+                response = await asyncio.wait_for(client.post(setup.NAPCAT_START_PATH, headers=headers, json={}), 1)
+                assert response.status == 202
+                again = await client.post(setup.NAPCAT_START_PATH, headers=headers, json={})
+                assert again.status == 202
+                assert len(calls) == 1
+            finally:
+                release.set()
+                task = app[setup._SETUP].get('napcat_login_task')
+                if task:
+                    await task
+            assert app[setup._SETUP]['napcat_error'] == 'NAPCAT_DEPENDENCY_REPAIR_FAILED'
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize('initial,additional', [('wechat', 'qq'), ('qq', 'wechat')])
 def test_selected_channel_can_add_other_channel_without_losing_binding(tmp_path, initial, additional):
     from runtime.personal_chat import setup

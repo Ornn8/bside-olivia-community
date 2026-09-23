@@ -579,29 +579,28 @@ def install_setup_routes(app: web.Application, server) -> None:
     async def start_napcat_once(request: web.Request) -> web.Response:
         if "qq" not in _selected_channels(server):
             return web.json_response({"error": "PERSONAL_CHAT_CONTACT_NOT_ACCEPTED"}, status=409)
+        login_task = runtime.get("napcat_login_task")
+        if isinstance(login_task, asyncio.Task) and not login_task.done():
+            return web.json_response({"status": str(runtime.get("napcat_state") or "STARTING")}, status=202)
+        runtime.pop("napcat_error", None)
+        runtime["napcat_state"] = "STARTING"
+        runtime["napcat_login_task"] = asyncio.create_task(prepare_and_open_napcat())
+        return web.json_response({"status": "STARTING"}, status=202)
+
+    async def prepare_and_open_napcat() -> None:
         from . import napcat_installer
 
         try:
-            login_task = runtime.get("napcat_login_task")
-            if isinstance(login_task, asyncio.Task) and not login_task.done():
-                return web.json_response({"status": str(runtime.get("napcat_state") or "STARTING")}, status=202)
-            runtime.pop("napcat_error", None)
-            runtime["napcat_state"] = "STARTING"
             process = runtime.get("napcat_shell_process")
             if process is None or getattr(process, "poll", lambda: 0)() is not None:
                 process = await asyncio.to_thread(napcat_installer.ensure_shell, _root(server))
             runtime["napcat_shell_process"] = process
             await refresh_managed_napcat_state()
-            login_task = runtime.get("napcat_login_task")
-            if not isinstance(login_task, asyncio.Task) or login_task.done():
-                login_task = asyncio.create_task(_open_napcat_login(server, runtime))
-                runtime["napcat_login_task"] = login_task
-            return web.json_response({"status": str(runtime.get("napcat_state") or "STARTING")}, status=202)
+            await _open_napcat_login(server, runtime)
         except Exception as exc:
             code = _failure_code(exc)
             runtime["napcat_state"] = "FAILED"
             runtime["napcat_error"] = code
-            return web.json_response({"error": code}, status=400)
 
     async def napcat_login(request: web.Request) -> web.Response:
         if "qq" not in _selected_channels(server):
