@@ -49,8 +49,6 @@ Filename: "{sys}\wscript.exe"; Parameters: "//B //Nologo ""{code:GetInstallRoot}
 [Code]
 var
   InstallDirPage: TInputDirWizardPage;
-  OfficialDirPage: TInputQueryWizardPage;
-  OfficialBrowseButton: TNewButton;
   InstallProgressPage: TOutputProgressWizardPage;
   StableInstallCode: String;
   SetupResultPath: String;
@@ -154,15 +152,6 @@ begin
   InstallProgressPage.SetText(Caption, Detail);
 end;
 
-procedure OfficialBrowseButtonClick(Sender: TObject);
-var
-  Selected: String;
-begin
-  Selected := OfficialDirPage.Values[0];
-  if BrowseForFolder('选择正版 Steam 游戏目录', Selected, False) then
-    OfficialDirPage.Values[0] := Selected;
-end;
-
 function IsStableErrorCode(const Value: String): Boolean;
 var
   Index: Integer;
@@ -219,26 +208,6 @@ begin
     '{param:InstallRoot|{localappdata}\BSideOliviaLocal}'
   );
 
-  OfficialDirPage := CreateInputQueryPage(
-    InstallDirPage.ID,
-    '选择正版游戏目录',
-    '可选择 Steam 中 Olivia 的正版安装目录。',
-    '留空时安装器会按 Steam AppID 自动发现；不会写入正版目录。'
-  );
-  OfficialDirPage.Add('正版游戏目录（可留空）：', False);
-  OfficialDirPage.Values[0] := ExpandConstant('{param:OfficialRoot|}');
-
-  OfficialBrowseButton := TNewButton.Create(OfficialDirPage);
-  OfficialBrowseButton.Parent := OfficialDirPage.Surface;
-  OfficialBrowseButton.Caption := '浏览…';
-  OfficialBrowseButton.Width := ScaleX(80);
-  OfficialBrowseButton.Height := OfficialDirPage.Edits[0].Height;
-  OfficialBrowseButton.Left := OfficialDirPage.Edits[0].Left +
-    OfficialDirPage.Edits[0].Width - OfficialBrowseButton.Width;
-  OfficialBrowseButton.Top := OfficialDirPage.Edits[0].Top;
-  OfficialBrowseButton.OnClick := @OfficialBrowseButtonClick;
-  OfficialDirPage.Edits[0].Width := OfficialDirPage.Edits[0].Width -
-    OfficialBrowseButton.Width - ScaleX(8);
 end;
 
 function GetInstallRoot(Param: String): String;
@@ -304,8 +273,8 @@ begin
         ExpandConstant('{src}\Olivia-video-offline-private')
       );
 #endif
-    if Trim(OfficialDirPage.Values[0]) <> '' then
-      Params := Params + ' -OfficialRoot ' + AddQuotes(OfficialDirPage.Values[0]);
+    if Trim(ExpandConstant('{param:OfficialRoot|}')) <> '' then
+      Params := Params + ' -OfficialRoot ' + AddQuotes(ExpandConstant('{param:OfficialRoot|}'));
 
     try
       ExecSucceeded := ExecAndLogOutput(
@@ -331,7 +300,23 @@ begin
       if LoadStringFromFile(SetupResultPath + '.diagnostic.json', DiagnosticContent) then
         Log('Olivia installer diagnostic: ' + String(DiagnosticContent));
       if StableInstallCode = 'OFFICIAL_INSTALL_AMBIGUOUS' then
-        Result := '检测到多个 Olivia 正版目录，且无法自动确认当前副本。请点击“上一步”，明确选择 Steam 中正在使用的正版游戏目录。'
+        Result := '检测到多个正版副本，但均未匹配支持的版本。请在 Steam 中更新 Olivia 并验证游戏文件完整性，然后重试；安装器会自动重新检测。'
+      else if StableInstallCode = 'OFFICIAL_INSTALL_NOT_FOUND' then
+        Result := '未自动找到完整的正版游戏文件。请确认 Steam 已安装 Olivia，并在 Steam 中验证游戏文件完整性，然后重试；无需手动选择游戏目录。'
+      else if StableInstallCode = 'INSTALL_ROOT_OVERLAPS_OFFICIAL' then
+        Result := '本地版安装目录与正版游戏目录重叠。请返回上一步，为本地版选择独立目录，例如 D:\Olivia。'
+      else if StableInstallCode = 'OFFICIAL_INSTALL_PATH_REPARSE_POINT' then
+        Result := '自动检测到的正版游戏目录经过了链接或重定向，暂不支持此位置。请通过 Steam 的存储管理将游戏移动到普通目录后重试。'
+      else if StableInstallCode = 'SETUP_FILE_PERMISSION_DENIED' then
+        Result := '无法读取或写入安装所需文件。请确认目录访问权限，并检查安全软件的拦截记录；无需删除现有数据。'
+      else if StableInstallCode = 'SETUP_FILE_IN_USE' then
+        Result := '安装所需文件正在被占用。请关闭原版游戏及 Olivia 后点击重试；无需重新下载安装包。'
+      else if StableInstallCode = 'SETUP_FILE_MISSING' then
+        Result := '安装所需文件缺失。请检查正版游戏完整性及安全软件隔离记录；安装日志已记录失败阶段。'
+      else if StableInstallCode = 'SETUP_DISK_FULL' then
+        Result := '安装盘或临时目录所在盘空间不足。请释放空间后重试；不要删除信件与记忆目录。'
+      else if StableInstallCode = 'SETUP_PATH_TOO_LONG' then
+        Result := '安装文件路径过长。请返回上一步选择较短的目录，例如 D:\Olivia。'
       else if StableInstallCode = 'SETUP_PATCH_FILE_IN_USE' then
         Result := '安装文件正在被占用。请关闭旧版 Olivia 后重试；不要删除信件和记忆目录。'
       else if StableInstallCode = 'SETUP_PATCH_PERMISSION_DENIED' then

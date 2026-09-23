@@ -21,6 +21,37 @@ $requirements = Join-Path $PayloadRoot 'installer\runtime-requirements.txt'
 $setupDiagnosticPath = if ($SetupResultPath) { $SetupResultPath + '.diagnostic.json' } else { '' }
 $script:OfficialSourceDiagnostic = $null
 $script:InstallInstanceLock = $null
+$script:CurrentSetupPhase = 'PREPARE'
+
+function Get-SetupFailure {
+    param([Management.Automation.ErrorRecord]$Record)
+
+    $exception = $Record.Exception
+    $code = Get-SafeSetupErrorCode -Code ([string]$exception.Message)
+    while ($exception.InnerException) { $exception = $exception.InnerException }
+    $win32 = $exception.HResult -band 0xffff
+    if ($code -eq 'SETUP_INSTALL_FAILED') {
+        if ($exception -is [UnauthorizedAccessException] -or $win32 -eq 5) {
+            $code = 'SETUP_FILE_PERMISSION_DENIED'
+        } elseif ($win32 -in @(32, 33)) {
+            $code = 'SETUP_FILE_IN_USE'
+        } elseif ($win32 -in @(39, 112)) {
+            $code = 'SETUP_DISK_FULL'
+        } elseif ($exception -is [IO.PathTooLongException]) {
+            $code = 'SETUP_PATH_TOO_LONG'
+        } elseif ($exception -is [IO.FileNotFoundException] -or $exception -is [IO.DirectoryNotFoundException]) {
+            $code = 'SETUP_FILE_MISSING'
+        }
+    }
+    # Never serialize exception messages, paths, invocation text or stack traces.
+    return [ordered]@{
+        code = $code
+        phase = $script:CurrentSetupPhase
+        exception_type = $exception.GetType().FullName
+        hresult = $exception.HResult
+        line = $Record.InvocationInfo.ScriptLineNumber
+    }
+}
 
 function Get-SafeSetupErrorCode {
     param([string]$Code)
@@ -100,6 +131,7 @@ function Write-SetupProgress {
         ) {
             return
         }
+        $script:CurrentSetupPhase = $Phase
         $line = 'OLIVIA_SETUP_PROGRESS=' + $Phase + '|' +
             $CurrentBytes.ToString([Globalization.CultureInfo]::InvariantCulture) + '|' +
             $TotalBytes.ToString([Globalization.CultureInfo]::InvariantCulture)
@@ -200,7 +232,12 @@ function Exit-ManagedInstallLock {
 }
 
 trap {
-    $safeCode = Get-SafeSetupErrorCode -Code ([string]$_.Exception.Message)
+    $failure = Get-SetupFailure -Record $_
+    $safeCode = $failure.code
+    if ($null -eq $script:OfficialSourceDiagnostic) {
+        $script:OfficialSourceDiagnostic = [ordered]@{ schema_version = 'olivia.setup-failure.v1' }
+    }
+    $script:OfficialSourceDiagnostic['failure'] = $failure
     Write-SetupDiagnosticResult -Diagnostic $script:OfficialSourceDiagnostic
     Write-SetupErrorResult -Code $safeCode
     Exit-ManagedInstallLock
