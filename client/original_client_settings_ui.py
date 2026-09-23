@@ -1619,6 +1619,16 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     box.append(title,metrics,balance,usage,unifiedHistory,recharge,controls,orderView,status);
     panel.append(box);
     void run(async()=>{await readBalance();drawOrder(await call({action:"order_status"}));});
+    const refreshVisibleBalance = async () => {
+      if (!box.isConnected) return;
+      if (!document.hidden && box.getClientRects().length && !busy) {
+        busy=true;
+        try { await readBalance(); } catch (_) { /* Keep the last confirmed balance on network failure. */ }
+        finally { busy=false; }
+      }
+      if (box.isConnected) window.setTimeout(refreshVisibleBalance,15000);
+    };
+    window.setTimeout(refreshVisibleBalance,15000);
   };
 
   const renderLlmSetupPanel = async (panel, initialMode, preferOlivia = false) => {
