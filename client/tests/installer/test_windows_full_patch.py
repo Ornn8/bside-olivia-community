@@ -1621,6 +1621,39 @@ def test_copy_payload_includes_runtime_packages_used_by_product_imports(
         assert (destination / relative).is_file(), relative
 
 
+def test_packaged_backend_reply_startup_includes_photo_modules(tmp_path):
+    destination = tmp_path / 'local_backend'
+    copy_project_payload(Path(__file__).parents[2], destination)
+    environment = dict(os.environ, OLIVIA_LOCAL_DATA_ROOT=str(tmp_path / 'data'))
+    environment.pop('PYTHONPATH', None)
+    script = '''
+import asyncio
+import local_server as server
+from runtime.image_understanding import commit_image_memory
+server._refresh_proactive_context = lambda: None
+server._proactive_settings = lambda: {'enabled': False}
+server._schedule_pending_reply_jobs = lambda: None
+server._schedule_pending_media_jobs = lambda: None
+server.daily_life_runtime = None
+async def idle():
+    await asyncio.sleep(60)
+server._proactive_loop = idle
+async def check():
+    await server._start_reply_tasks(None)
+    await asyncio.sleep(0)
+    tasks = [server._proactive_task, *server.media_tasks]
+    assert all(not task.done() for task in tasks)
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+asyncio.run(check())
+'''
+    result = subprocess.run([sys.executable, '-X', 'utf8', '-c', script],
+        cwd=destination, env=environment, capture_output=True, text=True,
+        encoding='utf-8', timeout=30)
+    assert result.returncode == 0, result.stderr
+
+
 def test_copy_payload_from_git_tree_excludes_untracked_files(
     tmp_path: Path,
 ) -> None:

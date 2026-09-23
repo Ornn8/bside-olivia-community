@@ -99,6 +99,9 @@ def test_browser_open_failure_is_actionable(tmp_path, monkeypatch):
 
 def test_reenter_with_live_service_clears_exited_process_handle(tmp_path, monkeypatch):
     from runtime.personal_chat import setup, napcat_installer as installer
+    async def login_ready(server, runtime):
+        return None
+    monkeypatch.setattr(setup, '_open_napcat_login', login_ready)
     monkeypatch.setattr(setup, '_selected_channels', lambda server: {'qq'})
     monkeypatch.setattr(installer, 'onebot_available', lambda: False)
     monkeypatch.setattr(installer, 'webui_available', lambda root: True)
@@ -112,8 +115,10 @@ def test_reenter_with_live_service_clears_exited_process_handle(tmp_path, monkey
             response = await client.post(setup.NAPCAT_START_PATH,
                 headers={setup.CONFIRM_HEADER: setup.CONFIRM_VALUE})
             assert response.status == 202
+            assert (await response.json())['status'] == 'STARTING'
+            await runtime['napcat_login_task']
             assert runtime['napcat_shell_process'] is None
-            assert (await response.json())['status'] == 'AWAITING_QQ_LOGIN'
+            assert runtime['napcat_state'] == 'AWAITING_QQ_LOGIN'
     asyncio.run(scenario())
 
 

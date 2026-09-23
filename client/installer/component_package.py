@@ -67,7 +67,10 @@ def _export_commit(source: Path, commit: str, destination: Path, archive_path: P
     try:
         with archive_path.open("wb") as stream:
             subprocess.run(
-                ["git", "-C", str(source), "archive", "--format=zip", commit],
+                # A subtree archive cannot see the repository-root attributes.
+                # Do not let Windows autocrlf rewrite hash-pinned manifests.
+                ["git", "-c", "core.autocrlf=false", "-c", "core.eol=lf",
+                 "-C", str(source), "archive", "--format=zip", commit],
                 check=True,
                 stdout=stream,
                 stderr=subprocess.PIPE,

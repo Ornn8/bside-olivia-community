@@ -161,7 +161,8 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
         NAPCAT_PORT_IN_USE: "QQ 登录端口被其他实例占用，请关闭其他 NapCat 实例后重试。",
         NAPCAT_DEPENDENCY_HASH_MISMATCH: "QQ 运行依赖校验失败，请重试；Olivia 会重新下载校验，无需重装程序。",
         NAPCAT_DEPENDENCY_EXTRACT_FAILED: "QQ 运行依赖解压失败，请检查剩余空间后重试。",
-        NAPCAT_DEPENDENCY_REPAIR_FAILED: "QQ 运行依赖补齐失败，请关闭 QQ 组件后重试。"
+        NAPCAT_DEPENDENCY_REPAIR_FAILED: "QQ 运行依赖补齐失败，请关闭 QQ 组件后重试。",
+        NAPCAT_R2_DOWNLOAD_FAILED: "QQ 组件包下载失败，请检查网络后重试。下载链接会自动重新获取。"
       })[code] || code;
     };
 
@@ -312,9 +313,9 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
       }
       component.append(componentTop);
       if (napcat.state === "STARTING") {
-        component.append(node("div", "正在检查 QQ 运行依赖并启动登录页。首次补齐依赖需要下载约 300 MB，完成后等待登录服务就绪；无需重复点击。", "olivia-chat-copy"));
+        component.append(node("div", "正在检查 QQ 运行依赖并启动登录页。首次准备需从 Olivia 下载服务获取约 427 MB 完整包，已下载文件可复用；无需重复点击。", "olivia-chat-copy"));
       } else if (napcat.state === "DOWNLOADING") {
-        component.append(node("div", "正在获取并校验 NapCat 发布的固定 Node 运行包。", "olivia-chat-copy"));
+        component.append(node("div", "正在从 Olivia 下载服务获取并校验 QQ 完整组件包。", "olivia-chat-copy"));
       } else if (napcat.state === "AWAITING_QQ_LOGIN") {
         const login = status.qq_login || {};
         const message = login.logged_in ? "QQ 已登录，正在准备连接…"
@@ -344,7 +345,7 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
       } else if (napcat.installed) {
         component.append(node("div", "Olivia 会使用 NapCat 的自包含 Node 包，自动准备仅监听 127.0.0.1 的 OneBot 连接和随机 Token。", "olivia-chat-copy"));
       } else {
-        component.append(node("div", "点击一键安装即可。Olivia 不会把 NapCat 打进补丁包，而是从 NapCat 发布页下载固定版本并校验 SHA-256。", "olivia-chat-copy"));
+        component.append(node("div", "点击一键安装即可。从 Olivia 下载服务获取固定版本 QQ 组件及运行依赖，安装前校验 SHA-256。", "olivia-chat-copy"));
       }
       if (napcat.error) renderError(component, {code: napcat.error});
       box.append(component);
