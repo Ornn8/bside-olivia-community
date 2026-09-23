@@ -166,10 +166,13 @@ def test_paid_quote_and_explicit_shared_key_never_forward_to_custom_host(tmp_pat
     from runtime.cloud_service import CloudService
     calls=[]
     available=[500]
+    provider = [None]
     async def remote(self, action, data):
         calls.append((self.url,self.token,action))
         if action=='capabilities':
-            return {'kinds':['tts','video'],'billing_enabled':True,'reservation_cents':{'audio':100,'video':500}}
+            caps = {'kinds':['tts','video'],'billing_enabled':True,'reservation_cents':{'audio':100,'original':300,'video':500}}
+            if provider[0] is not None: caps['original_music_provider'] = provider[0]
+            return caps
         return {'balance_cents':available[0]}
     monkeypatch.setattr('runtime.remote_generation.RemoteGeneration.request',remote)
     async def scenario():
@@ -188,11 +191,27 @@ def test_paid_quote_and_explicit_shared_key_never_forward_to_custom_host(tmp_pat
             assert result.status==200 and 'olivia-synthetic-shared' not in await result.text()
             assert env['OLIVIA_GPU_API_URL']=='https://175.24.191.6'
             assert env['OLIVIA_GPU_API_KEY']=='olivia-synthetic-shared'
+            music = await (await client.post(path,json={'action':'music_settings_status'},headers=headers)).json()
+            assert music['original_music_provider'] == 'legacy'
+            provider[0] = 'suno_v6'
+            music = await (await client.post(path,json={'action':'music_settings_status'},headers=headers)).json()
+            assert music['original_music_provider'] == 'suno_v6'
+            stale=await client.post(path,json={'action':'billing_quote','video':False},headers=headers)
+            assert stale.status==409
+            assert (await stale.json())['error_code']=='GPU_CLIENT_UPDATE_REQUIRED'
             for video,expected in [(True,500),(False,100)]:
-                quote=await (await client.post(path,json={'action':'billing_quote','video':video},headers=headers)).json()
+                quote=await (await client.post(path,json={'action':'billing_quote','video':video,'original':False},headers=headers)).json()
                 assert quote['paid'] and quote['max_charge_cents']==expected
+            for video,expected in [(True,500),(False,300)]:
+                quote=await (await client.post(path,json={'action':'billing_quote','video':video,'original':True},headers=headers)).json()
+                assert quote['paid'] and quote['max_charge_cents']==expected
+            available[0]=299
+            denied=await client.post(path,json={'action':'billing_quote','video':False,'original':True},headers=headers)
+            assert denied.status==402
+            still_audio=await client.post(path,json={'action':'billing_quote','video':False,'original':False},headers=headers)
+            assert still_audio.status==200
             available[0]=99
-            denied=await client.post(path,json={'action':'billing_quote','video':False},headers=headers)
+            denied=await client.post(path,json={'action':'billing_quote','video':False,'original':False},headers=headers)
             assert denied.status==402
             assert (await denied.json())['error_code']=='GPU_INSUFFICIENT_BALANCE'
             assert (await client.post(path,json={'action':'settings_use_olivia','url':'https://other.example'},headers=headers)).status==400

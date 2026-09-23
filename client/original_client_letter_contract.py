@@ -53,7 +53,7 @@ _INTERNAL_AUDIT_STATUS = {
     "PASSED": OriginalClientAuditStatus.PASSED,
     "REJECTED": OriginalClientAuditStatus.REJECTED,
 }
-_MEDIA_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.(?:mp4|wav)$")
+_MEDIA_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.(?:mp4|wav|png)$")
 _VIDEO_MODES = frozenset({"musical_video", "singing_video", "voice_song_video"})
 
 
@@ -344,6 +344,14 @@ def serialize_letter_detail(
         }
     )
     sticker_id = letter.get("reply_sticker_id")
+    if published:
+        payload['imageStatus'] = letter.get('image_status', 'NOT_REQUESTED')
+        if letter.get('image_reply_settings', {}).get('enabled'):
+            payload['imageRequestId'] = str(letter.get('letter_id', ''))
+        if letter.get('image_status') == 'COMPLETED':
+            payload['replyImageUrl'] = _safe_local_media_url(letter.get('reply_image_url'))
+            payload['imageResolution'] = letter.get('image_resolution', '1K')
+            payload['imageRenderMode'] = letter.get('image_render_mode', 'native')
     if published and isinstance(sticker_id, str) and sticker_id in {f"linli-{i:02d}" for i in range(1, 109)}:
         payload["replyStickerId"] = sticker_id
     if published and _audio_reply(letter):

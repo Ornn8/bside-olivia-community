@@ -57,6 +57,9 @@ async def generate(server, event, row):
         if asyncio.get_running_loop().time() >= deadline:
             raise RuntimeError("PERSONAL_CHAT_MEMORY_UNAVAILABLE")
         await asyncio.sleep(.25)
+    from runtime.image_understanding import understand_incoming, incoming_context
+    await understand_incoming(server, event, row)
+    content = event.text + incoming_context(row)
     source = server._CURRENT_LETTER_MEMORY_SOURCE.set(f"reply:{event.exchange_id}:1")
     receipt = server._CURRENT_LETTER_RECEIPT.set(datetime.fromisoformat(row["life_received_at"]))
     from .presentation import CURRENT, parse, parse_social
@@ -85,7 +88,7 @@ async def generate(server, event, row):
                                 'proactive': row.get('origin') == 'proactive'})
     try:
         attempt_id = event.exchange_id + ':' + str(row.get('generation_attempts', 1))
-        request = ReplyRequest(content=event.text or '应用主动聊天检查：现在是否有值得和对方分享的话？没有则跳过。', request_id="personal-chat:" + attempt_id,
+        request = ReplyRequest(content=content or '应用主动聊天检查：现在是否有值得和对方分享的话？没有则跳过。', request_id="personal-chat:" + attempt_id,
             idempotency_key=attempt_id, max_input_chars=adapter.config.max_input_chars,
             gateway_scope=(server.GatewayRequestScope.PERSONAL_CHAT_JSON
                            if server.supports_scoped_reasoning(adapter.config) else None))
@@ -140,7 +143,8 @@ async def commit(server, row):
     if row.get("delivery_status") != "DELIVERED":
         return
     failures = []
-    for consume in (_commit_mailbox_notice, _commit_world, _commit_candidates, _commit_life, _commit_memory):
+    from runtime.image_understanding import commit_image_memory
+    for consume in (_commit_mailbox_notice, _commit_world, _commit_candidates, _commit_life, _commit_memory, commit_image_memory):
         try:
             await consume(server, row)
         except asyncio.CancelledError:
@@ -149,6 +153,32 @@ async def commit(server, row):
             failures.append(exc)
     if failures:
         raise failures[0]
+
+
+async def deliver_photo(server, row, send):
+    from runtime.image_reply import prepare
+    from runtime.image_understanding import commit_image_memory
+    if row.get('delivery_status') != 'DELIVERED':
+        return
+    await prepare(server, row, row.get('content', ''), row['reply_text'], channel='qq')
+    if row.get('image_status') != 'COMPLETED' or not row.get('prepared_image'):
+        return
+    if callable(getattr(send, 'is_available', None)) and not send.is_available():
+        return  # Safe to send the saved picture only when a later owner replay reconnects.
+    row['image_delivery_status'] = 'SENDING'
+    server._persist_store_state()
+    try:
+        receipt = await send.image(row['prepared_image'])
+        if isinstance(receipt, bool) or not isinstance(receipt, (str, int)) or not str(receipt):
+            raise RuntimeError('QQ_SEND_UNCONFIRMED')
+    except BaseException:
+        row['image_delivery_status'] = 'UNKNOWN'
+        server._persist_store_state()
+        raise
+    row.update(image_delivery_status='DELIVERED', image_delivery_receipt=str(receipt),
+               image_world_status='PENDING')
+    server._persist_store_state()
+    await commit_image_memory(server, row)
 
 
 async def _commit_mailbox_notice(server, row):
@@ -327,7 +357,7 @@ def install_personal_chat(app, server):
                     return False
             service = PersonalChatService(server.store.personal_chats, server._persist_store_state,
                 lambda event, row: generate(server, event, row), lambda row: recoverable_commit(server, row), bindings,
-                sticker_allowed=sticker_allowed)
+                sticker_allowed=sticker_allowed, photo=lambda row, send: deliver_photo(server, row, send))
             from .probe import ProbeJournal
             journal = ProbeJournal(server._state_root() / "personal-chat-diagnostics")
             runtime = {"stop": stop_event, "tasks": [], "service": service, "status": {},
@@ -471,6 +501,10 @@ def install_personal_chat(app, server):
                 try:
                     while not stop_event.is_set():
                         await service.recover()
+                        from runtime.image_understanding import commit_image_memory
+                        for row in server.store.personal_chats:
+                            if row.get('image_world_status') == 'PENDING':
+                                await commit_image_memory(server, row)
                         _publish_status(server, runtime)
                         try:
                             await asyncio.wait_for(stop_event.wait(), 30)
@@ -524,9 +558,10 @@ def install_personal_chat(app, server):
         if runtime is None:
             return
         runtime["stop"].set()
-        for task in runtime["tasks"]:
+        tasks = [*runtime["tasks"], *runtime['service'].photo_tasks.values()]
+        for task in tasks:
             task.cancel()
-        await asyncio.gather(*runtime["tasks"], return_exceptions=True)
+        await asyncio.gather(*tasks, return_exceptions=True)
         runtime["journal"].db.close()
 
     app.on_startup.append(start)

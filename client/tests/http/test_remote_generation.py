@@ -6,6 +6,18 @@ from runtime.remote_generation import RemoteGeneration
 from runtime.cloud_service import CloudError
 
 
+@pytest.mark.parametrize('kind,cap', [('tts',100),('cover',100),('original',300),('original_video',500),('image',121)])
+def test_submit_preserves_kind_specific_charge_consent(kind, cap):
+    async def scenario():
+        async def handler(request):
+            assert request.headers['X-Olivia-Max-Charge-Cents']==str(cap)
+            return web.json_response({'task_id':'synthetic','status':'queued'})
+        app=web.Application();app.router.add_post('/v1/tasks',handler)
+        async with TestServer(app) as server:
+            await RemoteGeneration(str(server.make_url('/')),'synthetic').request('submit',{'request_id':'test-request','kind':kind,'input':{}})
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize('failure', [502, 503, 504, 404, 401, 'persistent'])
 def test_status_transient_failure_does_not_resubmit(tmp_path, monkeypatch, failure):
     async def scenario():

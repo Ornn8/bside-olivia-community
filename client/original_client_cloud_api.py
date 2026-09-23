@@ -33,7 +33,7 @@ def mount_cloud_api(app, service, setup, gpu_settings=None):
                 await gpu_settings.test(url, key)
                 return web.json_response(gpu_settings.save('remote', url, key), headers=_headers(origin))
             if operation == 'billing_quote':
-                if set(body) != {'video'} or type(body['video']) is not bool:
+                if set(body) not in ({'video'}, {'video', 'original'}) or type(body['video']) is not bool or type(body.get('original', False)) is not bool:
                     raise CloudError('GPU_REQUEST_INVALID', 400)
                 if gpu_settings.environment.get('OLIVIA_GPU_ROUTE') != 'remote':
                     return web.json_response({'status': 'OK', 'paid': False}, headers=_headers(origin))
@@ -42,8 +42,13 @@ def mount_cloud_api(app, service, setup, gpu_settings=None):
                 paid = caps.get('billing_enabled') is True
                 result = {'status': 'OK', 'paid': paid}
                 if paid:
-                    amount = caps.get('reservation_cents', {}).get('video' if body['video'] else 'audio')
-                    if type(amount) is not int or amount != (500 if body['video'] else 100):
+                    # An already-open pre-update frontend only sends video and
+                    # would otherwise confirm a 100-cent cap for a 300-cent song.
+                    if 'original' not in body:
+                        raise CloudError('GPU_CLIENT_UPDATE_REQUIRED', 409)
+                    original = body.get('original', False)
+                    amount = caps.get('reservation_cents', {}).get('video' if body['video'] else 'original' if original else 'audio')
+                    if type(amount) is not int or amount != (500 if body['video'] else 300 if original else 100):
                         raise CloudError('GPU_RESPONSE_INVALID', 502)
                     account = await api.request('billing_account', {})
                     if account['balance_cents'] < amount:
@@ -51,7 +56,18 @@ def mount_cloud_api(app, service, setup, gpu_settings=None):
                     result.update(max_charge_cents=amount, balance_cents=account['balance_cents'])
                 return web.json_response(result, headers=_headers(origin))
             if operation == 'music_settings_status' and not body:
-                return web.json_response(music_settings.status(), headers=_headers(origin))
+                result = music_settings.status()
+                result['original_music_provider'] = 'legacy'
+                if gpu_settings.environment.get('OLIVIA_GPU_ROUTE') == 'remote':
+                    api = RemoteGeneration(gpu_settings.environment.get('OLIVIA_GPU_API_URL', ''), gpu_settings.environment.get('OLIVIA_GPU_API_KEY', ''))
+                    try:
+                        caps = await api.request('capabilities', {})
+                    except CloudError:
+                        caps = {}
+                        result['original_music_provider'] = 'unavailable'
+                    if caps.get('original_music_provider') == 'suno_v6':
+                        result['original_music_provider'] = 'suno_v6'
+                return web.json_response(result, headers=_headers(origin))
             if operation == 'music_settings_save' and set(body) == {'options'}:
                 return web.json_response(music_settings.save(body['options']), headers=_headers(origin))
             if operation == 'settings_status' and not body:
@@ -66,11 +82,14 @@ def mount_cloud_api(app, service, setup, gpu_settings=None):
                 return web.json_response(await gpu_settings.claim(body['url']), headers=_headers(origin))
             remote = RemoteGeneration(os.environ.get('OLIVIA_GPU_API_URL', ''), os.environ.get('OLIVIA_GPU_API_KEY', ''))
             result = await remote.request(operation, body)
-            if operation in ('billing_prices', 'billing_account'):
+            if operation in ('billing_prices', 'billing_account', 'billing_statement'):
                 result = dict(result, status='OK')
             return web.json_response(result, headers=_headers(origin))
         except CloudError as exc:
-            return web.json_response({'error_code': exc.code}, status=exc.status, headers=_headers(origin))
+            payload = {'error_code': exc.code}
+            if exc.code == 'GPU_CLIENT_UPDATE_REQUIRED':
+                payload['message'] = '请重启客户端以更新原创收费确认。草稿已保留。'
+            return web.json_response(payload, status=exc.status, headers=_headers(origin))
     async def options(request):
         origin = _authorize(request, confirm=False)
         return web.Response(status=204, headers=_headers(origin, preflight=True))

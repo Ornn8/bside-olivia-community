@@ -17,12 +17,16 @@ def test_gpu_form_tests_candidate_and_clears_saved_key(tmp_path, monkeypatch):
                  'settings_use_olivia': dict(service.status(), route='remote', url='https://new.example', has_key=True),
                  'settings_test': asyncio.run(service.test('https://new.example', 'test-key')),
                  'settings_clear': service.status()}
-    responses.update(billing_prices={'status': 'OK', 'pricing': None}, billing_account={'status': 'OK',
-        'balance_cents': 9985, 'spent_cents': 15,
-            'charges': [{'task_id': 'synthetic-task', 'amount_cents': 15, 'pricing_version': 'test-v1', 'stages': [{'kind':'tts'}]}]})
+    responses.update(billing_prices={'status': 'OK', 'pricing': None}, billing_statement={
+        'status': 'OK', 'currency': 'CNY', 'remaining_yuan': '99.85', 'used_yuan': '0.15', 'reserved_yuan': '0.00',
+        'items': [{'source':'gpu', 'label':'语音生成', 'status':'settled', 'charged_yuan':'0.15',
+                   'reserved_yuan':'0.00', 'released_yuan':'0.00'},
+                  {'source':'relay', 'label':'图片识别', 'status':'settled', 'charged_yuan':'0.00001234',
+                   'reserved_yuan':'0.00', 'released_yuan':'0.00'}]})
     node=shutil.which('node')
     if not node: pytest.skip('Node unavailable')
-    source='const mountGPUSettings ='+BOOTSTRAP_JAVASCRIPT.split('const mountGPUSettings =',1)[1].split('const mountCloudService =',1)[0]
+    source=('const drawUnifiedStatement ='+BOOTSTRAP_JAVASCRIPT.split('const drawUnifiedStatement =',1)[1].split('const mountRelayAccount =',1)[0]
+        +'const mountGPUSettings ='+BOOTSTRAP_JAVASCRIPT.split('const mountGPUSettings =',1)[1].split('const mountCloudService =',1)[0])
     harness=r'''
 const assert=require('node:assert/strict');
 class Element {
@@ -72,12 +76,14 @@ const fetch=async(path,options)=>{
  assert.equal(inputs[1].value,'');assert.equal(mode.value,'remote');
  assert.ok(root.querySelectorAll('p').some(p=>p.textContent.startsWith('已启用云端生成')));
  await click('刷新账单');
- assert.ok(root.querySelectorAll('p').some(p=>p.textContent==='¥99.85'));
- assert.ok(root.querySelectorAll('p').some(p=>p.textContent==='语音生成'));
- assert.ok(root.querySelectorAll('p').some(p=>p.textContent==='−¥0.15'));
+ assert.equal(requests.at(-1).action,'billing_statement');
+ assert.ok(root.querySelectorAll('p').some(p=>p.textContent.includes('¥99.85')));
+ assert.ok(root.querySelectorAll('span').some(p=>p.textContent==='语音生成 · 已结算'));
+ assert.ok(root.querySelectorAll('span').some(p=>p.textContent==='−¥0.15'));
+ assert.ok(root.querySelectorAll('span').some(p=>p.textContent==='−¥0.00001234'));
  const visible=root.querySelectorAll('p').map(p=>p.textContent).join(' ');
  for(const internal of ['synthetic-task','test-v1','0.75','倍率','CPU','local-gpu-active'])assert.ok(!visible.includes(internal));
- responses.billing_account=null;
+ responses.billing_statement=null;
  await click('刷新账单');
  assert.ok(root.querySelectorAll('p').some(p=>p.textContent.includes('余额暂时无法读取')));
  assert.ok(!root.querySelectorAll('p').some(p=>p.textContent.includes('¥99.85')));

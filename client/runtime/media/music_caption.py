@@ -129,6 +129,10 @@ _TIMELINE = {
         "0-6 seconds piano opening; 6-54 seconds one verse; "
         "54-102 seconds one chorus; 102-110 seconds closing cadence."
     ),
+    240: (
+        "0-10 seconds piano opening; 10-120 seconds verse development; "
+        "120-225 seconds chorus development; 225-240 seconds closing cadence."
+    ),
 }
 
 _HEADINGS = ("### Global Metadata", "### Vocal Details", "### Arrangement")

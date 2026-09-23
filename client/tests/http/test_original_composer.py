@@ -3,7 +3,8 @@ import pytest
 from runtime.video_reply_settings import VideoReplySettingsStore, REPLY_ROUTES
 
 @pytest.mark.parametrize('output',['audio','video'])
-def test_original_composer_preserves_options_and_explicit_route(tmp_path,monkeypatch,output):
+@pytest.mark.parametrize('cloud', [False, True])
+def test_original_composer_preserves_options_and_explicit_route(tmp_path,monkeypatch,output,cloud):
     import local_server as server
     settings=VideoReplySettingsStore.initialize(tmp_path)
     settings.mutate_tier('video_reply_setting:original','video')
@@ -16,6 +17,7 @@ def test_original_composer_preserves_options_and_explicit_route(tmp_path,monkeyp
     monkeypatch.setattr(server,'_route_readiness',lambda *a,**k:dict.fromkeys(REPLY_ROUTES,True))
     monkeypatch.setattr(server,'_classify_managed_route',lambda *a:pytest.fail('explicit composer must not need model guess'))
     monkeypatch.setenv('OLIVIA_LOCAL_DATA_ROOT',str(tmp_path))
+    monkeypatch.setenv('OLIVIA_GPU_ROUTE', 'remote' if cloud else 'local')
     async def scenario():
         options={'caption':'gentle guitar','guidance_scale':7,'use_cot':True,'thinking':False}
         body={'content':'请原创演唱秋天。','original_output':output,'music_options':options}
@@ -34,4 +36,7 @@ def test_original_composer_preserves_options_and_explicit_route(tmp_path,monkeyp
         letter=server.store.letters[0]
         assert letter['material']['music_options']==options
         assert letter['route_preflight']['music_intent']=='compose'
+        assert letter['music_provider'] == ('cloud_original' if cloud else 'ace_step_xl_original')
+        assert letter['music_duration_seconds'] == (None if cloud else 110)
+        assert letter['music_planning_duration_seconds'] == (None if cloud else 110)
     asyncio.run(scenario())

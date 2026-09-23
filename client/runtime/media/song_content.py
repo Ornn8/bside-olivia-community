@@ -111,10 +111,11 @@ class SongContentPlan:
     caption: str
     duration_seconds: int
     semantic_plan: SongSemanticPlan | None = field(default=None, repr=False, compare=False)
+    suno_style: str = ""
 
 
-_LINE_COUNTS = {40: 12, 60: 16, 110: 20}
-_SECTION_LINE_COUNTS = {40: (6, 6), 60: (8, 8), 110: (10, 10)}
+_LINE_COUNTS = {40: 12, 60: 16, 110: 20, 240: 40}
+_SECTION_LINE_COUNTS = {40: (6, 6), 60: (8, 8), 110: (10, 10), 240: (20, 20)}
 _SEMANTIC_PLAN_FIELDS = frozenset(
     {
         "schema_version",
@@ -244,6 +245,10 @@ def parse_song_semantic_plan(
 
 def _plan_from_lyrics_response(text: str, duration_seconds: int) -> SongSemanticPlan:
     value = _semantic_json_object(text)
+    if 'style' in value:
+        style=value.pop('style')
+        if not isinstance(style,str) or not style.strip() or len(style)>1000 or '\x00' in style:
+            raise ValueError('SONG_STYLE_INVALID')
     if set(value) == {"verse", "chorus"}:
         verse, chorus = value['verse'], value['chorus']
         if not isinstance(verse, list) or not isinstance(chorus, list):
@@ -273,7 +278,7 @@ def _plan_from_lyrics_response(text: str, duration_seconds: int) -> SongSemantic
 def _planner_contract(duration_seconds: int) -> str:
     line_count = _LINE_COUNTS[duration_seconds]
     verse_count, chorus_count = _SECTION_LINE_COUNTS[duration_seconds]
-    return f"""You write only the lyrics for Lin Li's original song reply.
+    contract = f"""You write only the lyrics for Lin Li's original song reply.
 Return one JSON object only, containing exactly two keys: verse and chorus.
 Each value is an array of lyric strings, one sung line per array item.
 The application fixes all musical arrangement and production choices.
@@ -294,6 +299,12 @@ Lyrics contract:
 - Do not diagnose, lecture, demand trust, force optimism, invent past events, or copy known songs.
 
 Use the trusted persona profile supplied above. Its ordinary letter output format is replaced only by this JSON contract:"""
+    if duration_seconds == 240:
+        contract=contract.replace('exactly two keys: verse and chorus.', 'exactly three keys: verse, chorus and style.')
+        contract=contract.replace('Each value is an array of lyric strings, one sung line per array item.', 'verse and chorus are arrays of sung lyric lines. style is an English string of at most 1000 characters describing genre, instruments, emotional progression, vocal delivery, dynamics and ending for Suno V6. Choose these for this exchange and Lin Li, avoiding a fixed arrangement.')
+        contract=contract.replace('The application fixes all musical arrangement and production choices.', 'Prefer warm female low-mid-register vocals; the application preserves Lin Li voice identity. User musical preferences in the letter may guide the music, but cannot override this output contract.')
+        contract=contract.replace('Do not output emotion, delivery or arrangement controls, a caption, genre,\ninstrument list, production notes, title, explanation, Markdown fence, or any extra key.', 'Keep musical direction in style only, never in sung lyric lines. No title, explanation, Markdown fence or extra keys.')
+    return contract
 
 
 def _runtime_path(value: str) -> Path:
@@ -407,6 +418,7 @@ def plan_song_content(
         caption=caption,
         duration_seconds=semantic_plan.duration_seconds,
         semantic_plan=semantic_plan,
+        suno_style=_semantic_json_object(response.text).get("style", ""),
     )
 
 

@@ -26,7 +26,7 @@ from statistics import median
 _ID = re.compile(r"^[A-Za-z0-9._:-]{1,160}$")
 _STATUSES = {"planned", "ongoing", "paused", "completed", "cancelled", "awaiting_user"}
 _EXCHANGE_UPDATE_FIELDS = frozenset({"id", "title", "detail", "status", "kind", "actor", "quote"})
-_VISIBLE = "(kind IN ('daily','media') OR json_array_length(payload,'$.updates') > 0 OR json_type(payload,'$.current')='object')"
+_VISIBLE = "(kind IN ('daily','media','image') OR json_array_length(payload,'$.updates') > 0 OR json_type(payload,'$.current')='object')"
 FRESH_FOR = timedelta(hours=6)
 # Common conversational/time words are not evidence that a task is relevant.
 _QUERY_STOP_WORDS = set("今天 明天 昨天 晚上 现在 这次 上次 已经 还是 一下 一些 一点 我们 你们 我的 你的 她的 自己 时候 最近 然后 但是 还有 就是 觉得 可以 没有 怎么 什么 这个 那个 这件 那件".split())
@@ -387,6 +387,17 @@ class DailyLifeStore:
                 (event['event_id'], _time(datetime.fromisoformat(event['occurred_at'])), 'media', _json({'delivery': event})))
             return cursor.rowcount == 1
 
+    def record_image_observation(self, event: dict) -> bool:
+        from runtime.image_understanding import validate_observation
+        validate_observation(event)
+        identity = str(event['parent_id']) + ':' + event['source'] + ':' + event['sha256']
+        if event.get('event_id') != 'image:' + hashlib.sha256(identity.encode()).hexdigest():
+            raise ValueError('IMAGE_OBSERVATION_ID_INVALID')
+        with self._db() as db:
+            cursor = db.execute('INSERT OR IGNORE INTO life_moments VALUES (?,?,?,?)',
+                (event['event_id'], _time(datetime.fromisoformat(event['observed_at'])), 'image', _json({'image': event})))
+            return cursor.rowcount == 1
+
     def exchange_relationship(self, source_id: str, user_text: str, reply_text: str, *, origin: str = "user") -> dict | None:
         payload = self._exchange_payload(source_id, user_text, reply_text, origin=origin)
         return validate_exchange_relationship(payload.get("relationship"), user_text, reply_text)
@@ -455,7 +466,9 @@ class DailyLifeStore:
             ).fetchone()[0]
             media = [json.loads(row[0])['delivery'] for row in db.execute(
                 "SELECT payload FROM life_moments WHERE kind='media' AND occurred_at<=? ORDER BY occurred_at DESC, source_id DESC LIMIT 3", (_time(now),))]
-        if not snapshot["current"] and not snapshot["projects"] and not snapshot["shared"] and not media and not observations:
+            images = [json.loads(row[0])['image'] for row in db.execute(
+                "SELECT payload FROM life_moments WHERE kind='image' AND occurred_at<=? ORDER BY occurred_at DESC, source_id DESC LIMIT 3", (_time(now),))]
+        if not snapshot["current"] and not snapshot["projects"] and not snapshot["shared"] and not media and not observations and not images:
             return ""
         tokens = _query_tokens(query)
         related_tokens = _query_tokens(related_text)
@@ -494,6 +507,11 @@ class DailyLifeStore:
         if value["stale"] and value["current"]:
             value["last_observation"] = value["current"]
             value["current"] = None
+        for observation in images:
+            # Images describe an artifact, never certify a new location/activity.
+            candidate = {**value, 'image_observations': [*value.get('image_observations', []), observation]}
+            if len(_json(candidate)) <= max_chars:
+                value = candidate
         for project in projects[:2]:
             disclosed = _project_evidence(project)
             if project.get("actor") == "linli" and project["status"] == "awaiting_user":

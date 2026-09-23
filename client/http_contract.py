@@ -228,6 +228,8 @@ def canonical_route_path(path: str) -> str:
 
 ROUTES: dict[str, dict[str, Any]] = {
     "/toy/settings/reply-routes": _route(["GET", "POST"], "settings.video_reply", evidence="local-extension"),
+    "/toy/image/ack": _route(["POST"], "settings.video_reply", evidence="local-extension"),
+    "/toy/image/status": _route(["GET"], "settings.video_reply", evidence="local-extension"),
     "/toy/letter/route-preview": _route(["POST"], "letters.send", evidence="local-extension"),
     "/toy/letter/route-preview-diagnostic": _route(["POST"], "letters.send", evidence="local-extension"),
     "/toy/cover/progress": _route(["GET"], "letters.read", evidence="local-extension"),

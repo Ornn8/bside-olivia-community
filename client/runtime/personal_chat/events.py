@@ -15,6 +15,7 @@ class PersonalMessage:
     parts: tuple[tuple[str, str], ...] = ()
     input_kind: str = 'text'
     sent_at: str | None = None
+    images: tuple[tuple[str, str], ...] = ()
 
     @property
     def sources(self):
@@ -42,10 +43,16 @@ def owner_message(channel: str, payload: Mapping, *, account_id: str, owner_id: 
                 or str(payload.get("user_id", "")) != owner_id or owner_id == account_id):
             return None
         segments = payload.get("message")
-        if not isinstance(segments, list) or any(not isinstance(s, dict) or s.get("type") != "text"
-            or not isinstance(s.get("data"), dict) or not isinstance(s["data"].get("text"), str) for s in segments):
+        if not isinstance(segments, list) or any(not isinstance(s, dict) or s.get("type") not in {"text", "image"}
+            or not isinstance(s.get("data"), dict) for s in segments):
             return None
-        text = "".join(s.get("data", {}).get("text", "") for s in segments if isinstance(s, dict))
+        if any(s['type'] == 'text' and not isinstance(s['data'].get('text'), str) for s in segments):
+            return None
+        pictures = [s['data'] for s in segments if s['type'] == 'image']
+        if len(pictures) > 4 or any(not isinstance(p.get('url'), str)
+                                   or not p['url'].startswith('https://') or len(p['url']) > 8192 for p in pictures):
+            return None
+        text = "".join(s['data']['text'] if s['type'] == 'text' else '[图片]' for s in segments)
         message_id = payload.get("message_id")
     elif channel == "wechat":
         if (payload.get("group_id") or payload.get("message_type") != 1
@@ -72,7 +79,9 @@ def owner_message(channel: str, payload: Mapping, *, account_id: str, owner_id: 
         except (ValueError, OverflowError, OSError):
             pass
     return PersonalMessage(channel, account_id, owner_id, str(message_id), text,
-        input_kind='voice' if channel == 'wechat' and any(i['type'] == 3 for i in items) else 'text', sent_at=sent_at)
+        input_kind=('image' if channel == 'qq' and pictures else
+                    'voice' if channel == 'wechat' and any(i['type'] == 3 for i in items) else 'text'), sent_at=sent_at,
+        images=tuple((str(message_id), p['url']) for p in pictures) if channel == 'qq' else ())
 
 
 
@@ -114,4 +123,5 @@ def combine(events):
     if len(text) > 10000:
         raise ValueError('PERSONAL_CHAT_BATCH_TOO_LARGE')
     return PersonalMessage(first.channel, first.account_id, first.owner_id, next(iter(sources)), text, tuple(sources.items()),
-                           'voice' if any(e.input_kind == 'voice' for e in events) else 'text', first.sent_at)
+                           'image' if any(e.images for e in events) else 'voice' if any(e.input_kind == 'voice' for e in events) else 'text',
+                           first.sent_at, tuple(dict.fromkeys(image for event in events for image in event.images)))

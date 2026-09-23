@@ -27,16 +27,17 @@ def _safe(path: Path) -> bool:
     return True
 
 
-def _restore(value, duration):
+def _restore(value, duration, style=""):
+    if not isinstance(style,str) or len(style)>1000 or "\x00" in style: raise ValueError("SONG_STYLE_INVALID")
     semantic = parse_song_semantic_plan(json.dumps(value, ensure_ascii=False), duration)
     return SongContentPlan(semantic.emotion_arc.value, semantic.lyrics,
-                           render_minimax_caption(semantic), duration, semantic_plan=semantic)
+                           render_minimax_caption(semantic), duration, semantic_plan=semantic, suno_style=style)
 
 
 def cached_song_plan(path: Path, content: str, reply: str, duration: int, planner):
     identity = hashlib.sha256(json.dumps([content, reply, duration],
         ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
-    expected = {"schema_version": _SCHEMA, "planner_version": 3 if duration == 110 else _PLANNER_VERSION,
+    expected = {"schema_version": _SCHEMA, "planner_version": 3 if duration == 110 else 2 if duration == 240 else _PLANNER_VERSION,
                 "input_sha256": identity}
     try:
         if _safe(path) and stat.S_ISREG(path.stat().st_mode) and path.stat().st_size <= _MAX_BYTES:
@@ -44,10 +45,10 @@ def cached_song_plan(path: Path, content: str, reply: str, duration: int, planne
                 raw = source.read(_MAX_BYTES + 1)
             if len(raw) <= _MAX_BYTES:
                 payload = json.loads(raw)
-                if (isinstance(payload, dict) and set(payload) == {*expected, "semantic_plan"}
+                if (isinstance(payload, dict) and set(payload) in ({*expected, "semantic_plan"}, {*expected, "semantic_plan", "suno_style"})
                         and all(type(payload[key]) is type(value) and payload[key] == value
                                 for key, value in expected.items())):
-                    return _restore(payload["semantic_plan"], duration)
+                    return _restore(payload["semantic_plan"], duration, payload.get("suno_style", ""))
     except (OSError, ValueError, TypeError, RecursionError):
         pass
     # Never hide a real planning failure or try another provider here.
@@ -57,10 +58,10 @@ def cached_song_plan(path: Path, content: str, reply: str, duration: int, planne
     semantic = result.semantic_plan.to_dict()
     semantic.pop("duration_seconds")
     try:
-        restored = _restore(semantic, duration)
+        restored = _restore(semantic, duration, result.suno_style)
         if restored != result or result.semantic_plan.duration_seconds != duration:
             return result
-        raw = json.dumps({**expected, "semantic_plan": semantic}, ensure_ascii=False,
+        raw = json.dumps({**expected, "semantic_plan": semantic, "suno_style": result.suno_style}, ensure_ascii=False,
                          separators=(",", ":")).encode("utf-8")
         if len(raw) > _MAX_BYTES or not _safe(path):
             return result

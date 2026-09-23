@@ -87,7 +87,12 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
         from pathlib import Path
         return await send_item({'type': 'record', 'data': {'file': Path(path).resolve().as_uri()}})
 
+    async def send_image(path):
+        from pathlib import Path
+        return await send_item({'type': 'image', 'data': {'file': Path(path).resolve().as_uri()}})
+
     send.audio = send_audio
+    send.image = send_image
     send.is_available = lambda: not ws.closed
 
     async def reader():
@@ -136,6 +141,7 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
                         break
                     if (next_event.text.strip() == '/连接测试'
                             or sum(len(e.text)+1 for e in events) + len(next_event.text) > 10000
+                            or sum(len(e.images) for e in events) + len(next_event.images) > 4
                             or not mergeable_by_sent_time(events[-1], next_event, merge_seconds)):
                         carry = next_event
                         break

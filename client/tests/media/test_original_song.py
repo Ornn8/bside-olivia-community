@@ -71,3 +71,29 @@ def test_original_never_falls_back_to_cover_voice(tmp_path):
     paths = original_song.original_paths({'OLIVIA_LOCAL_DATA_ROOT': str(tmp_path)})
     assert paths['voice_lora'] is None
     assert not original_song.original_configured({'OLIVIA_LOCAL_DATA_ROOT': str(tmp_path)})
+
+
+def test_cloud_original_plans_long_lyrics_and_returns_measured_duration(tmp_path, monkeypatch):
+    from runtime import remote_pipeline
+    from runtime.media.song_content import _plan_from_lyrics_response, _planner_contract
+    from runtime.media.music_caption import render_minimax_caption
+    lyrics = {'verse': ['窗外晚风轻轻吹来'] * 20, 'chorus': ['把这首歌慢慢唱完'] * 20}
+    semantic = _plan_from_lyrics_response(json.dumps(lyrics), 240)
+    assert '40 original' in _planner_contract(240)
+    assert '240 seconds' in render_minimax_caption(semantic)
+    plans = []
+    monkeypatch.setattr(original_song, 'cached_song_plan', lambda path, content, reply, duration, planner:
+                        plans.append(duration) or SimpleNamespace(lyrics=semantic.lyrics))
+    def generate(kind, data, output, **kwargs):
+        assert kind == 'original' and set(data) == {'lyrics', 'music_options'}
+        assert data['lyrics'] == semantic.lyrics
+        return {'duration_seconds': 213.45}
+    monkeypatch.setattr(remote_pipeline, 'generate', generate)
+    monkeypatch.setattr(remote_pipeline, 'capabilities', lambda env: {'original_music_provider': 'suno_v6'})
+    result = original_song.render_original_reply('letter', 'reply', tmp_path / 'song.wav',
+        environment={'OLIVIA_GPU_ROUTE': 'remote'}, duration_seconds=240, render_video=False)
+    assert plans == [240] and result['duration_seconds'] == 213.45
+    monkeypatch.setattr(remote_pipeline, 'capabilities', lambda env: {})
+    original_song.render_original_reply('letter', 'reply', tmp_path / 'legacy.wav',
+        environment={'OLIVIA_GPU_ROUTE': 'remote'}, render_video=False)
+    assert plans == [240, 110]

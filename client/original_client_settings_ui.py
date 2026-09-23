@@ -123,6 +123,33 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     return;
   }
   let setupSessionToken = "";
+  if (typeof customElements !== 'undefined' && typeof HTMLElement !== 'undefined' && !customElements.get('olivia-photo')) customElements.define('olivia-photo', class extends HTMLElement {
+    static get observedAttributes(){return ['letter-id'];}
+    connectedCallback(){this.refresh();}
+    disconnectedCallback(){clearTimeout(this.timer);}
+    attributeChangedCallback(){if(this.isConnected)this.refresh();}
+    async refresh(){
+      clearTimeout(this.timer);const id=this.getAttribute('letter-id');if(!id)return;
+      try {
+        const endpoint=new URL('/toy/image/status',apiBase);endpoint.searchParams.set('letter_id',id);
+        const response=await fetch(endpoint);const raw=await response.json();const data=raw.data;
+        if(!this.isConnected||id!==this.getAttribute('letter-id'))return;
+        if(data?.imageStatus==='COMPLETED' && data.replyImageUrl){
+          if(this.dataset.loaded===data.replyImageUrl)return;
+          const url=new URL(data.replyImageUrl);if(url.origin!==new URL(apiBase).origin)return;
+          const link=document.createElement('a');link.href=url.href;link.target='_blank';link.rel='noopener';
+          const img=document.createElement('img');img.alt='林离分享的照片';img.style.cssText='display:block;max-width:100%;max-height:420px;object-fit:contain;border-radius:8px;margin:12px auto';
+          img.onload=()=>{if(this.isConnected&&id===this.getAttribute('letter-id'))fetch(new URL('/toy/image/ack',apiBase),{method:'POST',headers:{'Content-Type':'application/json','X-Olivia-Companion-Action':'confirmed'},body:JSON.stringify({filename:url.pathname.split('/').pop()})}).catch(()=>{});};
+          img.onerror=()=>{if(this.isConnected&&id===this.getAttribute('letter-id')){delete this.dataset.loaded;this.textContent='照片读取暂时中断，正在重试…';this.timer=setTimeout(()=>this.refresh(),5000);}};
+          img.src=url.href;link.append(img);this.replaceChildren(link);this.dataset.loaded=url.href;return;
+        }
+        if(['SKIPPED','NOT_REQUESTED'].includes(data?.imageStatus)){this.replaceChildren();return;}
+        if(data?.imageStatus==='FAILED'){this.textContent='照片暂未生成成功，文字和语音不受影响。';return;}
+        this.textContent='照片正在准备…';
+      } catch(_){this.textContent='照片正在准备…';}
+      if(this.isConnected)this.timer=setTimeout(()=>this.refresh(),5000);
+    }
+  });
 
   const text = (tag, value, className) => {
     const element = document.createElement(tag);
@@ -1413,6 +1440,21 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     return { wrapper, input };
   };
 
+  const drawUnifiedStatement = (target, account) => {
+    const money=value=>'¥'+new Intl.NumberFormat('zh-CN',{minimumFractionDigits:2,maximumFractionDigits:8}).format(Number(value));
+    const status={pending:'预留中',review:'等待结算',reserved:'预留中',settled:'已结算',released:'已释放',rejected:'未收费'};
+    target.replaceChildren(text('h4','统一消费账单'));
+    target.append(text('p',`可用 ${money(account.remaining_yuan)} · 预留 ${money(account.reserved_yuan)} · 累计消费 ${money(account.used_yuan)}`));
+    for(const item of account.items||[]){
+      const row=document.createElement('div');row.style.cssText='display:flex;justify-content:space-between;gap:16px;padding:12px 0;border-bottom:1px solid #8884';
+      const held=Number(item.reserved_yuan)>0;
+      row.append(text('span',`${item.label} · ${status[item.status]||item.status}`),text('span',(held?'预留 ':'−')+money(held?item.reserved_yuan:item.charged_yuan)));
+      target.append(row);
+    }
+    if(!(account.items||[]).length)target.append(text('p','还没有消费记录。'));
+    target.append(text('p','中转和 GPU 共用同一余额；释放预留不是额外扣款或充值。'+(account.has_more?'当前显示最近 50 笔。':''),'text-text-secondary text-caption-m'));
+  };
+
   const mountRelayAccount = (panel) => {
     panel.style.cssText = "display:grid;gap:20px;min-width:0";
     const account = text("p", "正在读取账户…", "text-text-secondary text-body-m");
@@ -1548,6 +1590,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       tick(); enabled();
       queuePoll(serial);
     };
+    const unifiedHistory=document.createElement("section");
     const readBalance = async () => {
       const data = await call({action:"balance"});
       if (!box.isConnected) return;
@@ -1556,6 +1599,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       balance.hidden=true;
       available.textContent=`¥${Number(data.remaining_yuan).toFixed(4)}`;
       spent.textContent=`¥${Number(data.used_yuan).toFixed(4)}`;
+      try {drawUnifiedStatement(unifiedHistory,await call({action:'statement'}));} catch(_){unifiedHistory.textContent='统一账单暂时无法读取，请稍后刷新。';}
       const counts = data.usage;
       calls.textContent=counts ? counts.calls.toLocaleString() : "—";
       tokens.textContent=counts ? counts.total_tokens.toLocaleString() : "—";
@@ -1572,7 +1616,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     create.className += " olivia-primary-action";
     const recharge = text("h3","账户充值","text-text-title text-title-m");
     recharge.style.marginTop="12px";
-    box.append(title,metrics,balance,usage,recharge,controls,orderView,status);
+    box.append(title,metrics,balance,usage,unifiedHistory,recharge,controls,orderView,status);
     panel.append(box);
     void run(async()=>{await readBalance();drawOrder(await call({action:"order_status"}));});
   };
@@ -3208,11 +3252,13 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     delete material.route_allow_once;
     delete material.route_video_once;
     let quote={paid:false};
-    try{if(preview.reply_mode!=='text_letter')quote=await requestSetup('/toy/generation/action',{action:'billing_quote',video:preview.video_enabled===true});}
-    catch(error){error.config=config;error.message=error.code==='GPU_INSUFFICIENT_BALANCE'?'Olivia 可用余额不足。音频需预留 ¥1，视频需预留 ¥5，请先充值。草稿已保留。':'无法核对云端生成费用，请检查云端连接后重试。草稿已保留。';throw error;}
+    const originalCharge=!preview.requires_cover_audio&&['singing_video','voice_song_video','musical_video'].includes(preview.reply_mode);
+    try{if(preview.reply_mode!=='text_letter')quote=await requestSetup('/toy/generation/action',{action:'billing_quote',video:preview.video_enabled===true,original:originalCharge});}
+    catch(error){error.config=config;error.message=error.code==='GPU_CLIENT_UPDATE_REQUIRED'?'请重启客户端以更新原创收费确认。草稿已保留。':error.code==='GPU_INSUFFICIENT_BALANCE'?'Olivia 可用余额不足。语音或翻唱需预留 ¥1，原创单曲需预留 ¥3，视频需预留 ¥5，请先充值。草稿已保留。':'无法核对云端生成费用，请检查云端连接后重试。草稿已保留。';throw error;}
     if(quote.paid){
       const cap=(quote.max_charge_cents/100).toFixed(2);
-      if(!await confirmAction(`本次云端生成将从 Olivia 余额预留 ¥${cap}，本次最多收费 ¥${cap}。成功后按实际占用结算，多余金额释放；失败全退。回信文字另按 Token 计费。确认寄出？`)){
+      const priceDetail=originalCharge?'原创音乐按时长定价 ¥2–3，含小幅随机浮动，最终不超过 ¥3；视频另含视频费用，以本次总上限为准。':'成功后按实际占用结算。';
+      if(!await confirmAction(`本次云端生成将从 Olivia 余额预留 ¥${cap}，本次最多收费 ¥${cap}。${priceDetail}多余预留释放；失败全退。回信文字另按 Token 计费。确认寄出？`)){
         throw Object.assign(new Error('已取消发送，草稿保留。'),{config,code:'ERR_CANCELED',__CANCEL__:true});
       }
     }
@@ -3343,11 +3389,22 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     choices.style.cssText = "display:flex;gap:8px;flex-wrap:wrap";
     const labels = {text:"纯文字",audio:"文字＋声音",video:"文字＋声音＋视频"};
     const descriptions = {text:"通过文字回信。",audio:"可回复文字，也可用说话、唱歌或两者组合的音频。",video:"文字、声音和视频都可使用，由本次内容决定。"};
-    let selected = null, busy = false;
+    let selected = null, busy = false, imageEnabled = false, imageResolution = '1K';
+    const imageControls = document.createElement('div'); imageControls.style.cssText='display:flex;gap:8px;align-items:center;flex-wrap:wrap';
+    const imageToggle = button('图片',()=>{imageEnabled=!imageEnabled;render();});
+    imageToggle.setAttribute('aria-label','允许林离回复图片');
+    const imageSizes = document.createElement('select'); imageSizes.setAttribute('aria-label','图片分辨率');
+    for(const value of ['1K','2K','4K']){const option=document.createElement('option');option.value=value;option.textContent=value;imageSizes.append(option);}
+    imageSizes.addEventListener('change',()=>{imageResolution=imageSizes.value;});
+    imageControls.append(imageToggle,imageSizes);
+    const imageHelp=text('p','图片仅云端生成，可随文字或语音回信，也适用于 QQ，每次最多 1 张。1K／2K／4K 基准价为 ¥0.50／¥0.80／¥1.10，每单随机浮动 ±10%（¥0.45–0.55／¥0.72–0.88／¥0.99–1.21）。提交时锁定并预留本单价格，重试不变价，失败释放预留。不进行图片质检；用于记忆的图片识别仍按中转用量计费。实际像素随构图变化。','text-text-secondary text-caption-m');
     const nodes = {};
     const detail = text("p", "", "text-text-secondary text-body-m font-regular");
     const status = text("p", "正在读取设置…", "text-text-secondary text-caption-m font-regular"); status.setAttribute("role", "status");
     const render = () => {
+      imageToggle.disabled=busy || selected===null;imageToggle.setAttribute('aria-pressed',String(imageEnabled));
+      imageToggle.style.background=imageEnabled?'#ded7cb':'transparent';imageToggle.style.color=imageEnabled?'#18191b':'';
+      imageSizes.hidden=!imageEnabled;imageSizes.disabled=busy;imageSizes.value=imageResolution;imageHelp.hidden=!imageEnabled;
       Object.entries(nodes).forEach(([key,node])=>{
         node.disabled=busy || selected===null; node.setAttribute("aria-checked",String(selected===key));
         node.style.background=selected===key ? "#ded7cb" : "transparent";
@@ -3361,7 +3418,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     });
     const save=button("保存",async()=>{
       busy=true;render();
-      try { await routeRequest("/toy/settings/reply-routes",{request_id:videoReplyRequestId(),tier:selected}); status.textContent="已保存。已接收的信件继续按原设置处理。"; }
+      try { await routeRequest("/toy/settings/reply-routes",{request_id:videoReplyRequestId(),tier:selected,image:{enabled:imageEnabled,resolution:imageResolution}});
+        status.textContent="已保存。已接收的信件继续按原设置处理。"; }
       catch (_) { status.textContent="保存失败，请重试。"; }
       finally {busy=false;render();}
     });
@@ -3369,13 +3427,14 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       try {
         const result=await routeRequest("/toy/settings/reply-routes");
         selected=result.tier || (Object.values(result.routes||{}).some(Boolean) ? "video" : "text");
+        imageEnabled=result.image?.enabled===true;imageResolution=result.image?.resolution||'1K';
         if(!labels[selected]) throw Error("invalid tier");
         status.textContent=result.tier_configured===false ? "当前沿用旧设置，保存后统一按所选档位生效。" : "";
       } catch (_) { selected=null;status.textContent="设置读取失败，请重新读取。"; }
       render();
     };
     const controls=actions();controls.append(save,button("离线组件",()=>openDialog(false,"capability")),button("重新读取",()=>{if(!busy)void hydrate();}));
-    container.append(choices,detail,controls,status);section.append(container);
+    container.append(choices,detail,imageControls,imageHelp,controls,status);section.append(container);
     refreshVideoReplySetting=()=>container.isConnected ? hydrate() : Promise.resolve(); void hydrate();
   };
 
@@ -3400,40 +3459,28 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       }
       parent.append(row);return input;
     };
-    const caption=field(form,"caption","音乐描述","textarea","描述曲风、乐器、氛围和唱法；留空使用默认风格，歌词仍由信件生成。");
-    caption.rows=3;caption.maxLength=3000;caption.placeholder="例如：舒缓的钢琴民谣，自然轻声演唱，副歌温暖舒展";
-    field(form,"use_cot","丰富编曲描述","checkbox","生成前补充音乐描述，可能改变乐器和编曲。");
-    field(form,"thinking","先规划旋律","checkbox","先规划音乐再生成；耗时更长，部分歌曲的人声音量可能不稳定。");
-    const advanced=document.createElement("details");advanced.append(text("summary","音乐参数"));
-    const grid=document.createElement("div");grid.style.cssText="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px;margin-top:16px";
-    for(const [name,label,min,max,step,help] of [
-      ["guidance_scale","描述遵循强度（CFG）",1,15,.5,"推荐 7；更高不一定更好。"],
-      ["inference_steps","生成步数",8,100,1,"默认 50，增加步数会增加耗时。"],
-      ["bpm","速度（每分钟拍数）",30,240,1,"数值越大，节奏越快。"],
-      ["seed","随机种子",0,2147483647,1,"固定种子便于对照，换个数字尝试新旋律。"]]) {
-      const input=field(grid,name,label,"number",help);input.min=min;input.max=max;input.step=step;input.required=true;
-    }
-    const key=field(grid,"keyscale","调性","select");
-    for(const note of ["C","C#","Db","D","D#","Eb","E","F","F#","Gb","G","G#","Ab","A","A#","Bb","B"])
-      for(const [mode,label] of [["major","大调"],["minor","小调"]]) {const opt=document.createElement("option");opt.value=note+" "+mode;opt.textContent=note+" "+label;key.append(opt);}
-    const meter=field(grid,"timesignature","每小节拍数","select");
-    for(const value of ["2","3","4","6"]){const opt=document.createElement("option");opt.value=value;opt.textContent=value+" 拍";meter.append(opt);}
-    advanced.append(grid);form.append(advanced);
-    field(advanced,"use_adg","自适应音质引导","checkbox","根据生成状态调整引导，推荐保持开启。");
+    const caption=field(form,"caption","音乐描述","textarea","描述曲风、乐器、氛围和唱法；留空由林离根据回信安排曲风和唱法；填写后优先使用你的描述，歌词仍由信件生成。");
+    caption.rows=3;caption.maxLength=1000;caption.placeholder="例如：舒缓的钢琴民谣，自然轻声演唱，副歌温暖舒展";
+    const advanced=document.createElement('details');advanced.append(text('summary','进阶音乐参数'));form.append(advanced);
+    const title=field(advanced,'title','歌曲标题','text','留空使用默认标题');title.maxLength=80;
+    const duration=field(advanced,'duration','目标时长（秒）','number','留空随机 180–270 秒；填写 180–270，实际时长以生成结果为准。');duration.min=180;duration.max=270;duration.step=1;
+    const negative=field(advanced,'negative_tags','避免的风格或元素','textarea','例如：重金属、尖锐高音；多个项目用逗号分隔。');negative.maxLength=1000;
+    for(const [name,label,help] of [['style_weight','风格遵循度','0–1，越高越贴近音乐描述；留空使用服务默认值。'],['weirdness_constraint','创意偏离度','0–1，越高越允许偏离常规；留空使用服务默认值。']]){const input=field(advanced,name,label,'number',help);input.min=0;input.max=1;input.step=0.01;}
     const status=text("p","正在读取音乐设置…","text-text-secondary text-body-m");status.setAttribute("role","status");
     const controls=actions();
-    const fill=options=>{for(const [name,input] of Object.entries(fields)){if(input.type==="checkbox")input.checked=options[name];else input.value=options[name];}};
+    const fill=options=>{for(const [name,input] of Object.entries(fields)){if(input.type==="checkbox")input.checked=options[name];else input.value=options[name]??"";}};
     const setBusy=value=>{busy=value;for(const el of form.querySelectorAll("input,textarea,select,button"))el.disabled=value;};
     const load=async()=>{
       if(busy)return;setBusy(true);
       try{if(!setupSessionToken)await requestSetup(SETUP_STATUS_PATH);
         const result=await requestSetup("/toy/generation/action",{action:"music_settings_status"});defaults=result.defaults;
-        fill(result.options||defaults);status.textContent=result.error_code?"原设置无法读取，请检查参数。":composer?"约 110 秒 · 参数随这封信生效":"当前设置用于下一首原创歌曲，时长约 110 秒。";
+        const durationHint=result.original_music_provider==='suno_v6'?"默认目标时长随机为3–4分半，可在进阶设置指定，实际时长以生成结果为准。原创单曲按时长收费 ¥2–3，含小幅随机浮动，最高 ¥3。":result.original_music_provider==='unavailable'?"暂时无法确认服务时长，请连接后重新读取。":"当前服务沿用约 110 秒原创方案。";
+        fill(result.options||defaults);status.textContent=result.error_code?"原设置无法读取，请检查参数。":durationHint+"音乐描述随"+(composer?"这封信":"下一首原创歌曲")+"生效。";
       }catch(_){status.textContent="音乐设置读取失败，请重新读取。";}finally{setBusy(false);save.disabled=!defaults;}
     };
     const save=button("保存音乐设置",async()=>{
       if(busy||!defaults||!form.reportValidity())return;
-      const options={};for(const [name,input] of Object.entries(fields))options[name]=input.type==="checkbox"?input.checked:input.type==="number"?Number(input.value):input.value;
+      const options={};for(const [name,input] of Object.entries(fields))options[name]=input.type==="checkbox"?input.checked:input.type==="number"?(input.value.trim()===""?null:Number(input.value)):input.value;
       setBusy(true);
       try{await requestSetup("/toy/generation/action",{action:"music_settings_save",options});status.textContent="已保存，对下一首原创歌曲生效。";}
       catch(_){status.textContent="保存失败，请检查参数后重试；原设置未改动。";}finally{setBusy(false);}
@@ -3442,7 +3489,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     controls.append(button("恢复推荐参数",()=>{if(!busy&&defaults){fill(defaults);status.textContent=composer?"已恢复推荐参数。":"已填入推荐参数，保存后生效。";}}));
     if(!composer)controls.append(button("重新读取",load));
     form.addEventListener("submit",event=>event.preventDefault());form.append(controls,status);panel.append(form);section.append(panel);void load();
-    return {read:()=>{if(busy||!defaults)throw Error('音乐参数尚未读取，请稍候或重新打开写信窗口。');if(!form.reportValidity())throw Error('请检查音乐参数。');const options={};for(const [name,input] of Object.entries(fields))options[name]=input.type==='checkbox'?input.checked:input.type==='number'?Number(input.value):input.value;return options;}};
+    return {read:()=>{if(busy||!defaults)throw Error('音乐参数尚未读取，请稍候或重新打开写信窗口。');if(!form.reportValidity())throw Error('请检查音乐参数。');const options={};for(const [name,input] of Object.entries(fields))options[name]=input.type==='checkbox'?input.checked:input.type==='number'?(input.value.trim()===""?null:Number(input.value)):input.value;return options;}};
   };
 
   const mountGPUSettings = (section) => {
@@ -3457,7 +3504,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       row.append(text("span", label), input); box.append(row); return input;
     };
     const mode = field("生成位置", document.createElement("select"));
-    for (const [value, label] of [["local","本机 GPU"],["remote","云端 GPU"]]) {
+    for (const [value, label] of [["local","本机 GPU"],["remote","云端服务"]]) {
       const option = document.createElement("option"); option.value=value; option.textContent=label; mode.append(option);
     }
     const url = field("服务地址", document.createElement("input")); url.type="url"; url.placeholder="填写完整的 HTTPS 服务地址";
@@ -3481,29 +3528,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       mode.disabled=url.disabled=key.disabled=true;
       billing.replaceChildren(text("p", "正在读取账单…"));
       try {
-        const account = await requestSetup("/toy/generation/action", {action:"billing_account"});
-        const yuan = cents => "¥"+(cents/100).toFixed(2);
-        const summary=document.createElement("div");summary.style.cssText="display:flex;align-items:baseline;justify-content:space-between;gap:16px;flex-wrap:wrap";
-        const balance=text("p",yuan(account.balance_cents));balance.style.cssText="font-size:32px;font-weight:600;line-height:1.2;font-variant-numeric:tabular-nums";
-        summary.append(balance,hint(`累计消费 ${yuan(account.spent_cents)}`));
-        const history=document.createElement("div");
-        const historyTitle=text("h4","最近消费");historyTitle.style.cssText="font-size:16px;font-weight:600;margin:0 0 8px";
-        history.append(historyTitle);
-        billing.replaceChildren(summary,hint(account.mode==='money'?"与回信服务共用 Olivia 充值余额。音频最多 ¥1、视频最多 ¥5，按实际占用结算，失败不收费。":"测试额度，不涉及真实扣款。"),history);
-        if(account.mode==='money'&&account.held_cents>0)billing.insertBefore(hint("预留中 "+yuan(account.held_cents)+"，任务结算后释放差额；上方为当前可用余额。"),history);
-        if (!account.charges.length) history.append(hint("还没有消费记录。"));
-        const names={tts:"语音生成",video:"视频生成",lipsync:"口型生成",cover:"歌曲翻唱",original:"原创歌曲",separate:"人声分离"};
-        for (const charge of account.charges.slice(0,20)) {
-          const stages=Array.isArray(charge.stages)?charge.stages:[];
-          const kind=stages.length>1?"video":stages[0]?.kind;
-          const row=document.createElement("div");row.style.cssText="display:flex;align-items:center;justify-content:space-between;gap:16px;padding:16px 0;border-bottom:1px solid #8884";
-          const label=document.createElement("div");label.append(text("p",names[kind]||"媒体生成"));
-          if(charge.refunded_cents)label.append(hint("已退回 "+yuan(charge.refunded_cents)));
-          const amount=text("p","−"+yuan(charge.amount_cents));amount.style.cssText="font-variant-numeric:tabular-nums;white-space:nowrap";
-          row.append(label,amount);history.append(row);
-        }
-        if (account.charges.length>20) history.append(hint("显示最近 20 笔消费。"));
-        billing.append(hint("消费记录在生成完成后更新。"));
+        const account = await requestSetup("/toy/generation/action", {action:"billing_statement"});
+        drawUnifiedStatement(billing,account);
       } catch (_error) { billing.replaceChildren(hint("余额暂时无法读取，请稍后刷新。")); }
       finally { busy=false; billingRefresh.disabled=false; mode.disabled=url.disabled=key.disabled=false; setButtonsBusy(Array.from(controls.querySelectorAll("button")),false); }
     };

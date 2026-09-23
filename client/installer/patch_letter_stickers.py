@@ -9,6 +9,7 @@ import zipfile
 
 MAIN='assets/main-31595bd3.js'
 MARKER='/*olivia-letter-stickers-v4*/'
+PHOTO_MARKER='/*olivia-letter-photos-v1*/'
 METADATA_MARKER='/*olivia-letter-stickers-v3*/'
 LAYOUT_MARKER='/*olivia-letter-stickers-v2*/'
 ASSETS=Path(__file__).resolve().parents[1]/'runtime'/'letter_stickers'
@@ -82,6 +83,23 @@ def _patch_presentation(source: str) -> str:
     return source.replace(METADATA_MARKER, MARKER, 1)
 
 
+def patch_photos(source: str) -> str:
+    if PHOTO_MARKER in source: return source
+    anchors = {
+        'bodyText:e.replyBody,': 'imageRequestId:e.imageRequestId||"",bodyText:e.replyBody,',
+        '__name:"MailBoxReplyContent",props:{': '__name:"MailBoxReplyContent",props:{imageRequestId:{},',
+        'n("div",mw,v(o(I)),1)':
+        'A.imageRequestId?n("olivia-photo",{"letter-id":A.imageRequestId},null,8,["letter-id"]):Y("",!0),n("div",mw,v(o(I)),1)',
+    }
+    for before, after in anchors.items():
+        if source.count(before) != 1: raise ValueError('PHOTO_ANCHOR_INVALID')
+        source=source.replace(before,after,1)
+    if source.count('F(ks,{bodyText:') != 2: raise ValueError('PHOTO_PROPS_INVALID')
+    source=source.replace('F(ks,{bodyText:','F(ks,{imageRequestId:i.mail.received?.imageRequestId,bodyText:')
+    source=source.replace('["bodyText","signature","stickerId",','["bodyText","signature","stickerId","imageRequestId",')
+    return PHOTO_MARKER+source
+
+
 def patch_letter_stickers(path: Path | str) -> str:
     path=Path(path)
     assets={f'assets/letter-stickers/{p.name}':p.read_bytes() for p in ASSETS.iterdir() if p.suffix in {'.png','.json','.js'}}
@@ -91,7 +109,7 @@ def patch_letter_stickers(path: Path | str) -> str:
         if MAIN not in archive.namelist():
             return 'UNSUPPORTED_CLIENT'
         source=archive.read(MAIN).decode('utf-8')
-        changed=patch_source(source).encode('utf-8')
+        changed=patch_photos(patch_source(source)).encode('utf-8')
         if changed==source.encode('utf-8') and all(n in archive.namelist() and archive.read(n)==data for n,data in assets.items()):
             return 'ALREADY_PATCHED'
         with tempfile.TemporaryDirectory(prefix='.letter-stickers-',dir=path.parent) as folder:
