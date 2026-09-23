@@ -190,6 +190,14 @@ def test_event_source_zero_hit_trace_reaches_actual_generation_call(tmp_path, mo
             {'source_id': 'reply:event:1', 'status': 'cancelled', 'quote': '后来取消了'}
         ]}, ensure_ascii=False)),)
     adapter.daily_life_fragments = life
+    selection_calls = []
+    async def select_history(messages, **kwargs):
+        selection_calls.append(messages)
+        candidates = json.loads(messages[1]['content'])['candidates']
+        matching = [item['id'] for item in candidates
+                    if '银环是去年挑的' in json.dumps(item['records'], ensure_ascii=False)]
+        return SimpleNamespace(text=json.dumps({'selected_ids': matching[:1]}))
+    adapter.gateway.complete_structured_scoped = select_history
     class Capture:
         gateway = SimpleNamespace(adapter=adapter)
         async def run(self, request):
@@ -207,12 +215,14 @@ def test_event_source_zero_hit_trace_reaches_actual_generation_call(tmp_path, mo
             CURRENT.reset(token)
     assert result.state is ReplyState.COMPLETED
     assert result.quality_status == 'not_checked'
+    assert len(selection_calls) == 1
     system = capture.request.messages[0]['content']
     assert '银环是去年挑的' in system
     assert '登记原定明天办理，后来取消了' in system
     assert '2026-09-01' in system
     assert 'cancelled' in system
     assert len(reads) == 1
+    assert len(selection_calls) == 1
     assert sum(len(m['content']) for m in capture.request.messages) <= capture.request.max_input_chars
 def test_topics_preserve_distinct_clauses_and_deduplicate_before_numbering():
     from runtime.memory.recall import query_topics
