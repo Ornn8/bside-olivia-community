@@ -84,6 +84,8 @@ def test_napcat_launch_passes_isolated_workdir(
     shell = _shell(tmp_path)
     monkeypatch.setattr(module, "prepare_onebot", lambda _root: (shell, "synthetic-token"))
     seen: dict[str, object] = {}
+    from runtime.personal_chat import napcat_dependencies
+    monkeypatch.setattr(napcat_dependencies, 'ensure_dependencies', lambda *args: None)
 
     class _Process:
         pass
@@ -124,7 +126,7 @@ def test_napcat_login_page_opens_only_loopback_webui(
 @pytest.mark.parametrize("onebot,webui,expected", [
     (False, False, "READY"),
     (False, True, "AWAITING_QQ_LOGIN"),
-    (True, False, "ONEBOT_READY"),
+    (True, False, "READY"),
     (True, True, "ONEBOT_READY"),
 ])
 def test_napcat_public_status_discovers_completed_install(

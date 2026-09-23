@@ -14,6 +14,8 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
   const QQ_CONFIGURE = "/toy/personal-chat/setup/qq/configure";
   const NAPCAT_INSTALL = "/toy/personal-chat/setup/qq/napcat/install";
   const NAPCAT_START = "/toy/personal-chat/setup/qq/napcat/start";
+  const NAPCAT_LOGIN = "/toy/personal-chat/setup/qq/napcat/login";
+  const NAPCAT_BROWSER = "/toy/personal-chat/setup/qq/napcat/browser";
   const CONFIRM_HEADER = "X-Olivia-Companion-Action";
   const CONFIRM_VALUE = "confirmed";
   let pollTimer = null;
@@ -150,7 +152,17 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
         target = node("div", "", "olivia-chat-error");
         parent.append(target);
       }
-      target.textContent = error?.code || error?.message || String(error || "连接失败");
+      const code = error?.code || error?.message || String(error || "连接失败");
+      target.textContent = ({
+        NAPCAT_START_TIMEOUT: "QQ 组件在一分钟内未就绪。请检查安全软件拦截，并导出诊断包排查；可点击重试。",
+        NAPCAT_LOGIN_OPEN_FAILED: "登录窗口未能打开。可以直接扫描本页二维码；需要额外验证时，请设置默认浏览器后再点“打开 QQ 登录窗口”。",
+        NAPCAT_LOGIN_UNAVAILABLE: "暂未取得 QQ 登录信息，请稍后刷新二维码。",
+        NAPCAT_START_FAILED: "QQ 组件启动后已退出，请重试或导出诊断包排查。",
+        NAPCAT_PORT_IN_USE: "QQ 登录端口被其他实例占用，请关闭其他 NapCat 实例后重试。",
+        NAPCAT_DEPENDENCY_HASH_MISMATCH: "QQ 运行依赖校验失败，请重试；Olivia 会重新下载校验，无需重装程序。",
+        NAPCAT_DEPENDENCY_EXTRACT_FAILED: "QQ 运行依赖解压失败，请检查剩余空间后重试。",
+        NAPCAT_DEPENDENCY_REPAIR_FAILED: "QQ 运行依赖补齐失败，请关闭 QQ 组件后重试。"
+      })[code] || code;
     };
 
     const chooseChannel = async (choice, parent) => {
@@ -287,19 +299,42 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
           } catch (error) { renderError(component, error); }
         }));
       } else if (napcat.installed && napcat.state !== "ONEBOT_READY") {
-        const label = napcat.state === "AWAITING_QQ_LOGIN" ? "重新打开 QQ 登录" : "启动并登录 QQ";
-        componentTop.append(action(label, async () => {
+        const label = napcat.state === "AWAITING_QQ_LOGIN" ? "刷新登录二维码" : "启动并登录 QQ";
+        const startButton = action(napcat.state === "STARTING" ? "正在启动…" : label, async (button) => {
           try {
-            await request(NAPCAT_START, {method: "POST", body: {}});
+            button.textContent = "正在启动…";
+            await request(napcat.state === "AWAITING_QQ_LOGIN" ? NAPCAT_LOGIN : NAPCAT_START, {method: "POST", body: {}});
             await refresh(true);
-          } catch (error) { renderError(component, error); }
-        }));
+          } catch (error) { button.textContent = label; renderError(component, error); }
+        });
+        startButton.disabled = napcat.state === "STARTING";
+        componentTop.append(startButton);
       }
       component.append(componentTop);
-      if (napcat.state === "DOWNLOADING") {
+      if (napcat.state === "STARTING") {
+        component.append(node("div", "正在检查 QQ 运行依赖并启动登录页。首次补齐依赖需要下载约 300 MB，完成后等待登录服务就绪；无需重复点击。", "olivia-chat-copy"));
+      } else if (napcat.state === "DOWNLOADING") {
         component.append(node("div", "正在获取并校验 NapCat 发布的固定 Node 运行包。", "olivia-chat-copy"));
       } else if (napcat.state === "AWAITING_QQ_LOGIN") {
-        component.append(node("div", "NapCat WebUI 已真实启动。请在本机登录页完成 QQ 登录；Olivia 会自动等待 OneBot 就绪。", "olivia-chat-copy"));
+        const login = status.qq_login || {};
+        const message = login.logged_in ? "QQ 已登录，正在准备连接…"
+          : login.scanned ? "已扫码，请在手机 QQ 上确认登录。"
+          : login.qr_data ? "请用手机 QQ 扫描下方二维码登录。关闭设置页不会关闭 QQ 组件，再次进入即可继续登录。"
+          : "QQ 组件正在后台运行，暂未取得登录二维码。请刷新二维码，或点击下方按钮打开登录窗口。";
+        component.append(node("div", message, "olivia-chat-copy"));
+        if (login.qr_data) {
+          const qr = node("img", null, "olivia-chat-qr");
+          qr.alt = "QQ 登录二维码";
+          qr.src = login.qr_data;
+          component.append(qr);
+        }
+        if (login.verification_required) component.append(node("div", "QQ 需要额外验证，请点击下方按钮，在打开的登录窗口中完成验证。", "olivia-chat-copy"));
+        component.append(action("打开 QQ 登录窗口", async (button) => {
+          try {
+            await request(NAPCAT_BROWSER, {method: "POST", body: {}});
+            button.textContent = "已请求打开，再次点击可重开";
+          } catch (error) { renderError(component, error); }
+        }));
       } else if (napcat.state === "ONEBOT_PROBING") {
         component.append(node("div", "已经检测到 OneBot 端口，正在确认真实登录账号。", "olivia-chat-copy"));
       } else if (napcat.state === "ONEBOT_CONFIG_PENDING") {
@@ -363,6 +398,10 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
       try {
         const status = await request(STATUS);
         const selected = Array.isArray(status.selected_channels) ? status.selected_channels : [];
+        if (selected.includes("qq") && status.napcat?.state === "AWAITING_QQ_LOGIN") {
+          try { status.qq_login = await request(NAPCAT_LOGIN); }
+          catch (_) { status.qq_login = {}; }
+        }
         const fragment = document.createDocumentFragment();
         if (!selected.length && status.contact_state === "invited") {
           fragment.append(renderChannelChoice());

@@ -29,6 +29,8 @@ WECHAT_VERIFY_PATH = "/toy/personal-chat/setup/wechat/verify"
 QQ_CONFIGURE_PATH = "/toy/personal-chat/setup/qq/configure"
 NAPCAT_INSTALL_PATH = "/toy/personal-chat/setup/qq/napcat/install"
 NAPCAT_START_PATH = "/toy/personal-chat/setup/qq/napcat/start"
+NAPCAT_LOGIN_PATH = "/toy/personal-chat/setup/qq/napcat/login"
+NAPCAT_BROWSER_PATH = "/toy/personal-chat/setup/qq/napcat/browser"
 CONFIRM_HEADER = "X-Olivia-Companion-Action"
 CONFIRM_VALUE = "confirmed"
 _SETUP = web.AppKey("personal_chat_setup", dict)
@@ -42,6 +44,8 @@ _SETUP_PATHS = {
     QQ_CONFIGURE_PATH: frozenset({"POST"}),
     NAPCAT_INSTALL_PATH: frozenset({"POST"}),
     NAPCAT_START_PATH: frozenset({"POST"}),
+    NAPCAT_LOGIN_PATH: frozenset({"GET", "POST"}),
+    NAPCAT_BROWSER_PATH: frozenset({"POST"}),
 }
 _NAPCAT_WATCHDOG_SECONDS = 15.0
 
@@ -385,15 +389,21 @@ async def _open_napcat_login(server, runtime: dict[str, object]) -> None:
 
     for _ in range(60):
         await asyncio.sleep(1)
-        try:
-            opened = await asyncio.to_thread(napcat_installer.open_login_page, _root(server))
-        except Exception:
-            opened = False
-        if opened:
-            runtime["napcat_login_opened"] = True
-            if runtime.get("napcat_state") != "ONEBOT_READY":
-                runtime["napcat_state"] = "AWAITING_QQ_LOGIN"
+        if await asyncio.to_thread(napcat_installer.webui_available, _root(server)):
+            runtime.pop('napcat_error', None)
+            if runtime.get('napcat_state') != 'ONEBOT_READY':
+                runtime['napcat_state'] = 'AWAITING_QQ_LOGIN'
             return
+        process = runtime.get('napcat_shell_process')
+        if process is not None and process.poll() is not None:
+            runtime['napcat_state'] = 'FAILED'
+            runtime['napcat_error'] = 'NAPCAT_START_FAILED'
+            return
+    if runtime.get("napcat_state") == "ONEBOT_READY":
+        return
+    ready = await asyncio.to_thread(napcat_installer.webui_available, _root(server))
+    runtime["napcat_state"] = "AWAITING_QQ_LOGIN" if ready else "FAILED"
+    runtime["napcat_error"] = "NAPCAT_LOGIN_OPEN_FAILED" if ready else "NAPCAT_START_TIMEOUT"
 
 
 def install_setup_routes(app: web.Application, server) -> None:
@@ -411,6 +421,7 @@ def install_setup_routes(app: web.Application, server) -> None:
         "napcat_account": None,
     }
     app[_SETUP] = runtime
+    napcat_start_lock = asyncio.Lock()
 
     async def refresh_managed_napcat_state() -> str:
         from . import napcat_installer
@@ -433,8 +444,11 @@ def install_setup_routes(app: web.Application, server) -> None:
         if await asyncio.to_thread(napcat_installer.webui_available, root):
             runtime["napcat_state"] = "AWAITING_QQ_LOGIN"
             return "AWAITING_QQ_LOGIN"
-        runtime["napcat_state"] = "STARTING"
-        return "STARTING"
+        if runtime.get("napcat_state") == "FAILED":
+            return "FAILED"
+        state = "READY" if runtime.get("napcat_state") in {"IDLE", "READY"} else "STARTING"
+        runtime["napcat_state"] = state
+        return state
 
     async def napcat_watchdog() -> None:
         from . import napcat_installer
@@ -559,15 +573,24 @@ def install_setup_routes(app: web.Application, server) -> None:
         return web.json_response({"status": "DOWNLOADING"}, status=202)
 
     async def napcat_start(request: web.Request) -> web.Response:
+        async with napcat_start_lock:
+            return await start_napcat_once(request)
+
+    async def start_napcat_once(request: web.Request) -> web.Response:
         if "qq" not in _selected_channels(server):
             return web.json_response({"error": "PERSONAL_CHAT_CONTACT_NOT_ACCEPTED"}, status=409)
         from . import napcat_installer
 
         try:
+            login_task = runtime.get("napcat_login_task")
+            if isinstance(login_task, asyncio.Task) and not login_task.done():
+                return web.json_response({"status": str(runtime.get("napcat_state") or "STARTING")}, status=202)
+            runtime.pop("napcat_error", None)
             runtime["napcat_state"] = "STARTING"
-            process = await asyncio.to_thread(napcat_installer.ensure_shell, _root(server))
-            if process is not None:
-                runtime["napcat_shell_process"] = process
+            process = runtime.get("napcat_shell_process")
+            if process is None or getattr(process, "poll", lambda: 0)() is not None:
+                process = await asyncio.to_thread(napcat_installer.ensure_shell, _root(server))
+            runtime["napcat_shell_process"] = process
             await refresh_managed_napcat_state()
             login_task = runtime.get("napcat_login_task")
             if not isinstance(login_task, asyncio.Task) or login_task.done():
@@ -579,6 +602,30 @@ def install_setup_routes(app: web.Application, server) -> None:
             runtime["napcat_state"] = "FAILED"
             runtime["napcat_error"] = code
             return web.json_response({"error": code}, status=400)
+
+    async def napcat_login(request: web.Request) -> web.Response:
+        if "qq" not in _selected_channels(server):
+            return web.json_response({"error": "PERSONAL_CHAT_CONTACT_NOT_ACCEPTED"}, status=409)
+        from . import napcat_installer
+        data = await asyncio.to_thread(napcat_installer.login_status, _root(server),
+                                       refresh=request.method == "POST")
+        result = {key: data[key] for key in ('logged_in', 'scanned', 'verification_required')}
+        if not result['logged_in'] and not result['scanned']:
+            qr = data.get('qr')
+            if isinstance(qr, str) and 0 < len(qr) <= 4096:
+                try:
+                    result['qr_data'] = 'data:image/svg+xml;base64,' + base64.b64encode(svg_bytes(qr)).decode('ascii')
+                except (QRPayloadTooLong, ValueError):
+                    pass
+        return web.json_response(result)
+
+    async def napcat_browser(request: web.Request) -> web.Response:
+        if "qq" not in _selected_channels(server):
+            return web.json_response({"error": "PERSONAL_CHAT_CONTACT_NOT_ACCEPTED"}, status=409)
+        from . import napcat_installer
+        if not await asyncio.to_thread(napcat_installer.open_login_page, _root(server)):
+            return web.json_response({"error": "NAPCAT_LOGIN_OPEN_FAILED"}, status=503)
+        return web.json_response({"status": "OPEN_REQUESTED"})
 
     async def qq_configure(request: web.Request) -> web.Response:
         if "qq" not in _selected_channels(server):
@@ -657,6 +704,8 @@ def install_setup_routes(app: web.Application, server) -> None:
         QQ_CONFIGURE_PATH: qq_configure,
         NAPCAT_INSTALL_PATH: napcat_install,
         NAPCAT_START_PATH: napcat_start,
+        NAPCAT_LOGIN_PATH: napcat_login,
+        NAPCAT_BROWSER_PATH: napcat_browser,
     }
 
     @web.middleware

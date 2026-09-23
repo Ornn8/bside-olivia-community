@@ -10,6 +10,8 @@ import shutil
 import socket
 import subprocess
 import tempfile
+import time
+import threading
 import urllib.request
 from urllib.parse import quote, urlsplit
 import webbrowser
@@ -29,6 +31,8 @@ NAPCAT_WS_URL = "ws://127.0.0.1:3001"
 _MAX_ARCHIVE_BYTES = 160 * 1024 * 1024
 _MAX_EXTRACTED_BYTES = 1024 * 1024 * 1024
 _MAX_MEMBERS = 20_000
+_WEBUI_AUTH: dict[tuple[int, str], tuple[str, float]] = {}
+_WEBUI_AUTH_LOCK = threading.Lock()
 _ALLOWED_DOWNLOAD_HOSTS = frozenset({
     "github.com",
     "release-assets.githubusercontent.com",
@@ -90,11 +94,11 @@ def _allowed_download_url(value: str) -> bool:
     )
 
 
-def _download_archive(path: Path) -> None:
-    if not _allowed_download_url(NAPCAT_URL):
+def _download_archive(path: Path, *, url=NAPCAT_URL, sha256=NAPCAT_SHA256, limit=_MAX_ARCHIVE_BYTES) -> None:
+    if not _allowed_download_url(url):
         raise NapCatSetupError("NAPCAT_SOURCE_INVALID")
     request = urllib.request.Request(
-        NAPCAT_URL,
+        url,
         headers={"User-Agent": "Olivia-local-NapCat-bootstrap/1"},
     )
     try:
@@ -103,7 +107,7 @@ def _download_archive(path: Path) -> None:
             if not _allowed_download_url(final_url):
                 raise NapCatSetupError("NAPCAT_SOURCE_INVALID")
             length = response.headers.get("Content-Length")
-            if length is not None and int(length) > _MAX_ARCHIVE_BYTES:
+            if length is not None and int(length) > limit:
                 raise NapCatSetupError("NAPCAT_ARCHIVE_TOO_LARGE")
             path.parent.mkdir(parents=True, exist_ok=True)
             fd, name = tempfile.mkstemp(prefix=".napcat-", suffix=".zip", dir=path.parent)
@@ -117,13 +121,13 @@ def _download_archive(path: Path) -> None:
                         if not chunk:
                             break
                         total += len(chunk)
-                        if total > _MAX_ARCHIVE_BYTES:
+                        if total > limit:
                             raise NapCatSetupError("NAPCAT_ARCHIVE_TOO_LARGE")
                         digest.update(chunk)
                         stream.write(chunk)
                     stream.flush()
                     os.fsync(stream.fileno())
-                if digest.hexdigest().lower() != NAPCAT_SHA256:
+                if digest.hexdigest().lower() != sha256:
                     raise NapCatSetupError("NAPCAT_ARCHIVE_HASH_MISMATCH")
                 os.replace(temporary, path)
             finally:
@@ -196,6 +200,8 @@ def install_component(data_root: Path) -> Path:
         raise NapCatSetupError("NAPCAT_WINDOWS_REQUIRED")
     existing = find_shell(data_root)
     if existing is not None:
+        from .napcat_dependencies import ensure_dependencies
+        ensure_dependencies(data_root, existing)
         return existing
     root = _root(data_root)
     archive = root / NAPCAT_ASSET
@@ -215,6 +221,8 @@ def install_component(data_root: Path) -> Path:
     if shell is None:
         shutil.rmtree(destination, ignore_errors=True)
         raise NapCatSetupError("NAPCAT_COMPONENT_INVALID")
+    from .napcat_dependencies import ensure_dependencies
+    ensure_dependencies(data_root, shell)
     return shell
 
 
@@ -232,15 +240,16 @@ def public_status(data_root: Path, runtime: dict[str, object]) -> dict[str, obje
     shell_process = runtime.get("napcat_shell_process")
     state = str(runtime.get("napcat_state") or "IDLE")
     if shell is not None and state not in {
-        "STARTING", "AWAITING_QQ_LOGIN", "ONEBOT_PROBING",
+        "FAILED", "STARTING", "AWAITING_QQ_LOGIN", "ONEBOT_PROBING",
         "ONEBOT_CONFIG_PENDING", "ONEBOT_READY",
     }:
         state = "READY"
-    if shell is not None and onebot_available():
+    own_webui = shell is not None and webui_available(data_root)
+    if own_webui and onebot_available():
         state = state if state in {"ONEBOT_PROBING", "ONEBOT_CONFIG_PENDING"} else "ONEBOT_READY"
-    elif shell is not None and webui_available(data_root):
+    elif own_webui:
         state = "AWAITING_QQ_LOGIN"
-    elif shell_process is not None and getattr(shell_process, "poll", lambda: 0)() is None:
+    elif state != "FAILED" and shell_process is not None and getattr(shell_process, "poll", lambda: 0)() is None:
         state = "STARTING"
     elif task is not None and not getattr(task, "done", lambda: True)():
         state = str(runtime.get("napcat_state") or "DOWNLOADING")
@@ -361,8 +370,47 @@ def _webui_port(data_root: Path) -> int:
 
 
 def webui_available(data_root: Path) -> bool:
-    """Return true only when the managed WebUI is actually accepting TCP connections."""
-    return _tcp_port_open(_webui_port(data_root))
+    """Prove the listener uses this installation's token, not merely this port."""
+    port = _webui_port(data_root)
+    if not _tcp_port_open(port):
+        return False
+    try:
+        config = json.loads((_config_dir(data_root) / 'webui.json').read_text(encoding='utf-8'))
+        token = config.get('token')
+        if not isinstance(token, str) or not token:
+            return False
+        digest = hashlib.sha256((token + '.napcat').encode()).hexdigest()
+        key = (port, digest)
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, *args, **kwargs):
+                return None
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+        def request(action, body, credential=''):
+            headers = {'Content-Type': 'application/json'}
+            if credential:
+                headers['Authorization'] = 'Bearer ' + credential
+            req = urllib.request.Request(f'http://127.0.0.1:{port}/api/auth/{action}',
+                data=json.dumps(body).encode(), headers=headers)
+            with opener.open(req, timeout=1) as response:
+                return json.loads(response.read(16384))
+        with _WEBUI_AUTH_LOCK:
+            credential, last_attempt = _WEBUI_AUTH.get(key, ('', 0))
+            if credential and request('check', {}, credential).get('code') == 0:
+                return True
+            if time.monotonic() - last_attempt < 10:
+                return False
+            if len(_WEBUI_AUTH) >= 8:
+                _WEBUI_AUTH.clear()
+            _WEBUI_AUTH[key] = ('', time.monotonic())
+            result = request('login', {'hash': digest})
+            data = result.get('data') or {}
+            credential = data.get('Credential')
+            if result.get('code') != 0 or not isinstance(credential, str) or not credential:
+                return False
+            _WEBUI_AUTH[key] = (credential, time.monotonic())
+            return True
+    except (OSError, ValueError, TypeError, AttributeError):
+        return False
 
 
 def account_config_ready(data_root: Path, account: str) -> bool:
@@ -372,10 +420,46 @@ def account_config_ready(data_root: Path, account: str) -> bool:
     return (_config_dir(data_root) / f"onebot11_{account}.json").is_file()
 
 
+def login_status(data_root: Path, *, refresh: bool = False) -> dict:
+    """Read login presentation from our authenticated instance; never expose its token."""
+    if not webui_available(data_root):
+        raise NapCatSetupError('NAPCAT_LOGIN_UNAVAILABLE')
+    config = json.loads((_config_dir(data_root) / 'webui.json').read_text(encoding='utf-8'))
+    digest = hashlib.sha256((config['token'] + '.napcat').encode()).hexdigest()
+    port = _webui_port(data_root)
+    with _WEBUI_AUTH_LOCK:
+        credential = _WEBUI_AUTH.get((port, digest), ('', 0))[0]
+    if not credential:
+        raise NapCatSetupError('NAPCAT_LOGIN_UNAVAILABLE')
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *args, **kwargs):
+            return None
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    def request(action):
+        req = urllib.request.Request(f'http://127.0.0.1:{port}/api/QQLogin/{action}',
+            data=b'{}', headers={'Content-Type': 'application/json',
+                                'Authorization': 'Bearer ' + credential})
+        with opener.open(req, timeout=3) as response:
+            result = json.loads(response.read(16384))
+        if result.get('code') != 0:
+            raise NapCatSetupError('NAPCAT_LOGIN_UNAVAILABLE')
+        return result.get('data') or {}
+    if refresh:
+        request('RefreshQRcode')
+    data = request('CheckLoginStatus')
+    # Only allowlisted fields cross the local setup boundary.
+    return {'logged_in': data.get('isLogin') is True,
+            'scanned': data.get('qrLoginAccepted') is True,
+            'qr': data.get('qrcodeurl'),
+            'verification_required': bool(data.get('loginError'))}
+
+
 def launch_shell(data_root: Path) -> subprocess.Popen:
     if os.name != "nt":
         raise NapCatSetupError("NAPCAT_WINDOWS_REQUIRED")
     shell, _token = prepare_onebot(data_root)
+    from .napcat_dependencies import ensure_dependencies
+    ensure_dependencies(data_root, shell)
     batch = shell / "napcat.bat"
     if not batch.is_file():
         raise NapCatSetupError("NAPCAT_LAUNCHER_NOT_FOUND")
@@ -395,8 +479,10 @@ def launch_shell(data_root: Path) -> subprocess.Popen:
 
 def ensure_shell(data_root: Path) -> subprocess.Popen | None:
     prepare_onebot(data_root)
-    if _onebot_port_open():
+    if webui_available(data_root):
         return None
+    if _onebot_port_open() or _tcp_port_open(_webui_port(data_root)):
+        raise NapCatSetupError('NAPCAT_PORT_IN_USE')
     return launch_shell(data_root)
 
 
