@@ -35,6 +35,7 @@
 | `jsonschema` | 4.26.0 | MIT |
 | `jsonschema-specifications` | 2025.9.1 | MIT |
 | `multidict` | 6.7.1 | Apache-2.0 |
+| `Pillow` | 12.3.0 | MIT-CMU；用于图片校验，wheel 内保留 `pillow-12.3.0.dist-info/licenses/LICENSE` |
 | `propcache` | 0.5.2 | Apache-2.0；wheel 内含 NOTICE |
 | `referencing` | 0.37.0 | MIT |
 | `rpds-py` | 2026.6.3 | MIT |

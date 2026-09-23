@@ -10,6 +10,17 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def test_offline_schema_matches_pinned_closure_and_requires_photo_decoder():
+    from jsonschema import Draft202012Validator
+    schema = json.loads((ROOT / 'contracts/offline_core_assets.schema.json').read_text(encoding='utf-8'))
+    manifest = json.loads((ROOT / 'contracts/offline_core_assets.example.json').read_text(encoding='utf-8'))
+    validator = Draft202012Validator(schema)
+    validator.validate(manifest)
+    assert manifest['requirements_sha256'] == hashlib.sha256((ROOT / 'installer/runtime-requirements.txt').read_bytes()).hexdigest()
+    manifest['wheels'] = [item for item in manifest['wheels'] if '/pillow-' not in item['path']]
+    assert list(validator.iter_errors(manifest))
+
+
 @pytest.mark.skipif(os.name != 'nt', reason='Windows installer')
 @pytest.mark.parametrize('missing_wheel', [False, True])
 def test_powershell_accepts_current_closure_and_rejects_missing_wheel(tmp_path, missing_wheel):
