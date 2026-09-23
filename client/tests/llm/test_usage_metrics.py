@@ -10,6 +10,22 @@ from llm_gateway import GatewayConfig, OpenAICompatibleAdapter, ProviderProtocol
 from runtime.diagnostics.usage_metrics import normalize_usage, record_usage
 
 
+def test_chat_and_selection_usage_are_separate_and_private(tmp_path, monkeypatch):
+    from runtime.diagnostics.usage_metrics import purpose_for
+    monkeypatch.setenv('OLIVIA_LOCAL_DATA_ROOT', str(tmp_path))
+    for request, purpose in [('history-select:personal-chat:PRIVATE', 'history_selection'),
+                             ('personal-chat:PRIVATE', 'personal_chat')]:
+        assert purpose_for(request) == purpose
+        record_usage({'prompt_tokens': 100, 'prompt_tokens_details': {
+            'cached_tokens': 60, 'cache_creation_input_tokens': 20}},
+            purpose=purpose_for(request), outcome='response')
+    path = tmp_path / 'diagnostics/token-usage.sqlite3'
+    with sqlite3.connect(path) as db:
+        assert set(db.execute("SELECT purpose,total FROM usage WHERE metric='cache_creation_tokens'")) == {
+            ('history_selection', 20), ('personal_chat', 20)}
+    assert b'PRIVATE' not in path.read_bytes()
+
+
 def test_memory_sdk_usage_is_counted_before_truncation_guard(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from runtime.memory.mem0_memory import _guard_extraction_client, Mem0AdapterError

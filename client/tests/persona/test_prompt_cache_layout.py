@@ -51,3 +51,34 @@ def test_clock_remains_required_even_when_optional_context_is_dropped():
     with pytest.raises(PromptBudgetExceeded) as caught:
         assemble_persona(snapshot, context, user_input="你好", max_units=100)
     assert "runtime_time" in caught.value.report.included_ids
+
+
+@pytest.mark.parametrize('channel', ['qq', 'wechat'])
+def test_chat_delivery_changes_do_not_break_persona_cache_prefix(channel):
+    from runtime.personal_chat.presentation import CURRENT
+
+    snapshot = load_persona(Path(__file__).resolve().parents[2] / "linli_character/persona_release_v2.json").snapshot
+    results = []
+    for minute, voice in ((1, False), (2, True)):
+        delivery = {'channel': channel, 'decision_now': f'2026-09-23T22:0{minute}:00',
+                    'voice_available': voice, 'letter_invitation_allowed': voice}
+        token = CURRENT.set(delivery)
+        try:
+            context = ReplyContext.create(ReplyMode.FUTURE_IM, future_im_enabled=True,
+                trusted_time=TrustedTime(datetime(2026, 9, 23, 14, minute, tzinfo=timezone.utc)))
+            result = assemble_persona(snapshot, context, user_input='今天怎么样？', max_units=30000)
+            prefix, dynamic = result.system_content.split('<runtime_time>', 1)
+            assert 'decision_now' not in prefix
+            assert json.loads(re.search(r'<chat_delivery>\s*(.*?)\s*</chat_delivery>', dynamic, re.S)[1]) == delivery
+            assert 'chat_delivery' in result.budget_report.included_ids
+            assert result.budget_report.used_units == len(result.system_content) + len(result.user_content)
+            results.append(prefix)
+            with pytest.raises(PromptBudgetExceeded) as caught:
+                assemble_persona(snapshot, context, user_input='你好', max_units=100)
+            assert 'chat_delivery' in caught.value.report.included_ids
+        finally:
+            CURRENT.reset(token)
+    assert results[0] == results[1]
+    for declaration in snapshot.declarations:
+        if declaration.tier == 'PUBLIC_CANON':
+            assert declaration.declaration_id in results[0]

@@ -90,3 +90,19 @@ def test_selected_context_is_not_selected_again_at_gateway_boundary():
     selected = run(gateway)
     assert run(gateway, selected) == selected
     assert len(gateway.calls) == 1
+
+
+def test_selection_bounds_recent_context_and_deduplicates_candidates():
+    group = [{'citation': 'same', 'speaker': 'user', 'text': '相关旧事'}]
+    messages = ({'role': 'system', 'content': _block([group] * 30)},
+                {'role': 'user', 'content': '很长的上一轮' * 5000},
+                {'role': 'assistant', 'content': '最近回复'},
+                {'role': 'user', 'content': '那件事后来怎样？'})
+    gateway = Gateway({'selected_ids': ['h0']})
+    result = run(gateway, messages, budget=100000)
+    assert len(gateway.calls) == 1
+    packet = json.loads(gateway.calls[0][0][-1]['content'])
+    assert len(packet['candidates']) == 1
+    assert packet['recent_dialogue'] == [messages[-2]]
+    assert sum(len(m['content']) for m in gateway.calls[0][0]) <= 12000
+    assert tuple(m for m in result if m['role'] != 'system') == messages[1:]
