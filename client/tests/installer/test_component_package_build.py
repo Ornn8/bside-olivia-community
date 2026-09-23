@@ -75,6 +75,25 @@ def _managed_installation(tmp_path: Path) -> Path:
     return installation
 
 
+def test_nested_export_preserves_locked_file_bytes_with_windows_autocrlf(tmp_path):
+    source, _ = _clean_payload_repo(tmp_path)
+    client = source / 'client'
+    client.mkdir()
+    for item in list(source.iterdir()):
+        if item.name not in {'.git', 'client'}:
+            item.rename(client / item.name)
+    locked = client / 'installer/mem0-runtime-requirements.txt'
+    locked.write_bytes(b'locked==1.0\nsecond==2.0\n')
+    _run_git(source, 'add', '.')
+    _run_git(source, 'commit', '-m', 'nested locked input')
+    _run_git(source, 'config', 'core.autocrlf', 'true')
+    commit = _run_git(source, 'rev-parse', 'HEAD')
+    destination = tmp_path / 'export'
+    destination.mkdir()
+    component_package._export_commit(source, commit + ':client', destination, tmp_path / 'source.zip')
+    assert (destination / 'installer/mem0-runtime-requirements.txt').read_bytes() == locked.read_bytes()
+
+
 def test_builds_from_client_subdirectory_without_changing_installed_paths(tmp_path: Path) -> None:
     source, _ = _clean_payload_repo(tmp_path)
     client = source / "client"
@@ -267,7 +286,9 @@ def test_packages_git_objects_not_an_assume_unchanged_worktree_file(
     tmp_path: Path,
 ) -> None:
     source, commit = _clean_payload_repo(tmp_path)
-    committed = (source / "local_server.py").read_bytes()
+    committed = subprocess.check_output(
+        ["git", "-C", str(source), "show", f"{commit}:local_server.py"]
+    )
     _run_git(source, "update-index", "--assume-unchanged", "local_server.py")
     (source / "local_server.py").write_text("hidden worktree mutation\n", encoding="utf-8")
     package = tmp_path / "object-backed.oliviapatch"
