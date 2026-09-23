@@ -18,10 +18,14 @@ def test_verified_dependencies_repair_existing_install_without_touching_config(t
     monkeypatch.setattr(deps, 'QQ_SHA256', hashlib.sha256(b'qq!').hexdigest())
     monkeypatch.setattr(deps, 'EXTRACTOR_SHA256', hashlib.sha256(b'7z!').hexdigest())
     downloads = []
-    def download(path, **kwargs):
-        downloads.append(path.name)
-        path.write_bytes(b'qq!' if path.name.startswith('qq') else b'7z!')
-    monkeypatch.setattr(installer, '_download_archive', download)
+    from runtime.personal_chat import napcat_bundle
+    def download(root):
+        cache = installer._root(root) / 'dependencies'
+        cache.mkdir(exist_ok=True)
+        for name, content in [('qq-9.9.31.exe', b'qq!'), ('7zr-26.03.exe', b'7z!')]:
+            downloads.append(name)
+            (cache / name).write_bytes(content)
+    monkeypatch.setattr(napcat_bundle, 'ensure_bundle', download)
     def extract(args, **kwargs):
         from pathlib import Path
         stage = Path(next(x[2:] for x in args if x.startswith('-o')))

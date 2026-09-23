@@ -34,6 +34,7 @@ _MAX_MEMBERS = 20_000
 _WEBUI_AUTH: dict[tuple[int, str], tuple[str, float]] = {}
 _WEBUI_AUTH_LOCK = threading.Lock()
 _ALLOWED_DOWNLOAD_HOSTS = frozenset({
+    "3fa206f49fd071a9eff9a1c9905208dd.r2.cloudflarestorage.com",
     "github.com",
     "release-assets.githubusercontent.com",
     "objects.githubusercontent.com",
@@ -213,8 +214,8 @@ def install_component(data_root: Path) -> Path:
                 check.update(chunk)
             digest = check.hexdigest().lower()
     if digest != NAPCAT_SHA256:
-        archive.unlink(missing_ok=True)
-        _download_archive(archive)
+        from .napcat_bundle import ensure_bundle
+        ensure_bundle(data_root)
     destination = _component_root(data_root)
     _safe_extract(archive, destination)
     shell = find_shell(data_root)

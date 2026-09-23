@@ -45,7 +45,8 @@ def ensure_dependencies(data_root: Path, shell: Path) -> None:
         ]:
             path = cache / name
             if not _matches(path, digest):
-                _download_archive(path, url=url, sha256=digest, limit=limit)
+                from .napcat_bundle import ensure_bundle
+                ensure_bundle(data_root)
             if not _matches(path, digest):
                 raise NapCatSetupError('NAPCAT_DEPENDENCY_HASH_MISMATCH')
         with tempfile.TemporaryDirectory(prefix='extract-', dir=cache) as temporary:
