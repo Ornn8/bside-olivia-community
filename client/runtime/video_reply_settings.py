@@ -82,14 +82,41 @@ class VideoReplySettingsStore:
             return dict(self._document.get("settings", {}).get("videos", DEFAULT_ROUTE_VIDEOS))
     def saved_tier(self):
         return self._document.get("settings", {}).get("tier")
+    def image_snapshot(self):
+        with self._lock:
+            if self._committed.state != 'available':
+                return {'enabled': False, 'resolution': '1K'}
+            return dict(self._document.get('settings', {}).get('image', {'enabled': False, 'resolution': '1K'}))
+    def mutate_image(self, request_id, image):
+        request = self._request(request_id)
+        self._validate_image(image)
+        with self._lock:
+            if self._committed.state != 'available': raise VideoReplySettingsError(_UNAVAILABLE)
+            old = self._ledger(self._document).get(request)
+            if old is not None:
+                if old.get('image') != image: raise VideoReplySettingsError('VIDEO_REPLY_SETTING_REQUEST_CONFLICT', status=409)
+                return {'status': 'DUPLICATE', 'image': dict(image)}
+            candidate = deepcopy(self._document)
+            candidate['settings']['image'] = dict(image)
+            candidate.setdefault('ledger', {})[request] = {'enabled': self._committed.enabled, 'image': dict(image), 'result': {'status': 'APPLIED'}}
+            try: self._writer(self.path, self._encode(candidate))
+            except (OSError, ValueError): raise VideoReplySettingsError(_UNAVAILABLE) from None
+            self._document = candidate
+            return {'status': 'APPLIED', 'image': dict(image)}
+    @staticmethod
+    def _validate_image(image):
+        if (not isinstance(image, dict) or set(image) != {'enabled', 'resolution'}
+                or type(image['enabled']) is not bool or image['resolution'] not in ('1K', '2K', '4K')):
+            raise VideoReplySettingsError('VIDEO_REPLY_SETTING_PAYLOAD_INVALID', status=400)
     def tier_snapshot(self):
         routes, videos = self.routes_snapshot(), self.videos_snapshot()
         return self.saved_tier() or ("video" if any(routes[k] and videos[k] for k in REPLY_ROUTES) else "audio" if any(routes.values()) else "text")
-    def mutate_tier(self, request_id, tier):
+    def mutate_tier(self, request_id, tier, *, image=None):
         routes, videos = tier_preferences(tier)
-        return self.mutate_routes(request_id, routes, videos, tier=tier)
-    def mutate_routes(self, request_id: object, routes: object, videos: object = None, *, tier=None) -> dict[str, object]:
+        return self.mutate_routes(request_id, routes, videos, tier=tier, image=image)
+    def mutate_routes(self, request_id: object, routes: object, videos: object = None, *, tier=None, image=None) -> dict[str, object]:
         request = self._request(request_id)
+        if image is not None: self._validate_image(image)
         if not isinstance(routes, dict) or set(routes) != set(REPLY_ROUTES) or any(type(v) is not bool for v in routes.values()):
             raise VideoReplySettingsError("VIDEO_REPLY_SETTING_PAYLOAD_INVALID", status=400)
         if videos is not None and (not isinstance(videos, dict) or set(videos) != set(REPLY_ROUTES) or any(type(v) is not bool for v in videos.values())):
@@ -102,19 +129,22 @@ class VideoReplySettingsStore:
             if old is not None:
                 if old.get("tier") != tier: raise VideoReplySettingsError("VIDEO_REPLY_SETTING_REQUEST_CONFLICT", status=409)
                 if old.get("routes") != routes or old.get("videos", DEFAULT_ROUTE_VIDEOS) != videos: raise VideoReplySettingsError("VIDEO_REPLY_SETTING_REQUEST_CONFLICT", status=409)
-                return {"status": "DUPLICATE", "routes": dict(routes), "videos": videos, "tier": tier}
+                if image is not None and old.get('image') != image: raise VideoReplySettingsError("VIDEO_REPLY_SETTING_REQUEST_CONFLICT", status=409)
+                return {"status": "DUPLICATE", "routes": dict(routes), "videos": videos, "tier": tier, **({'image': dict(image)} if image is not None else {})}
             candidate = deepcopy(self._document)
             candidate["settings"].update(routes=dict(routes), video_reply_enabled=any(routes.values()))
             candidate["settings"]["videos"] = videos
             if tier is None: candidate["settings"].pop("tier", None)
             else: candidate["settings"]["tier"] = tier
+            if image is not None: candidate["settings"]["image"] = dict(image)
             candidate.setdefault("ledger", {})[request] = {"enabled": any(routes.values()), "routes": dict(routes), "result": {"status": "APPLIED"}}
             candidate["ledger"][request]["videos"] = videos
             if tier is not None: candidate["ledger"][request]["tier"] = tier
+            if image is not None: candidate["ledger"][request]["image"] = dict(image)
             try: self._writer(self.path, self._encode(candidate))
             except (OSError, UnicodeError, TypeError, ValueError): raise VideoReplySettingsError(_UNAVAILABLE) from None
             self._document, self._committed = candidate, VideoReplySettingsSnapshot("available", enabled=any(routes.values()))
-            return {"status": "APPLIED", "routes": dict(routes), "videos": videos, "tier": tier}
+            return {"status": "APPLIED", "routes": dict(routes), "videos": videos, "tier": tier, **({'image': dict(image)} if image is not None else {})}
     def receive_snapshot(self) -> VideoReplyReceiveEligibility: return VideoReplyReceiveEligibility(self._committed.enabled is True)
     def reload(self) -> None:
         with self._lock: self._open()
@@ -163,6 +193,7 @@ class VideoReplySettingsStore:
         return ledger
     @classmethod
     def _validate(cls, document: Mapping[str, object]) -> None:
+        if 'image' in document.get('settings', {}): cls._validate_image(document['settings']['image'])
         tier = document.get("settings", {}).get("tier")
         if tier is not None:
             expected_routes, expected_videos = tier_preferences(tier)

@@ -368,9 +368,12 @@ class CanonicalMemoryOutbox:
             raise ConversationMemoryOutboxError("MEMORY_OUTBOX_STATE_INVALID")
         # The same outbox/committer owns both channels. Generated or uncertain
         # sends are never canonical memory even if their text is present.
+        from runtime.image_understanding import image_memory_rows
+        image_rows = tuple(image for row in (*letters, *chats) if isinstance(row, Mapping)
+                           for image in image_memory_rows(row))
         return (*tuple(row for row in letters if isinstance(row, Mapping)),
                 *tuple(row for row in chats if isinstance(row, Mapping)
-                       and row.get("delivery_status") == "DELIVERED"))
+                       and row.get("delivery_status") == "DELIVERED"), *image_rows)
 
     def _is_terminal(self, source_id: str) -> bool:
         try:

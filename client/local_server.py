@@ -1853,7 +1853,7 @@ def _offline_media(value):
 # ---------------------------------------------------------------------------
 # 路由处理
 # ---------------------------------------------------------------------------
-_MEDIA_NAME = _re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.(?:mp4|wav)$")
+_MEDIA_NAME = _re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.(?:mp4|wav|png)$")
 
 
 def _media_root() -> Path | None:
@@ -1875,7 +1875,7 @@ async def _media_handler(request: web.Request) -> web.StreamResponse:
         return web.json_response({"status": "FAILED", "error_code": "MEDIA_NOT_FOUND"}, status=404)
     if not target.is_file():
         return web.json_response({"status": "FAILED", "error_code": "MEDIA_NOT_FOUND"}, status=404)
-    return web.FileResponse(target, headers={"Content-Type": "audio/wav" if target.suffix == ".wav" else "video/mp4", "Cache-Control": "no-store", **CORS_HEADERS(request)})
+    return web.FileResponse(target, headers={"Content-Type": {'.png':'image/png','.wav':'audio/wav','.mp4':'video/mp4'}[target.suffix], "Cache-Control": "no-store", **CORS_HEADERS(request)})
 
 
 async def handler(request: web.Request):
@@ -3689,15 +3689,44 @@ async def route(
             "source": source,
         })
 
+    if p == '/toy/image/status':
+        identifier = query.get('letter_id')
+        row = next((item for item in store.letters if item.get('letter_id') == identifier), None)
+        if row is None: return err(404, 'IMAGE_NOT_FOUND', {})
+        from original_client_letter_contract import serialize_letter_detail
+        detail = serialize_letter_detail(row)
+        return ok({key:detail[key] for key in ('imageStatus','replyImageUrl','imageResolution','imageRenderMode') if key in detail})
+
+    if p == '/toy/image/ack':
+        if not companion_confirmed: return err(403, 'COMPANION_CONFIRMATION_REQUIRED', {})
+        name = body.get('filename') if isinstance(body, dict) else None
+        if not isinstance(body, dict) or set(body) != {'filename'} or not isinstance(name, str) or not _re.fullmatch(r'photo-[a-f0-9]{32}\.png', name):
+            return err(400, 'IMAGE_ACK_INVALID', {})
+        row = next((item for item in store.letters if str(item.get('reply_image_url', '')).endswith('/'+name)
+                    and item.get('image_status') == 'COMPLETED' and item.get('letter_status') == 'COMPLETED'), None)
+        if row is None: return err(404, 'IMAGE_NOT_FOUND', {})
+        from original_client_letter_contract import _published
+        if not _published(row, now=None): return err(409, 'IMAGE_NOT_PUBLISHED', {})
+        row.update(image_delivery_status='DELIVERED', image_world_status='PENDING')
+        _persist_store_state()
+        from runtime.image_understanding import commit_image_memory
+        import sys
+        await commit_image_memory(sys.modules[__name__], row)
+        return ok({'status':'DELIVERED'})
+
     if p == "/toy/settings/reply-routes":
         try:
             if method == "POST":
+                if set(body) == {"request_id", "tier", "image"}:
+                    return ok(video_reply_settings_store.mutate_tier(body["request_id"], body["tier"], image=body["image"]))
+                if set(body) == {'request_id', 'image'}:
+                    return ok(video_reply_settings_store.mutate_image(body['request_id'], body['image']))
                 if set(body) == {"request_id", "tier"}:
                     return ok(video_reply_settings_store.mutate_tier(body["request_id"], body["tier"]))
                 if set(body) not in ({"request_id", "routes"}, {"request_id", "routes", "videos"}):
                     return err(400, "VIDEO_REPLY_SETTING_PAYLOAD_INVALID", {})
                 return ok(video_reply_settings_store.mutate_routes(body["request_id"], body["routes"], body.get("videos")))
-            return ok({"state": "available", "tier": video_reply_settings_store.tier_snapshot(), "tier_configured": video_reply_settings_store.saved_tier() is not None,
+            return ok({"state": "available", "image": video_reply_settings_store.image_snapshot(), "tier": video_reply_settings_store.tier_snapshot(), "tier_configured": video_reply_settings_store.saved_tier() is not None,
                        "routes": video_reply_settings_store.routes_snapshot(), "videos": video_reply_settings_store.videos_snapshot(),
                        "ready": await asyncio.to_thread(_route_readiness)})
         except VideoReplySettingsError as exc:
@@ -4274,6 +4303,8 @@ async def route(
         if _proactive_busy:
             return err(409, "PROACTIVE_LETTER_BUSY", {"error_code": "PROACTIVE_LETTER_BUSY"})
         lid = str(uuid.uuid4())
+        from runtime.remote_pipeline import enabled as remote_enabled
+        cloud_original = source_id is None and remote_enabled(_os.environ)
         letter = {
             "letter_id": lid,
             "content": content,
@@ -4286,11 +4317,13 @@ async def route(
             "reply_text": "",
             "reply_mode": ReplyMode.TEXT_LETTER.value,
             "triage": {"status": "pending"},
-            "music_duration_seconds": duration,
-            "music_provider": "ace_step_xl_cover" if source_id is not None else "ace_step_xl_original",
+            "music_duration_seconds": None if cloud_original else duration,
+            "music_planning_duration_seconds": None if cloud_original else duration,
+            "music_provider": "ace_step_xl_cover" if source_id is not None else "cloud_original" if cloud_original else "ace_step_xl_original",
             "reply_routes": routes,
             "reply_route_videos": videos,
             "reply_capability_tier": video_reply_settings_store.saved_tier(),
+            "image_reply_settings": video_reply_settings_store.image_snapshot(),
             "route_preflight": route_decision.to_dict() if route_decision else None,
             # Freeze the setting at the service receive boundary.  Recovery,
             # retry, and media work read this field rather than global state.
@@ -4660,7 +4693,7 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                 stage = "voice_plan"
                 voice_plan = await _music_voice_plan_for_letter(letter, reply_text) if reply_mode == ReplyMode.MUSICAL_VIDEO.value else None
                 stage = "prepare"
-                music_duration_seconds = int(letter.get("music_duration_seconds", VIDEO_REPLY_MUSIC_DURATION_SECONDS))
+                music_duration_seconds = int(letter.get("music_planning_duration_seconds") or letter.get("music_duration_seconds") or VIDEO_REPLY_MUSIC_DURATION_SECONDS)
                 performance_scene = _current_music_performance(environment)
                 if video_enabled and not remote_enabled(environment) and (performance_scene is None or not performance_scene.is_file()):
                     raise MusicReplyError("MUSIC_PERFORMANCE_SCENE_NOT_CONFIGURED")
@@ -4684,7 +4717,7 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                 song_output = output_dir / f"{letter_id}-song.wav" if not video_enabled and reply_mode == "voice_song_video" else output_path
                 music_renderer = render_musical_reply
                 cover_options = {}
-                if letter.get("music_provider") == "ace_step_xl_original":
+                if letter.get("music_provider") in {"ace_step_xl_original", "cloud_original"}:
                     from runtime.media.original_song import render_original_reply
                     music_renderer = render_original_reply
                 if letter.get("music_provider") == "ace_step_xl_cover":
@@ -4725,9 +4758,14 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                 if not still_current():
                     return
                 letter.update(_sanitized_music_render_metadata(render_metadata))
+                if render_metadata.get('music_planning_duration_seconds') in (110, 240):
+                    letter['music_planning_duration_seconds'] = render_metadata['music_planning_duration_seconds']
+                measured_duration = render_metadata.get('duration_seconds')
+                if type(measured_duration) in (int, float) and 0 < measured_duration < 86400:
+                    letter['music_duration_seconds'] = measured_duration
                 if reply_mode == "voice_song_video":
                     letter["reply_song_url"] = f"http://127.0.0.1:{PORT}/toy/media/{song_output.name}"
-                    letter["reply_song_duration"] = render_metadata.get("duration_seconds", 110)
+                    letter["reply_song_duration"] = letter.get('music_duration_seconds')
                     letter["reply_structure"] = "speech_and_separate_song_audio"
                     output_path = song_output
             stage = "publish"
@@ -4989,6 +5027,19 @@ def _schedule_pending_media_jobs() -> int:
     return scheduled
 
 
+async def _recover_photo_memories():
+    import sys
+    from runtime.image_understanding import commit_image_memory
+    while True:
+        for row in tuple(store.letters):
+            if row.get('image_world_status') == 'PENDING' and row.get('image_delivery_status') == 'DELIVERED':
+                try:
+                    await commit_image_memory(sys.modules[__name__], row)
+                except Exception:
+                    _safe_log('image_memory_pending')
+        await asyncio.sleep(60)
+
+
 async def _start_reply_tasks(_app: web.Application) -> None:
     global _proactive_task
     _refresh_proactive_context()
@@ -5002,6 +5053,14 @@ async def _start_reply_tasks(_app: web.Application) -> None:
     _proactive_task = asyncio.create_task(_proactive_loop())
     _schedule_pending_reply_jobs()
     _schedule_pending_media_jobs()
+    from runtime.image_reply import schedule as schedule_image
+    import sys
+    for letter in store.letters:
+        if letter.get('letter_status') == 'COMPLETED' and letter.get('image_status') in ('PLANNING', 'GENERATING', 'RETRY_PENDING'):
+            schedule_image(sys.modules[__name__], letter)
+    photo_recovery = asyncio.create_task(_recover_photo_memories())
+    media_tasks.add(photo_recovery)
+    photo_recovery.add_done_callback(media_tasks.discard)
     if daily_life_runtime is not None:
         daily_life_runtime.schedule_refresh(datetime.now(timezone.utc))
         media_changed = False
@@ -5532,6 +5591,9 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
         _schedule_media_job(letter_id, content, result.text, exact_mode)
 
     letters_adapter.remember_conversation(content, result.text)
+    from runtime.image_reply import schedule as schedule_image
+    import sys
+    schedule_image(sys.modules[__name__], letter)
     _safe_log("letter_completed", reply_mode=exact_mode)
     return True
 

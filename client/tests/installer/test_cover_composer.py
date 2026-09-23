@@ -16,16 +16,16 @@ def composer_document():
     return (Path(__file__).parents[1]/'fixtures/cover_composer.html').read_text(encoding='utf-8').replace('/* COMPOSER */',composer).replace('/* WAVE */',wave)
 
 
-@pytest.mark.parametrize('asr,width', [('ready',1200),('missing',700),('failed',1200)])
-def test_inline_cover_composer_preserves_drafts_and_submission(tmp_path,asr,width):
+@pytest.mark.parametrize('asr,width,provider', [('ready',1200,'suno'),('missing',700,'suno'),('failed',1200,'suno'),('ready',1200,'legacy')])
+def test_inline_cover_composer_preserves_drafts_and_submission(tmp_path,asr,width,provider):
     browser=shutil.which('google-chrome') or shutil.which('chromium')
     if os.name=='nt':
         browser=next((str(p) for p in [Path('C:/Program Files/Google/Chrome/Application/chrome.exe'),Path('C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe')] if p.is_file()),None)
     if not browser:pytest.skip('Headless Chromium unavailable')
     page=tmp_path/'composer.html';page.write_text(composer_document(),encoding='utf-8')
-    result=subprocess.run([browser,'--headless','--disable-gpu','--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-component-update','--disable-extensions',f'--user-data-dir={tmp_path / "profile"}',f'--window-size={width},960','--virtual-time-budget=1500','--dump-dom',page.as_uri()+f'?verify&asr={asr}'],capture_output=True,text=True,encoding='utf-8',errors='replace',timeout=90)
+    result=subprocess.run([browser,'--headless','--disable-gpu','--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-component-update','--disable-extensions',f'--user-data-dir={tmp_path / "profile"}',f'--window-size={width},960','--virtual-time-budget=1500','--dump-dom',page.as_uri()+f'?verify&asr={asr}&provider={provider}'],capture_output=True,text=True,encoding='utf-8',errors='replace',timeout=90)
     assert result.returncode==0,result.stderr[-1500:]
-    assert '<pre id="acceptance">PASS</pre>' in result.stdout,result.stdout[-1800:]
+    assert '<pre id="acceptance">PASS</pre>' in result.stdout,result.stdout.split('<pre id="acceptance">', 1)[-1][:500]
 
 
 def test_audio_collection_reuses_existing_waveform_and_stays_outside_paper():

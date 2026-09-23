@@ -77,8 +77,15 @@ def _generate_complete_audio(generate, bundle, *, text, audio_only_unbounded=Fal
     import torch
     if len({item['sample_rate'] for item in results}) != 1:
         raise ValueError('BREEZE_REQUEST_INVALID')
+    parts = []
+    for item in results:
+        waveform = item['waveform']
+        if parts:
+            # Leave a short breath between independently generated text spans.
+            parts.append(waveform.new_zeros((*waveform.shape[:-1], round(item['sample_rate'] * .2))))
+        parts.append(waveform)
     return {'sample_rate': results[0]['sample_rate'],
-            'waveform': torch.cat([item['waveform'] for item in results], dim=-1)}
+            'waveform': torch.cat(parts, dim=-1)}
 _VARIANT_LABEL_ATTR = {
     "int8_hybrid": "HYBRID_LABEL",
     "bf16": "BF16_LABEL",

@@ -7,11 +7,13 @@ from .events import PersonalMessage
 
 
 class PersonalChatService:
-    def __init__(self, rows, persist, generate, commit, bindings, *, sticker_allowed=lambda key: True):
+    def __init__(self, rows, persist, generate, commit, bindings, *, sticker_allowed=lambda key: True, photo=None):
         self.rows, self.persist = rows, persist
         self.generate, self.commit = generate, commit
         self.bindings = dict(bindings)
         self.sticker_allowed = sticker_allowed
+        self.photo = photo
+        self.photo_tasks = {}
         # One owner shares memory/world across both channels; serialize exchanges.
         self.lock = asyncio.Lock()
         self.batch_lock = asyncio.Lock()
@@ -36,7 +38,8 @@ class PersonalChatService:
                 if any(remaining[key] != sources[key] for key in overlap):
                     raise ValueError('PERSONAL_CHAT_ID_CONFLICT')
                 stored = PersonalMessage(event.channel, event.account_id, event.owner_id,
-                    next(iter(sources)), row['content'], tuple(sources.items()), row.get('input_kind','text'), row.get('user_sent_at'))
+                    next(iter(sources)), row['content'], tuple(sources.items()), row.get('input_kind','text'), row.get('user_sent_at'),
+                    tuple(tuple(item) for item in row.get('incoming_images', [])))
                 terminal = row.get('delivery_status') in {'SENDING', 'DELIVERY_UNCONFIRMED'} or (
                     row.get('delivery_status') == 'FAILED' and row.get('generation_attempts', 0) >= 2)
                 if not terminal or remaining.keys() == overlap:
@@ -44,7 +47,8 @@ class PersonalChatService:
                 for key in overlap:
                     del remaining[key]
             if remaining:
-                fresh = combine([PersonalMessage(event.channel, event.account_id, event.owner_id, key, text, input_kind=event.input_kind, sent_at=event.sent_at)
+                fresh = combine([PersonalMessage(event.channel, event.account_id, event.owner_id, key, text, input_kind=event.input_kind, sent_at=event.sent_at,
+                                                images=tuple(item for item in event.images if item[0] == key))
                                  for key, text in remaining.items()])
                 await self._handle_one(fresh, send.for_exchange(fresh) if callable(getattr(send, 'for_exchange', None)) else send)
 
@@ -68,6 +72,7 @@ class PersonalChatService:
                 # not: the platform may have delivered before a crash/timeout.
                 if row.get("delivery_status") == "DELIVERED":
                     await self.commit(row)
+                    self._schedule_photo(row, send)
                     return
                 if row.get('delivery_status') == 'SKIPPED':
                     return
@@ -92,6 +97,7 @@ class PersonalChatService:
                        "source_messages": dict(event.sources),
                        "binding_id": event.binding_id,
                        "input_kind": event.input_kind,
+                       "incoming_images": [list(item) for item in event.images],
                        "channel": event.channel, "reply_mode": "future_im",
                        "life_received_at": now, "created_at": datetime.now(timezone.utc).timestamp(),
                        "user_sent_at": event.sent_at,
@@ -205,6 +211,26 @@ class PersonalChatService:
                         row['sticker_delivery_status'] = 'UNKNOWN'
                 self.persist()
             await self.commit(row)
+            self._schedule_photo(row, send)
+
+    def _schedule_photo(self, row, send):
+        # Photos can take minutes. The ordinary reply and the owner queue proceed.
+        key = row['letter_id']
+        if (not callable(self.photo) or row.get('channel') != 'qq' or not callable(getattr(send, 'image', None))
+                or key in self.photo_tasks or row.get('image_delivery_status') in {'SENDING', 'UNKNOWN', 'DELIVERED'}
+                or row.get('image_status') in {'FAILED', 'SKIPPED'}):
+            return
+        async def deliver():
+            try:
+                await self.photo(row, send)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                row['image_error_code'] = 'PERSONAL_CHAT_IMAGE_UNAVAILABLE'
+                self.persist()
+            finally:
+                self.photo_tasks.pop(key, None)
+        self.photo_tasks[key] = asyncio.create_task(deliver())
 
     async def recover(self):
         """Recover local consumers only; never initiate an outbound resend."""

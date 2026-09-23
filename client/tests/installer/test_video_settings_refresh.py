@@ -11,7 +11,7 @@ const assert = require("node:assert/strict");
 let refreshVideoReplySetting = async () => {};
 let ready = false, calls = 0;
 const buttons=[];
-const node=()=>({isConnected:true,style:{},append(){},setAttribute(k,v){this[k]=v}});
+const node=()=>({isConnected:true,style:{},append(){},addEventListener(){},setAttribute(k,v){this[k]=v}});
 const document={createElement:node};
 const text=node, actions=node;
 const button=(label,fn)=>{const n=node();n.textContent=label;n.click=fn;buttons.push(n);return n;};
@@ -23,11 +23,12 @@ const routeRequest=async()=>{calls++;return {tier:ready?'audio':'text',routes:{}
 (async()=>{
  mountVideoReplySetting(node());
  await new Promise(setImmediate);
- assert.equal(buttons[0]['aria-checked'],'true');
+ const tiers=buttons.filter(b=>b.role==='radio');
+ assert.equal(tiers[0]['aria-checked'],'true');
  ready=true;
  await refreshVideoReplySetting();
- assert.equal(buttons[0]['aria-checked'],'false');
- assert.equal(buttons[1]['aria-checked'],'true');
+ assert.equal(tiers[0]['aria-checked'],'false');
+ assert.equal(tiers[1]['aria-checked'],'true');
  assert.equal(calls,2);
 })().catch(e=>{console.error(e);process.exitCode=1;});
 '''

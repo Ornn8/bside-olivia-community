@@ -50,6 +50,10 @@ def conversation_context(rows, *, query, now, excluded_sources=(), max_chars=600
                 'replied_at': _time(row.get('private_world_occurred_at')),
                 'user_letter': row.get('content', ''), 'linli_reply': row.get('reply_text', '')}
         deliveries = delivery_references(row)
+        from runtime.image_understanding import image_evidence
+        images = image_evidence(row)
+        if images:
+            item['image_observations'] = images
         if deliveries:
             item['media_deliveries'] = grouped_delivery_evidence(deliveries)
             item['media_outcome'] = delivery_outcome(row)

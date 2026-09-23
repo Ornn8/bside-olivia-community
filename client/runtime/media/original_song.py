@@ -32,9 +32,13 @@ def original_configured(environment):
 def render_original_reply(content, reply_text, output_path, *, environment,
                           duration_seconds=110, gateway=None, reply_adapter=None, render_video=True,
                           include_spoken=True, **video_options):
-    if duration_seconds != 110:
+    from runtime.remote_pipeline import enabled, generate, capabilities
+    cloud = enabled(environment)
+    if not cloud and duration_seconds != 110:
         raise MusicReplyError("MUSIC_DURATION_UNSUPPORTED")
-    from runtime.remote_pipeline import enabled, generate
+    # Old central servers still render ACE's 110s preset. Only the advertised
+    # Suno pipeline accepts the full-song lyric plan.
+    planning_duration = 240 if cloud and capabilities(environment).get('original_music_provider') == 'suno_v6' else 110
     if not enabled(environment) and not original_configured(environment):
         raise MusicReplyError("ORIGINAL_RUNTIME_UNAVAILABLE")
     audio = output_path.with_name(output_path.stem + "-original.wav") if render_video else output_path
@@ -45,14 +49,17 @@ def render_original_reply(content, reply_text, output_path, *, environment,
         if reply_adapter is not None:
             planner_options['reply_adapter'] = reply_adapter
         plan = cached_song_plan(audio.parent / (audio.stem + "-song-plan.private.json"),
-            content, reply_text, 110,
-            lambda: plan_song_content(content, reply_text, 110, **planner_options))
+            content, reply_text, planning_duration,
+            lambda: plan_song_content(content, reply_text, planning_duration, **planner_options))
     except Exception as exc:
         raise MusicReplyError("SONG_CONTENT_UNAVAILABLE") from exc
+    if cloud and planning_duration == 240 and not music_options['caption'].strip():
+        music_options['caption'] = getattr(plan, 'suno_style', '')
     if render_video and enabled(environment):
         from runtime.media.remote_materials import render_music_materials
-        return render_music_materials('original_video', {'lyrics': plan.lyrics, 'music_options': music_options}, output_path,
+        metadata = render_music_materials('original_video', {'lyrics': plan.lyrics, 'music_options': music_options}, output_path,
             environment=environment, include_spoken=include_spoken, reply_text=reply_text, **video_options)
+        return {**metadata, 'music_planning_duration_seconds': planning_duration}
     try:
         metadata = generate('original', {'lyrics': plan.lyrics, 'music_options': music_options}, audio, environment=environment) if enabled(environment) else generate_ace(None, audio, environment=environment, paths=original_paths(environment),
             lyrics=plan.lyrics, language="zh", task_type="text2music",
@@ -60,7 +67,7 @@ def render_original_reply(content, reply_text, output_path, *, environment,
     except CoverError as exc:
         raise MusicReplyError(str(exc)) from None
     if not render_video:
-        return {**metadata, "reply_structure": "original_song_audio"}
+        return {**metadata, "reply_structure": "original_song_audio", 'music_planning_duration_seconds': planning_duration}
     from runtime.media.cover_reply import deliver_cover_video
     return deliver_cover_video(audio, output_path, environment=environment, metadata=metadata,
         include_spoken=include_spoken, reply_text=reply_text, separate_for_lipsync=False, **video_options)

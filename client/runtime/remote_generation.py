@@ -68,11 +68,11 @@ class RemoteGeneration:
                 raise CloudError('GPU_REQUEST_INVALID', 400)
             payload = data
             headers['Idempotency-Key'] = data['request_id']
-            headers['X-Olivia-Max-Charge-Cents'] = str(500 if data['kind'] in ('video', 'lipsync', 'cover_video', 'original_video') else 100)
+            headers['X-Olivia-Max-Charge-Cents'] = str(121 if data['kind'] == 'image' else 500 if data['kind'] in ('video', 'lipsync', 'cover_video', 'original_video') else 300 if data['kind'] == 'original' else 100)
             path, method = '/v1/tasks', 'POST'
         elif action == 'capabilities' and data == {}:
             path, method = '/v1/capabilities', 'GET'
-        elif action in ('billing_prices', 'billing_account') and data == {}:
+        elif action in ('billing_prices', 'billing_account', 'billing_statement') and data == {}:
             path, method = '/v1/billing/' + action.removeprefix('billing_'), 'GET'
         elif action in ('status', 'cancel', 'ack'):
             if set(data) != {'task_id'} or not isinstance(data['task_id'], str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', data['task_id']):
@@ -129,6 +129,15 @@ class RemoteGeneration:
                                 or not money(charge.get('amount_cents')) or charge['amount_cents'] < 0
                                 or not money(charge.get('refunded_cents', 0))
                                 or not 0 <= charge.get('refunded_cents', 0) <= charge['amount_cents']): raise ValueError()
+                return result
+            if action == 'billing_statement':
+                if not isinstance(result, dict) or result.get('currency') != 'CNY' or not isinstance(result.get('items'), list): raise ValueError()
+                for key in ('allocated_yuan', 'used_yuan', 'reserved_yuan', 'remaining_yuan'):
+                    if not isinstance(result.get(key), str) or not re.fullmatch(r'-?\d+(?:\.\d+)?', result[key]): raise ValueError()
+                for item in result['items']:
+                    if not isinstance(item, dict) or item.get('source') not in ('relay','gpu') or not isinstance(item.get('label'),str): raise ValueError()
+                    for key in ('charged_yuan','reserved_yuan','released_yuan'):
+                        if not isinstance(item.get(key), str) or not re.fullmatch(r'\d+(?:\.\d+)?', item[key]): raise ValueError()
                 return result
             if action == 'capabilities':
                 if not isinstance(result, dict) or not isinstance(result.get('kinds'), list) or not isinstance(result.get('shared_assets'), list): raise ValueError()

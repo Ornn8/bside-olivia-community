@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from pathlib import Path
 import zipfile
 
@@ -119,7 +120,11 @@ def test_patch_adds_original_settings_management_and_preserves_existing_assets(
         "reject",
         "encodeURIComponent",
     ):
-        assert hidden_artifact not in bootstrap
+        if hidden_artifact in ('approve', 'reject'):
+            # Billing's "rejected" status is not a relationship approval action.
+            assert not re.search(r'\b' + hidden_artifact + r'\b', bootstrap)
+        else:
+            assert hidden_artifact not in bootstrap
     assert "/toy/companion/private-world" in bootstrap
     assert "PRIVATE_WORLD_PATH" in bootstrap
     assert "MutationObserver" in bootstrap

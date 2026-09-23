@@ -251,22 +251,41 @@ def test_long_audio_chunks_preserve_every_character_and_video_stays_single_pass(
     assert result['sample_rate'] == 24000
 
 
-def test_audio_chunks_are_generated_once_and_directions_are_renumbered(monkeypatch):
-    import sys
-    from types import SimpleNamespace
+def test_audio_chunks_are_generated_once_and_directions_are_renumbered():
+    import torch
     from tts.external_breeze_worker import _generate_complete_audio
-    monkeypatch.setitem(sys.modules, 'torch', SimpleNamespace(cat=lambda waves, dim: sum(waves, [])))
     text = '一' * 100 + '。' + '二' * 100 + '。' + '三' * 100 + '。'
     calls = []
     def generate(bundle, **kwargs):
         calls.append(kwargs)
-        return {'sample_rate':24000,'waveform':[len(kwargs['text'])]}
+        return {'sample_rate':24000,'waveform':torch.tensor([len(kwargs['text'])])}
     result = _generate_complete_audio(generate, None, text=text, audio_only_unbounded=True,
         instruction='第1句：稍慢。第2句：上扬。第3句：平稳。')
     assert ''.join(item['text'] for item in calls) == text
     assert len(calls) == 3
     assert calls[1]['instruction'] == '第1句：上扬。'
-    assert result['waveform'] == [101,101,101]
+    assert result['waveform'].tolist() == [101] + [0] * 4800 + [101] + [0] * 4800 + [101]
+
+
+@pytest.mark.parametrize('sample_rate', [16000, 24000])
+@pytest.mark.parametrize('count', [1, 3])
+def test_chunk_pause_preserves_samples_and_adds_no_outer_silence(sample_rate, count):
+    import torch
+    from tts.external_breeze_worker import _generate_complete_audio
+    chunks = [str(i) for i in range(count)]
+    waves = [torch.full((1, 2, 11), float(i + 1), dtype=torch.float64) for i in range(count)]
+    def generate(bundle, *, text):
+        return {'sample_rate': sample_rate, 'waveform': waves[int(text)]}
+    result = _generate_complete_audio(generate, None, text=''.join(chunks), chunks=chunks)
+    gap = round(sample_rate * .2)
+    actual = result['waveform']
+    assert actual.shape == (1, 2, count * 11 + (count - 1) * gap)
+    assert actual.dtype == waves[0].dtype and actual.device == waves[0].device
+    for i, wave in enumerate(waves):
+        start = i * (11 + gap)
+        assert torch.equal(actual[..., start:start + 11], wave)
+        if i < count - 1:
+            assert torch.count_nonzero(actual[..., start + 11:start + 11 + gap]) == 0
 
 
 @pytest.mark.parametrize('separator', ['', '\n\n'])

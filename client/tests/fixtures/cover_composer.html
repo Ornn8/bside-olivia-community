@@ -20,7 +20,7 @@ const routeRequest=async(path,body)=>{calls.push({path,body});return {token:'fix
 const confirmReplyRoute=async()=>true;
 let paid=false,approvePayment=false,paymentMessage='';const confirmAction=async(message)=>{paymentMessage=message;return approvePayment};
 const actions=()=>document.createElement('div');let setupSessionToken='fixture';const SETUP_STATUS_PATH='/toy/setup/status';
-const requestSetup=async(path,body)=>body?.action==='billing_quote'?{status:'OK',paid,max_charge_cents:body.video?500:100}:({defaults:{caption:'',guidance_scale:7,inference_steps:50,bpm:68,keyscale:'Bb major',timesignature:'4',seed:200717,use_cot:false,thinking:false,use_adg:true},options:{caption:'',guidance_scale:7,inference_steps:50,bpm:68,keyscale:'Bb major',timesignature:'4',seed:200717,use_cot:false,thinking:false,use_adg:true}});
+const requestSetup=async(path,body)=>body?.action==='billing_quote'?{status:'OK',paid,max_charge_cents:body.video?500:100}:({original_music_provider:params.get('provider')==='legacy'?undefined:'suno_v6',defaults:{caption:'',guidance_scale:7,inference_steps:50,bpm:68,keyscale:'Bb major',timesignature:'4',seed:200717,use_cot:false,thinking:false,use_adg:true},options:{caption:'',guidance_scale:7,inference_steps:50,bpm:68,keyscale:'Bb major',timesignature:'4',seed:200717,use_cot:false,thinking:false,use_adg:true}});
 /* WAVE */
 /* COMPOSER */
 const input=document.querySelector('.mail-box-write-dialog-content-textarea');const send=document.getElementById('send');
@@ -52,14 +52,17 @@ if(params.has('verify'))(async()=>{
  state.select('cover');assert(lyrics.value==='人工修正歌词','retain corrected lyrics');uploadFails=true;await testFile('失败.wav');assert(state.material.filename==='原曲.wav'&&lyrics.value==='人工修正歌词','failed replacement preserves old source');
  document.getElementById('clear').click();assert(!state.material&&lyrics.value===''&&state.draft===draft,'clear cover only');state.select('letter');assert(input.value===draft,'clear did not erase letter');
  state.select('original');await Promise.resolve();const intent=document.querySelector('.olivia-original-intent textarea');intent.value='秋天的晚风';intent.dispatchEvent(new Event('input'));
- document.querySelector('[name=guidance_scale]').value='9';document.querySelector('[name=use_cot]').checked=true;
+ document.querySelector('[name=caption]').value='温暖的钢琴民谣';
+ assert(!document.querySelector('[name=guidance_scale]')&&!document.querySelector('[name=use_cot]'),'unsupported model controls hidden');
+ const musicCopy=document.querySelector('[data-olivia-music-settings]').textContent;
+ assert(params.get('provider')==='legacy'?musicCopy.includes('110 秒')&&!musicCopy.includes('3–4分半'):musicCopy.includes('3–4分半')&&!musicCopy.includes('110 秒'),'cloud duration capability gate');
  config=await window.__oliviaPrepareLetterRoute({url:'/toy/letter/send',data:{content:input.value}});
- assert(config.data.material.original_output==='audio'&&config.data.material.music_options.guidance_scale===9&&config.data.material.music_options.use_cot,'original parameter snapshot');
+ assert(config.data.material.original_output==='audio'&&config.data.material.music_options.caption==='温暖的钢琴民谣','original style snapshot');
  assert(!config.data.material.cover_source_id&&config.data.content.includes('秋天'),'original submission');
  paid=true;let paymentCancelled=false;try{await window.__oliviaPrepareLetterRoute({url:'/toy/letter/send',data:{content:input.value}})}catch(e){paymentCancelled=e.__CANCEL__===true}
  assert(paymentCancelled&&paymentMessage.includes('¥1.00')&&intent.value==='秋天的晚风','paid audio cap shown and cancel keeps draft');
  approvePayment=true;state.originalOutput='video';await window.__oliviaPrepareLetterRoute({url:'/toy/letter/send',data:{content:input.value}});assert(paymentMessage.includes('¥5.00')&&paymentMessage.includes('失败全退'),'paid video cap and refund shown');paid=false;state.originalOutput='audio';
- state.select('cover');state.select('original');assert(intent.value==='秋天的晚风'&&document.querySelector('[name=guidance_scale]').value==='9','original draft retained');
+ state.select('cover');state.select('original');assert(intent.value==='秋天的晚风'&&document.querySelector('[name=caption]').value==='温暖的钢琴民谣','original draft retained');
  assert(Math.abs(grid.getBoundingClientRect().height-beforeSwitch.height)<1,'all modes same height');state.select('letter');assert(input.value===draft,'ordinary draft retained');
  mountCoverComposer(input);assert(document.querySelectorAll('.olivia-compose-grid').length===1,'idempotent mount');const dialog=document.querySelector('.el-dialog').getBoundingClientRect();assert(Math.abs(dialog.left+dialog.width/2-innerWidth/2)<2,'dialog centered');assert(document.documentElement.scrollWidth<=innerWidth,'no horizontal page overflow');assert(grid.closest('[role=dialog]')!==null,'controls inside native dialog');assert(!document.querySelector('select[name=language]'),'no language selector');document.getElementById('acceptance').textContent='PASS';
 })().catch(e=>{document.getElementById('acceptance').textContent='FAIL: '+e.message});

@@ -595,8 +595,10 @@ def _verify_archive(
         "批准",
         "拒绝",
         "本地世界线",
-        "approve",
-        "reject",
+        '"approve"',
+        '"reject"',
+        "'approve'",
+        "'reject'",
     )
     if (
         any(value not in index for value in required)
