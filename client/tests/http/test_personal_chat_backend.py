@@ -87,6 +87,11 @@ def test_backend_generate_uses_real_pipeline_persona_memory_and_world(monkeypatc
         GatewayRequestScope=GatewayRequestScope, supports_scoped_reasoning=lambda config: False,
         _reply_pipeline_timeout_seconds=lambda mode: 2, store=SimpleNamespace(personal_chats=[]))
     event = PersonalMessage("qq", "100", "200", "1", "今天钢琴练得怎么样？")
+    original_run = pipeline.run
+    async def bounded_run(request, context):
+        assert request.max_input_chars == 40000 + len(event.text)
+        return await original_run(request, context)
+    monkeypatch.setattr(pipeline, 'run', bounded_run)
     async def scenario():
         result = await backend.generate(server, event, {"life_received_at": datetime.now(timezone.utc).isoformat()})
         assert source.get() == "previous-source" and receipt.get() is None

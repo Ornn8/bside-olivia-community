@@ -67,13 +67,22 @@ async def select_history_messages(messages, gateway, *, max_input_chars, request
     base, groups = _split(messages)
     current = next((m['content'] for m in reversed(base) if m.get('role') == 'user'), '')
     # Candidate selection has a separate bounded input; it is not the reply prompt.
-    recent = [m for m in base if m.get('role') in {'user', 'assistant'}][:-1]
-    packet = {'current_message': current, 'recent_dialogue': recent, 'candidates': []}
-    candidate_limit = min(24000, max_input_chars - len(_INSTRUCTION))
-    offered = {}
-    for group in groups:
-        if len(offered) == 24:
+    recent = []
+    for message in reversed([m for m in base if m.get('role') in {'user', 'assistant'}][:-1]):
+        if len(recent) == 6 or len(_encode([message, *recent])) > 4000:
             break
+        recent.insert(0, message)
+    packet = {'current_message': current, 'recent_dialogue': recent, 'candidates': []}
+    candidate_limit = min(12000, max_input_chars) - len(_INSTRUCTION)
+    offered = {}
+    seen = set()
+    for group in groups:
+        if len(offered) == 12:
+            break
+        identity = _encode(group)
+        if identity in seen:
+            continue
+        seen.add(identity)
         item = {'id': 'h' + str(len(offered)), 'records': group}
         packet['candidates'].append(item)
         if len(_encode(packet)) > candidate_limit:
