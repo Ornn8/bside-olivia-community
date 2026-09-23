@@ -306,7 +306,7 @@ def _persona_blocks(
                     "沿用刚聊过的话题，已经说明过的事不再重新铺垫。自然用标点，不用引号包住普通说话。"
                     "历史信件提供事实和关系依据，不要求沿用书面句式。"
                     "关系亲近时可以自然亲昵、逗对方，不必故意保持初识时的距离；长文和认真倾诉要充分回应，不硬凑短句。"
-                ), **_im_presentation()} if persona_mode == "future_im" else {}),
+                )} if persona_mode == "future_im" else {}),
                 **({"style_grounding": "历史回信只提供事件线索，不是口吻范本。友善和亲近表达本身不证明越界。分歧针对具体行为，误解先澄清，再自然接话。"} if snapshot.status == "READY" else {}),
                 **({"delivery_mode": context.mode.value, "delivery_instruction": (
                     "本次已选择语音回信，正文会交给语音组件朗读，并与文字一起交付。"
@@ -381,6 +381,13 @@ def _persona_blocks(
          **({"character_local_time": context.trusted_time.instant.astimezone(LOCAL).isoformat()}
             if snapshot.status == "READY" else {})},
     ))
+    # Per-turn channel and delivery state must not invalidate the persona prefix.
+    presentation = _im_presentation() if persona_mode == "future_im" else {}
+    if presentation:
+        blocks.append(_json_block(
+            "chat_delivery", "chat_delivery", PromptSection.MODE_CONSTRAINTS,
+            presentation["chat_delivery"],
+        ))
 
     selected_exemplars = _select_style_exemplars(snapshot, context, user_input)
     if selected_exemplars:

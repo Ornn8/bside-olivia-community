@@ -89,7 +89,8 @@ async def generate(server, event, row):
     try:
         attempt_id = event.exchange_id + ':' + str(row.get('generation_attempts', 1))
         request = ReplyRequest(content=content or '应用主动聊天检查：现在是否有值得和对方分享的话？没有则跳过。', request_id="personal-chat:" + attempt_id,
-            idempotency_key=attempt_id, max_input_chars=adapter.config.max_input_chars,
+            idempotency_key=attempt_id,
+            max_input_chars=min(adapter.config.max_input_chars, 40000 + len(content or '')),
             gateway_scope=(server.GatewayRequestScope.PERSONAL_CHAT_JSON
                            if server.supports_scoped_reasoning(adapter.config) else None))
         result = await asyncio.wait_for(server.reply_pipeline.run(request,

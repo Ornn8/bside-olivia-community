@@ -30,6 +30,7 @@ def normalize_usage(value: object) -> dict[str, int | None]:
         'input_tokens': number('prompt_tokens', 'input_tokens'),
         'output_tokens': number('completion_tokens', 'output_tokens'),
         'cached_tokens': number('prompt_cache_hit_tokens', 'prompt_tokens_details.cached_tokens', 'input_tokens_details.cached_tokens'),
+        'cache_creation_tokens': number('prompt_tokens_details.cache_creation_input_tokens'),
         'reasoning_tokens': number('completion_tokens_details.reasoning_tokens', 'output_tokens_details.reasoning_tokens'),
         'uncached_tokens': number('prompt_cache_miss_tokens'),
     }
@@ -41,6 +42,8 @@ def normalize_usage(value: object) -> dict[str, int | None]:
 def purpose_for(request_id: str) -> str:
     # Never persist arbitrary request IDs, which may contain private text.
     for fragment, purpose in (
+        ('history-select:', 'history_selection'), ('recall-check:', 'history_selection'),
+        ('personal-chat:', 'personal_chat'),
         ('proactive', 'proactive'), ('router', 'routing'), ('triage', 'routing'),
         ('day:', 'world_refresh'), ('life:', 'world_extract'),
         ('voice-direction', 'voice_direction'), ('song', 'song'),
@@ -56,7 +59,7 @@ def record_usage(usage: object, *, purpose: str, outcome: str) -> None:
     configured = os.environ.get('OLIVIA_LOCAL_DATA_ROOT')
     if not configured or not Path(configured).is_absolute():
         return
-    purpose = purpose if purpose in {'proactive', 'routing', 'world_refresh', 'world_extract', 'voice_direction', 'song', 'reply', 'memory', 'other'} else 'other'
+    purpose = purpose if purpose in {'proactive', 'routing', 'world_refresh', 'world_extract', 'voice_direction', 'song', 'reply', 'memory', 'personal_chat', 'history_selection', 'other'} else 'other'
     outcome = outcome if outcome in {'response', 'error', 'timeout', 'transport_error'} else 'error'
     counters = normalize_usage(usage)
     day = datetime.now(timezone.utc).date().isoformat()
