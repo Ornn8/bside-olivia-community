@@ -14,8 +14,8 @@ def install_check(monkeypatch, events):
         events.append(('check', tuple(messages), gateway, max_input_chars, request_id))
         return ({**messages[0], 'content': messages[0]['content'] + '\nchecked-original-evidence'},
                 *messages[1:])
-    monkeypatch.setitem(sys.modules, 'runtime.memory.recall_check',
-                        SimpleNamespace(prepare_recall_messages=prepare))
+    monkeypatch.setitem(sys.modules, 'runtime.memory.history_selection',
+                        SimpleNamespace(select_history_messages=prepare))
 
 
 def adapter_with(gateway, *, max_input_chars=7000):

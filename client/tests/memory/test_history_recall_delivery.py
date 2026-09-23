@@ -150,15 +150,15 @@ class DynamicCheck:
     config = SimpleNamespace(provider='openai_compatible')
     def __init__(self):
         self.calls = []
-    async def complete_scoped(self, prompt, **kwargs):
+    async def complete_structured_scoped(self, prompt, **kwargs):
         self.calls.append(deepcopy(prompt))
         packet = json.loads(prompt[1]['content'])
-        source = next(s for s in packet['sources'] if s['scope'] == 'historical_exchange'
-                      and '铜纽扣' in s['text'])
-        return SimpleNamespace(text=json.dumps({'reply_intent': 'recall_question',
-            'direct_questions': [], 'findings': [{'topic': '围巾', 'status': 'confirmed',
-            'event_stage': 'reported', 'finding': '原文提过围巾上的铜纽扣。',
-            'citations': [{'source': source['source'], 'quote': '那颗铜纽扣我记住了。'}]}]}, ensure_ascii=False))
+        query = packet['current_message']
+        topics = ('围巾', '杯底', '海边') if '杯底' in query else ('围巾',)
+        selected = [item['id'] for item in packet['candidates']
+                    if query != '好久不见。' and any(
+                        topic in json.dumps(item['records'], ensure_ascii=False) for topic in topics)]
+        return SimpleNamespace(text=json.dumps({'selected_ids': selected[:6]}))
 
 
 async def final_request(adapter, query, *, mode=None):
@@ -199,9 +199,12 @@ def test_restart_and_production_pipeline_preserve_archive_in_final_model_input(t
         adapter = production_adapter(reopened, IndexedMemory(tmp_path / 'index'), recent)
         request, check = asyncio.run(final_request(adapter, query))
         system = request.messages[0]['content']
-        assert '外婆的围巾上缝着一颗铜纽扣。' in system
-        assert '那颗铜纽扣我记住了。' in system
-        assert '[ORIGINAL' in _unescape_reserved(system)
+        if query == '好久不见。':
+            assert '外婆的围巾上缝着一颗铜纽扣。' not in system
+        else:
+            assert '外婆的围巾上缝着一颗铜纽扣。' in system
+            assert '那颗铜纽扣我记住了。' in system
+            assert '[ORIGINAL' in _unescape_reserved(system)
         assert request.messages[-1]['content'] == query
         assert len(check.calls) == 1
     finally:

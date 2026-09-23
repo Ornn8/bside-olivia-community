@@ -423,8 +423,8 @@ def test_generation_receives_the_same_mode_context_as_quality_gate(
     assert result.state is ReplyState.COMPLETED
     assert bridge.calls == 0
     assert provider.calls == 1
-    expected_roles = ('system', 'system', 'user') if mode is ReplyMode.TEXT_LETTER else ('system', 'user')
-    assert tuple(message["role"] for message in provider.messages) == expected_roles
+    assert all(message['role'] == 'system' for message in provider.messages[:-1])
+    assert provider.messages[-1]['role'] == 'user'
     assert provider.messages[-1]["content"] == "今天只是普通地有点累。"
     system = provider.messages[0]["content"]
     assert f'"mode":"{mode.value}"' in system

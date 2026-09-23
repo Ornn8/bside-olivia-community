@@ -199,7 +199,7 @@ class ReplyPipeline:
                     ReplyState.FAILED, error_code="CURRENT_TURN_INTERPRETATION_FAILED",
                 )
         if isinstance(prepared, ReplyRequest) and prepared.messages:
-            from runtime.memory.recall_check import prepare_recall_messages
+            from runtime.memory.history_selection import select_history_messages as prepare_recall_messages
             adapter = getattr(getattr(self.orchestrator, 'gateway', None), 'adapter', None)
             gateway = getattr(adapter, 'gateway', None)
             messages = await prepare_recall_messages(prepared.messages, gateway,

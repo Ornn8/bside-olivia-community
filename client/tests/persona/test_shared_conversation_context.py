@@ -92,7 +92,7 @@ def test_song_planner_keeps_all_shared_messages():
 def test_proactive_generation_preserves_native_history(monkeypatch):
     import asyncio
     import local_server
-    from runtime.memory import recall_check
+    from runtime.memory import history_selection as recall_check
     shared = ({'role': 'system', 'content': 'persona'}, {'role': 'user', 'content': 'earlier message'},
               {'role': 'assistant', 'content': 'earlier reply'}, {'role': 'system', 'content': 'state boundary'},
               {'role': 'user', 'content': 'query for retrieval'})
@@ -102,7 +102,7 @@ def test_proactive_generation_preserves_native_history(monkeypatch):
         return SimpleNamespace(text='new proactive reply')
     async def prepare(messages, *args, **kwargs):
         return (*messages[:-1], {'role':'system', 'content':'late recall evidence'}, messages[-1])
-    monkeypatch.setattr(recall_check, 'prepare_recall_messages', prepare)
+    monkeypatch.setattr(recall_check, 'select_history_messages', prepare)
     adapter = SimpleNamespace(_messages=lambda *a: shared, gateway=SimpleNamespace(
         complete_scoped=complete, timeout_seconds_for_scope=lambda *a, **k: 5))
     monkeypatch.setattr(local_server, 'letters_adapter', adapter)

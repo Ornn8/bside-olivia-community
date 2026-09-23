@@ -382,7 +382,7 @@ def plan_song_content(
     messages = _planning_messages(user_input, duration, gateway_config, reply_adapter=reply_adapter)
     complete_scoped = getattr(active_gateway, "complete_scoped", None)
     async def complete_plan(plan_messages):
-        from runtime.memory.recall_check import prepare_recall_messages
+        from runtime.memory.history_selection import select_history_messages as prepare_recall_messages
         plan_messages = await prepare_recall_messages(
             plan_messages, active_gateway, max_input_chars=gateway_config.max_input_chars,
         )
