@@ -223,7 +223,10 @@ class RemoteGeneration:
             temporary_receipt = receipt.with_suffix('.tmp')
             temporary_receipt.write_text(json.dumps({'fingerprint': fingerprint, 'submission': submission}), encoding='utf-8')
             temporary_receipt.replace(receipt)
+        progress = getattr(self, 'progress', lambda phase, task: None)
+        progress('submission', {})
         task = await self.request('submit', submission)
+        progress('generation', task)
         deadline = time.monotonic() + timeout
         while task['status'] in ('queued', 'running') or task.get('stage') == 'uploading':
             if time.monotonic() >= deadline:
@@ -231,8 +234,11 @@ class RemoteGeneration:
                 raise CloudError('GPU_TASK_TIMEOUT', 504)
             await asyncio.sleep(1)
             task = await self._status(task['task_id'])
+            progress('generation', task)
         if receipt and task['status'] in ('failed', 'cancelled'):
             receipt.unlink(missing_ok=True)
+        if task['status'] == 'succeeded':
+            progress('download', task)
         result = await self._download(task, output, validate=validate)
         if caps.get('result_acknowledgement') is True and kind not in ('cover_video', 'original_video'):
             from runtime.gpu_cleanup import acknowledge_result

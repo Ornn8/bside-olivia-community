@@ -7,12 +7,13 @@ from .events import PersonalMessage
 
 
 class PersonalChatService:
-    def __init__(self, rows, persist, generate, commit, bindings, *, sticker_allowed=lambda key: True, photo=None):
+    def __init__(self, rows, persist, generate, commit, bindings, *, sticker_allowed=lambda key: True, photo=None, prepare_photo=None):
         self.rows, self.persist = rows, persist
         self.generate, self.commit = generate, commit
         self.bindings = dict(bindings)
         self.sticker_allowed = sticker_allowed
         self.photo = photo
+        self.prepare_photo = prepare_photo
         self.photo_tasks = {}
         # One owner shares memory/world across both channels; serialize exchanges.
         self.lock = asyncio.Lock()
@@ -153,6 +154,10 @@ class PersonalChatService:
                                error_code='PERSONAL_CHAT_DUPLICATE_CONTENT')
                     self.persist()
                     return
+            if event.channel == 'qq' and callable(self.prepare_photo) and callable(getattr(send, 'image', None)):
+                await self.prepare_photo(row)
+                if callable(getattr(send, 'is_available', None)) and not send.is_available():
+                    raise RuntimeError('PERSONAL_CHAT_CHANNEL_DISCONNECTED')
             audio = row.get('prepared_audio')
             if audio and callable(getattr(send, 'prepare_audio', None)):
                 try:
@@ -214,7 +219,7 @@ class PersonalChatService:
             self._schedule_photo(row, send)
 
     def _schedule_photo(self, row, send):
-        # Photos can take minutes. The ordinary reply and the owner queue proceed.
+        # New replies already prepared their photo; retain this recovery path for saved replies.
         key = row['letter_id']
         if (not callable(self.photo) or row.get('channel') != 'qq' or not callable(getattr(send, 'image', None))
                 or key in self.photo_tasks or row.get('image_delivery_status') in {'SENDING', 'UNKNOWN', 'DELIVERED'}

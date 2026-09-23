@@ -188,7 +188,7 @@ def test_incoming_retry_uses_saved_pixel_observation_and_world_failure_keeps_rep
     asyncio.run(scenario())
 
 
-def test_photo_generation_does_not_block_text_or_duplicate_on_replay():
+def test_legacy_photo_recovery_does_not_duplicate_text_on_replay():
     async def scenario():
         rows, sent = [], []
         started, finish = asyncio.Event(), asyncio.Event()
@@ -209,6 +209,38 @@ def test_photo_generation_does_not_block_text_or_duplicate_on_replay():
         finish.set(); await asyncio.gather(*service.photo_tasks.values())
         await service.handle(event, send)
         assert not service.photo_tasks
+    asyncio.run(scenario())
+
+
+def test_qq_waits_for_photo_before_delivering_text():
+    async def scenario():
+        rows, sent = [], []
+        started, finish = asyncio.Event(), asyncio.Event()
+        async def generate(event, row): return '一起送达。'
+        async def commit(row): pass
+        async def prepare(row):
+            started.set()
+            await finish.wait()
+            row['image_status'] = 'COMPLETED'
+        async def photo(row, send):
+            assert row['image_status'] == 'COMPLETED'
+            await send.image('synthetic.png')
+            row['image_delivery_status'] = 'DELIVERED'
+        async def send(text): sent.append('text'); return 'ack'
+        async def image(path): sent.append('image'); return 'image-ack'
+        send.image = image
+        service = PersonalChatService(rows, lambda: None, generate, commit, {'qq': ('100', '200')},
+                                      photo=photo, prepare_photo=prepare)
+        event = PersonalMessage('qq', '100', '200', '1', '给我照片')
+        task = asyncio.create_task(service.handle(event, send))
+        await asyncio.wait_for(started.wait(), 1)
+        assert sent == [] and rows[0]['delivery_status'] == 'GENERATED'
+        finish.set()
+        await task
+        await asyncio.gather(*service.photo_tasks.values())
+        assert sent == ['text', 'image']
+        await service.handle(event, send)
+        assert sent == ['text', 'image']
     asyncio.run(scenario())
 
 

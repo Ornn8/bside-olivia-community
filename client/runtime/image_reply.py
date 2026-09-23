@@ -147,6 +147,7 @@ async def _prepare_once(server, row, content, text, *, channel='letter'):
         server._persist_store_state()
         return
     from runtime.remote_generation import RemoteGeneration
+    row['image_phase'] = 'configuration'
     try:
         api = RemoteGeneration(os.environ.get('OLIVIA_GPU_API_URL', ''), os.environ.get('OLIVIA_GPU_API_KEY', ''))
     except Exception:
@@ -157,7 +158,19 @@ async def _prepare_once(server, row, content, text, *, channel='letter'):
         row.update(image_status='FAILED', image_error_code='GPU_NOT_CONFIGURED')
         server._persist_store_state()
         return
-    row['image_status'] = 'PLANNING'; server._persist_store_state()
+    def progress(phase, task):
+        facts = {'image_phase': phase}
+        if task.get('task_id'):
+            facts['image_cloud_task_id'] = task['task_id']
+        if task.get('status'):
+            facts['image_cloud_status'] = task['status']
+        from runtime.diagnostics.photo import project_photo
+        changes = project_photo(facts)
+        if any(row.get(key) != value for key, value in changes.items()):
+            row.update(changes)
+            server._persist_store_state()
+    api.progress = progress
+    row['image_status'] = 'PLANNING'; progress('planning', {}); server._persist_store_state()
     receipt = None
     try:
         identity = str(row.get('letter_id') or row.get('exchange_id') or row.get('id'))
@@ -187,6 +200,13 @@ async def _prepare_once(server, row, content, text, *, channel='letter'):
         plan = row['image_plan']
         if not plan['attach']:
             row['image_status'] = 'SKIPPED'; server._persist_store_state(); return
+        progress('dependency', {})
+        try:
+            from PIL import Image
+        except ImportError:
+            row['image_dependency_available'] = False
+            raise ValueError('IMAGE_DEPENDENCY_MISSING') from None
+        row['image_dependency_available'] = True
         payload = {k:v for k,v in plan.items() if k != 'attach'}
         payload['resolution'] = settings['resolution']
         name = 'photo-' + photo_id + '.png'
@@ -199,7 +219,7 @@ async def _prepare_once(server, row, content, text, *, channel='letter'):
         if row.setdefault('image_generation_binding', fingerprint) != fingerprint:
             raise ValueError('IMAGE_GENERATION_BINDING_CHANGED')
         def validate(p):
-            from PIL import Image
+            progress('validation', {})
             minimum, maximum = {'1K':(850,1300), '2K':(1450,2500),
                                 '4K':(3000,4100)}[settings['resolution']]
             with Image.open(p) as image:
@@ -208,6 +228,7 @@ async def _prepare_once(server, row, content, text, *, channel='letter'):
                     raise ValueError('IMAGE_OUTPUT_INVALID')
                 image.verify()
         row['image_status'] = 'GENERATING';server._persist_store_state()
+        progress('waiting', {})
         # Serialize with audio generation for the existing one-active-task wallet limit.
         async with server.media_semaphore:
             if not path.exists():
@@ -215,6 +236,7 @@ async def _prepare_once(server, row, content, text, *, channel='letter'):
                 await api.generate('image', payload, path, receipt_path=receipt, validate=validate)
             else: validate(path)
         from runtime.image_understanding import describe_image
+        progress('understanding', {})
         try:
             row['image_description'] = await describe_image(server, path, source='generated')
         except Exception:
@@ -223,6 +245,7 @@ async def _prepare_once(server, row, content, text, *, channel='letter'):
         row.update(image_status='COMPLETED', prepared_image=str(path),
                    reply_image_url=f'http://127.0.0.1:{server.PORT}/toy/media/{name}',
                    image_resolution=settings['resolution'], image_render_mode='native')
+        progress('ready', {})
         row.pop('image_error_code', None)
         row.pop('image_retry_at', None)
     except asyncio.CancelledError:

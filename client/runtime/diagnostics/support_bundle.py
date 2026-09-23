@@ -47,6 +47,7 @@ _TASK_STAGES = frozenset(
         "completed",
         "failed",
         "media_generation",
+        "image_generation",
         "reply_generation",
         "waiting",
         "unknown",
@@ -214,6 +215,8 @@ def _project_tasks(value: object) -> dict[str, object]:
     for index, value in enumerate(raw_items, start=1):
         item = _mapping(value)
         projected: dict[str, object] = {"index": index, "status": _status(item.get("status"))}
+        from .photo import project_photo
+        projected.update(project_photo(item))
         if item.get('reply_capability_tier') in ('text', 'audio', 'video'):
             projected['reply_capability_tier'] = item['reply_capability_tier']
         if type(item.get('display_status')) is int and -1 <= item['display_status'] <= 10:

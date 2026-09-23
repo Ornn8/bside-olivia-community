@@ -80,7 +80,7 @@ def _now_value(now: float | None) -> float:
 
 
 def _published(letter: Mapping[str, object], *, now: float | None) -> bool:
-    if _video_pending(letter) or _audio_pending(letter):
+    if _video_pending(letter) or _audio_pending(letter) or _photo_pending(letter):
         return False
     deadline = letter.get("reply_not_before", 0.0)
     if deadline in (None, ""):
@@ -88,6 +88,14 @@ def _published(letter: Mapping[str, object], *, now: float | None) -> bool:
     if isinstance(deadline, bool) or not isinstance(deadline, (int, float)):
         return False
     return float(deadline) <= _now_value(now)
+
+
+def _photo_pending(letter: Mapping[str, object]) -> bool:
+    settings = letter.get('image_reply_settings')
+    return (isinstance(settings, Mapping) and settings.get('enabled') is True
+            and letter.get('reply_mode') in ('text', 'text_letter', 'voice_reply', 'spoken_video')
+            and letter.get('image_status') not in ('COMPLETED', 'SKIPPED', 'FAILED')
+            and str(letter.get('letter_status', '')).upper() == 'COMPLETED')
 
 
 def _audio_pending(letter: Mapping[str, object]) -> bool:
@@ -255,7 +263,7 @@ def serialize_letter_summary(
     letter_id = _required_identifier(letter)
     status = _letter_status(letter.get("letter_status", letter.get("letterStatus")), published=published)
     video_pending = _video_pending(letter)
-    if video_pending or _audio_pending(letter):
+    if video_pending or _audio_pending(letter) or _photo_pending(letter):
         status = int(OriginalClientLetterStatus.LLM_PROCESSING)
     audit_status = _audit_status(letter.get("audit_status", letter.get("auditStatus")))
     raw_created_at = letter.get("created_at", letter.get("createdAt"))
@@ -268,7 +276,7 @@ def serialize_letter_summary(
         "isRead": 1 if letter.get("is_read", letter.get("isRead", 1)) else 0,
         "letterStatus": status,
         "auditStatus": audit_status,
-        "summary": _summary(letter),
+        "summary": _summary(letter) if published else str(letter.get('summary') or letter.get('content') or '')[:50],
         "createdAt": created_at,
         "replyType": reply_type,
     }
@@ -288,7 +296,7 @@ def serialize_letter_summary(
     ):
         payload["coverId"] = letter_id
         payload["audioStatus"] = str(letter.get("media_status") or "PENDING")
-        payload["audioRevision"] = _safe_local_media_url(letter.get("reply_audio_url"))
+        payload["audioRevision"] = _safe_local_media_url(letter.get("reply_audio_url")) if published else ""
 
     replied_at = letter.get("replied_at", letter.get("repliedAt"))
     if replied_at not in (None, ""):

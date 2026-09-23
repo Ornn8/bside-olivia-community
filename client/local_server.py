@@ -2826,6 +2826,9 @@ def _send_result_for_letter(letter: dict) -> dict:
             }
         )
     if letter_status == "COMPLETED":
+        from original_client_letter_contract import _photo_pending
+        if _photo_pending(letter):
+            return ok({'letter_id': letter['letter_id'], 'letterId': letter['letter_id'], 'status': 'PENDING'})
         if letter.get("reply_not_before", 0.0) > time.time():
             return ok({"letter_id": letter["letter_id"], "letterId": letter["letter_id"], "status": "PENDING", "reply_not_before": letter["reply_not_before"]})
         if letter.get("reply_text"):
@@ -3150,11 +3153,11 @@ async def _proactive_loop() -> None:
 
 
 def _active_undelivered_letter(*, now: float | None = None) -> dict | None:
-    from original_client_letter_contract import _video_pending
+    from original_client_letter_contract import _video_pending, _photo_pending
 
     current_time = time.time() if now is None else now
     for letter in store.letters:
-        if _video_pending(letter):
+        if _video_pending(letter) or _photo_pending(letter):
             return letter
         if letter.get("letter_status") in {"PENDING", "PROCESSING"}:
             return letter
@@ -3910,7 +3913,8 @@ async def route(
                 "allowed_scopes": ["current", "legacy"],
             })
         letters = _letter_collection(scope)
-        unread = sum(1 for letter in letters if not letter.get("is_read"))
+        from original_client_letter_contract import _photo_pending
+        unread = sum(1 for letter in letters if not letter.get("is_read") and not _photo_pending(letter))
         return ok({
             "unread_count": unread,
             "scope": scope,
@@ -3950,13 +3954,14 @@ async def route(
                 "status": "FAILED",
                 "error_code": "LETTER_NOT_FOUND",
             })
-        if scope == "current" and not l.get("read_only"):
+        from original_client_letter_contract import _published
+        reply_published = _published(l, now=None)
+        if scope == "current" and not l.get("read_only") and reply_published:
             proactive_unread = l.get('origin') == 'proactive' and not l.get('is_read', 0)
             l["is_read"] = 1
             if proactive_unread:
                 _persist_store_state()
                 _refresh_proactive_context()
-        reply_published = l.get("reply_not_before", 0.0) <= time.time()
         reply_text = l.get("reply_text", "") if reply_published else ""
         error_code, retryable = _public_llm_error(l.get("error_code"))
         media_detail = contract.project_letter_detail_media(
@@ -3978,7 +3983,7 @@ async def route(
             "reply_type": 1 if reply_text else 0,
             "reply_text": reply_text,
             "reply_content": reply_text,
-            "reply_video_url": l.get("reply_video_url", ""),
+            "reply_video_url": l.get("reply_video_url", "") if reply_published else "",
             "reply_mode": (
                 _wire_reply_mode(l.get("reply_mode"))
                 if reply_published
@@ -5056,7 +5061,7 @@ async def _start_reply_tasks(_app: web.Application) -> None:
     from runtime.image_reply import schedule as schedule_image
     import sys
     for letter in store.letters:
-        if letter.get('letter_status') == 'COMPLETED' and letter.get('image_status') in ('PLANNING', 'GENERATING', 'RETRY_PENDING'):
+        if letter.get('letter_status') == 'COMPLETED':
             schedule_image(sys.modules[__name__], letter)
     photo_recovery = asyncio.create_task(_recover_photo_memories())
     media_tasks.add(photo_recovery)
