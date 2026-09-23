@@ -1911,8 +1911,8 @@ def test_inno_wrapper_is_current_user_offline_and_delegates_to_install_ps1() -> 
     assert "Olivia installer diagnostic:" in script
     assert "function PrepareToInstall" in script
     assert "dontcopy noencryption" in script
-    assert "OfficialDirPage: TInputQueryWizardPage" in script
-    assert "BrowseForFolder" in script
+    assert "OfficialDirPage" not in script
+    assert "BrowseForFolder" not in script
     assert "{param:InstallRoot|" in script
     assert "{localappdata}\\BSideOliviaLocal\\install}" not in script
     assert "产品目录" in script

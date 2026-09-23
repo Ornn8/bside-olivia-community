@@ -1484,6 +1484,12 @@ def test_failed_setup_records_selected_official_archives_and_manifest_hashes(
             encoding="utf-8"
         )
     )
+    failure = diagnostic.pop("failure")
+    assert failure["code"] == "OFFLINE_CORE_ASSETS_MISSING"
+    assert failure["phase"] == "VERIFY_CORE"
+    assert isinstance(failure["hresult"], int)
+    assert failure["line"] > 0
+    assert set(failure) == {"code", "phase", "exception_type", "hresult", "line"}
     assert diagnostic == {
         "schema_version": "olivia.setup-source-diagnostic.v1",
         "selection_mode": "explicit",
