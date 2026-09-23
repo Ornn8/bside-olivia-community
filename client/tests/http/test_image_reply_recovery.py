@@ -12,6 +12,23 @@ from runtime.cloud_service import CloudError
 PLAN = dict(attach=True, photo_type='snapshot', room='music-workstation', time_of_day='night', prompt='Coffee on a wooden desk')
 
 
+def test_missing_pillow_fails_before_paid_submission(tmp_path, monkeypatch):
+    import builtins
+    original = builtins.__import__
+    def guarded(name, *args, **kwargs):
+        if name == 'PIL':
+            raise ModuleNotFoundError('synthetic')
+        return original(name, *args, **kwargs)
+    async def scenario():
+        server, row, calls = setup(tmp_path, monkeypatch)
+        monkeypatch.setattr(builtins, '__import__', guarded)
+        await image_reply.prepare(server, row, 'photo', 'Okay')
+        assert row['image_error_code'] == 'IMAGE_DEPENDENCY_MISSING'
+        assert row['image_phase'] == 'dependency'
+        assert calls['submits'] == []
+    asyncio.run(scenario())
+
+
 def setup(tmp_path, monkeypatch, failure='download'):
     monkeypatch.setenv('OLIVIA_GPU_API_URL', 'http://127.0.0.1:9')
     monkeypatch.setenv('OLIVIA_GPU_API_KEY', 'synthetic-only')
@@ -53,9 +70,11 @@ def test_transient_result_download_recovers_same_paid_request(tmp_path, monkeypa
         server, row, calls = setup(tmp_path, monkeypatch)
         await image_reply._prepare_once(server, row, 'coffee?', 'Here')
         assert row['image_status'] == 'RETRY_PENDING' and row['image_receipt_required'] is True
+        assert row['image_phase'] == 'download' and row['image_cloud_status'] == 'succeeded'
         row['image_retry_at'] = 0
         await image_reply.prepare(server, row, 'coffee?', 'Here')
         assert row['image_status'] == 'COMPLETED'
+        assert row['image_phase'] == 'ready' and row['image_dependency_available'] is True
         assert len(calls['submits']) == 2 and len(set(calls['submits'])) == 1
         assert len(calls['plans']) == 1 and calls['plans'][0].startswith('reply-photo-plan-')
         assert row['image_description']['source'] == 'generated'

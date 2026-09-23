@@ -285,7 +285,8 @@ def _adapt_mailbox_payload(
 
     if path == "/toy/letter/unread_count" and payload.get("code") == 0:
         letters = _visible_mailbox_letters(tuple(letter_collection(scope)))
-        unread = sum(1 for letter in letters if not letter.get("is_read", 1))
+        from original_client_letter_contract import _photo_pending
+        unread = sum(1 for letter in letters if not letter.get("is_read", 1) and not _photo_pending(letter))
         payload["data"] = serialize_unread_count(
             unread,
             scope=scope,
@@ -528,7 +529,9 @@ def _diagnostic_source(
     def project_task(value: Mapping[str, object]) -> dict[str, object]:
         letter_state = state(value.get("letter_status"))
         media_state = state(value.get("media_status")) if "media_status" in value else None
-        if media_state in {"pending", "queued", "processing"}:
+        if str(value.get('image_status', '')).upper() in {'PLANNING', 'GENERATING', 'RETRY_PENDING'}:
+            stage = 'image_generation'
+        elif media_state in {"pending", "queued", "processing"}:
             stage = "media_generation"
         else:
             stage = {
@@ -559,6 +562,11 @@ def _diagnostic_source(
             "stage": stage,
             "elapsed_bucket": elapsed_bucket,
         }
+        from runtime.diagnostics.photo import project_photo
+        from original_client_letter_contract import _published
+        item.update(project_photo(value))
+        if 'image_status' in value:
+            item['reply_published'] = letter_state == 'completed' and _published(value, now=None)
         error_code = code(value.get("error_code"))
         if error_code is not None:
             item["error_code"] = error_code
@@ -593,6 +601,8 @@ def _diagnostic_source(
             item['audio_available'] = bool(projection.get('replyAudioUrl'))
             item['video_available'] = bool(projection.get('replyVideoUrl'))
             item['text_available'] = bool(projection.get('replyText'))
+            if 'image_status' in value:
+                item['image_available'] = bool(projection.get('replyImageUrl'))
         duration = value.get('reply_audio_duration')
         if type(duration) in (int, float) and 0 <= duration <= 86400:
             item['audio_duration_seconds'] = duration
@@ -771,6 +781,7 @@ def _diagnostic_source(
         pending = sum(
             item.get("status") in {"pending", "processing"}
             or item.get("media_status") in {"pending", "queued", "processing"}
+            or item.get('image_status') in {'planning', 'generating', 'retry_pending'}
             for item in task_items
         )
         return {
@@ -1172,6 +1183,7 @@ def _recent_diagnostic_tasks(letters) -> tuple[Mapping[str, object], ...]:
         return ()
     def priority(item):
         active = str(item.get("letter_status", "")).lower() in {"pending", "processing"} or str(item.get("media_status", "")).lower() in {"pending", "queued", "processing"}
+        active = active or str(item.get('image_status', '')).upper() in {'PLANNING', 'GENERATING', 'RETRY_PENDING'}
         created = item.get("created_at", 0)
         return (active, created if type(created) in {int, float} else 0)
     return tuple(sorted((item for item in letters if isinstance(item, Mapping)),
@@ -1229,7 +1241,8 @@ def create_configured_original_client_server_runtime(
     def task_snapshot() -> tuple[Mapping[str, object], ...]:
         store = getattr(server_module, "store", None)
         letters = getattr(store, "letters", ())
-        return _recent_diagnostic_tasks(letters)
+        chats = getattr(store, 'personal_chats', ())
+        return _recent_diagnostic_tasks([*letters, *chats])
 
     def history_import_snapshot() -> Mapping[str, object]:
         snapshot = getattr(server_module, "_official_import_progress_snapshot", None)

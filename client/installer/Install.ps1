@@ -602,6 +602,7 @@ function Assert-OfflineObjectShape {
 
 function Get-ExpectedOfflineWheels {
     $expected = [Collections.Generic.Dictionary[string,string]]::new([StringComparer]::Ordinal)
+    $expected.Add('wheelhouse/pillow-12.3.0-cp312-cp312-win_amd64.whl', 'a2b55dd6b2a4c4b7d87ffa56bdb33fdc5fdb9a462173861a7bc097f17d91cb09')
     $expected.Add('wheelhouse/aiohappyeyeballs-2.7.1-py3-none-any.whl', '9243213661e29250eb41368e5daa826fc017156c3b8a11440826b2e3ed376472')
     $expected.Add('wheelhouse/aiohttp-3.14.1-cp312-cp312-win_amd64.whl', '2aa92c87868cd13674989f9ee83e5f9f7ea4237589b728048e1f0c8f6caa3271')
     $expected.Add('wheelhouse/aiosignal-1.4.0-py3-none-any.whl', '053243f8b92b990551949e63930a839ff0cf0b0ebbe0597b0f3fb19e1a0fe82e')

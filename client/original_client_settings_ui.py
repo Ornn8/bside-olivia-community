@@ -133,6 +133,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       try {
         const endpoint=new URL('/toy/image/status',apiBase);endpoint.searchParams.set('letter_id',id);
         const response=await fetch(endpoint);const raw=await response.json();const data=raw.data;
+        if(!response.ok||raw.code!==0||!data?.imageStatus)throw new Error('PHOTO_STATUS_UNAVAILABLE');
         if(!this.isConnected||id!==this.getAttribute('letter-id'))return;
         if(data?.imageStatus==='COMPLETED' && data.replyImageUrl){
           if(this.dataset.loaded===data.replyImageUrl)return;
@@ -146,7 +147,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         if(['SKIPPED','NOT_REQUESTED'].includes(data?.imageStatus)){this.replaceChildren();return;}
         if(data?.imageStatus==='FAILED'){this.textContent='照片暂未生成成功，文字和语音不受影响。';return;}
         this.textContent='照片正在准备…';
-      } catch(_){this.textContent='照片正在准备…';}
+      } catch(_){if(this.isConnected&&id===this.getAttribute('letter-id'))this.textContent='暂时无法获取照片状态，正在重试…';}
       if(this.isConnected)this.timer=setTimeout(()=>this.refresh(),5000);
     }
   });
@@ -1619,6 +1620,16 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     box.append(title,metrics,balance,usage,unifiedHistory,recharge,controls,orderView,status);
     panel.append(box);
     void run(async()=>{await readBalance();drawOrder(await call({action:"order_status"}));});
+    const refreshVisibleBalance = async () => {
+      if (!box.isConnected) return;
+      if (!document.hidden && box.getClientRects().length && !busy) {
+        busy=true;
+        try { await readBalance(); } catch (_) { /* Keep the last confirmed balance on network failure. */ }
+        finally { busy=false; }
+      }
+      if (box.isConnected) window.setTimeout(refreshVisibleBalance,15000);
+    };
+    window.setTimeout(refreshVisibleBalance,15000);
   };
 
   const renderLlmSetupPanel = async (panel, initialMode, preferOlivia = false) => {

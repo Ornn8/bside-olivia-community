@@ -356,9 +356,11 @@ def install_personal_chat(app, server):
                     return key in allowed_stickers(context.private_behavior)
                 except Exception:
                     return False
+            from runtime.image_reply import prepare as prepare_photo
             service = PersonalChatService(server.store.personal_chats, server._persist_store_state,
                 lambda event, row: generate(server, event, row), lambda row: recoverable_commit(server, row), bindings,
-                sticker_allowed=sticker_allowed, photo=lambda row, send: deliver_photo(server, row, send))
+                sticker_allowed=sticker_allowed, photo=lambda row, send: deliver_photo(server, row, send),
+                prepare_photo=lambda row: prepare_photo(server, row, row.get('content', ''), row['reply_text'], channel='qq'))
             from .probe import ProbeJournal
             journal = ProbeJournal(server._state_root() / "personal-chat-diagnostics")
             runtime = {"stop": stop_event, "tasks": [], "service": service, "status": {},

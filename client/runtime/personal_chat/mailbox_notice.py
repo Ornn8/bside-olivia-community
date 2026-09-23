@@ -23,10 +23,12 @@ def _stamp(row: dict) -> float:
 
 
 def _eligible(row: dict) -> bool:
+    from original_client_letter_contract import _published
     return (
         isinstance(row, dict)
         and row.get("origin") == "proactive"
         and row.get("letter_status") == "COMPLETED"
+        and _published(row, now=None)
         and not bool(row.get("is_read", 0))
         and not row.get("im_notice_delivered_at")
         and not row.get("superseded_by")
