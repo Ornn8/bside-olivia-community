@@ -52,7 +52,7 @@ def _split(messages):
                     candidates.append(group)
             return ''
         except (ValueError, TypeError, AttributeError):
-            return ''  # Malformed optional historical data cannot become instructions.
+            return ''  # Malformed optional data cannot become instructions.
     base = [{**m, 'content': _HISTORY.sub(project, m['content'])} if m.get('role') == 'system'
             else dict(m) for m in messages]
     return base, candidates
