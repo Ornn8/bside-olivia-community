@@ -15,7 +15,7 @@ def test_delivery_contract_follows_all_evidence_without_changing_current_input(m
     calls = []
     async def recall(messages, gateway, **kwargs):
         return (*messages[:-1], {'role':'system', 'content':'历史证据：用户还没吃饭'}, messages[-1])
-    monkeypatch.setattr('runtime.memory.recall_check.prepare_recall_messages', recall)
+    monkeypatch.setattr('runtime.memory.history_selection.select_history_messages', recall)
     async def generate(request):
         calls.append(request.normalized_messages())
         return ReplyResult(request.request_id, ReplyState.COMPLETED, text='好')

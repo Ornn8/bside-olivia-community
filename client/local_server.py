@@ -638,7 +638,7 @@ class _LetterGateway(Gateway):
             "",
         )
         built_messages = await asyncio.to_thread(self.adapter._messages, content)
-        from runtime.memory.recall_check import prepare_recall_messages
+        from runtime.memory.history_selection import select_history_messages as prepare_recall_messages
         built_messages = await prepare_recall_messages(
             built_messages, self.adapter.gateway,
             max_input_chars=self.adapter.config.max_input_chars, request_id=request_id,
@@ -945,7 +945,7 @@ class LetterAdapter:
         try:
             messages = self._messages(content, context)
             async def complete_reply():
-                from runtime.memory.recall_check import prepare_recall_messages
+                from runtime.memory.history_selection import select_history_messages as prepare_recall_messages
                 prepared = await prepare_recall_messages(
                     messages, gateway, max_input_chars=config.max_input_chars,
                     request_id=request_id,
@@ -2978,7 +2978,7 @@ async def _proactive_complete(intent: dict, *, planning: bool, mode: str = 'text
     gateway = letters_adapter.gateway
     request_id = 'proactive:' + intent['id'] + (':plan' if planning else ':body')
     if not planning:
-        from runtime.memory.recall_check import prepare_recall_messages
+        from runtime.memory.history_selection import select_history_messages as prepare_recall_messages
         messages = await prepare_recall_messages(
             messages, gateway,
             max_input_chars=getattr(letters_adapter, 'config', LLM_CONFIG).max_input_chars,
