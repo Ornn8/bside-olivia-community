@@ -5091,6 +5091,16 @@ async def _recover_photo_memories():
         await asyncio.sleep(60)
 
 
+_DAILY_LIFE_REFRESH_CHECK_SECONDS = 60
+
+
+async def _refresh_daily_life_periodically() -> None:
+    while True:
+        await asyncio.sleep(_DAILY_LIFE_REFRESH_CHECK_SECONDS)
+        if daily_life_runtime is not None:
+            daily_life_runtime.schedule_refresh(datetime.now(timezone.utc))
+
+
 async def _start_reply_tasks(_app: web.Application) -> None:
     global _proactive_task
     _refresh_proactive_context()
@@ -5114,6 +5124,9 @@ async def _start_reply_tasks(_app: web.Application) -> None:
     photo_recovery.add_done_callback(media_tasks.discard)
     if daily_life_runtime is not None:
         daily_life_runtime.schedule_refresh(datetime.now(timezone.utc))
+        refresh_task = asyncio.create_task(_refresh_daily_life_periodically())
+        media_tasks.add(refresh_task)
+        refresh_task.add_done_callback(media_tasks.discard)
         media_changed = False
         for letter in store.letters:
             if letter.get('media_deliveries'):

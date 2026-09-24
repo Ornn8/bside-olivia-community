@@ -80,6 +80,99 @@ class HardFailingGateway:
         raise ClassifiedProviderFailure(self.code, self.status)
 
 
+def test_running_client_refreshes_stale_world_without_opening_world_page(tmp_path, monkeypatch):
+    import local_server as server
+
+    store = DailyLifeStore(tmp_path / "life.sqlite3")
+    refreshed = asyncio.Event()
+
+    class Gateway:
+        async def complete(self, _messages, **_kwargs):
+            refreshed.set()
+            return SimpleNamespace(text=json.dumps({
+                "current": {"location": "琴房", "activity": "练琴", "note": "今天练了一小段。"},
+                "projects": [],
+            }))
+
+    runtime = DailyLifeRuntime(store, Gateway, lambda: "林离喜欢弹琴。")
+    monkeypatch.setattr(server, "daily_life_runtime", runtime)
+    monkeypatch.setattr(server, "_DAILY_LIFE_REFRESH_CHECK_SECONDS", 0.01)
+
+    async def run():
+        task = asyncio.create_task(server._refresh_daily_life_periodically())
+        try:
+            await asyncio.wait_for(refreshed.wait(), 1)
+            await runtime._task
+            assert store.snapshot(datetime.now(timezone.utc))["stale"] is False
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            await runtime.close()
+
+    asyncio.run(run())
+
+
+def test_day_refresh_can_advance_twice_in_one_six_hour_block(tmp_path):
+    noon = datetime(2026, 9, 7, 4, tzinfo=timezone.utc)  # 12:00 in Shanghai
+    store = DailyLifeStore(tmp_path / "life.sqlite3")
+
+    class Gateway:
+        calls = 0
+
+        async def complete(self, _messages, **_kwargs):
+            self.calls += 1
+            return SimpleNamespace(text=json.dumps({
+                "current": {"location": "琴房", "activity": "练琴", "note": f"今天练习第{self.calls}段。"},
+                "projects": [],
+            }))
+
+    gateway = Gateway()
+    runtime = DailyLifeRuntime(store, lambda: gateway, lambda: "林离喜欢弹琴。")
+
+    async def run():
+        await runtime.refresh(noon)
+        assert gateway.calls == 1
+        await runtime.refresh(noon + timedelta(hours=2))
+        assert gateway.calls == 1
+        later = noon + timedelta(hours=5, minutes=31)
+        assert store.snapshot(later)["stale"] is True
+        await runtime.refresh(later)
+        assert gateway.calls == 2
+        assert store.snapshot(later)["current"]["note"] == "今天练习第2段。"
+
+    asyncio.run(run())
+
+
+def test_overdue_life_waits_for_waking_hours(tmp_path):
+    evening = datetime(2026, 9, 7, 13, tzinfo=timezone.utc)  # 21:00 in Shanghai
+    store = DailyLifeStore(tmp_path / "life.sqlite3")
+
+    class Gateway:
+        calls = 0
+
+        async def complete(self, _messages, **_kwargs):
+            self.calls += 1
+            return SimpleNamespace(text=json.dumps({
+                "current": {"location": "家里", "activity": "整理曲谱", "note": f"整理了第{self.calls}页曲谱。"},
+                "projects": [],
+            }))
+
+    gateway = Gateway()
+    runtime = DailyLifeRuntime(store, lambda: gateway, lambda: "林离喜欢弹琴。")
+
+    async def run():
+        await runtime.refresh(evening)
+        assert gateway.calls == 1
+        overnight = evening + timedelta(hours=5, minutes=31)
+        assert store.snapshot(overnight)["stale"] is True
+        await runtime.refresh(overnight)
+        assert gateway.calls == 1
+        await runtime.refresh(evening + timedelta(hours=11, minutes=31))
+        assert gateway.calls == 2
+
+    asyncio.run(run())
+
+
 def test_refresh_backoff_survives_restart_and_success_clears_state(tmp_path):
     store = DailyLifeStore(tmp_path / "life.sqlite3")
     gateway = FailingThenSuccessfulGateway()
