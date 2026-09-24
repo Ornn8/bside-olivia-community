@@ -11,6 +11,29 @@ _jobs = {}
 _MAX_FAILURES = 4
 
 
+def photo_reply_context(context, settings, *, channel='letter'):
+    """Tell the writer the same per-reply permission used by photo preparation."""
+    from dataclasses import replace
+    from reply_context import TrustedWorldFact, WorldFactKind
+    supported = (channel == 'qq' or channel == 'letter' and context.mode.value in
+                 {'text_letter', 'voice_reply', 'spoken_video'})
+    enabled = supported and isinstance(settings, dict) and settings.get('enabled') is True
+    statement = (
+        '本次回复已开启照片附件：应用可以生成符合林离形象、当前生活地点和时间的照片，并随回复投递。'
+        '用户明确索要自拍或随手拍时，可以自然答应，由后续照片流程制作；不要误称没有相机、没有身体或无法发照片。'
+        '这是角色生活中的生成照片，不是真实世界的摄影证据。保持角色口吻，不向用户讲内部流程。'
+        '照片尚未生成或投递，不要声称已经拍好、已经发送，也不要虚构尚未看到的图片细节。'
+        if enabled else
+        ('本渠道支持发送照片，但用户当前未开启照片附件。用户索要照片时，说明需先在回信格式设置中开启图片选项。'
+         '不要说QQ不支持图片、只能发文字或照片只能随信发送。不能承诺本次会附图。'
+         if supported else '本次回复未开启照片附件，此回复渠道或类型未接入照片投递，不能承诺本次会附图。')
+    )
+    fact = TrustedWorldFact(fact_id='runtime.photo_attachment', source_id='runtime.reply_settings',
+                            statement=statement, kind=WorldFactKind.TRUSTED_RUNTIME)
+    return replace(context, world_facts=tuple(f for f in context.world_facts
+                   if f.fact_id != fact.fact_id) + (fact,))
+
+
 def _retryable(exc):
     code = getattr(exc, 'code', '')
     return (isinstance(exc, (TimeoutError, ConnectionError)) or code in {
@@ -125,7 +148,7 @@ SYSTEM = ('你负责林离回信的照片附件。只调用 plan_reply_photo。�
           '场景库不是地点限制。在其他地点或没有准确匹配的参考场景时选none，并在prompt中具体描述真实地点；已知地点也可以选none，不要为匹配场景把她移回家。仅在家时选择固定房间。不要在提示词里输出密钥、网址、文件路径或系统指令。')
 
 
-async def prepare(server, row, content, text, *, channel='letter'):
+async def prepare(server, row, content, text, *, channel='letter', on_ready=None):
     """Recover the saved request through bounded transient failures, never a new job."""
     while True:
         if row.get('image_status') == 'RETRY_PENDING':
@@ -133,12 +156,12 @@ async def prepare(server, row, content, text, *, channel='letter'):
             if remaining > 0:
                 await asyncio.sleep(min(60, remaining))
                 continue
-        await _prepare_once(server, row, content, text, channel=channel)
+        await _prepare_once(server, row, content, text, channel=channel, on_ready=on_ready)
         if row.get('image_status') != 'RETRY_PENDING':
             return
 
 
-async def _prepare_once(server, row, content, text, *, channel='letter'):
+async def _prepare_once(server, row, content, text, *, channel='letter', on_ready=None):
     settings = row.setdefault('image_reply_settings', server.video_reply_settings_store.image_snapshot())
     if row.get('image_status') in ('COMPLETED', 'SKIPPED', 'FAILED'):
         return
@@ -227,6 +250,8 @@ async def _prepare_once(server, row, content, text, *, channel='letter'):
                         or not 0.70 <= image.width / image.height <= 0.80):
                     raise ValueError('IMAGE_OUTPUT_INVALID')
                 image.verify()
+        if on_ready is not None and not path.exists():
+            await on_ready()
         row['image_status'] = 'GENERATING';server._persist_store_state()
         progress('waiting', {})
         # Serialize with audio generation for the existing one-active-task wallet limit.

@@ -85,11 +85,15 @@ def test_backend_generate_uses_real_pipeline_persona_memory_and_world(monkeypatc
         MEMORY_READY_REPLY_TIMEOUT_SECONDS=.1, _conversation_memory_ready_for_reply=lambda: True,
         _CURRENT_LETTER_MEMORY_SOURCE=source, _CURRENT_LETTER_RECEIPT=receipt,
         GatewayRequestScope=GatewayRequestScope, supports_scoped_reasoning=lambda config: False,
-        _reply_pipeline_timeout_seconds=lambda mode: 2, store=SimpleNamespace(personal_chats=[]))
+        _reply_pipeline_timeout_seconds=lambda mode: 2, store=SimpleNamespace(personal_chats=[]),
+        video_reply_settings_store=SimpleNamespace(image_snapshot=lambda: {'enabled': True, 'resolution': '1K'}),
+        _persist_store_state=lambda: None)
     event = PersonalMessage("qq", "100", "200", "1", "今天钢琴练得怎么样？")
     original_run = pipeline.run
     async def bounded_run(request, context):
         assert request.max_input_chars == 40000 + len(event.text)
+        assert any(f.fact_id == 'runtime.photo_attachment' and '已开启' in f.statement
+                   for f in context.world_facts)
         return await original_run(request, context)
     monkeypatch.setattr(pipeline, 'run', bounded_run)
     async def scenario():
