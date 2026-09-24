@@ -9,7 +9,8 @@ import zipfile
 
 MAIN='assets/main-31595bd3.js'
 MARKER='/*olivia-letter-stickers-v4*/'
-PHOTO_MARKER='/*olivia-letter-photos-v1*/'
+PHOTO_MARKER='/*olivia-letter-photos-v2*/'
+LEGACY_PHOTO_MARKER='/*olivia-letter-photos-v1*/'
 METADATA_MARKER='/*olivia-letter-stickers-v3*/'
 LAYOUT_MARKER='/*olivia-letter-stickers-v2*/'
 ASSETS=Path(__file__).resolve().parents[1]/'runtime'/'letter_stickers'
@@ -85,6 +86,8 @@ def _patch_presentation(source: str) -> str:
 
 def patch_photos(source: str) -> str:
     if PHOTO_MARKER in source: return source
+    if LEGACY_PHOTO_MARKER in source:
+        return _move_photo_after_paper(source)
     anchors = {
         'bodyText:e.replyBody,': 'imageRequestId:e.imageRequestId||"",bodyText:e.replyBody,',
         '__name:"MailBoxReplyContent",props:{': '__name:"MailBoxReplyContent",props:{imageRequestId:{},',
@@ -97,7 +100,24 @@ def patch_photos(source: str) -> str:
     if source.count('F(ks,{bodyText:') != 2: raise ValueError('PHOTO_PROPS_INVALID')
     source=source.replace('F(ks,{bodyText:','F(ks,{imageRequestId:i.mail.received?.imageRequestId,bodyText:')
     source=source.replace('["bodyText","signature","stickerId",','["bodyText","signature","stickerId","imageRequestId",')
-    return PHOTO_MARKER+source
+    return _move_photo_after_paper(LEGACY_PHOTO_MARKER+source)
+
+
+def _move_photo_after_paper(source: str) -> str:
+    photo = 'A.imageRequestId?n("olivia-photo",{"letter-id":A.imageRequestId},null,8,["letter-id"]):Y("",!0),'
+    if source.count(photo) != 1:
+        raise ValueError('PHOTO_PLACEMENT_INVALID')
+    source = source.replace(photo, '', 1)
+    start = source.index('__name:"MailBoxContentBody"')
+    end = source.find('__name:', start + 10)
+    end = len(source) if end < 0 else end
+    component = source[start:end]
+    anchor = ']}),_:1},8,["disabled"])'
+    if component.count(anchor) != 1:
+        raise ValueError('PHOTO_ATTACHMENT_SLOT_INVALID')
+    attachment = ',i.mail.received?.content&&i.mail.received?.imageRequestId?n("olivia-photo",{"letter-id":i.mail.received.imageRequestId},null,8,["letter-id"]):Y("",!0)'
+    component = component.replace(anchor, attachment + anchor, 1)
+    return (source[:start] + component + source[end:]).replace(LEGACY_PHOTO_MARKER, PHOTO_MARKER, 1)
 
 
 def patch_letter_stickers(path: Path | str) -> str:

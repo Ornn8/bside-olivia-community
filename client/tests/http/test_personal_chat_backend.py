@@ -209,6 +209,56 @@ def test_candidate_recovers_after_ledger_commit_without_duplicate_ledger_write()
     asyncio.run(scenario())
 
 
+def test_first_qq_binding_starts_listener_without_restart(tmp_path, monkeypatch):
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+    from runtime.personal_chat import qq, setup
+    import original_client_setup_api
+    import local_server
+
+    monkeypatch.delenv("OLIVIA_PERSONAL_CHAT_CONFIG", raising=False)
+    monkeypatch.delenv("OLIVIA_PERSONAL_QQ_TOKEN", raising=False)
+    monkeypatch.setattr(backend, "selected_channels", lambda server: {"qq"})
+    monkeypatch.setattr(setup, "_selected_channels", lambda server: {"qq"})
+    monkeypatch.setattr(original_client_setup_api, "_dpapi_protect", lambda value: value)
+    monkeypatch.setattr(original_client_setup_api, "_dpapi_unprotect", lambda value: value)
+
+    async def scenario():
+        started, stopped = asyncio.Event(), asyncio.Event()
+        calls = []
+        async def probe(*args):
+            return "123456789"
+        async def run_qq(url, token, account, owner, handler, stop, **kwargs):
+            calls.append((account, owner))
+            kwargs["state_callback"]("CONNECTED")
+            started.set()
+            try:
+                await stop.wait()
+            finally:
+                stopped.set()
+        monkeypatch.setattr(setup, "_qq_probe", probe)
+        monkeypatch.setattr(qq, "run_qq", run_qq)
+        server = SimpleNamespace(store=local_server.Store(), _state_root=lambda: tmp_path,
+            _require_store_state_available=lambda: None, _persist_store_state=lambda: None,
+            _safe_log=lambda *a, **k: None)
+        app = web.Application()
+        backend.install_personal_chat(app, server)
+        async with TestClient(TestServer(app)) as client:
+            assert app.get(backend._RUNTIME) is None
+            response = await client.post(setup.QQ_CONFIGURE_PATH,
+                headers={setup.CONFIRM_HEADER: setup.CONFIRM_VALUE},
+                json={"account": "123456789", "owner": "987654321",
+                      "url": "ws://127.0.0.1:3001", "token": "synthetic-token-123456"})
+            assert response.status == 200
+            assert (await response.json())["status"] == "CONNECTING"
+            await asyncio.wait_for(started.wait(), 1)
+            assert app[backend._RUNTIME]["status"]["qq"] == "CONNECTED"
+            assert not await app[backend.ACTIVATE_SAVED_CONFIG]()
+            assert calls == [("123456789", "987654321")]
+        assert stopped.is_set()
+    asyncio.run(scenario())
+
+
 def test_two_channel_lifecycle_uses_one_service_and_stops_owned_tasks(tmp_path, monkeypatch):
     from runtime.reply.proactive_letters import write_json
     write_json(tmp_path / 'personal-chat/existing-access.json', {'channels': ['qq', 'wechat']})

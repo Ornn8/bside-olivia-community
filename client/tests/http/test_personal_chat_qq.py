@@ -11,7 +11,19 @@ run_qq = partial(_run_qq, merge_seconds=0)
 TOKEN = "synthetic-onebot-token"
 
 
-def test_reply_to_slow_message_keeps_its_source_when_new_message_arrives():
+def test_unknown_labels_cq_syntax_and_unicode_remain_literal():
+    from runtime.personal_chat.qq import text_segments
+    text = '🙂[未知标签][CQ:at,qq=999][吃瓜]后文😂'
+    assert text_segments(text) == [
+        {'type': 'text', 'data': {'text': '🙂[未知标签][CQ:at,qq=999]'}},
+        {'type': 'face', 'data': {'id': '271'}},
+        {'type': 'text', 'data': {'text': '后文😂'}},
+    ]
+
+
+@pytest.mark.parametrize('suffix,faces', [('', []), ('[doge]', ['179']),
+    ('[吃瓜]', ['271']), ('[捂脸][笑哭][DOGE]', ['264', '182', '179'])])
+def test_reply_to_slow_message_keeps_its_source_when_new_message_arrives(suffix, faces):
     async def scenario():
         stop, started, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
         sent = []
@@ -19,7 +31,7 @@ def test_reply_to_slow_message_keeps_its_source_when_new_message_arrives():
             if message.message_id == '1':
                 started.set()
                 await release.wait()
-            await send.for_exchange(message)('reply ' + message.message_id)
+            await send.for_exchange(message)('reply ' + message.message_id + suffix)
             if message.message_id == '2':
                 stop.set()
         async def socket(request):
@@ -43,7 +55,8 @@ def test_reply_to_slow_message_keeps_its_source_when_new_message_arrives():
         async with TestServer(app) as server:
             await asyncio.wait_for(run_qq(str(server.make_url('/')), TOKEN, '100', '200', handler, stop), 3)
         assert sent == [[{'type': 'reply', 'data': {'id': str(i)}},
-                         {'type': 'text', 'data': {'text': 'reply ' + str(i)}}] for i in (1, 2)]
+                         {'type': 'text', 'data': {'text': 'reply ' + str(i)}}]
+                        + [{'type': 'face', 'data': {'id': face}} for face in faces] for i in (1, 2)]
     asyncio.run(scenario())
 
 

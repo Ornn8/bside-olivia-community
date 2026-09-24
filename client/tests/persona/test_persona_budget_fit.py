@@ -16,6 +16,27 @@ RELEASE_PERSONA = ROOT / "linli_character" / "persona_release_v2.json"
 NOW = TrustedTime(datetime(2026, 8, 30, tzinfo=timezone.utc))
 
 
+def test_recent_water_statement_survives_old_recall_budget_pressure():
+    from runtime.reply.fact_attribution import prepare_dialogue_messages
+    recent = json.dumps({'kind': 'recent_dialogue', 'letters': [{
+        'source_id': 'reply:previous:1', 'channel': 'letter',
+        'user_letter': '今晚还喝茶吗？', 'linli_reply': '今晚不喝茶，已经换成白开水了。',
+    }]}, ensure_ascii=False)
+    kwargs = dict(user_input='你刚才不是说今晚喝水吗？', history=(
+        UntrustedFragment('memory.references', '旧检索资料' * 1000),
+        UntrustedFragment('chat.recent', recent),
+    ))
+    snapshot = load_persona(RELEASE_PERSONA).snapshot
+    context = ReplyContext.create(ReplyMode.TEXT_LETTER, trusted_time=NOW)
+    full = assemble_persona(snapshot, context, max_units=100000, **kwargs)
+    budget = full.budget_report.used_units - 2000
+    pressured = assemble_persona(snapshot, context, max_units=budget, **kwargs)
+    messages = prepare_dialogue_messages(pressured.to_messages(), max_input_chars=budget)
+    assert any(m['role'] == 'assistant' and '已经换成白开水了' in m['content'] for m in messages)
+    assert 'history.memory.references' in pressured.budget_report.dropped_ids
+    assert messages[-1]['content'] == kwargs['user_input']
+
+
 @pytest.mark.parametrize("query", [
     "你能说说外婆的事情吗？", "你的钢琴是怎么来的？", "这架钢琴有什么来历？",
     "你最爱吃什么？", "你家的猫叫什么？", "你平时看些什么书？",

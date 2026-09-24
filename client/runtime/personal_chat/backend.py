@@ -14,6 +14,7 @@ from runtime.private_world.life_rhythm import LOCAL
 
 
 _RUNTIME = web.AppKey("personal_chat", dict)
+ACTIVATE_SAVED_CONFIG = web.AppKey("personal_chat_activate_saved_config", object)
 _CONSUMER_TIMEOUT_SECONDS = 15
 _VOICE_QUEUE_TIMEOUT_SECONDS = 10 * 60
 _VOICE_RENDER_TIMEOUT_SECONDS = 20 * 60
@@ -168,7 +169,16 @@ async def generate(server, event, row):
         if result.state is not ReplyState.COMPLETED:
             raise RuntimeError("PERSONAL_CHAT_GENERATION_FAILED")
         from .decision import decode
-        decision = decode(result.text, user=event.text, now=datetime.now().timestamp(), proactive=row.get('origin') == 'proactive')
+        try:
+            decision = decode(result.text, user=event.text, now=datetime.now().timestamp(), proactive=row.get('origin') == 'proactive')
+        except ValueError as exc:
+            # Diagnostic categories only; never persist rejected model text.
+            reason = getattr(exc, 'reason', 'UNKNOWN')
+            row['decision_rejection_reason'] = reason
+            server._safe_log('personal_chat_decision_rejected', reason=reason,
+                missing_fields=getattr(exc, 'missing_fields', []),
+                extra_field_count=getattr(exc, 'extra_field_count', 0))
+            raise
         if decision['skip']:
             return '[[skip]]'
         text, mode = decision['text'].strip(), decision['delivery']
@@ -662,6 +672,17 @@ def install_personal_chat(app, server):
         await asyncio.gather(*tasks, return_exceptions=True)
         runtime["journal"].db.close()
 
+    activation_lock = asyncio.Lock()
+    async def activate_saved_config():
+        async with activation_lock:
+            # First binding used to require restarting the whole client. Preserve
+            # active conversations when an existing binding is being changed.
+            if app.get(_RUNTIME) is not None:
+                return False
+            await start(app)
+            return app.get(_RUNTIME) is not None
+
+    app[ACTIVATE_SAVED_CONFIG] = activate_saved_config
     app.on_startup.append(start)
     # Installed before memory/world cleanup so no new sends race shutdown.
     app.on_cleanup.append(stop)

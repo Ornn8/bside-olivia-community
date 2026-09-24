@@ -12,6 +12,43 @@ from runtime.cloud_service import CloudError
 PLAN = dict(attach=True, photo_type='snapshot', room='music-workstation', time_of_day='night', prompt='Coffee on a wooden desk')
 
 
+@pytest.mark.parametrize('kind', ['timeout', 'busy', 'unavailable'])
+def test_transient_photo_planner_failure_recovers_before_gpu_submission(tmp_path, monkeypatch, kind):
+    from llm_gateway import ProviderTimeout, ProviderRetryableError, ProviderUnavailable
+    async def scenario():
+        server, row, calls = setup(tmp_path, monkeypatch, failure='none')
+        original = server.letters_adapter.gateway.complete_with_tools
+        attempts = []
+        async def flaky(**kwargs):
+            attempts.append(kwargs['request_id'])
+            if len(attempts) == 1:
+                raise {'timeout': ProviderTimeout(), 'busy': ProviderRetryableError(503), 'unavailable': ProviderUnavailable()}[kind]
+            return await original(**kwargs)
+        server.letters_adapter.gateway.complete_with_tools = flaky
+        await image_reply._prepare_once(server, row, 'photo', 'Okay')
+        assert row['image_status'] == 'RETRY_PENDING'
+        assert calls['submits'] == []
+        row['image_retry_at'] = 0
+        await image_reply.prepare(server, row, 'photo', 'Okay')
+        assert row['image_status'] == 'COMPLETED'
+        assert len(calls['submits']) == 1 and len(set(attempts)) == 1
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('code', ['PROVIDER_AUTH_FAILED', 'PROVIDER_QUOTA_EXHAUSTED', 'PROVIDER_USAGE_PENDING'])
+def test_terminal_planner_failure_is_not_retried(tmp_path, monkeypatch, code):
+    from llm_gateway import GatewayError
+    async def scenario():
+        server, row, calls = setup(tmp_path, monkeypatch, failure='none')
+        async def rejected(**kwargs):
+            raise GatewayError(code, retryable=False)
+        server.letters_adapter.gateway.complete_with_tools = rejected
+        await image_reply._prepare_once(server, row, 'photo', 'Okay')
+        assert row['image_status'] == 'FAILED' and row['image_error_code'] == code
+        assert calls['submits'] == []
+    asyncio.run(scenario())
+
+
 def test_missing_pillow_fails_before_paid_submission(tmp_path, monkeypatch):
     import builtins
     original = builtins.__import__

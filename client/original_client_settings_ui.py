@@ -125,29 +125,59 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   let setupSessionToken = "";
   if (typeof customElements !== 'undefined' && typeof HTMLElement !== 'undefined' && !customElements.get('olivia-photo')) customElements.define('olivia-photo', class extends HTMLElement {
     static get observedAttributes(){return ['letter-id'];}
-    connectedCallback(){this.refresh();}
-    disconnectedCallback(){clearTimeout(this.timer);}
-    attributeChangedCallback(){if(this.isConnected)this.refresh();}
+    connectedCallback(){
+      this.outside=e=>{if(!this.contains(e.target))this.setOpen(false);};
+      this.escape=e=>{if(e.key==='Escape')this.setOpen(false);};
+      this.refresh();
+    }
+    disconnectedCallback(){clearTimeout(this.timer);this.controller?.abort();this.setOpen(false);}
+    attributeChangedCallback(){if(this.isConnected){this.setOpen(false);this.refresh();}}
+    setOpen(open){
+      const paper=this.parentElement?.querySelector('.mail-box-reply-content');
+      if(open&&paper)this.style.setProperty('--photo-open-height',Math.max(120,paper.clientHeight-48)+'px');
+      this.toggleAttribute('data-open',open);
+      this.querySelector('button')?.setAttribute('aria-expanded',String(open));
+      const caption=this.querySelector('.olivia-letter-photo-print span');
+      if(caption)caption.textContent=open?'点击收起':'随信附照';
+      document.removeEventListener('pointerdown',this.outside);
+      document.removeEventListener('keydown',this.escape);
+      if(open){document.addEventListener('pointerdown',this.outside);document.addEventListener('keydown',this.escape);this.ackPhoto();}
+    }
+    ackPhoto(){
+      const img=this.querySelector('img');
+      if(!this.isConnected||!this.hasAttribute('data-open')||!img?.naturalWidth)return;
+      fetch(new URL('/toy/image/ack',apiBase),{method:'POST',headers:{'Content-Type':'application/json','X-Olivia-Companion-Action':'confirmed'},body:JSON.stringify({filename:new URL(img.src).pathname.split('/').pop()})}).catch(()=>{});
+    }
     async refresh(){
-      clearTimeout(this.timer);const id=this.getAttribute('letter-id');if(!id)return;
+      clearTimeout(this.timer);this.controller?.abort();
+      const controller=new AbortController();this.controller=controller;
+      const id=this.getAttribute('letter-id');if(!id)return;
       try {
         const endpoint=new URL('/toy/image/status',apiBase);endpoint.searchParams.set('letter_id',id);
-        const response=await fetch(endpoint);const raw=await response.json();const data=raw.data;
+        const response=await fetch(endpoint,{signal:controller.signal});const raw=await response.json();const data=raw.data;
         if(!response.ok||raw.code!==0||!data?.imageStatus)throw new Error('PHOTO_STATUS_UNAVAILABLE');
-        if(!this.isConnected||id!==this.getAttribute('letter-id'))return;
+        if(controller.signal.aborted||!this.isConnected||id!==this.getAttribute('letter-id'))return;
         if(data?.imageStatus==='COMPLETED' && data.replyImageUrl){
           if(this.dataset.loaded===data.replyImageUrl)return;
           const url=new URL(data.replyImageUrl);if(url.origin!==new URL(apiBase).origin)return;
-          const link=document.createElement('a');link.href=url.href;link.target='_blank';link.rel='noopener';
-          const img=document.createElement('img');img.alt='林离分享的照片';img.style.cssText='display:block;max-width:100%;max-height:420px;object-fit:contain;border-radius:8px;margin:12px auto';
-          img.onload=()=>{if(this.isConnected&&id===this.getAttribute('letter-id'))fetch(new URL('/toy/image/ack',apiBase),{method:'POST',headers:{'Content-Type':'application/json','X-Olivia-Companion-Action':'confirmed'},body:JSON.stringify({filename:url.pathname.split('/').pop()})}).catch(()=>{});};
-          img.onerror=()=>{if(this.isConnected&&id===this.getAttribute('letter-id')){delete this.dataset.loaded;this.textContent='照片读取暂时中断，正在重试…';this.timer=setTimeout(()=>this.refresh(),5000);}};
-          img.src=url.href;link.append(img);this.replaceChildren(link);this.dataset.loaded=url.href;return;
+          const link=document.createElement('button');link.type='button';link.setAttribute('aria-expanded','false');
+          link.onclick=e=>{e.stopPropagation();this.setOpen(!this.hasAttribute('data-open'));};
+          link.title='查看随信照片';link.className='olivia-letter-photo-print';
+          const img=document.createElement('img');img.alt='随信照片，点击查看大图';
+          const caption=document.createElement('span');caption.textContent='随信附照';
+          img.onload=()=>{if(id===this.getAttribute('letter-id'))this.ackPhoto();};
+          img.onerror=()=>{if(this.isConnected&&id===this.getAttribute('letter-id')){this.setOpen(false);delete this.dataset.loaded;this.textContent='照片读取暂时中断，正在重试…';this.timer=setTimeout(()=>this.refresh(),5000);}};
+          img.src=url.href;link.append(img,caption);this.replaceChildren(link);this.dataset.loaded=url.href;return;
         }
+        this.setOpen(false);
         if(['SKIPPED','NOT_REQUESTED'].includes(data?.imageStatus)){this.replaceChildren();return;}
-        if(data?.imageStatus==='FAILED'){this.textContent='照片暂未生成成功，文字和语音不受影响。';return;}
-        this.textContent='照片正在准备…';
-      } catch(_){if(this.isConnected&&id===this.getAttribute('letter-id'))this.textContent='暂时无法获取照片状态，正在重试…';}
+        if(data?.imageStatus==='FAILED'){
+          const reasons={GPU_NOT_CONFIGURED:'请先在云端 GPU 设置中连接照片服务。',GPU_AUTH_FAILED:'照片服务验证失败，请检查云端 GPU 设置。',GPU_INSUFFICIENT_BALANCE:'云端余额不足，请检查云服务余额。',GPU_BILLING_CONSENT_REQUIRED:'请先在云端 GPU 设置中确认使用服务。',IMAGE_DEPENDENCY_MISSING:'照片组件不完整，请更新或修复客户端。'};
+          const code=/^[A-Z][A-Z0-9_]{0,95}$/.test(data.imageErrorCode||'')?data.imageErrorCode:'';
+          this.textContent='照片未能附上。'+(reasons[code]||'请导出诊断包以便排查。')+(code?'（'+code+'）':'');return;
+        }
+        this.textContent=data.imageStatus==='RETRY_PENDING'?'照片连接暂时中断，正在自动重试…':data.imagePhase==='waiting'||data.imageCloudStatus==='queued'?'照片正在排队，完成后会附在正文后…':'照片正在准备…';
+      } catch(_){if(controller.signal.aborted)return;if(this.isConnected&&id===this.getAttribute('letter-id'))this.textContent='暂时无法获取照片状态，正在重试…';}
       if(this.isConnected)this.timer=setTimeout(()=>this.refresh(),5000);
     }
   });
@@ -3013,7 +3043,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   };
   const routeRequest = async (path, body) => {
     const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), 300000);
+    const timeout = window.setTimeout(() => controller.abort(), 330000);
     try {
       const response = await fetch(new URL(path, apiBase), {
         method: body ? "POST" : "GET", cache: "no-store", credentials: "omit",
@@ -4231,6 +4261,20 @@ BOOTSTRAP_JAVASCRIPT = r'''
     olivia-letter-audio{display:block;margin:var(--tp-spacing-5,16px) var(--tp-spacing-6,16px) 0;color:var(--tp-grey-0,#333);font-family:inherit}
     .mail-box-reply-content-text:has(olivia-letter-audio){height:auto;min-height:290px}
     .mail-box-reply-content-text:has(olivia-letter-audio) .mail-box-reply-content-textarea{height:180px;margin-top:10px}
+    .mail-responsive-card:has(olivia-photo){height:auto!important;aspect-ratio:auto;flex:0 0 auto!important}
+    .mail-responsive-card:has(olivia-photo .olivia-letter-photo-print){position:relative;isolation:isolate;padding-bottom:52px}
+    .mail-responsive-card:has(olivia-photo .olivia-letter-photo-print)>.mail-box-reply-content{position:relative;z-index:1}
+    .mail-responsive-card:has(olivia-photo[data-open]){z-index:5}
+    olivia-photo{display:block;flex:none;margin:8px 20px 16px;max-width:100%;color:#bbb6ad;overflow-wrap:anywhere;font-family:system-ui,sans-serif;font-size:13px;line-height:1.6}
+    olivia-photo:has(.olivia-letter-photo-print){position:absolute;right:24px;bottom:8px;z-index:0;display:block;max-width:calc(100% - 48px);margin:0;transform:rotate(4deg);transform-origin:bottom center}
+    olivia-photo[data-open]{top:16px;bottom:auto;z-index:3;transform:none}
+    .olivia-letter-photo-print{display:block;max-width:100%;padding:8px 8px 4px;border:0;background:#f3eee4;color:#514638;text-decoration:none;box-shadow:0 4px 12px #0003;cursor:zoom-in}
+    .olivia-letter-photo-print img{display:block;max-width:100%;max-height:200px;width:auto;height:auto;object-fit:contain}
+    .olivia-letter-photo-print span{display:block;padding:4px 0;text-align:center;font:16px/1.5 SentyTEA,serif}
+    olivia-photo[data-open] .olivia-letter-photo-print{cursor:zoom-out;box-shadow:0 12px 32px #0006}
+    olivia-photo[data-open] img{max-height:min(360px,60vh,var(--photo-open-height,360px))}
+    .olivia-letter-photo-print:focus-visible{outline:2px solid #d6c3a4;outline-offset:4px}
+    olivia-photo:empty{display:none}
     olivia-letter-audio .voice-controls{position:relative;display:flex;flex-direction:column;align-items:center;gap:5px;padding:8px 0 12px;color:#514638}
     olivia-letter-audio .voice-controls>button{position:absolute;top:21px;left:calc(50% - 105px)}
     olivia-letter-audio .voice-controls[data-wave-style="ripple"]>button{left:calc(50% - 15px);top:21px;z-index:1}

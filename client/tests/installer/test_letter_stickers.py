@@ -13,7 +13,7 @@ def test_patch_preserves_unrelated_members_and_is_idempotent(tmp_path):
             'class:ae(["mail-box-reply-content faux-bold",o(E)]);'
             'ref:p,value:l.modelValue,readonly:A.readonly,;'
             'n("div",mw,v(o(I)),1);null,42,uw);],2)}}});const $s=;'
-            'F(ks,{onVideoError:u},null,8,[]);F(ks,{onVideoError:u},null,8,[])')
+            '__name:"MailBoxContentBody";F(ks,{onVideoError:u},null,8,[]);F(ks,{onVideoError:u},null,8,[])]}),_:1},8,["disabled"])')
     path=tmp_path/'feapp.dat'
     with zipfile.ZipFile(path,'w') as z:
         z.writestr('assets/main-31595bd3.js',source)
@@ -31,6 +31,13 @@ def test_patch_preserves_unrelated_members_and_is_idempotent(tmp_path):
     before=path.read_bytes()
     assert patch_letter_stickers(path)=='ALREADY_PATCHED'
     assert path.read_bytes()==before
+
+    from installer.patch_letter_stickers import patch_photos, PHOTO_MARKER, LEGACY_PHOTO_MARKER
+    attachment = ',i.mail.received?.content&&i.mail.received?.imageRequestId?n("olivia-photo",{"letter-id":i.mail.received.imageRequestId},null,8,["letter-id"]):Y("",!0)'
+    assert attachment in patched
+    legacy = patched.replace(PHOTO_MARKER, LEGACY_PHOTO_MARKER).replace(attachment, '')
+    legacy = legacy.replace('n("div",mw,v(o(I)),1)', 'A.imageRequestId?n("olivia-photo",{"letter-id":A.imageRequestId},null,8,["letter-id"]):Y("",!0),n("div",mw,v(o(I)),1)')
+    assert patch_photos(legacy) == patched
 
     # Upgrade an already-patched 54-image archive without reinjecting native props.
     old=tmp_path/'old54.dat'

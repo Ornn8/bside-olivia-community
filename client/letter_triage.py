@@ -357,13 +357,17 @@ class LetterReplyRouter:
     ) -> None:
         self.gateway = gateway
         if timeout_seconds is None:
-            raw_timeout = (environ or os.environ).get(
-                "OLIVIA_REPLY_ROUTER_TIMEOUT_SECONDS", "60"
+            # The outer deadline must not cancel an otherwise valid provider
+            # request at 60s while the configured gateway still allows 180s.
+            provider_timeout = getattr(getattr(gateway, 'config', None), 'timeout_seconds', 60.0)
+            default_timeout = min(300.0, max(60.0, float(provider_timeout) + 5.0))
+            raw_timeout = (environ if environ is not None else os.environ).get(
+                "OLIVIA_REPLY_ROUTER_TIMEOUT_SECONDS", str(default_timeout)
             )
             try:
                 configured_timeout = float(raw_timeout)
             except (TypeError, ValueError):
-                configured_timeout = 60.0
+                configured_timeout = default_timeout
             self.timeout_seconds = min(300.0, max(5.0, configured_timeout))
         else:
             self.timeout_seconds = max(0.05, float(timeout_seconds))

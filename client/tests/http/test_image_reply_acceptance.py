@@ -116,3 +116,22 @@ def test_settings_bootstrap_javascript_syntax(tmp_path):
     path.write_text(BOOTSTRAP_JAVASCRIPT, encoding='utf8')
     result = subprocess.run(['node', '--check', str(path)], capture_output=True)
     assert result.returncode == 0, result.stderr.decode('utf8', errors='replace')
+
+
+def test_photo_status_exposes_only_sanitized_failure_facts(monkeypatch):
+    import local_server as server
+    row = dict(letter_id='failed-photo', content='test', reply_text='test', letter_status='COMPLETED',
+               reply_mode='text_letter', image_reply_settings={'enabled': True, 'resolution': '1K'},
+               image_status='FAILED', image_error_code='GPU_AUTH_FAILED', image_phase='submission',
+               image_cloud_status='failed', image_cloud_task_id='private-task', prepared_image='private-path')
+    monkeypatch.setattr(server.store, 'letters', [row])
+    async def scenario():
+        result = (await server.route('GET', '/toy/image/status', {}, {'letter_id': row['letter_id']}))['data']
+        assert result['imageErrorCode'] == 'GPU_AUTH_FAILED'
+        assert result['imagePhase'] == 'submission'
+        assert result['imageCloudStatus'] == 'failed'
+        assert 'private-' not in str(result)
+        row.update(image_error_code='secret/path?token=private', image_phase='private-path')
+        result = (await server.route('GET', '/toy/image/status', {}, {'letter_id': row['letter_id']}))['data']
+        assert 'imageErrorCode' not in result and 'imagePhase' not in result
+    asyncio.run(scenario())
