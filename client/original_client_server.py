@@ -1225,15 +1225,22 @@ def create_configured_original_client_server_runtime(
     collection = getattr(server_module, "_letter_collection", None)
     data_root = _absolute_data_root(values)
     apply_runtime = getattr(server_module, "apply_runtime_llm_config", None)
+    capability_installer = _configured_capability_installer(values, data_root)
+    def setup_memory_ready() -> bool:
+        try:
+            probe = getattr(server_module, '_official_history_memory_available', None)
+            return bool(callable(probe) and probe())
+        except Exception:
+            return False
     setup_service = (
         LLMSetupService(
             data_root,
             apply_runtime=apply_runtime if callable(apply_runtime) else None,
+            memory_ready=setup_memory_ready,
         )
         if data_root is not None
         else None
     )
-    capability_installer = _configured_capability_installer(values, data_root)
     video_capability_installer = _configured_video_capability_installer(values, data_root)
     component_updater = _configured_component_updater(values)
     server_runtime_tail = getattr(server_module, "runtime_diagnostic_event_snapshot", None)

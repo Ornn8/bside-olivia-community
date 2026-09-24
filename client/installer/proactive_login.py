@@ -103,12 +103,12 @@ def run(
     """Run the quiet login worker until settings disable it or it is stopped."""
 
     root = install_root.expanduser().resolve()
-    lease = _try_acquire_instance(root)
+    from installer.user_data_root import resolve_user_data_root
+    data_root = resolve_user_data_root(root)
+    lease = _try_acquire_instance(data_root.parent)
     if lease is None:
         return 0
     try:
-        from installer.user_data_root import resolve_user_data_root
-        data_root = resolve_user_data_root(root)
         while _enabled(_read_settings(data_root)):
             try:
                 scan(data_root, now=clock())

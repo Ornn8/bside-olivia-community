@@ -102,6 +102,7 @@ ERROR_HTTP_STATUSES = {
     "LLM_SETUP_HOST_FORBIDDEN": [403],
     "LLM_SETUP_JSON_INVALID": [400],
     "LLM_SETUP_KEY_REQUIRED": [400, 409],
+    "LLM_SETUP_MEMORY_PREPARING": [409],
     "LLM_SETUP_KEY_UNAVAILABLE": [503],
     "LLM_SETUP_LOGIN_REQUIRED": [403],
     "LLM_SETUP_ORIGIN_FORBIDDEN": [403],
@@ -309,6 +310,7 @@ class LLMSetupService:
         unprotect: Protector = _dpapi_unprotect,
         probe: Probe = _probe_openai_compatible,
         apply_runtime: RuntimeApply | None = None,
+        memory_ready: Callable[[], bool] | None = None,
     ) -> None:
         self._config_root = Path(data_root) / "config"
         self._key_path = self._config_root / "deepseek_api_key.dpapi"
@@ -318,6 +320,7 @@ class LLMSetupService:
         self._unprotect = unprotect
         self._probe = probe
         self._apply_runtime = apply_runtime
+        self._memory_ready = memory_ready
         self._login_observed = False
         self._session_token: str | None = None
         self._tested_digest: str | None = None
@@ -571,6 +574,13 @@ class LLMSetupService:
             raise LLMSetupError("LLM_SETUP_FIELDS_INVALID", status=400)
         if not skipped and self._config().requires_api_key and self._active_key_path() is None:
             raise LLMSetupError("LLM_SETUP_KEY_REQUIRED", status=409)
+        if not skipped and self._memory_ready is not None:
+            try:
+                ready = self._memory_ready()
+            except Exception as exc:
+                raise LLMSetupError("LLM_SETUP_MEMORY_PREPARING", status=409) from exc
+            if ready is not True:
+                raise LLMSetupError("LLM_SETUP_MEMORY_PREPARING", status=409)
         _atomic_json(
             self._complete_path,
             {"schema_version": 1, "completed": True, "skipped": skipped},

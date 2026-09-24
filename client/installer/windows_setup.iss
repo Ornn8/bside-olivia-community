@@ -53,6 +53,25 @@ var
   StableInstallCode: String;
   SetupResultPath: String;
   LastInstallPhase: String;
+  InstallSucceeded: Boolean;
+  FailureDetailsButton: TNewButton;
+  CloseAndRetryButton: TNewButton;
+  CloseRequested: Boolean;
+
+procedure CloseAndRetry(Sender: TObject);
+begin
+  CloseRequested := True;
+  WizardForm.NextButton.OnClick(WizardForm.NextButton);
+end;
+
+procedure ShowFailureDetails(Sender: TObject);
+begin
+  MsgBox('这些信息仅供技术支持定位问题，无需自行处理。' + #13#10 +
+    '错误编号：' + StableInstallCode + #13#10 + '发生步骤：' + LastInstallPhase,
+    mbInformation, MB_OK);
+end;
+
+function RunInstallation: String; forward;
 
 function InstallPhaseCaption(const Phase: String): String;
 begin
@@ -188,26 +207,50 @@ begin
 end;
 
 procedure InitializeWizard;
+var
+  PreviousRoot: String;
 begin
   InstallProgressPage := CreateOutputProgressPage(
     '正在安装 Olivia 本地版',
-    '进度来自安装程序实际处理量。'
+    '正在为你准备使用所需的文件，请稍候。'
   );
   LastInstallPhase := '';
 
   InstallDirPage := CreateInputDirPage(
     wpSelectDir,
-    '选择产品目录',
-    'Olivia 本地版将在产品目录内分别管理客户端与运行环境。',
-    '建议保留默认位置；升级补丁会继续使用这里的受管安装。',
+    '安装位置',
+    '选择 Olivia 的保存位置。',
+    '已有安装时请选择原来的位置。程序会识别已有目录，保留信件、记忆和已保存的 Key。',
     False,
     ''
   );
-  InstallDirPage.Add('产品目录：');
+  InstallDirPage.Add('保存到：');
   InstallDirPage.Values[0] := ExpandConstant(
     '{param:InstallRoot|{localappdata}\BSideOliviaLocal}'
   );
-
+  if (ExpandConstant('{param:InstallRoot|}') = '') and
+    RegQueryStringValue(HKCU, 'Software\BSideOliviaCommunity', 'ProductRoot', PreviousRoot) then
+    if FileExists(AddBackslash(PreviousRoot) + 'install\.olivia-full-patch.json') then
+      InstallDirPage.Values[0] := PreviousRoot;
+  FailureDetailsButton := TNewButton.Create(WizardForm);
+  FailureDetailsButton.Parent := WizardForm.ReadyPage;
+  FailureDetailsButton.Left := WizardForm.ReadyMemo.Left;
+  FailureDetailsButton.Top := WizardForm.ReadyMemo.Top + WizardForm.ReadyMemo.Height - ScaleY(30);
+  FailureDetailsButton.Width := ScaleX(130);
+  FailureDetailsButton.Height := ScaleY(26);
+  FailureDetailsButton.Caption := '查看技术详情';
+  FailureDetailsButton.OnClick := @ShowFailureDetails;
+  FailureDetailsButton.Visible := False;
+  CloseAndRetryButton := TNewButton.Create(WizardForm);
+  CloseAndRetryButton.Parent := WizardForm.ReadyPage;
+  CloseAndRetryButton.Left := FailureDetailsButton.Left + FailureDetailsButton.Width + ScaleX(12);
+  CloseAndRetryButton.Top := FailureDetailsButton.Top;
+  CloseAndRetryButton.Width := ScaleX(180);
+  CloseAndRetryButton.Height := FailureDetailsButton.Height;
+  CloseAndRetryButton.Caption := '关闭 Olivia 并重试';
+  CloseAndRetryButton.OnClick := @CloseAndRetry;
+  CloseAndRetryButton.Visible := False;
+  WizardForm.ReadyMemo.Height := WizardForm.ReadyMemo.Height - ScaleY(38);
 end;
 
 function GetInstallRoot(Param: String): String;
@@ -216,16 +259,36 @@ begin
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
+var
+  FailureMessage: String;
 begin
   Result := True;
   if (CurPageID = InstallDirPage.ID) and (Trim(InstallDirPage.Values[0]) = '') then
   begin
-    MsgBox('请选择产品目录。', mbError, MB_OK);
+    MsgBox('请选择 Olivia 的保存位置。', mbError, MB_OK);
     Result := False;
+  end;
+  if (CurPageID = wpReady) and not InstallSucceeded then
+  begin
+    FailureDetailsButton.Visible := False;
+    CloseAndRetryButton.Visible := False;
+    FailureMessage := RunInstallation;
+    if FailureMessage <> '' then
+    begin
+      Result := False;
+      WizardForm.PageNameLabel.Caption := '安装未完成';
+      WizardForm.PageDescriptionLabel.Caption := '请按下面的说明处理后重试。';
+      WizardForm.ReadyLabel.Visible := False;
+      WizardForm.ReadyMemo.Text := FailureMessage + #13#10 + #13#10 +
+        '处理后点击“重试安装”；更换位置请点击“上一步”。不需要卸载已有程序。';
+      WizardForm.NextButton.Caption := '重试安装';
+      FailureDetailsButton.Visible := True;
+      CloseAndRetryButton.Visible := StableInstallCode = 'INSTALL_APPLICATION_RUNNING';
+    end;
   end;
 end;
 
-function PrepareToInstall(var NeedsRestart: Boolean): String;
+function RunInstallation: String;
 var
   PowerShell: String;
   Params: String;
@@ -233,7 +296,10 @@ var
   ExecSucceeded: Boolean;
   DiagnosticContent: AnsiString;
   ResolvedProductRoot: AnsiString;
+  CloseThisAttempt: Boolean;
 begin
+  CloseThisAttempt := CloseRequested;
+  CloseRequested := False;
   Result := '';
   StableInstallCode := '';
   SetupResultPath := ExpandConstant('{tmp}\olivia-setup-result.txt');
@@ -249,7 +315,7 @@ begin
     except
       StableInstallCode := 'SETUP_PAYLOAD_EXTRACT_FAILED';
       Log('Olivia installer code: ' + StableInstallCode);
-      Result := '安装失败：' + StableInstallCode + '。请保留安装日志后重试。';
+      Result := '安装文件未能解压。请确认磁盘有足够空间后重试；如果仍然失败，请重新下载完整安装包。';
       Exit;
     end;
 
@@ -262,6 +328,8 @@ begin
       ' -SetupResultPath ' + AddQuotes(SetupResultPath) +
       ' -NonInteractive' +
       ' -SkipShortcut';
+    if CloseThisAttempt then
+      Params := Params + ' -CloseRunningApplication';
 #ifdef VideoRuntimePayload
     Params := Params +
       ' -VideoRuntimePath ' + AddQuotes(
@@ -296,6 +364,8 @@ begin
     begin
       if LoadStringFromFile(SetupResultPath + '.product-root', ResolvedProductRoot) then
         InstallDirPage.Values[0] := UTF8Decode(ResolvedProductRoot);
+      InstallSucceeded := True;
+      RegWriteStringValue(HKCU, 'Software\BSideOliviaCommunity', 'ProductRoot', InstallDirPage.Values[0]);
     end;
     if (not ExecSucceeded) or (ExitCode <> 0) then
     begin
@@ -305,7 +375,20 @@ begin
       Log('Olivia installer code: ' + StableInstallCode);
       if LoadStringFromFile(SetupResultPath + '.diagnostic.json', DiagnosticContent) then
         Log('Olivia installer diagnostic: ' + String(DiagnosticContent));
-      if StableInstallCode = 'OFFICIAL_INSTALL_AMBIGUOUS' then
+      if StableInstallCode = 'INSTALL_APPLICATION_RUNNING' then
+        Result := 'Olivia 还在运行。请先退出 Olivia，再点击“重试安装”。'
+      else if StableInstallCode = 'INSTALL_PROCESS_CHECK_FAILED' then
+        Result := '暂时无法确认 Olivia 是否已退出，安装尚未开始。请关闭 Olivia 后重试；如果仍然失败，请通过“查看技术详情”联系支持。'
+      else if StableInstallCode = 'OFFLINE_CORE_RUNTIME_PARENT_INVALID' then
+        Result := '这个位置不能用于安装。请返回上一步，选择普通文件夹，例如 D:\Olivia；不要直接选择整个磁盘或文件夹快捷链接。'
+      else if (Pos('ROLLBACK', StableInstallCode) > 0) or (Pos('TRANSACTION', StableInstallCode) > 0) then
+        Result := '上次安装没有正常结束，程序暂时无法自动恢复。请保留现有目录，通过“查看技术详情”联系支持；不要卸载或删除数据。'
+      else if StableInstallCode = 'PATCH_PAYLOAD_REFRESH_FAILED' then
+        Result := '替换旧版程序文件时失败。请关闭 Olivia，确认安装目录可写后重试；无需重新下载安装包。'
+      else if (Pos('HASH', StableInstallCode) > 0) or (Pos('MANIFEST', StableInstallCode) > 0) or
+        (Pos('WHEEL', StableInstallCode) > 0) or (Pos('PAYLOAD', StableInstallCode) > 0) then
+        Result := '安装包中的部分文件不完整或版本不一致。请重新下载同一版本的完整安装包，再重试。'
+      else if StableInstallCode = 'OFFICIAL_INSTALL_AMBIGUOUS' then
         Result := '检测到多个正版副本，但均未匹配支持的版本。请在 Steam 中更新 Olivia 并验证游戏文件完整性，然后重试；安装器会自动重新检测。'
       else if StableInstallCode = 'OFFICIAL_INSTALL_NOT_FOUND' then
         Result := '未自动找到完整的正版游戏文件。请确认 Steam 已安装 Olivia，并在 Steam 中验证游戏文件完整性，然后重试；无需手动选择游戏目录。'
@@ -335,12 +418,18 @@ begin
         Result := '复制文件时路径过长。请改用较短的安装目录后重试，例如 D:\Olivia；若仍失败，请保留安装日志。'
       else if StableInstallCode = 'SETUP_PATCH_COPY_FAILED' then
         Result := '复制客户端文件失败。请关闭原版游戏和 Olivia 后重试，并保留安装日志以确认具体原因。'
-      else if StableInstallCode <> '' then
-        Result := '安装失败：' + StableInstallCode + '。请保留安装日志后重试。'
       else
-        Result := Format('安装失败（进程错误码 %d）。请保留安装日志后重试。', [ExitCode]);
+        Result := '这次安装没有完成。请点击“重试安装”；如果仍然失败，可通过“查看技术详情”联系支持。不要卸载已有程序。';
     end;
   finally
     InstallProgressPage.Hide;
   end;
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  Result := '';
+  { Silent setup does not visit NextButtonClick; retain its failure exit code. }
+  if not InstallSucceeded then
+    Result := RunInstallation;
 end;

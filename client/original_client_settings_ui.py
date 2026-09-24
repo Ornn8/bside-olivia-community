@@ -671,13 +671,29 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     }
   };
 
+  const setDiagnosticDetails = (target, values) => {
+    const codes = [...new Set((Array.isArray(values) ? values : [values])
+      .filter(value => typeof value === "string" && /^[A-Z][A-Z0-9_]{0,95}$/.test(value)))].slice(0, 5);
+    let details = target.__oliviaDiagnosticDetails;
+    if (!details && !codes.length) return;
+    if (!details) {
+      details = document.createElement("details");
+      details.__oliviaCodeNode = text("p", "");
+      details.append(text("summary", "诊断详情"), details.__oliviaCodeNode);
+      target.__oliviaDiagnosticDetails = details;
+    }
+    details.hidden = !codes.length;
+    details.__oliviaCodeNode.textContent = codes.join(" · ");
+    if (target.parentElement && details.parentElement !== target.parentElement) {
+      target.parentElement.append(details);
+    }
+  };
+
   const memoryClearFailureMessage = (error) => {
     if (error && error.code === "MEMORY_ADMIN_BUSY") {
       return "正在导入或写入记忆，请完成后再清空；本次未执行清空。";
     }
-    const code = error && typeof error.code === "string" && /^MEMORY_[A-Z0-9_]{1,80}$/.test(error.code)
-      ? `（${error.code}）` : "";
-    return `长期记忆清空未完成${code}，原始信件和林离世界保持不变。`;
+    return "长期记忆清空未完成，原始信件和林离世界保持不变。请稍后重试。";
   };
 
   const mutationMessage = (payload, appliedText) => {
@@ -835,16 +851,16 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const renderCompanionStatus = (statusNode, capabilities) => {
     if (!statusNode) return;
     statusNode.textContent = "本机陪伴服务已连接。";
+    setDiagnosticDetails(statusNode, []);
     statusNode.dataset.state = "available";
     const failed = Object.entries(capabilities).filter(([, value]) =>
       value && (value.state === "unavailable" || value.state === "degraded"));
     if (failed.length) {
       const labels = {memory: "长期记忆", private_world: "林离世界", candidates: "记忆候选"};
       statusNode.textContent = "本机陪伴服务已连接；" + failed.map(([name, value]) => {
-        const code = typeof value.reason_code === "string" && /^[A-Z][A-Z0-9_]{0,95}$/.test(value.reason_code)
-          ? `（${value.reason_code}）` : "";
-        return `${labels[name] || "部分功能"}暂不可用${code}`;
+        return `${labels[name] || "部分功能"}尚未准备好`;
       }).join("；") + "。";
+      setDiagnosticDetails(statusNode, failed.map(([, value]) => value.reason_code));
       statusNode.dataset.state = "degraded";
     }
   };
@@ -885,6 +901,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           if (!await confirmClear()) return;
           setButtonsBusy([resume], true);
           resultState.textContent = "正在继续清空当前用户记忆……";
+          setDiagnosticDetails(resultState, []);
           try {
             const payload = await requestMutation(MEMORY_CLEAR_PATH, {
               request_id: requestId("memory.clear"),
@@ -896,6 +913,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
             await renderMemoryPanel(panel, status.capabilities.memory);
           } catch (_error) {
             resultState.textContent = memoryClearFailureMessage(_error);
+            setDiagnosticDetails(resultState, _error?.code);
           } finally {
             setButtonsBusy([resume], false);
           }
@@ -1043,6 +1061,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       const generation = ++memoryLoadGeneration;
       const query = input.value.trim();
       resultState.textContent = "正在读取长期记忆……";
+      setDiagnosticDetails(resultState, []);
       list.replaceChildren();
       originals.replaceChildren();
       requestJson(MEMORY_PATH, {query, limit: 20, collection: "originals"}).then((payload) => {
@@ -1089,7 +1108,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         const code = _error?.name === "AbortError" ? "MEMORY_READ_TIMEOUT"
           : typeof _error?.code === "string" && /^[A-Z][A-Z0-9_]{0,95}$/.test(_error.code)
             ? _error.code : "COMPANION_READ_UNAVAILABLE";
-        resultState.textContent = `长期记忆暂时无法读取（${code}）。可点击搜索重试。`;
+        resultState.textContent = "长期记忆暂时无法读取。可点击搜索重试，已有记录会保留。";
+        setDiagnosticDetails(resultState, code);
       }
     };
 
@@ -1137,6 +1157,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       if (!await confirmClear()) return;
       setButtonsBusy([toggle, clear], true);
       resultState.textContent = "正在清空当前用户记忆……";
+      setDiagnosticDetails(resultState, []);
       try {
         const payload = await requestMutation(MEMORY_CLEAR_PATH, {
           request_id: requestId("memory.clear"),
@@ -1148,6 +1169,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         await refreshLifecyclePanel();
       } catch (_error) {
         resultState.textContent = memoryClearFailureMessage(_error);
+        setDiagnosticDetails(resultState, _error?.code);
       } finally {
         setButtonsBusy([toggle, clear], false);
       }
@@ -1198,10 +1220,11 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         summary,
         text(
           "p",
-          reasonCode ? `原因代码：${reasonCode}` : "原因代码：无",
+          "生活记录暂时无法读取，请稍后重新打开此页面。",
           "text-text-secondary text-body-m font-regular"
         )
       );
+      setDiagnosticDetails(summary, reasonCode);
       return;
     }
     const requestToken = {};
@@ -1634,7 +1657,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
 
   const renderLlmSetupPanel = async (panel, initialMode, preferOlivia = false) => {
     panel.replaceChildren(
-      text("h3", "大模型连接", "text-text-title text-title-m"),
+      text("h3", initialMode ? "连接回信服务" : "大模型连接", "text-text-title text-title-m"),
       text("p", "API key 仅加密保存在这台电脑上，不会显示在页面或日志中。", "text-text-secondary text-body-m font-regular")
     );
     let setup;
@@ -1723,6 +1746,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       if (["deepseek", "qwen", "olivia"].includes(provider.value)) void syncModels();
     });
     const state = text("p", "请先测试连接。自定义本地接口无需 key 时可留空；需要鉴权时请填写 key。", "text-text-secondary text-body-m font-regular");
+    if (initialMode) state.textContent = setup.llm.key_configured
+      ? "已找到保存的 Key，无需重新填写。可以测试连接，或直接点击开始使用。"
+      : "填写服务 Key 后点击连接并保存。使用其他服务可展开下方设置。";
     state.setAttribute("aria-live", "polite");
     const currentConfig = () => ({
       base_url: base.input.value.trim(),
@@ -1742,7 +1768,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         state.textContent = valid ? "连接成功，可以保存。" : "配置已变化，请重新测试连接。";
       }
     };
-    const testConnection = button("测试连接", async () => {
+    const testConnection = button(initialMode ? "连接并保存" : "测试连接", async () => {
       const requestedConfig = currentConfig();
       testedConfig = null;
       setupBusy = true;
@@ -1763,8 +1789,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         testConnection.style.cursor = "pointer";
         invalidateTest();
       }
+      if (initialMode && matchesTest()) await saveConfig();
     });
-    const save = button("保存", async () => {
+    const saveConfig = async () => {
       if (setupBusy || !matchesTest()) {
         if (!setupBusy) state.textContent = "请重新测试连接后保存。";
         return;
@@ -1793,7 +1820,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         testConnection.style.cursor = "pointer";
         save.disabled = true;
       }
-    });
+    };
+    const save = button("保存", saveConfig);
     save.disabled = true;
     const removeKey = button("删除 API key", async () => {
       if (!await confirmAction("确认删除这台电脑上保存的 API key？")) {
@@ -1821,7 +1849,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     model.input.addEventListener("input", invalidateTest);
     key.input.addEventListener("input", invalidateTest);
     const controls = actions();
-    controls.append(testConnection, save);
+    controls.append(testConnection);
+    if (!initialMode) controls.append(save);
     const useAccountKey = button("使用我的 Olivia Key", async () => {
       if (setupBusy) return;
       setupBusy=true; useAccountKey.disabled=true;
@@ -1839,7 +1868,13 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     if (setup.llm.key_configured) {
       controls.append(removeKey);
     }
-    panel.append(providerLabel, base.wrapper, model.wrapper, key.wrapper, controls, state);
+    if (initialMode) {
+      const advanced = document.createElement("details");
+      advanced.append(text("summary", "进阶设置（自定义接口与模型）"), base.wrapper, model.wrapper);
+      panel.append(providerLabel, key.wrapper, controls, state, advanced);
+    } else {
+      panel.append(providerLabel, base.wrapper, model.wrapper, key.wrapper, controls, state);
+    }
     const modelSelect = document.createElement("select");
     modelSelect.className = provider.className;
     modelSelect.style.width = "100%";
@@ -1919,7 +1954,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     return `${(value / (1024 * 1024)).toFixed(1)} MiB`;
   };
 
-  const renderMem0CapabilityPanel = async (panel) => {
+  const renderMem0CapabilityPanel = async (panel, initialMode = false) => {
     let payload;
     try {
       payload = await requestCapability(MEM0_CAPABILITY_PATH);
@@ -1959,7 +1994,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       queued: offlineImport ? "等待导入" : "等待下载",
       downloading: offlineImport ? "正在校验并导入离线包" : "下载中",
       verifying: "校验中",
-      ready: runtimeLoaded ? "已安装并已加载" : "组件已安装，记忆尚未加载；请查看长期记忆页",
+      ready: runtimeLoaded ? "记忆已准备好，可以继续连接回信服务" : "记忆包已安装，正在准备记忆服务",
       paused: "已暂停",
       repair: "需修复",
       incompatible: "不兼容",
@@ -1967,7 +2002,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const heading = text("h3", "长期记忆", "text-text-title text-title-m");
     const summary = text(
       "p",
-      "导入长期记忆离线包，包含 Mem0 与 BGE，无需 GPU。",
+      "选择已下载的记忆包 ZIP，无需解压。已有记忆包会自动识别，无需重复导入。",
       "text-text-secondary text-body-m font-regular"
     );
     const metadata = stack();
@@ -1994,7 +2029,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     }
     const controls = actions();
     const refresh = async () => {
-      await renderMem0CapabilityPanel(panel);
+      if (panel.isConnected === false) return;
+      await renderMem0CapabilityPanel(panel, initialMode);
     };
     if (["queued", "downloading", "verifying"].includes(stateValue)) {
       const pause = button(offlineImport ? "暂停导入" : "暂停下载", async () => {
@@ -2007,7 +2043,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       });
       controls.append(pause);
       window.setTimeout(refresh, 1000);
-    } else if (stateValue === "ready") {
+    } else if (stateValue === "ready" && !initialMode) {
       const uninstall = button("卸载运行依赖", async () => {
         if (!await confirmAction("确认卸载长期记忆运行依赖？已下载模型和个人记忆会保留。")) return;
         await requestCapability(MEM0_CAPABILITY_ACTION_PATH, {
@@ -2027,6 +2063,21 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       });
       controls.append(uninstall, removeAll);
     }
+    if (stateValue === "ready" && !runtimeLoaded) {
+      const retry = button("重新准备记忆服务", async () => {
+        setButtonsBusy([retry], true);
+        try {
+          await requestMutation(MEMORY_RETRY_PATH, {});
+          await refresh();
+        } catch (_error) {
+          result.textContent = "记忆服务还未准备完成，已安装的记忆包会保留。请稍候重试。";
+        } finally {
+          setButtonsBusy([retry], false);
+        }
+      });
+      controls.append(retry);
+      window.setTimeout(refresh, 2000);
+    }
     if (["missing", "repair", "paused"].includes(stateValue)) {
       const importOffline = button("导入记忆离线包（ZIP）", async () => {
         setButtonsBusy([importOffline], true);
@@ -2043,12 +2094,20 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           await refresh();
         } catch (_error) {
           result.textContent = "离线包导入未能启动，请重新选择完整 ZIP。";
+        } finally {
           setButtonsBusy([importOffline], false);
         }
       });
       controls.append(importOffline);
     }
-    panel.replaceChildren(heading, summary, metadata, controls, result);
+    if (initialMode) {
+      const details = document.createElement("details");
+      details.append(text("summary", "安装详情"), metadata);
+      panel.replaceChildren(heading, summary, text("p", labels[stateValue]), controls, result, details);
+    } else {
+      panel.replaceChildren(heading, summary, metadata, controls, result);
+    }
+    if (payload.reason_code) setDiagnosticDetails(result, payload.reason_code);
   };
 
   const videoCapabilityViewState = (bundles) => {
@@ -2213,6 +2272,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const result = text("p", "", "text-text-secondary text-body-m font-regular");
     result.setAttribute("aria-live", "polite");
     const choose = button("选择补丁并更新", async () => {
+      setDiagnosticDetails(result, []);
       setButtonsBusy([choose, install, rollback], true);
       result.textContent = "请选择已下载的补丁；选中后将自动校验并安装。";
       try {
@@ -2232,12 +2292,14 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           ? "无法获取官方校验值，尚未安装。请检查网络后重试，或展开手动校验，填入发布说明中的校验值。"
           : code === "UPDATE_BUNDLE_INVALID" || code === "UPDATE_BUNDLE_CHECKSUM_MISMATCH"
           ? "更新 ZIP 不完整、结构不正确或校验不匹配，尚未安装。请重新下载我们发布的更新 ZIP。"
-          : `未能确认更新结果：${code}。请检查版本后重试。`;
+          : "本次更新未完成。请关闭其他 Olivia 窗口后重试，或重新选择完整的更新包。";
+        setDiagnosticDetails(result, code);
       } finally {
         setButtonsBusy([choose, install, rollback], false);
       }
     });
     const install = button("手动校验并安装", async () => {
+      setDiagnosticDetails(result, []);
       const manifestSha256 = digest.input.value.trim().toLowerCase();
       if (!packagePath) {
         result.textContent = "请选择已下载的 .oliviapatch 文件。";
@@ -2258,12 +2320,14 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         });
         result.textContent = `版本 ${payload.version} 已安装，关闭并重新打开 Olivia 后生效。`;
       } catch (error) {
-        result.textContent = `补丁安装失败：${error && error.code ? error.code : "UPDATE_ACTION_UNAVAILABLE"}`;
+        result.textContent = "补丁未能安装。请确认更新包已下载完整、校验值填写正确，然后重试。";
+        setDiagnosticDetails(result, error?.code || "UPDATE_ACTION_UNAVAILABLE");
       } finally {
         setButtonsBusy([choose, install, rollback], false);
       }
     });
     const rollback = button("回滚上一版本", async () => {
+      setDiagnosticDetails(result, []);
       if (!await confirmAction("确认回滚到上一版本？关闭并重新打开 Olivia 后生效。")) return;
       setButtonsBusy([choose, install, rollback], true);
       result.textContent = "正在切换到上一版本……";
@@ -2271,7 +2335,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         const payload = await requestUpdate({ action: "rollback" });
         result.textContent = `已回滚到版本 ${payload.version}，关闭并重新打开 Olivia 后生效。`;
       } catch (error) {
-        result.textContent = `无法回滚：${error && error.code ? error.code : "UPDATE_ACTION_UNAVAILABLE"}`;
+        result.textContent = "暂时无法恢复上一版本。请关闭其他 Olivia 窗口后重试；如果没有上一版本，可导入新的修复补丁。";
+        setDiagnosticDetails(result, error?.code || "UPDATE_ACTION_UNAVAILABLE");
       } finally {
         setButtonsBusy([choose, install, rollback], false);
       }
@@ -2295,10 +2360,10 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     if (panels.memory) panels.memory.__oliviaCompanionStatusNode = statusNode;
     const tasks = [
       ...(panels.llm ? [renderLlmSetupPanel(panels.llm, initialMode)] : []),
-      renderCapabilityPanel(panels.capability),
+      initialMode ? renderMem0CapabilityPanel(panels.capability, true) : renderCapabilityPanel(panels.capability),
     ];
     if (initialMode) {
-      statusNode.textContent = "先连接大模型；未配置大模型时无法进行真实对话。长期记忆可以稍后按需安装，可在设置 > 本地陪伴中继续。";
+      statusNode.textContent = "先导入记忆包，再连接回信服务，即可开始写信。已有配置会自动沿用；语音、图片和视频无需在这里安装。";
       await Promise.allSettled(tasks);
       return;
     }
@@ -2624,6 +2689,16 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   };
 
   const finishInitialSetup = async (skipped) => {
+    if (!skipped) {
+      const memory = await requestCapability(MEM0_CAPABILITY_PATH);
+      if (memory.state !== "ready") {
+        throw Object.assign(new Error("请先导入记忆包，等待准备完成。"), {code: "SETUP_MEMORY_REQUIRED"});
+      }
+      const current = await requestJson(STATUS_PATH);
+      if (capabilityState(current.capabilities?.memory) !== "available") {
+        throw Object.assign(new Error("记忆包已安装，正在准备记忆服务。请稍候再点开始使用。"), {code: "LLM_SETUP_MEMORY_PREPARING"});
+      }
+    }
     await requestSetup(SETUP_COMPLETE_PATH, { skipped });
     window.location.hash = "#/collection";
   };
@@ -2824,8 +2899,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const panelNodes = {};
     const definitions = initialMode
       ? [
-          { id: "llm", label: "大模型", key: "llm" },
-          { id: "capability", label: "可选能力", key: "capability" },
+          { id: "capability", label: "1 · 导入记忆包", key: "capability" },
+          { id: "llm", label: "2 · 连接回信服务", key: "llm" },
         ]
       : [
           { id: "llm", label: "大模型", key: "llm" },
@@ -2881,13 +2956,24 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     if (initialMode) {
       const finishActions = actions();
       finishActions.style.marginTop = "18px";
-      const finish = button("完成初始设置", async () => {
+      const finish = button("开始使用", async () => {
         setButtonsBusy([finish], true);
+        setDiagnosticDetails(status, []);
         try {
           await finishInitialSetup(false);
           backdrop.remove();
         } catch (_error) {
-          status.textContent = "初始设置状态保存失败，请重试。";
+          const code = _error && _error.code;
+          setDiagnosticDetails(status, code || "SETUP_CONNECTION_UNAVAILABLE");
+          if (["SETUP_MEMORY_REQUIRED", "LLM_SETUP_MEMORY_PREPARING"].includes(code)) {
+            status.textContent = _error.message;
+            showPanel("capability");
+          } else if (code === "LLM_SETUP_KEY_REQUIRED") {
+            status.textContent = "请填写回信服务 Key，测试连接并保存，然后开始使用。";
+            showPanel("llm");
+          } else {
+            status.textContent = "还未确认准备完成。请检查服务连接后重试，你已保存的设置会保留。";
+          }
           setButtonsBusy([finish], false);
         }
       });
@@ -2905,7 +2991,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       }
     });
     document.body.append(backdrop);
-    showPanel(definitions.some(item => item.id === initialPanel) ? initialPanel : definitions[0].id);
+    showPanel(initialMode ? "capability" : definitions.some(item => item.id === initialPanel) ? initialPanel : definitions[0].id);
     close.focus();
     loadDialogData(status, panelNodes, initialMode);
   };
@@ -3720,6 +3806,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       state
     );
     const exportButton = button("导出诊断包", async () => {
+      setDiagnosticDetails(state, []);
       setButtonsBusy([exportButton], true);
       state.textContent = "正在生成诊断包…";
       try {
@@ -3738,7 +3825,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         const code = error && typeof error.code === "string"
           ? error.code
           : "DIAGNOSTIC_EXPORT_UNAVAILABLE";
-        state.textContent = `导出失败：${code}`;
+        state.textContent = "诊断包未能生成。请稍后再次点击导出。";
+        setDiagnosticDetails(state, code);
       } finally {
         setButtonsBusy([exportButton], false);
       }
@@ -3782,10 +3870,11 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         const result = await requestJson(LOCAL_LETTER_IMPORT_PATH, {relationship:"1"});
         const count = `${result.processed || 0} / ${result.total || 0} 封`;
         state.textContent = result.status === "RUNNING" ? `历史关系评估中：${count}，按顺序每五封评估一次。`
-          : result.status === "FAILED" ? `历史关系评估暂停：${count}。${result.error_code || ""}；已保存的原文不受影响，可重试剩余批次。`
+          : result.status === "FAILED" ? `历史关系评估暂停：${count}。已保存的原文不受影响，可重试剩余批次。`
           : result.status === "PENDING" ? `历史关系等待评估：${count}。请配置可用的大模型后点击重试。`
           : result.status === "APPLIED" ? `历史关系已评估：${count}。重复信件不重复评估。`
           : "历史关系评估暂不可用。";
+        setDiagnosticDetails(state, result.status === "FAILED" ? result.error_code : null);
         if (result.status === "RUNNING" && state.isConnected) window.setTimeout(refresh, 2000);
       } catch (_) { state.textContent = "暂时无法读取历史关系进度，可点击重试。"; }
     };
@@ -3861,11 +3950,13 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     let importPending = false;
     const missingBackupText = "未在原版游戏目录找到 letter_pairs.json。官方服务器已关闭，请先准备本地备份并放回该目录。";
     const refreshLocalBackup = async () => {
+      setDiagnosticDetails(importState, []);
       try {
         const payload = await requestJson(LOCAL_LETTER_IMPORT_PATH);
         importState.textContent = `已找到本地备份，共 ${payload.seen} 封；可新增 ${payload.would_insert} 封，需修复 ${payload.would_update} 封，清理旧乱码重复 ${payload.would_remove} 封，重复 ${payload.duplicates} 封。`;
         return payload;
       } catch (error) {
+        setDiagnosticDetails(importState, error?.code);
         importState.textContent = error && error.code === "OFFLINE_LETTER_BACKUP_REQUIRED"
           ? missingBackupText
           : error && error.code === "OFFLINE_LETTER_BACKUP_INVALID"
@@ -3923,6 +4014,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           try { window.location.reload(); } catch (_error) { /* native shell may own navigation */ }
         }, 800);
       } catch (error) {
+        setDiagnosticDetails(importState, error?.code);
         importState.textContent = error && error.code === "OFFLINE_LETTER_BACKUP_REQUIRED"
           ? missingBackupText
           : error && error.code === "OFFLINE_LETTER_BACKUP_INVALID"
@@ -3932,7 +4024,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
             : error && error.code === "OFFICIAL_HISTORY_MEMORY_UNAVAILABLE"
               ? "长期记忆尚不可用，本次尚未开始导入。请到长期记忆页面查看状态；恢复可用后再点击导入。"
             : error && error.code && /^[A-Z][A-Z0-9_]{0,95}$/.test(error.code)
-              ? `本地信件导入未完成：${error.code}。请保留诊断包。`
+              ? "本地信件导入未完成。请检查备份文件和回信服务连接，然后点击重试。"
               : "暂时无法读取导入结果，后台任务可能仍在继续。点击可查询进度，请勿重启或重复导入。";
         importButton.textContent = "查看进度 / 导入";
       } finally {

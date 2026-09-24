@@ -17,7 +17,7 @@ const context={document:{createElement:tag=>new Element(tag)},
 vm.createContext(context);
 vm.runInContext(section('  const button =','  const confirmAction =')+section('  const setupInput =','  const formatBytes =')+'\nglobalThis.render=renderLlmSetupPanel;',context);
 (async()=>{
- const panel=new Element('div'); await context.render(panel,true);
+ const panel=new Element('div'); await context.render(panel,false);
  const all=e=>[e,...e.children.flatMap(all)];
  const test=all(panel).find(e=>e.textContent==='测试连接');
  const save=all(panel).find(e=>e.textContent==='保存');
@@ -27,4 +27,8 @@ vm.runInContext(section('  const button =','  const confirmAction =')+section(' 
  await test.click();
  assert.equal(save.style.opacity,'1','successful test must restore enabled appearance');
  assert.equal(save.style.cursor,'pointer');
+ const initialPanel=new Element('div');await context.render(initialPanel,true);
+ assert(!all(initialPanel).some(e=>e.textContent==='保存'),'first-run uses one connect-and-save action');
+ await all(initialPanel).find(e=>e.textContent==='连接并保存').click();
+ assert.equal(saves,2,'first-run must save automatically after a successful connection test');
 })().catch(e=>{console.error(e.message);process.exitCode=1});

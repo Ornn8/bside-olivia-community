@@ -39,6 +39,28 @@ def test_normal_install_uses_its_own_data(tmp_path):
     assert resolve_user_data_root(root) == root / 'data'
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='Windows mutex')
+def test_nested_login_worker_shares_original_data_lease(tmp_path):
+    from installer import proactive_login
+
+    original = tmp_path / 'install'
+    nested = original / 'install'
+    seed(original / 'data', 1)
+    seed(nested / 'data')
+    settings = original / 'data/proactive/settings.json'
+    settings.parent.mkdir()
+    settings.write_text(json.dumps({'enabled': True, 'login_check_enabled': True}))
+    lease = proactive_login._try_acquire_instance(original)
+    assert lease is not None
+    calls = []
+    try:
+        proactive_login.run(nested, scan=lambda data, **kw: calls.append(data),
+                            sleep=lambda _: settings.write_text('{}'))
+        assert calls == []
+    finally:
+        lease.close()
+
+
 @pytest.mark.skipif(os.name != 'nt', reason='Windows installer')
 def test_powershell_normalizes_custom_existing_install_not_arbitrary_named_folder(tmp_path):
     script = (Path(__file__).parents[2] / 'installer/Install.ps1').read_text(encoding='utf-8-sig')

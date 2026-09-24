@@ -10,7 +10,7 @@ from original_client_settings_ui import BOOTSTRAP_JAVASCRIPT
     "scenario",
     [
         "same", "changed", "inflight", "save_body", "catalog", "qwen", "qwen-saved",
-        "deepseek-v1",
+        "deepseek-v1", "initial-auto-save",
     ],
 )
 def test_generated_llm_panel_saves_only_tested_normalized_configuration(scenario):
@@ -59,12 +59,13 @@ const context={
 };
 vm.runInNewContext(fs.readFileSync(0,'utf8')+';globalThis.render=renderLlmSetupPanel;',context);
 (async()=>{
-  await context.render(make('panel'));
+  const initial=process.argv[1]==='initial-auto-save';
+  await context.render(make('panel'), initial);
   const inputs=elements.filter(el=>el.tag==='input');
   const [base,model,key]=inputs;
-  const test=elements.find(el=>el.textContent==='测试连接');
+  const test=elements.find(el=>el.textContent===(initial?'连接并保存':'测试连接'));
   const save=elements.find(el=>el.textContent==='保存');
-  const status=elements.find(el=>el.tag==='p' && el.textContent.startsWith('请先测试连接。'));
+  const status=elements.find(el=>el.tag==='p' && el.textContent.startsWith(initial?'填写服务 Key':'请先测试连接。'));
   assert.ok(status);
   key.value=' synthetic-key ';
   if(process.argv[1]==='qwen' || process.argv[1]==='qwen-saved') {
@@ -116,6 +117,11 @@ vm.runInNewContext(fs.readFileSync(0,'utf8')+';globalThis.render=renderLlmSetupP
   const pending=test.click();
   if(process.argv[1]==='inflight') {model.value='changed';model.listeners.input();}
   resolveTest({status:'AVAILABLE'});await pending;
+  if(initial) {
+    assert.equal(sent.filter(call=>call.path==='save').length,1);
+    assert.deepEqual(sent.find(call=>call.path==='save').body,sent.find(call=>call.path==='test').body);
+    assert.equal(key.value,'');assert.match(status.textContent,/已保存/);return;
+  }
   if(process.argv[1]==='inflight') {
     assert.equal(save.disabled,true);assert.match(status.textContent,/重新测试/);return;
   }

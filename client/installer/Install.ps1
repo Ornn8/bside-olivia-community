@@ -9,6 +9,7 @@ param(
     [string]$SetupResultPath = '',
     [switch]$NonInteractive,
     [switch]$SkipShortcut,
+    [switch]$CloseRunningApplication,
     [ValidateRange(1, 65535)]
     [int]$Port = 8899
 )
@@ -219,6 +220,67 @@ function Enter-ManagedInstallLock {
         if ($null -ne $lock) { $lock.Dispose() }
         throw 'INSTALL_LOCK_UNAVAILABLE'
     }
+}
+
+function Assert-ManagedApplicationStopped {
+    param([Parameter(Mandatory)][string]$ProductRoot)
+
+    $prefixes = @('install', 'runtime') | ForEach-Object {
+        [IO.Path]::GetFullPath((Join-Path $ProductRoot $_)).TrimEnd('\') + '\'
+    }
+    try {
+        $processes = @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop)
+    } catch {
+        throw 'INSTALL_PROCESS_CHECK_FAILED'
+    }
+    foreach ($candidate in $processes) {
+        if ($candidate.ProcessId -eq $PID -or -not $candidate.ExecutablePath) { continue }
+        $executable = [IO.Path]::GetFullPath([string]$candidate.ExecutablePath)
+        foreach ($prefix in $prefixes) {
+            if ($executable.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+                throw 'INSTALL_APPLICATION_RUNNING'
+            }
+        }
+    }
+}
+
+function Request-ManagedApplicationClose {
+    param([Parameter(Mandatory)][string]$ProductRoot)
+
+    $appPrefix = [IO.Path]::GetFullPath((Join-Path $ProductRoot 'install\app')).TrimEnd('\') + '\'
+    try {
+        $processes = @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop)
+    } catch {
+        throw 'INSTALL_PROCESS_CHECK_FAILED'
+    }
+    $requested = $false
+    foreach ($candidate in $processes) {
+        if ($candidate.ProcessId -eq $PID -or -not $candidate.ExecutablePath) { continue }
+        $executable = [IO.Path]::GetFullPath([string]$candidate.ExecutablePath)
+        if (-not $executable.StartsWith($appPrefix, [StringComparison]::OrdinalIgnoreCase)) { continue }
+        try {
+            $window = Get-Process -Id $candidate.ProcessId -ErrorAction Stop
+            # Recheck identity after lookup; never signal a reused PID or a headless worker.
+            if ($window.MainWindowHandle -eq 0 -or -not [string]::Equals(
+                [string]$window.MainModule.FileName, $executable, [StringComparison]::OrdinalIgnoreCase
+            )) { continue }
+            if ($window.CloseMainWindow()) { $requested = $true }
+        } catch {
+            # A process may exit or refuse access. The normal preflight decides readiness.
+        }
+    }
+    if ($requested) {
+        $wait = [Diagnostics.Stopwatch]::StartNew()
+        while ($wait.ElapsedMilliseconds -lt 10000) {
+            try { Assert-ManagedApplicationStopped -ProductRoot $ProductRoot; return }
+            catch {
+                if ($_.Exception.Message -ne 'INSTALL_APPLICATION_RUNNING') { throw }
+            }
+            $remaining = 10000 - $wait.ElapsedMilliseconds
+            if ($remaining -gt 0) { Start-Sleep -Milliseconds ([int][Math]::Min(250, $remaining)) }
+        }
+    }
+    Assert-ManagedApplicationStopped -ProductRoot $ProductRoot
 }
 
 function Exit-ManagedInstallLock {
@@ -1831,6 +1893,8 @@ function Test-ManagedServerDependencies {
 Write-SetupProgress -Phase 'PREPARE' -CurrentBytes 0 -TotalBytes 0
 Assert-ManagedRuntimeParent -ProductRoot $productRoot -RuntimePath $runtimeRoot
 $script:InstallInstanceLock = Enter-ManagedInstallLock -ProductRoot $productRoot
+if ($CloseRunningApplication) { Request-ManagedApplicationClose -ProductRoot $productRoot }
+Assert-ManagedApplicationStopped -ProductRoot $productRoot
 Repair-ManagedInstallTransaction -ProductRoot $productRoot -InstallRoot $Destination -RuntimeRoot $runtimeRoot
 Write-SetupProgress -Phase 'VERIFY_OFFICIAL' -CurrentBytes 0 -TotalBytes 0
 $selectedOfficial = $OfficialRoot

@@ -60,6 +60,7 @@ def test_memory_summary_tracks_latest_status_and_read_failure():
     harness = r'''
 const assert = require('node:assert/strict');
 const summary = {textContent: ''}, resultState = {textContent: ''};
+const setDiagnosticDetails = () => {};
 const capability = {state: 'available', count: 5};
 const stateLabels = {available:'AVAILABLE', degraded:'DEGRADED', unavailable:'UNAVAILABLE'};
 const capabilityState = c => c && c.state || 'unavailable';
@@ -270,9 +271,9 @@ def test_original_settings_reuses_llm_setup_after_login() -> None:
     assert 'options.headers[SETUP_SESSION_HEADER] = setupSessionToken' in source
     assert "暂停下载" in source
     assert "无需 GPU" in source
-    assert "完成初始设置" in source
-    assert "未配置大模型时无法进行真实对话" in source
-    assert "可在设置 > 本地陪伴中继续" in source
+    assert "开始使用" in source
+    assert "先导入记忆包，再连接回信服务" in source
+    assert "已有配置会自动沿用" in source
     assert "剩余" in source
     assert "安装后占用" in source
     assert "实际来源" in source
@@ -289,7 +290,7 @@ def test_original_settings_reuses_llm_setup_after_login() -> None:
 def test_memory_capability_offers_direct_offline_zip_import() -> None:
     source = BOOTSTRAP_JAVASCRIPT
     memory_panel = source.split(
-        "const renderMem0CapabilityPanel = async (panel) => {", 1
+        "const renderMem0CapabilityPanel = async (panel, initialMode = false) => {", 1
     )[1].split("const videoCapabilityViewState", 1)[0]
 
     assert 'button("导入记忆离线包（ZIP）"' in memory_panel
@@ -302,7 +303,7 @@ def test_memory_capability_offers_direct_offline_zip_import() -> None:
 def test_memory_offline_import_progress_is_not_described_as_a_download() -> None:
     source = BOOTSTRAP_JAVASCRIPT
     memory_panel = source.split(
-        "const renderMem0CapabilityPanel = async (panel) => {", 1
+        "const renderMem0CapabilityPanel = async (panel, initialMode = false) => {", 1
     )[1].split("const videoCapabilityViewState", 1)[0]
 
     assert (
@@ -322,7 +323,7 @@ def test_memory_offline_import_progress_is_not_described_as_a_download() -> None
 def test_memory_runtime_preparation_shows_live_elapsed_time() -> None:
     source = BOOTSTRAP_JAVASCRIPT
     memory_panel = source.split(
-        "const renderMem0CapabilityPanel = async (panel) => {", 1
+        "const renderMem0CapabilityPanel = async (panel, initialMode = false) => {", 1
     )[1].split("const videoCapabilityViewState", 1)[0]
 
     assert "let mem0RuntimeProgressStartedAt = null;" in source

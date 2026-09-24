@@ -433,6 +433,23 @@ def test_prepare_setup_payload_copies_only_tracked_release_files_and_offline_ass
     assert not (destination / "installer" / "build_windows_setup.py").exists()
 
 
+def test_shipped_setup_payload_imports_startup_helpers(tmp_path, monkeypatch):
+    from installer.full_patch import copy_project_payload
+    offline, payload, installed = (tmp_path / name for name in ('offline', 'payload', 'installed'))
+    _offline_fixture(offline, (ROOT / 'installer/runtime-requirements.txt').read_bytes())
+    monkeypatch.setattr('installer.build_windows_setup._git_dirty_files', lambda root: set())
+    prepare_setup_payload(ROOT, offline, payload, validate_schema=False)
+    copy_project_payload(payload, installed)
+    for name in ('user_data_root.py', 'repair_image_dependency.py'):
+        assert (installed / 'installer' / name).read_bytes() == (ROOT / 'installer' / name).read_bytes()
+    probe = subprocess.run([sys.executable, '-I', '-c',
+        'import sys; sys.path.insert(0,sys.argv[1]); '
+        'from installer.user_data_root import resolve_user_data_root; '
+        'from installer.repair_image_dependency import ensure_bundled_image_dependency',
+        str(installed)], capture_output=True, text=True)
+    assert probe.returncode == 0, probe.stderr
+
+
 def test_prepare_setup_payload_injects_hash_locked_voice_reference(tmp_path: Path, monkeypatch) -> None:
     source, offline, reference = _voice_setup_fixture(tmp_path, monkeypatch)
     runtime = tmp_path / "distributor" / "Olivia-video-runtime-fixture.zip"
@@ -1915,7 +1932,7 @@ def test_inno_wrapper_is_current_user_offline_and_delegates_to_install_ps1() -> 
     assert "BrowseForFolder" not in script
     assert "{param:InstallRoot|" in script
     assert "{localappdata}\\BSideOliviaLocal\\install}" not in script
-    assert "产品目录" in script
+    assert "安装位置" in script
     assert "{param:OfficialRoot|" in script
     assert "API" not in script
     assert "Hugging Face" not in script

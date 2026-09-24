@@ -33,7 +33,9 @@ const requestMutation=async(path,body)=>{
  imported=body.backup;return {status:'APPLIED',inserted:1,duplicates:0};
 };
 '''
-    harness += source + r'''
+    helper = 'const setDiagnosticDetails =' + BOOTSTRAP_JAVASCRIPT.split(
+        '  const setDiagnosticDetails =', 1)[1].split('  const memoryClearFailureMessage =', 1)[0]
+    harness += helper + source + r'''
 (async()=>{
  mountLetterBackup(new Element());
  const buttons=all.filter(x=>x.textContent&&typeof x.click==='function');

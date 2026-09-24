@@ -303,6 +303,79 @@ def test_first_install_rebuilds_and_atomically_replaces_any_existing_runtime() -
     )
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows installer process check")
+@pytest.mark.parametrize("executable, expected", [
+    ("runtime/python-3.12.10-embed-amd64/python.exe", "INSTALL_APPLICATION_RUNNING"),
+    ("install/app/Olivia.exe", "INSTALL_APPLICATION_RUNNING"),
+    ("Olivia-Setup-x64.exe", "VOICE_REFERENCE_INSTALL_ROLLBACK_FAILED"),
+    ("runtime-other/python.exe", "VOICE_REFERENCE_INSTALL_ROLLBACK_FAILED"),
+])
+def test_running_application_blocks_install_before_transaction_recovery(
+    tmp_path: Path, executable: str, expected: str,
+) -> None:
+    product = tmp_path / "product"
+    product.mkdir()
+    transaction = product / ".install.transaction"
+    transaction.write_text("must-not-be-touched", encoding="utf-8")
+    script = tmp_path / "preflight.ps1"
+    def literal(path):
+        return "'" + str(path).replace("'", "''") + "'"
+    script.write_text(
+        "function Get-CimInstance { [pscustomobject]@{ ProcessId = 999999; ExecutablePath = "
+        + literal(product / executable)
+        + " } }\n& " + literal(ROOT / "installer/Install.ps1")
+        + " -PayloadRoot " + literal(ROOT) + " -Destination " + literal(product)
+        + " -NonInteractive -SkipShortcut\n", encoding="utf-8",
+    )
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+    )
+    assert expected in result.stdout + result.stderr
+    assert transaction.read_text(encoding="utf-8") == "must-not-be-touched"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows graceful application close")
+@pytest.mark.parametrize("requested, executable, closes, expected", [
+    (False, "install/app/Olivia.exe", True, "INSTALL_APPLICATION_RUNNING"),
+    (True, "install/app/Olivia.exe", True, "VOICE_REFERENCE_INSTALL_ROLLBACK_FAILED"),
+    (True, "install/app/Olivia.exe", False, "INSTALL_APPLICATION_RUNNING"),
+    (True, "runtime/python.exe", True, "INSTALL_APPLICATION_RUNNING"),
+    (True, "install/install/app/Olivia.exe", True, "INSTALL_APPLICATION_RUNNING"),
+])
+def test_installer_only_requests_explicit_graceful_window_close(
+    tmp_path: Path, requested: bool, executable: str, closes: bool, expected: str,
+) -> None:
+    product = tmp_path / "product"
+    product.mkdir()
+    transaction = product / ".install.transaction"
+    transaction.write_text("must-not-be-touched", encoding="utf-8")
+    calls = tmp_path / "close-called"
+    def literal(value):
+        return "'" + str(value).replace("'", "''") + "'"
+    script = tmp_path / "close.ps1"
+    script.write_text(
+        "$global:closed = $false\n"
+        "function Get-CimInstance { if (-not $global:closed) { [pscustomobject]@{ ProcessId = 999999; ExecutablePath = "
+        + literal(product / executable) + " } } }\n"
+        "function Get-Process { $p = [pscustomobject]@{ MainWindowHandle = 1; MainModule = [pscustomobject]@{ FileName = "
+        + literal(product / executable) + " } }; $p | Add-Member ScriptMethod CloseMainWindow { "
+        "[IO.File]::WriteAllText(" + literal(calls) + ", 'called'); $global:closed = "
+        + ("$true" if closes else "$false") + "; return $true }; return $p }\n"
+        "function Start-Sleep {}\nfunction Stop-Process { throw 'MUST_NOT_KILL' }\n"
+        "& " + literal(ROOT / "installer/Install.ps1") + " -PayloadRoot " + literal(ROOT)
+        + " -Destination " + literal(product) + " -NonInteractive -SkipShortcut"
+        + (" -CloseRunningApplication" if requested else "") + "\n", encoding="utf-8",
+    )
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+    )
+    assert expected in result.stdout + result.stderr
+    assert calls.exists() is (requested and executable == "install/app/Olivia.exe")
+    assert transaction.read_text(encoding="utf-8") == "must-not-be-touched"
+
+
 def _run_install_preflight(
     product_root: Path,
     tmp_path: Path,

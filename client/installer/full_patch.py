@@ -629,6 +629,7 @@ def _refresh_existing_install(
     rollback = staging / ".rollback"
     published: list[Path] = []
     backed_up: list[tuple[Path, Path]] = []
+    preserve_rollback = False
     names = (
         "local_backend",
         "launcher",
@@ -674,17 +675,23 @@ def _refresh_existing_install(
             published.append(active)
         return refreshed
     except OSError as exc:
-        for active in reversed(published):
-            if active.is_dir():
-                shutil.rmtree(active, ignore_errors=True)
-            else:
-                active.unlink(missing_ok=True)
-        for active, backup in reversed(backed_up):
-            if _managed_entry_metadata(backup) is not None:
-                os.replace(backup, active)
+        try:
+            for active in reversed(published):
+                if active.is_dir():
+                    shutil.rmtree(active)
+                else:
+                    active.unlink(missing_ok=True)
+            for active, backup in reversed(backed_up):
+                if _managed_entry_metadata(backup) is not None:
+                    os.replace(backup, active)
+        except OSError as rollback_error:
+            # Never discard the only old payload when a locked file prevents recovery.
+            preserve_rollback = True
+            raise PatchInstallError("PATCH_PAYLOAD_ROLLBACK_FAILED") from rollback_error
         raise PatchInstallError("PATCH_PAYLOAD_REFRESH_FAILED") from exc
     finally:
-        shutil.rmtree(staging, ignore_errors=True)
+        if not preserve_rollback:
+            shutil.rmtree(staging, ignore_errors=True)
 
 
 def _read_marker(path: Path) -> dict[str, Any]:

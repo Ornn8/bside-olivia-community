@@ -3,6 +3,8 @@ import subprocess
 import pytest
 from original_client_settings_ui import BOOTSTRAP_JAVASCRIPT
 
+DIAGNOSTIC_HELPER = 'const setDiagnosticDetails =' + BOOTSTRAP_JAVASCRIPT.split(
+    '  const setDiagnosticDetails =', 1)[1].split('  const memoryClearFailureMessage =', 1)[0]
 
 def test_old_search_response_cannot_overwrite_latest_query():
     node=shutil.which('node')
@@ -17,7 +19,7 @@ let displayed;const updateSummary=()=>{};
 const originalProgress={},originalPending=[],originals={replaceChildren(){},append(){}},text=()=>({}),formatTime=x=>x;
 const renderMemories=(_list,rows)=>{displayed=rows[0].memory_id;};
 const requestJson=(path,params)=>path===STATUS_PATH?Promise.resolve({capabilities:{}}):new Promise((resolve,reject)=>(params.collection==='originals'?originalPending:pending).push({resolve,reject}));
-'''+load+'''
+'''+DIAGNOSTIC_HELPER+load+'''
 (async()=>{
 const old=load();input.value='new';const latest=load();
 pending[1].resolve({memories:[{memory_id:'new-result'}]});await latest;
@@ -64,7 +66,7 @@ const renderMemories=(list)=>list.append(text('p','暂无提取记忆'));
 const requestJson=async(path,params)=>params?.collection==='originals'
  ? {indexed_letters:1,archive_total:1,archive_indexed:1,archive_removed:0,originals:[{speaker:'user',text:'开心果冰淇淋。\n第二行',created_at:null,excerpt:false}]}
  : path===STATUS_PATH?{capabilities:{memory:{state:'available',count:0}}}:{memories:[]};
-'''+ 'const renderMemoryPanel ='+panel+r'''
+'''+DIAGNOSTIC_HELPER+ 'const renderMemoryPanel ='+panel+r'''
 (async()=>{
  const root=new Element();await renderMemoryPanel(root,{state:'available',count:0});
  const collect=e=>[e.textContent,...e.children.flatMap(collect)];
