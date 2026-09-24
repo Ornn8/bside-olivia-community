@@ -94,6 +94,10 @@ def test_backend_generate_uses_real_pipeline_persona_memory_and_world(monkeypatc
         _persist_store_state=lambda: None)
     event = PersonalMessage("qq", "100", "200", "1", "今天钢琴练得怎么样？")
     original_run = pipeline.run
+    def chat_timeout(mode):
+        assert mode == ReplyMode.FUTURE_IM.value
+        return 2
+    server._reply_pipeline_timeout_seconds = chat_timeout
     async def bounded_run(request, context):
         assert request.max_input_chars == 40000 + len(event.text)
         assert any(f.fact_id == 'runtime.photo_attachment' and '已开启' in f.statement

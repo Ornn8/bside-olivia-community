@@ -564,8 +564,10 @@ def _diagnostic_source(
             "elapsed_bucket": elapsed_bucket,
         }
         from runtime.diagnostics.photo import project_photo
+        from runtime.diagnostics.support_bundle import project_chat_task
         from original_client_letter_contract import _published
         item.update(project_photo(value))
+        item.update(project_chat_task(value))
         if 'image_status' in value:
             item['reply_published'] = letter_state == 'completed' and _published(value, now=None)
         error_code = code(value.get("error_code"))

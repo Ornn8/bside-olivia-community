@@ -1,8 +1,10 @@
 """Explicit remote routing for existing synchronous generation stages."""
 import asyncio
+from contextvars import ContextVar
 from concurrent.futures import ThreadPoolExecutor
 import os
 from pathlib import Path
+PROGRESS_CALLBACK = ContextVar('remote_generation_progress', default=None)
 
 
 def enabled(environment=None):
@@ -27,6 +29,9 @@ def generate(kind, data, output, *, environment=None, assets=None):
     from runtime.cloud_service import CloudError
     env = environment if environment is not None else os.environ
     api = RemoteGeneration(env.get('OLIVIA_GPU_API_URL', ''), env.get('OLIVIA_GPU_API_KEY', ''))
+    progress = PROGRESS_CALLBACK.get()
+    if progress is not None:
+        api.progress = progress
     ffmpeg = env.get('OLIVIA_FFMPEG_EXE')
     metadata = {}
     def validate(path):
