@@ -268,7 +268,7 @@ begin
     MsgBox('请选择 Olivia 的保存位置。', mbError, MB_OK);
     Result := False;
   end;
-  if (CurPageID = wpReady) and not InstallSucceeded then
+  if (CurPageID = wpReady) and not WizardSilent and not InstallSucceeded then
   begin
     FailureDetailsButton.Visible := False;
     CloseAndRetryButton.Visible := False;

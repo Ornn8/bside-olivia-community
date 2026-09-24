@@ -58,7 +58,7 @@ exit 23
         ('/InstallRoot="' + $install + '"'),
         ('/LOG="' + $log + '"')
     )
-    $process = Start-Process -FilePath $setup -ArgumentList $arguments -PassThru -Wait
+    $process = Start-Process -FilePath $setup -ArgumentList $arguments -WindowStyle Hidden -PassThru -Wait
     if ($process.ExitCode -ne 7) { throw 'SETUP_SMOKE_EXIT_CODE_INVALID' }
 
     $logText = Get-Content -Raw -LiteralPath $log
