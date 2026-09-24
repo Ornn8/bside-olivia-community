@@ -1,7 +1,6 @@
 """Occasional same-call selection from existing relationship-eligible stickers."""
-import random
 import re
-from runtime.letter_stickers.selection import allowed_stickers, _labels
+from runtime.letter_stickers.selection import allowed_stickers, weighted_candidates, _labels
 
 
 def choices(rows, view, *, channel='wechat'):
@@ -11,20 +10,14 @@ def choices(rows, view, *, channel='wechat'):
         if row.get('sticker_delivery_status') in {'SENDING', 'DELIVERED', 'UNKNOWN'}:
             break
         since += 1
-    if since < 4:
+    sent_count = sum(row.get('sticker_delivery_status') in {'SENDING', 'DELIVERED', 'UNKNOWN'}
+                     for row in delivered)
+    if since < 1 + sent_count % 2:
         return {}
-    allowed = list(allowed_stickers(view))
-    counts = {key: sum(r.get('sticker_id') == key for r in delivered) for key in allowed}
-    last = {row.get('sticker_id'): index for index, row in enumerate(delivered)
-            if row.get('sticker_delivery_status') in {'SENDING', 'DELIVERED', 'UNKNOWN'}}
-    # Bounded recency keeps old/unseen choices competitive without enormous weights.
-    weights = {key: (1 + min(256, len(delivered) - last.get(key, -1))) / (1 + counts[key])
-               for key in allowed}
-    sampled = []
-    for _ in range(min(10, len(allowed))):
-        key = random.choices(allowed, weights=[weights[k] for k in allowed])[0]
-        sampled.append(key)
-        allowed.remove(key)
+    history = [row.get('sticker_id') for row in delivered]
+    appeared = [row.get('sticker_id') if row.get('sticker_delivery_status') in
+                {'SENDING', 'DELIVERED', 'UNKNOWN'} else None for row in delivered]
+    sampled = weighted_candidates(allowed_stickers(view), history, appeared=appeared, limit=10)
     return {key: _labels()[key] for key in sampled}
 
 

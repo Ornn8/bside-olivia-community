@@ -298,7 +298,9 @@ class PersonalChatService:
                     row['sticker_delivery_status'] = 'SENDING'
                     await persist_state(self.persist)
                     try:
-                        await send.image(Path(__file__).resolve().parents[1] / 'letter_stickers' / (row['sticker_id'] + '.png'))
+                        from runtime.letter_stickers.selection import asset_filename
+                        await send.image(Path(__file__).resolve().parents[1] / 'letter_stickers' /
+                                         asset_filename(row['sticker_id']))
                         row['sticker_delivery_status'] = 'DELIVERED'
                     except Exception:
                         row['sticker_delivery_status'] = 'UNKNOWN'

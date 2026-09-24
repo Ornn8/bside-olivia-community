@@ -28,7 +28,9 @@ from runtime.reply.reply_reviewer import (
     TrustedReviewEvidence,
 )
 from runtime.memory.memory_port import CONVERSATION_MEMORY, MemoryRecord
-from runtime.letter_stickers.selection import allowed_stickers, selection_instruction, split_selection
+from runtime.letter_stickers.selection import (
+    allowed_stickers, selection_instruction, split_selection, weighted_candidates,
+)
 from runtime.reply.letter_presentation import LETTER_PRESENTATION_INSTRUCTION, split_signature
 
 
@@ -149,6 +151,10 @@ class ReplyPipeline:
         if not isinstance(context, ReplyContext):
             raise TypeError("ReplyContext is required")
         sticker_choices = allowed_stickers(context.private_behavior)
+        if context.mode is ReplyMode.TEXT_LETTER:
+            sticker_choices = weighted_candidates(
+                sticker_choices, context.sticker_history, limit=32,
+            )
         sticker_note = (LETTER_PRESENTATION_INSTRUCTION + '\n' + selection_instruction(sticker_choices)) if context.mode is ReplyMode.TEXT_LETTER else ""
         generation_note = sticker_note
         if context.mode is ReplyMode.FUTURE_IM:

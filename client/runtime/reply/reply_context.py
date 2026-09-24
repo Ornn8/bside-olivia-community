@@ -437,6 +437,7 @@ class ReplyContext:
     future_im_enabled: bool = False
     intimacy_request: IntimacyRequest = IntimacyRequest.NONE
     world_state_available: bool = True
+    sticker_history: tuple[str | None, ...] = ()
 
     @classmethod
     def create(
@@ -445,6 +446,7 @@ class ReplyContext:
         *,
         trusted_time: TrustedTime,
         world_facts: tuple[TrustedWorldFact, ...] = (),
+        sticker_history: tuple[str | None, ...] = (),
         private_behavior: PrivateBehaviorView | None = None,
         output_constraints: OutputConstraints | None = None,
         future_im_enabled: bool = False,
@@ -476,6 +478,7 @@ class ReplyContext:
             mode=mode,
             trusted_time=trusted_time,
             world_facts=facts,
+            sticker_history=tuple(sticker_history),
             private_behavior=private_behavior or PrivateBehaviorView(),
             output_constraints=constraints,
             future_im_enabled=future_im_enabled,

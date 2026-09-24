@@ -8,7 +8,8 @@ import tempfile
 import zipfile
 
 MAIN='assets/main-31595bd3.js'
-MARKER='/*olivia-letter-stickers-v4*/'
+MARKER='/*olivia-letter-stickers-v5*/'
+PREVIOUS_MARKER='/*olivia-letter-stickers-v4*/'
 PHOTO_MARKER='/*olivia-letter-photos-v2*/'
 LEGACY_PHOTO_MARKER='/*olivia-letter-photos-v1*/'
 METADATA_MARKER='/*olivia-letter-stickers-v3*/'
@@ -44,8 +45,10 @@ def _patch_layout(source: str) -> str:
 def patch_source(source: str) -> str:
     if MARKER in source:
         return source
+    if PREVIOUS_MARKER in source:
+        return _upgrade_assets(source)
     if METADATA_MARKER in source:
-        return _patch_presentation(source)
+        return _upgrade_assets(_patch_presentation(source))
     source=_patch_layout(source)
     anchors={
         'content:e.replyText??"",':'stickerId:e.replyStickerId||"",content:e.replyText??"",',
@@ -59,7 +62,17 @@ def patch_source(source: str) -> str:
         raise ValueError('STICKER_ANCHOR_PROPS_INVALID')
     source=source.replace('F(ks,{','F(ks,{stickerId:i.mail.received?.stickerId,')
     source=source.replace('onVideoError:u},null,8,[','onVideoError:u},null,8,["stickerId",')
-    return _patch_presentation(source.replace(LAYOUT_MARKER,METADATA_MARKER,1))
+    return _upgrade_assets(_patch_presentation(source.replace(LAYOUT_MARKER,METADATA_MARKER,1)))
+
+
+def _upgrade_assets(source: str) -> str:
+    old_import='import{oliviaLetterSticker}from"./letter-stickers/select.js";'
+    old_call='oliviaLetterSticker(A.stickerId)+".png"'
+    if source.count(PREVIOUS_MARKER)!=1 or source.count(old_import)!=1 or source.count(old_call)!=1:
+        raise ValueError('STICKER_ASSET_UPGRADE_INVALID')
+    return (source.replace(old_import,'import{oliviaLetterStickerAsset}from"./letter-stickers/select.js";',1)
+                  .replace(old_call,'oliviaLetterStickerAsset(A.stickerId)',1)
+                  .replace(PREVIOUS_MARKER,MARKER,1))
 
 
 def _patch_presentation(source: str) -> str:
@@ -81,7 +94,7 @@ def _patch_presentation(source: str) -> str:
         raise ValueError('STICKER_ANCHOR_PRESENTATION_PROPS_INVALID')
     source = source.replace('F(ks,{stickerId:', 'F(ks,{bodyText:i.mail.received?.bodyText,signature:i.mail.received?.signature,stickerId:')
     source = source.replace('onVideoError:u},null,8,["stickerId",', 'onVideoError:u},null,8,["bodyText","signature","stickerId",')
-    return source.replace(METADATA_MARKER, MARKER, 1)
+    return source.replace(METADATA_MARKER, PREVIOUS_MARKER, 1)
 
 
 def patch_photos(source: str) -> str:
@@ -122,8 +135,10 @@ def _move_photo_after_paper(source: str) -> str:
 
 def patch_letter_stickers(path: Path | str) -> str:
     path=Path(path)
-    assets={f'assets/letter-stickers/{p.name}':p.read_bytes() for p in ASSETS.iterdir() if p.suffix in {'.png','.json','.js'}}
-    if {n for n in assets if n.endswith('.png')} != {f'assets/letter-stickers/linli-{i:02d}.png' for i in range(1,109)}:
+    assets={f'assets/letter-stickers/{p.name}':p.read_bytes() for p in ASSETS.iterdir() if p.suffix in {'.png','.gif','.json','.js'}}
+    expected={f'assets/letter-stickers/linli-{i:02d}.png' for i in range(1,253)}
+    expected.update(f'assets/letter-stickers/linli-{i:02d}.gif' for i in range(253,273))
+    if {n for n in assets if n.endswith(('.png','.gif'))} != expected:
         raise ValueError('STICKER_ASSETS_INCOMPLETE')
     with zipfile.ZipFile(path) as archive:
         if MAIN not in archive.namelist():

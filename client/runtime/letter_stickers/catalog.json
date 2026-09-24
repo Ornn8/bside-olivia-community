@@ -808,5 +808,1317 @@
     "source": "dreams-100.png",
     "cell": 8,
     "unlock": "high_closeness"
+  },
+  {
+    "id": "linli-109",
+    "label": "手绘·专心练琴",
+    "file": "linli-109.png",
+    "style": "sketchbook",
+    "source": "persona-style-concepts-20260924\\sketchbook-32\\01.png",
+    "source_sha256": "23f77b27753a5ee514d8c1742a8f70e7396d0258d53d9d2418963450d69ddd41"
+  },
+  {
+    "id": "linli-110",
+    "label": "手绘·斟酌回信",
+    "file": "linli-110.png",
+    "style": "sketchbook",
+    "source": "persona-style-concepts-20260924\\sketchbook-32\\02.png",
+    "source_sha256": "f7533f4888f73af714e4b5f12bf247554d82313ca3072d9e2babb45ca9b4533e"
+  },
+  {
+    "id": "linli-111",
+    "label": "手绘·观察茶叶",
+    "file": "linli-111.png",
+    "style": "sketchbook",
+    "source": "persona-style-concepts-20260924\\sketchbook-32\\03.png",
+    "source_sha256": "49919a5f88724b7023441cec741ce7395742a876d758e4953e5a81039a26b8d6"
+  },
+  {
+    "id": "linli-112",
+    "label": "手绘·笔尖灵感",
+    "file": "linli-112.png",
+    "style": "sketchbook",
+    "source": "persona-style-concepts-20260924\\sketchbook-32\\04.png",
+    "source_sha256": "8b10cc17038dcad15ad5a1bf105ab196cfa8c2827931f80cb17d2bb19deda04e"
+  },
+  {
+    "id": "linli-113",
+    "label": "手绘·翻阅乐谱",
+    "file": "linli-113.png",
+    "style": "sketchbook",
+    "source": "persona-style-concepts-20260924\\sketchbook-32\\05.png",
+    "source_sha256": "1beadd3844855df3b259e0fcc812b1ffe9820db07e439ffcb87fc01c69fc964f"
+  },
+  {
+    "id": "linli-114",
+    "label": "手绘·琴前思考",
+    "file": "linli-114.png",
+    "style": "sketchbook",
+    "source": "persona-style-concepts-20260924\\sketchbook-32\\06.png",
+    "source_sha256": "db3fc4d107eaab526818f9d2cf031b32070abed963653a3c481b2bffc5da92f7"
+  },
+  {
+    "id": "linli-115",
+    "label": "手绘·放上黑胶",
+    "file": "linli-115.png",
+    "style": "sketchbook",
+    "source": "persona-style-concepts-20260924\\sketchbook-32\\07.png",
+    "source_sha256": "f69abbcfa550e7b45c469a90cad0c3f2e3dc5b015e9a8369418df1980bfe7e2c"
+  },
+  {
+    "id": "linli-116",
+    "label": "手绘·听回放做笔记",
+    "file": "linli-116.png",
+    "style": "sketchbook",
+    "source": "persona-style-concepts-20260924\\sketchbook-32\\08.png",
+    "source_sha256": "a937df194bdab857d6bef40c54f03a0fd8df31cdf22695e4c14605578294af1a"
+  },
+  {
+    "id": "linli-117",
+    "label": "手绘·拆开来信",
+    "file": "linli-117.png",
+    "style": "sketchbook",
+    "source": "persona-style-concepts-20260924\\sketchbook-32\\09.png",
+    "source_sha256": "963e1cd0beb5889e917bd121dc4340f523cd9a00bb9277c67b9186f5ff6cc932"
+  },
+  {
+    "id": "linli-118",
+    "label": "手绘·停笔斟酌",
+    "file": "linli-118.png",
+    "style": "sketchbook",
+    "source": "persona-style-concepts-20260924\\sketchbook-32\\10.png",
+    "source_sha256": "dca38c751703c5955219228c79a6564de516578dd4fd1a499f51856e6b9bc328"
+  },
+  {
+    "id": "linli-119",
+    "label": "手绘·读信忍笑",
+    "file": "linli-119.png",
+    "style": "sketchbook",
+    "source": "persona-style-concepts-20260924\\sketchbook-32\\11.png",
+    "source_sha256": "1caf9be252ce39ac47861e11476f067c04f72b03876b55911f3055e7b862949c"
+  },
+  {
+    "id": "linli-120",
+    "label": "手绘·封好回信",
+    "file": "linli-120.png",
+    "style": "sketchbook",
+    "source": "persona-style-concepts-20260924\\sketchbook-32\\12.png",
+    "source_sha256": "ad3570d3b28df8b9144ab0502da0fde8a2c8d14aa46082ab9d39a3bd02c1d75a"
+  },
+  {
+    "id": "linli-121",
+    "label": "手绘·书堆里抬头",
+    "file": "linli-121.png",
+    "style": "sketchbook",
+    "source": "persona-style-concepts-20260924\\sketchbook-32\\13.png",
+    "source_sha256": "d57e3f155e5166a4bbca38e674644ff6763883f68eecba967702edba5325eafd"
+  },
+  {
+    "id": "linli-122",
+    "label": "手绘·看茶叶沉降",
+    "file": "linli-122.png",
+    "style": "sketchbook",
+    "source": "persona-style-concepts-20260924\\sketchbook-32\\14.png",
+    "source_sha256": "9bbb00799beeafca120a1fc3288670e2d222057998668288c7b20dc35283205a"
+  },
+  {
+    "id": "linli-123",
+    "label": "手绘·遇见小黑猫",
+    "file": "linli-123.png",
+    "style": "sketchbook",
+    "source": "persona-style-concepts-20260924\\sketchbook-32\\15.png",
+    "source_sha256": "b050b4ca06d583b86e48020880a81e3f4df13bdcbddd91e401c4b9248cba9118"
+  },
+  {
+    "id": "linli-124",
+    "label": "手绘·理平袖口",
+    "file": "linli-124.png",
+    "style": "sketchbook",
+    "source": "persona-style-concepts-20260924\\sketchbook-32\\16.png",
+    "source_sha256": "b5d393e81d2c8211bbde5c4e40511b2e61064f168e5ac9902ee36c798512b954"
+  },
+  {
+    "id": "linli-125",
+    "label": "手绘·练琴后揉眼",
+    "file": "linli-125.png",
+    "style": "sketchbook",
+    "source": "persona-style-concepts-20260924\\sketchbook-32\\17.png",
+    "source_sha256": "5681a8b765f20da37d5b4548e47562894cf89612fc28a457e753550a9845376d"
+  },
+  {
+    "id": "linli-126",
+    "label": "手绘·不经意轻笑",
+    "file": "linli-126.png",
+    "style": "sketchbook",
+    "source": "persona-style-concepts-20260924\\sketchbook-32\\18.png",
+    "source_sha256": "16511beb38e6e1e58571323c3f24d8106a4d6bdd50f1a019b17a5fc5173a6655"
+  },
+  {
+    "id": "linli-127",
+    "label": "手绘·不太赞同",
+    "file": "linli-127.png",
+    "style": "sketchbook",
+    "source": "persona-style-concepts-20260924\\sketchbook-32\\19.png",
+    "source_sha256": "bfa55ae5459a005928d1b6144a1672f0ab349840fe0c7e2bea49aaa87216a576"
+  },
+  {
+    "id": "linli-128",
+    "label": "手绘·松一口气",
+    "file": "linli-128.png",
+    "style": "sketchbook",
+    "source": "persona-style-concepts-20260924\\sketchbook-32\\20.png",
+    "source_sha256": "39392822415f314febff517f00a55a77d0ab90e434c35fbf2229995581d594cb"
+  },
+  {
+    "id": "linli-129",
+    "label": "手绘·窗边看雨",
+    "file": "linli-129.png",
+    "style": "sketchbook",
+    "source": "persona-style-concepts-20260924\\sketchbook-32\\21.png",
+    "source_sha256": "d90ebad373ed80ad51d677458eb09518a81b3f5a93f1999fe92938cff4ecd733"
+  },
+  {
+    "id": "linli-130",
+    "label": "手绘·收起雨伞",
+    "file": "linli-130.png",
+    "style": "sketchbook",
+    "source": "persona-style-concepts-20260924\\sketchbook-32\\22.png",
+    "source_sha256": "886a1d72aa384189d459923205de7c877e5744247957aa0086a31ca47c8b96b9"
+  },
+  {
+    "id": "linli-131",
+    "label": "手绘·回味老电影",
+    "file": "linli-131.png",
+    "style": "sketchbook",
+    "source": "persona-style-concepts-20260924\\sketchbook-32\\23.png",
+    "source_sha256": "c12868f3f133de868be2229aabc65ffb5957c79c70088748dc092ae2945fd34e"
+  },
+  {
+    "id": "linli-132",
+    "label": "手绘·等雨停",
+    "file": "linli-132.png",
+    "style": "sketchbook",
+    "source": "persona-style-concepts-20260924\\sketchbook-32\\24.png",
+    "source_sha256": "6722bd08ebb906069a082a70a436d0e78639f1f52cc26e359e5d6002a53682aa"
+  },
+  {
+    "id": "linli-133",
+    "label": "手绘·抱臂挑眉",
+    "file": "linli-133.png",
+    "style": "sketchbook",
+    "source": "persona-style-concepts-20260924\\sketchbook-32\\25.png",
+    "source_sha256": "d887f94c9bfb75a036901f4d30d45528295721041819edc2291272278f976ae0"
+  },
+  {
+    "id": "linli-134",
+    "label": "手绘·佯装生气",
+    "file": "linli-134.png",
+    "style": "sketchbook",
+    "source": "persona-style-concepts-20260924\\sketchbook-32\\26.png",
+    "source_sha256": "8611431aca70ce80a3b282997b71b6fb6f1be1e9fd2c2e97fd70b3c5239c1d44"
+  },
+  {
+    "id": "linli-135",
+    "label": "手绘·笔点桌面",
+    "file": "linli-135.png",
+    "style": "sketchbook",
+    "source": "persona-style-concepts-20260924\\sketchbook-32\\27.png",
+    "source_sha256": "a50c85274a4d4a77ae6206846abb1e0509f82552565a11f5eae05ea0d7706238"
+  },
+  {
+    "id": "linli-136",
+    "label": "手绘·认真拒绝",
+    "file": "linli-136.png",
+    "style": "sketchbook",
+    "source": "persona-style-concepts-20260924\\sketchbook-32\\28.png",
+    "source_sha256": "e8465873058a0000ea39fdbe94180fe6c98466e3da6f1c55fc948d6fd3fba0d9"
+  },
+  {
+    "id": "linli-137",
+    "label": "手绘·端详旧照片",
+    "file": "linli-137.png",
+    "style": "sketchbook",
+    "source": "persona-style-concepts-20260924\\sketchbook-32\\29.png",
+    "source_sha256": "5deb4628da1f6f8a88eb92a200f61c34f75082c65423ae1faa152170ad94f4ff"
+  },
+  {
+    "id": "linli-138",
+    "label": "手绘·听环境声",
+    "file": "linli-138.png",
+    "style": "sketchbook",
+    "source": "persona-style-concepts-20260924\\sketchbook-32\\30.png",
+    "source_sha256": "641da5f4ccbe5af266d8c52c28b8156c781d32a616699e62d9726c3ad9c0273f"
+  },
+  {
+    "id": "linli-139",
+    "label": "手绘·收好小铃铛",
+    "file": "linli-139.png",
+    "style": "sketchbook",
+    "source": "persona-style-concepts-20260924\\sketchbook-32\\31.png",
+    "source_sha256": "e78c39bed5a88d6ec62a184833651c6448302ba038b44a745694d94e1c36f4dc"
+  },
+  {
+    "id": "linli-140",
+    "label": "手绘·合上研究笔记",
+    "file": "linli-140.png",
+    "style": "sketchbook",
+    "source": "persona-style-concepts-20260924\\sketchbook-32\\32.png",
+    "source_sha256": "9bb19bac01f740f96a90d6dae71bd0250a1f6bc8cc5981ee5b822bd368786625"
+  },
+  {
+    "id": "linli-141",
+    "label": "静蓝·雨后收伞",
+    "file": "linli-141.png",
+    "style": "quiet_blue",
+    "source": "persona-style-concepts-20260924\\quiet-blue-32\\01.png",
+    "source_sha256": "9020e52af6a910b121669bc5c22eac63904b69249d0645527607c79d7daaffe4"
+  },
+  {
+    "id": "linli-142",
+    "label": "静蓝·旧电影票",
+    "file": "linli-142.png",
+    "style": "quiet_blue",
+    "source": "persona-style-concepts-20260924\\quiet-blue-32\\02.png",
+    "source_sha256": "641f155f4329047824486ca39e88bdb539c6385935a95ea67a1e195267451ec8"
+  },
+  {
+    "id": "linli-143",
+    "label": "静蓝·茶杯片刻",
+    "file": "linli-143.png",
+    "style": "quiet_blue",
+    "source": "persona-style-concepts-20260924\\quiet-blue-32\\03.png",
+    "source_sha256": "aacbc71a23abe229c97cd463deecd1881ceea4f411d9e72a29620676501b27d1"
+  },
+  {
+    "id": "linli-144",
+    "label": "静蓝·抱臂挑眉",
+    "file": "linli-144.png",
+    "style": "quiet_blue",
+    "source": "persona-style-concepts-20260924\\quiet-blue-32\\04.png",
+    "source_sha256": "2c83f2ac25930e1887b9a4b24a3bb304c4fc5dbb5850dccc7b4cdd153e001fc9"
+  },
+  {
+    "id": "linli-145",
+    "label": "静蓝·专心翻乐谱",
+    "file": "linli-145.png",
+    "style": "quiet_blue",
+    "source": "persona-style-concepts-20260924\\quiet-blue-32\\05.png",
+    "source_sha256": "ade32de4f7ff4719f603301e36fb354f297ad0e9d3b006c2631a9a8e12ec3ca2"
+  },
+  {
+    "id": "linli-146",
+    "label": "静蓝·琴键前思考",
+    "file": "linli-146.png",
+    "style": "quiet_blue",
+    "source": "persona-style-concepts-20260924\\quiet-blue-32\\06.png",
+    "source_sha256": "1b87d8141bef63c61aa0fe51aa26940ab98db02f4cf7404fd2b081a21da4188a"
+  },
+  {
+    "id": "linli-147",
+    "label": "静蓝·收起黑胶",
+    "file": "linli-147.png",
+    "style": "quiet_blue",
+    "source": "persona-style-concepts-20260924\\quiet-blue-32\\07.png",
+    "source_sha256": "f832c83522a823d127d3c50d9ccef7113cc6cc631c23e3b36c3b406734282504"
+  },
+  {
+    "id": "linli-148",
+    "label": "静蓝·听回放记一笔",
+    "file": "linli-148.png",
+    "style": "quiet_blue",
+    "source": "persona-style-concepts-20260924\\quiet-blue-32\\08.png",
+    "source_sha256": "27aa1a93b506f885ccedcee1f0a5aeea01d0747dd97c8b507a00ac8b067fbc16"
+  },
+  {
+    "id": "linli-149",
+    "label": "静蓝·拆新信",
+    "file": "linli-149.png",
+    "style": "quiet_blue",
+    "source": "persona-style-concepts-20260924\\quiet-blue-32\\09.png",
+    "source_sha256": "aebbfeb0326e88afb20902c31b1027c5588ca78395da5d2d6533395ff7f83ef1"
+  },
+  {
+    "id": "linli-150",
+    "label": "静蓝·停笔思考",
+    "file": "linli-150.png",
+    "style": "quiet_blue",
+    "source": "persona-style-concepts-20260924\\quiet-blue-32\\10.png",
+    "source_sha256": "02969320c3abec43af7d5207896318ce6607e2854a997247e88ea3d61f503832"
+  },
+  {
+    "id": "linli-151",
+    "label": "静蓝·读到有趣处",
+    "file": "linli-151.png",
+    "style": "quiet_blue",
+    "source": "persona-style-concepts-20260924\\quiet-blue-32\\11.png",
+    "source_sha256": "ee2618bcb9430b13805ba46a626a247849908c886287222a002fbfd6affe2bda"
+  },
+  {
+    "id": "linli-152",
+    "label": "静蓝·封好回信",
+    "file": "linli-152.png",
+    "style": "quiet_blue",
+    "source": "persona-style-concepts-20260924\\quiet-blue-32\\12.png",
+    "source_sha256": "7e10e3f0764f622e41259253442106183951115a67bebe5b5b594e8b739db36c"
+  },
+  {
+    "id": "linli-153",
+    "label": "静蓝·书堆里抬头",
+    "file": "linli-153.png",
+    "style": "quiet_blue",
+    "source": "persona-style-concepts-20260924\\quiet-blue-32\\13.png",
+    "source_sha256": "ee85b38e5519a1096a5e3f1b1fb2866ef761046ba685faad0662e45216da7bd6"
+  },
+  {
+    "id": "linli-154",
+    "label": "静蓝·看茶叶沉落",
+    "file": "linli-154.png",
+    "style": "quiet_blue",
+    "source": "persona-style-concepts-20260924\\quiet-blue-32\\14.png",
+    "source_sha256": "63398620da6a8624510d50ac510718b539b9dc9ff15d667964361ffb93f8bd0f"
+  },
+  {
+    "id": "linli-155",
+    "label": "静蓝·遇见小黑猫",
+    "file": "linli-155.png",
+    "style": "quiet_blue",
+    "source": "persona-style-concepts-20260924\\quiet-blue-32\\15.png",
+    "source_sha256": "4bc46d83df11d66fb84e410b6eea3f810f46a5a0b2e015e2caf0f182cf629611"
+  },
+  {
+    "id": "linli-156",
+    "label": "静蓝·理平袖口",
+    "file": "linli-156.png",
+    "style": "quiet_blue",
+    "source": "persona-style-concepts-20260924\\quiet-blue-32\\16.png",
+    "source_sha256": "969a30b79e724b845bc5e1559c1a3baf1367c5a50a24eaaedcc3039d6bb420d4"
+  },
+  {
+    "id": "linli-157",
+    "label": "静蓝·练琴后揉眼",
+    "file": "linli-157.png",
+    "style": "quiet_blue",
+    "source": "persona-style-concepts-20260924\\quiet-blue-32\\17.png",
+    "source_sha256": "fbecda07320568995c52bdb61908a49f11d70af754b907c401b8342f27484e34"
+  },
+  {
+    "id": "linli-158",
+    "label": "静蓝·不经意轻笑",
+    "file": "linli-158.png",
+    "style": "quiet_blue",
+    "source": "persona-style-concepts-20260924\\quiet-blue-32\\18.png",
+    "source_sha256": "8d84b3056baf99a4e6ea92b58950f4a70ce6730bff7076ae6c519e5fff61ef8d"
+  },
+  {
+    "id": "linli-159",
+    "label": "静蓝·有点不赞同",
+    "file": "linli-159.png",
+    "style": "quiet_blue",
+    "source": "persona-style-concepts-20260924\\quiet-blue-32\\19.png",
+    "source_sha256": "812b7dec2a999e42c285639a09ecdabda9ba2d6fc1f7129d5ed9d0c088d04a1e"
+  },
+  {
+    "id": "linli-160",
+    "label": "静蓝·松一口气",
+    "file": "linli-160.png",
+    "style": "quiet_blue",
+    "source": "persona-style-concepts-20260924\\quiet-blue-32\\20.png",
+    "source_sha256": "4a1d8547078786e182d0ee5de89c7f296fa912368d219f1cd8a445044c4a6ecd"
+  },
+  {
+    "id": "linli-161",
+    "label": "静蓝·看雨滴",
+    "file": "linli-161.png",
+    "style": "quiet_blue",
+    "source": "persona-style-concepts-20260924\\quiet-blue-32\\21.png",
+    "source_sha256": "0419b97fe2095e994f3dcb6a513c269cddc54771a1648d16d7934efc99dfc45e"
+  },
+  {
+    "id": "linli-162",
+    "label": "静蓝·收伞抖雨",
+    "file": "linli-162.png",
+    "style": "quiet_blue",
+    "source": "persona-style-concepts-20260924\\quiet-blue-32\\22.png",
+    "source_sha256": "0c9115577c074e1553af560bd88d262dcf989a73e3722c47925c2652f1fa24bb"
+  },
+  {
+    "id": "linli-163",
+    "label": "静蓝·捏旧电影票",
+    "file": "linli-163.png",
+    "style": "quiet_blue",
+    "source": "persona-style-concepts-20260924\\quiet-blue-32\\23.png",
+    "source_sha256": "9555b275db8b04b5f9d0f7213904f5789f6fef3023bddc0dabb000bdf1141ff0"
+  },
+  {
+    "id": "linli-164",
+    "label": "静蓝·判断雨停了吗",
+    "file": "linli-164.png",
+    "style": "quiet_blue",
+    "source": "persona-style-concepts-20260924\\quiet-blue-32\\24.png",
+    "source_sha256": "9c90a244a701eeb02dbfc594841d9da5905b4fb2dfe0289f1469c6e24d035575"
+  },
+  {
+    "id": "linli-165",
+    "label": "静蓝·抱臂调侃",
+    "file": "linli-165.png",
+    "style": "quiet_blue",
+    "source": "persona-style-concepts-20260924\\quiet-blue-32\\25.png",
+    "source_sha256": "542b69a51849fd2402d69a2972b5c7b10792a9171e28691d65f8dd14602fe5cc"
+  },
+  {
+    "id": "linli-166",
+    "label": "静蓝·软软地生气",
+    "file": "linli-166.png",
+    "style": "quiet_blue",
+    "source": "persona-style-concepts-20260924\\quiet-blue-32\\26.png",
+    "source_sha256": "f37ec90383612a161323494338dc3226e1f17325d71ed9f16a238c8cc70037b6"
+  },
+  {
+    "id": "linli-167",
+    "label": "静蓝·轻敲桌面",
+    "file": "linli-167.png",
+    "style": "quiet_blue",
+    "source": "persona-style-concepts-20260924\\quiet-blue-32\\27.png",
+    "source_sha256": "2d8cb68c8f23ba6a6e9d6704e9bf5282f4f9a700b28636880ebf10029ca63136"
+  },
+  {
+    "id": "linli-168",
+    "label": "静蓝·认真说不",
+    "file": "linli-168.png",
+    "style": "quiet_blue",
+    "source": "persona-style-concepts-20260924\\quiet-blue-32\\28.png",
+    "source_sha256": "67ea6efbfcc4ed294484377e89f1ee6388f50d1afbae2a0c605591522b4f46f4"
+  },
+  {
+    "id": "linli-169",
+    "label": "静蓝·端详旧照片",
+    "file": "linli-169.png",
+    "style": "quiet_blue",
+    "source": "persona-style-concepts-20260924\\quiet-blue-32\\29.png",
+    "source_sha256": "c5556a357ede4b78951a3f598dff0e7e698210a7940254b75d92aba66adee678"
+  },
+  {
+    "id": "linli-170",
+    "label": "静蓝·听旧录音",
+    "file": "linli-170.png",
+    "style": "quiet_blue",
+    "source": "persona-style-concepts-20260924\\quiet-blue-32\\30.png",
+    "source_sha256": "4d45ac0b09ca17c27fe2dc26b222fb5315c4c167be58172d80144a5a2de1f9f6"
+  },
+  {
+    "id": "linli-171",
+    "label": "静蓝·收好小铃铛",
+    "file": "linli-171.png",
+    "style": "quiet_blue",
+    "source": "persona-style-concepts-20260924\\quiet-blue-32\\31.png",
+    "source_sha256": "0d8d0111128499ae7c56d56c39a655138726508d89932c3da591e4bd44368127"
+  },
+  {
+    "id": "linli-172",
+    "label": "静蓝·合上研究笔记",
+    "file": "linli-172.png",
+    "style": "quiet_blue",
+    "source": "persona-style-concepts-20260924\\quiet-blue-32\\32.png",
+    "source_sha256": "bc70fda12626dffe16f2f90363163175bc7475d1cb21af3614b72088ef37ae67"
+  },
+  {
+    "id": "linli-173",
+    "label": "唱片·放上黑胶",
+    "file": "linli-173.png",
+    "style": "vinyl",
+    "source": "persona-style-concepts-20260924\\vinyl-32\\01.png",
+    "source_sha256": "258b3d5b895e0c0104d59a23ceb027d082beed3412aeaa8fa123a72f252be1b7"
+  },
+  {
+    "id": "linli-174",
+    "label": "唱片·边听边想",
+    "file": "linli-174.png",
+    "style": "vinyl",
+    "source": "persona-style-concepts-20260924\\vinyl-32\\02.png",
+    "source_sha256": "4551e6cc3524610147f6fffc2ab2e7d750852b2dda8ce05c3675803eaf4352f5"
+  },
+  {
+    "id": "linli-175",
+    "label": "唱片·抱臂自信",
+    "file": "linli-175.png",
+    "style": "vinyl",
+    "source": "persona-style-concepts-20260924\\vinyl-32\\03.png",
+    "source_sha256": "dcadb38f4cb1038fb75c129a3ac992cd63c2eee57c47d1921d287fed5523bdcf"
+  },
+  {
+    "id": "linli-176",
+    "label": "唱片·安静弹琴",
+    "file": "linli-176.png",
+    "style": "vinyl",
+    "source": "persona-style-concepts-20260924\\vinyl-32\\04.png",
+    "source_sha256": "1036eaaf1706ce8a117978616530fb7f17bbcb150d398a3c3e52685162e0f526"
+  },
+  {
+    "id": "linli-177",
+    "label": "唱片·专心翻谱",
+    "file": "linli-177.png",
+    "style": "vinyl",
+    "source": "persona-style-concepts-20260924\\vinyl-32\\05.png",
+    "source_sha256": "4c5e068db5efa4d9d3a1fd31b34968266cf2e532d0d677cd2353887e8e7a06de"
+  },
+  {
+    "id": "linli-178",
+    "label": "唱片·琴键前思考",
+    "file": "linli-178.png",
+    "style": "vinyl",
+    "source": "persona-style-concepts-20260924\\vinyl-32\\06.png",
+    "source_sha256": "5c3a876436b9fa4bbd33fb40a8dc2f4ebc3fee1eaf1cc2f7fa47d6c06f0ede1e"
+  },
+  {
+    "id": "linli-179",
+    "label": "唱片·轻放黑胶",
+    "file": "linli-179.png",
+    "style": "vinyl",
+    "source": "persona-style-concepts-20260924\\vinyl-32\\07.png",
+    "source_sha256": "06082b63b91d6ec944f2b55e8e08fc1cd49b10a747cf84bcad22344deb984800"
+  },
+  {
+    "id": "linli-180",
+    "label": "唱片·听回放记笔记",
+    "file": "linli-180.png",
+    "style": "vinyl",
+    "source": "persona-style-concepts-20260924\\vinyl-32\\08.png",
+    "source_sha256": "9a8e77cb6aa2040484486421cbf42b14756706d238c53c0b7dee1eb3abe5b577"
+  },
+  {
+    "id": "linli-181",
+    "label": "唱片·拆开来信",
+    "file": "linli-181.png",
+    "style": "vinyl",
+    "source": "persona-style-concepts-20260924\\vinyl-32\\09.png",
+    "source_sha256": "ed28dacc0e896b1d8999bb01534669c8a172bce6f84d0f8fb6525a6e091db0d9"
+  },
+  {
+    "id": "linli-182",
+    "label": "唱片·停笔斟酌",
+    "file": "linli-182.png",
+    "style": "vinyl",
+    "source": "persona-style-concepts-20260924\\vinyl-32\\10.png",
+    "source_sha256": "b0625d59904997c4200dbf44f2faef2c35d678a79f1d44d7076f873ed2f330f2"
+  },
+  {
+    "id": "linli-183",
+    "label": "唱片·读信忍笑",
+    "file": "linli-183.png",
+    "style": "vinyl",
+    "source": "persona-style-concepts-20260924\\vinyl-32\\11.png",
+    "source_sha256": "40bf2172397d65dc94395d03f1fa57ee2904a5f14b29c9737cac59543c9ab774"
+  },
+  {
+    "id": "linli-184",
+    "label": "唱片·封好回信",
+    "file": "linli-184.png",
+    "style": "vinyl",
+    "source": "persona-style-concepts-20260924\\vinyl-32\\12.png",
+    "source_sha256": "3b56a0887b5f446cc971ed4650ce2669334a5b3bf41722ba2877c5c22cf87260"
+  },
+  {
+    "id": "linli-185",
+    "label": "唱片·从书堆抬头",
+    "file": "linli-185.png",
+    "style": "vinyl",
+    "source": "persona-style-concepts-20260924\\vinyl-32\\13.png",
+    "source_sha256": "03d514a9d9d6cde7de8fc065bff1d151abaaaaae0e5848a48ff1c065c9aa826c"
+  },
+  {
+    "id": "linli-186",
+    "label": "唱片·观察茶叶",
+    "file": "linli-186.png",
+    "style": "vinyl",
+    "source": "persona-style-concepts-20260924\\vinyl-32\\14.png",
+    "source_sha256": "a7bd0f802e1bc70b03c53e8247019fb8899820d0df508791e7fad9cf555ba6d3"
+  },
+  {
+    "id": "linli-187",
+    "label": "唱片·路遇小黑猫",
+    "file": "linli-187.png",
+    "style": "vinyl",
+    "source": "persona-style-concepts-20260924\\vinyl-32\\15.png",
+    "source_sha256": "55f2ff3374667a3bf8d2669d97d730a52ff4dafb96c2406383b22a744b965d8d"
+  },
+  {
+    "id": "linli-188",
+    "label": "唱片·理平袖口",
+    "file": "linli-188.png",
+    "style": "vinyl",
+    "source": "persona-style-concepts-20260924\\vinyl-32\\16.png",
+    "source_sha256": "b43046060f9a914fd7c112ad2f0b5e081d39f01c21b088095b9da54c8843b4f4"
+  },
+  {
+    "id": "linli-189",
+    "label": "唱片·练琴后揉眼",
+    "file": "linli-189.png",
+    "style": "vinyl",
+    "source": "persona-style-concepts-20260924\\vinyl-32\\17.png",
+    "source_sha256": "cdb2017e6b1e7ff2a50712c98de059d94f35dfd513eadc6f666a00f36cebb088"
+  },
+  {
+    "id": "linli-190",
+    "label": "唱片·不经意轻笑",
+    "file": "linli-190.png",
+    "style": "vinyl",
+    "source": "persona-style-concepts-20260924\\vinyl-32\\18.png",
+    "source_sha256": "4b7777fc058d7acccde905cc1c45a39a8a29e74b41cd9d8a41f4f7aea028cb0d"
+  },
+  {
+    "id": "linli-191",
+    "label": "唱片·偏头不赞同",
+    "file": "linli-191.png",
+    "style": "vinyl",
+    "source": "persona-style-concepts-20260924\\vinyl-32\\19.png",
+    "source_sha256": "e1b6f5b20d9773281c58c06fa602176192e421260ec23d92412f3c6538558c94"
+  },
+  {
+    "id": "linli-192",
+    "label": "唱片·松一口气",
+    "file": "linli-192.png",
+    "style": "vinyl",
+    "source": "persona-style-concepts-20260924\\vinyl-32\\20.png",
+    "source_sha256": "9b71e80604f2b895218927a94154bdfea6002e41c7aa0af31bb6c104bdfb4c3b"
+  },
+  {
+    "id": "linli-193",
+    "label": "唱片·看窗上雨滴",
+    "file": "linli-193.png",
+    "style": "vinyl",
+    "source": "persona-style-concepts-20260924\\vinyl-32\\21.png",
+    "source_sha256": "ff0c59ef95acfd7bf91c2c65a30f84209aebbfc1a54fe5e6af6dc70e0733095b"
+  },
+  {
+    "id": "linli-194",
+    "label": "唱片·收伞抖雨",
+    "file": "linli-194.png",
+    "style": "vinyl",
+    "source": "persona-style-concepts-20260924\\vinyl-32\\22.png",
+    "source_sha256": "b2c20b08bf88605c616e2b0ae77b3c91ef6dd58f63b497c491ae8dccff0973ff"
+  },
+  {
+    "id": "linli-195",
+    "label": "唱片·想起旧电影",
+    "file": "linli-195.png",
+    "style": "vinyl",
+    "source": "persona-style-concepts-20260924\\vinyl-32\\23.png",
+    "source_sha256": "38ea2fb758219ffb71fb53dea48ed0e8bf97130166850d55441c348573f2ce63"
+  },
+  {
+    "id": "linli-196",
+    "label": "唱片·判断雨停没",
+    "file": "linli-196.png",
+    "style": "vinyl",
+    "source": "persona-style-concepts-20260924\\vinyl-32\\24.png",
+    "source_sha256": "94af50cf44e950e0ddcef2a0b664ab34b15721efe12706cc2e4ceb852cddfab6"
+  },
+  {
+    "id": "linli-197",
+    "label": "唱片·抱臂挑眉",
+    "file": "linli-197.png",
+    "style": "vinyl",
+    "source": "persona-style-concepts-20260924\\vinyl-32\\25.png",
+    "source_sha256": "5335f74abc1ab256eabd407fc8d23deddc48a78785a25fda3d1c612dbf1c0327"
+  },
+  {
+    "id": "linli-198",
+    "label": "唱片·假装生气",
+    "file": "linli-198.png",
+    "style": "vinyl",
+    "source": "persona-style-concepts-20260924\\vinyl-32\\26.png",
+    "source_sha256": "76e7aa16d5c5a604efe280034dcd33dd84ac473b72538a93cc99f415a278464b"
+  },
+  {
+    "id": "linli-199",
+    "label": "唱片·点笔提醒",
+    "file": "linli-199.png",
+    "style": "vinyl",
+    "source": "persona-style-concepts-20260924\\vinyl-32\\27.png",
+    "source_sha256": "4ad4cedbf6fd5386a89b8c64c6839c08b1092b178d9acc74704dc6cf321b949f"
+  },
+  {
+    "id": "linli-200",
+    "label": "唱片·认真拒绝",
+    "file": "linli-200.png",
+    "style": "vinyl",
+    "source": "persona-style-concepts-20260924\\vinyl-32\\28.png",
+    "source_sha256": "39c68dbc859656b14a33253f64f245034a7a5364d9f79b72b935522c0284edda"
+  },
+  {
+    "id": "linli-201",
+    "label": "唱片·端详旧照片",
+    "file": "linli-201.png",
+    "style": "vinyl",
+    "source": "persona-style-concepts-20260924\\vinyl-32\\29.png",
+    "source_sha256": "3a94c558d24b64030dd7d3ac363e2f37b17da955af94a4d6d55c7945463e0e77"
+  },
+  {
+    "id": "linli-202",
+    "label": "唱片·听环境声",
+    "file": "linli-202.png",
+    "style": "vinyl",
+    "source": "persona-style-concepts-20260924\\vinyl-32\\30.png",
+    "source_sha256": "01bbeb9838c7fe167b53dae0980a69503e9796f20d7623a2647fdc41a9f82c73"
+  },
+  {
+    "id": "linli-203",
+    "label": "唱片·收好旧物",
+    "file": "linli-203.png",
+    "style": "vinyl",
+    "source": "persona-style-concepts-20260924\\vinyl-32\\31.png",
+    "source_sha256": "1f3f11219c5e74dc3bed65bc216eae5e0da0e11039f5c071a4bc4ccc03136038"
+  },
+  {
+    "id": "linli-204",
+    "label": "唱片·合上笔记",
+    "file": "linli-204.png",
+    "style": "vinyl",
+    "source": "persona-style-concepts-20260924\\vinyl-32\\32.png",
+    "source_sha256": "4ba42f6021ef4ad61bf27157db4971245741c773cce15ec796d13878ca4d06df"
+  },
+  {
+    "id": "linli-205",
+    "label": "戏剧漫画·钢琴强奏",
+    "file": "linli-205.png",
+    "style": "dramatic_manga",
+    "source": "dramatic-manga-24\\01.png",
+    "source_sha256": "d8c5547b9d3b7b1da64cb2c0f2a124fe6b4599fcf8b642f32b06cf052e98dba4"
+  },
+  {
+    "id": "linli-206",
+    "label": "戏剧漫画·举起黑胶",
+    "file": "linli-206.png",
+    "style": "dramatic_manga",
+    "source": "dramatic-manga-24\\02.png",
+    "source_sha256": "b18f3ece6a19e6c3b60d633a93c528cf669b46351e8a03525ed5be1dc38c149e"
+  },
+  {
+    "id": "linli-207",
+    "label": "戏剧漫画·读到来信",
+    "file": "linli-207.png",
+    "style": "dramatic_manga",
+    "source": "dramatic-manga-24\\03.png",
+    "source_sha256": "21559d6f48d84c98bac0c43f28768f0fb677aee754b1dd0706e7f11c8fd6281e"
+  },
+  {
+    "id": "linli-208",
+    "label": "戏剧漫画·雨中回望",
+    "file": "linli-208.png",
+    "style": "dramatic_manga",
+    "source": "dramatic-manga-24\\04.png",
+    "source_sha256": "b44240b1468c629ad968ce8efb740e43c6905c60bc9b3368c4f549155f21f669"
+  },
+  {
+    "id": "linli-209",
+    "label": "戏剧漫画·翻开乐谱",
+    "file": "linli-209.png",
+    "style": "dramatic_manga",
+    "source": "dramatic-manga-24\\05.png",
+    "source_sha256": "bbea28e12035e477c59e9db6da51d7c10c6eec744ae898ae86665ec5dafb00f8"
+  },
+  {
+    "id": "linli-210",
+    "label": "戏剧漫画·收束尾音",
+    "file": "linli-210.png",
+    "style": "dramatic_manga",
+    "source": "dramatic-manga-24\\06.png",
+    "source_sha256": "96a8bbc29e2a9a1ee3e0d52068af3a00c5b110482840741c3d7e22066a4897db"
+  },
+  {
+    "id": "linli-211",
+    "label": "戏剧漫画·唱针落下",
+    "file": "linli-211.png",
+    "style": "dramatic_manga",
+    "source": "dramatic-manga-24\\07.png",
+    "source_sha256": "10c2f1958004c8ebd4148d168ba86a3b4354869fd2a1ab12c6239187ca124739"
+  },
+  {
+    "id": "linli-212",
+    "label": "戏剧漫画·侧耳细听",
+    "file": "linli-212.png",
+    "style": "dramatic_manga",
+    "source": "dramatic-manga-24\\08.png",
+    "source_sha256": "8b79733eb7e56c7817a896dd3509be781a065b290717fa4a6579c6261601b9ee"
+  },
+  {
+    "id": "linli-213",
+    "label": "戏剧漫画·新信到了",
+    "file": "linli-213.png",
+    "style": "dramatic_manga",
+    "source": "dramatic-manga-24\\09.png",
+    "source_sha256": "20807b34961c36d1831f06f115f4f7ed9b2a9dd980b4871f963b28c26b36a36e"
+  },
+  {
+    "id": "linli-214",
+    "label": "戏剧漫画·提笔写信",
+    "file": "linli-214.png",
+    "style": "dramatic_manga",
+    "source": "dramatic-manga-24\\10.png",
+    "source_sha256": "3318ca187b7e030731f8ddfb704f3ef353cf6f7ec72f03b33173850fa065270c"
+  },
+  {
+    "id": "linli-215",
+    "label": "戏剧漫画·读信莞尔",
+    "file": "linli-215.png",
+    "style": "dramatic_manga",
+    "source": "dramatic-manga-24\\11.png",
+    "source_sha256": "0a49acc74ebd48ea82b67924dd47ea7e45eb21985fc69655aebf358d100a47a3"
+  },
+  {
+    "id": "linli-216",
+    "label": "戏剧漫画·封好信件",
+    "file": "linli-216.png",
+    "style": "dramatic_manga",
+    "source": "dramatic-manga-24\\12.png",
+    "source_sha256": "7ff66d057559d9b46f0468217e805b33f8b23690c071d3561bb4acdf61c312fd"
+  },
+  {
+    "id": "linli-217",
+    "label": "戏剧漫画·端详茶叶",
+    "file": "linli-217.png",
+    "style": "dramatic_manga",
+    "source": "dramatic-manga-24\\13.png",
+    "source_sha256": "91668ae53d508678973725f95c07ab5318462739ac831101ccfc6e608311a55a"
+  },
+  {
+    "id": "linli-218",
+    "label": "戏剧漫画·旧电影票",
+    "file": "linli-218.png",
+    "style": "dramatic_manga",
+    "source": "dramatic-manga-24\\14.png",
+    "source_sha256": "024fb761ee5e8781d83fb00773f1c6b3bffcc5a6a2faee0b55ea2670e0e28c8d"
+  },
+  {
+    "id": "linli-219",
+    "label": "戏剧漫画·遇见黑猫",
+    "file": "linli-219.png",
+    "style": "dramatic_manga",
+    "source": "dramatic-manga-24\\15.png",
+    "source_sha256": "cc3384c9fc3285606f1f1ba1683cbde9a12cb9b4f3fe602431b619f880ea70b1"
+  },
+  {
+    "id": "linli-220",
+    "label": "戏剧漫画·整理衣领",
+    "file": "linli-220.png",
+    "style": "dramatic_manga",
+    "source": "dramatic-manga-24\\16.png",
+    "source_sha256": "9e1cb9fc5f248d7b002364b7359cb2adcc4f8efa1566289449b9cac498ef62c1"
+  },
+  {
+    "id": "linli-221",
+    "label": "戏剧漫画·练琴后休息",
+    "file": "linli-221.png",
+    "style": "dramatic_manga",
+    "source": "dramatic-manga-24\\17.png",
+    "source_sha256": "7376c4cdd21b0860c8964049061d60237c1a5df5d9586a55e2b5e6a0392cb643"
+  },
+  {
+    "id": "linli-222",
+    "label": "戏剧漫画·无声一笑",
+    "file": "linli-222.png",
+    "style": "dramatic_manga",
+    "source": "dramatic-manga-24\\18.png",
+    "source_sha256": "285bd06dfdfb920527ac127b0ff36dc255b2f115a6b6c6f122a58b2903b5d9aa"
+  },
+  {
+    "id": "linli-223",
+    "label": "戏剧漫画·我不同意",
+    "file": "linli-223.png",
+    "style": "dramatic_manga",
+    "source": "dramatic-manga-24\\19.png",
+    "source_sha256": "317fe07e542dd749006114c311041309b057509623c93d89b23782443a2bd879"
+  },
+  {
+    "id": "linli-224",
+    "label": "戏剧漫画·终于松口气",
+    "file": "linli-224.png",
+    "style": "dramatic_manga",
+    "source": "dramatic-manga-24\\20.png",
+    "source_sha256": "94eae80f8adad988c5928e5c134a6c78f6ed04bf7825916194f172a6868de94c"
+  },
+  {
+    "id": "linli-225",
+    "label": "戏剧漫画·窗边听雨",
+    "file": "linli-225.png",
+    "style": "dramatic_manga",
+    "source": "dramatic-manga-24\\21.png",
+    "source_sha256": "3c0a8ec42c66066e6bfabf49ffbe0101c2fe1b9192a2f3162648e1e0b6e1cc3f"
+  },
+  {
+    "id": "linli-226",
+    "label": "戏剧漫画·收起雨伞",
+    "file": "linli-226.png",
+    "style": "dramatic_manga",
+    "source": "dramatic-manga-24\\22.png",
+    "source_sha256": "dd7feea1f60dcfa7714cf69f07a41a5d35429d7a8112627161a09cc1458b874a"
+  },
+  {
+    "id": "linli-227",
+    "label": "戏剧漫画·翻看旧照片",
+    "file": "linli-227.png",
+    "style": "dramatic_manga",
+    "source": "dramatic-manga-24\\23.png",
+    "source_sha256": "cec5cb0f974e8ac002de599c323ce5ec7c5837a053d6aac2dcafab04cc5723b0"
+  },
+  {
+    "id": "linli-228",
+    "label": "戏剧漫画·合上笔记",
+    "file": "linli-228.png",
+    "style": "dramatic_manga",
+    "source": "dramatic-manga-24\\24.png",
+    "source_sha256": "43e1100dc7cdfbdcf7b7d32aa59150895b7fac4d282d5d950b677daf16dba715"
+  },
+  {
+    "id": "linli-229",
+    "label": "奇想漫画·收到",
+    "file": "linli-229.png",
+    "style": "jojo_chat",
+    "source": "jojo-chat-stickers-24\\release-v1\\transparent\\01.png",
+    "source_sha256": "e968f15c413e7d0219240bd60e949d1b2874db405158386623813305b17eadd6"
+  },
+  {
+    "id": "linli-230",
+    "label": "奇想漫画·拒绝",
+    "file": "linli-230.png",
+    "style": "jojo_chat",
+    "source": "jojo-chat-stickers-24\\release-v1\\transparent\\02.png",
+    "source_sha256": "e8027dd23362075333a4d5206fb06899b04865a0164b2644b77dd9270dac081e"
+  },
+  {
+    "id": "linli-231",
+    "label": "奇想漫画·疑惑",
+    "file": "linli-231.png",
+    "style": "jojo_chat",
+    "source": "jojo-chat-stickers-24\\release-v1\\transparent\\03.png",
+    "source_sha256": "1d8b4ced4d070ee478cf3d16ae906e09e63a594c6bdf14b9957beb6e24fc04da"
+  },
+  {
+    "id": "linli-232",
+    "label": "奇想漫画·得意",
+    "file": "linli-232.png",
+    "style": "jojo_chat",
+    "source": "jojo-chat-stickers-24\\release-v1\\transparent\\04.png",
+    "source_sha256": "87d6df346fbba9151249871d4b7a0f20d1195b976f644206f470ecf677699ab3"
+  },
+  {
+    "id": "linli-233",
+    "label": "奇想漫画·早安",
+    "file": "linli-233.png",
+    "style": "jojo_chat",
+    "source": "jojo-chat-stickers-24\\release-v1\\transparent\\05.png",
+    "source_sha256": "650744ca2323e73678e6bf5cbb443aa64b27a1a8e758b612a55e1718677ae27f"
+  },
+  {
+    "id": "linli-234",
+    "label": "奇想漫画·晚安",
+    "file": "linli-234.png",
+    "style": "jojo_chat",
+    "source": "jojo-chat-stickers-24\\release-v1\\transparent\\06.png",
+    "source_sha256": "7d7d3e8366941128623aa3e6158e255020ada67167c509ef35543659f3adf394"
+  },
+  {
+    "id": "linli-235",
+    "label": "奇想漫画·谢谢",
+    "file": "linli-235.png",
+    "style": "jojo_chat",
+    "source": "jojo-chat-stickers-24\\release-v1\\transparent\\07.png",
+    "source_sha256": "000bff1bc0170b0cc7fca6da0b7f222c54b42bcec556db04832bfdc7f7ebfa21"
+  },
+  {
+    "id": "linli-236",
+    "label": "奇想漫画·抱歉",
+    "file": "linli-236.png",
+    "style": "jojo_chat",
+    "source": "jojo-chat-stickers-24\\release-v1\\transparent\\08.png",
+    "source_sha256": "c474668bb2da2107afc8a48b64d7bbed3c88a708159c2aa0af0ff410e1705b29"
+  },
+  {
+    "id": "linli-237",
+    "label": "奇想漫画·加油",
+    "file": "linli-237.png",
+    "style": "jojo_chat",
+    "source": "jojo-chat-stickers-24\\release-v1\\transparent\\09.png",
+    "source_sha256": "716dcb2cc4d93a830fd55222ebfa5595e4bdf540ef9bda81e034a0e6326c35f1"
+  },
+  {
+    "id": "linli-238",
+    "label": "奇想漫画·好耶",
+    "file": "linli-238.png",
+    "style": "jojo_chat",
+    "source": "jojo-chat-stickers-24\\release-v1\\transparent\\10.png",
+    "source_sha256": "ea02b7d2d2ea67315f4715090f58ee8a1c03cb8db3bf46ded8bf20c6cc29107e"
+  },
+  {
+    "id": "linli-239",
+    "label": "奇想漫画·生气",
+    "file": "linli-239.png",
+    "style": "jojo_chat",
+    "source": "jojo-chat-stickers-24\\release-v1\\transparent\\11.png",
+    "source_sha256": "bdf96287b55dd4e3fa5b56aacf67098fcb2d2400c1be7fd60ed6e1c0b70eda24"
+  },
+  {
+    "id": "linli-240",
+    "label": "奇想漫画·委屈",
+    "file": "linli-240.png",
+    "style": "jojo_chat",
+    "source": "jojo-chat-stickers-24\\release-v1\\transparent\\12.png",
+    "source_sha256": "6df7dcb3a8fb5bf65d4d2e00ebd843b8d6572f5a08925f8d2d63baee485cd667"
+  },
+  {
+    "id": "linli-241",
+    "label": "奇想漫画·尴尬",
+    "file": "linli-241.png",
+    "style": "jojo_chat",
+    "source": "jojo-chat-stickers-24\\release-v1\\transparent\\13.png",
+    "source_sha256": "f3b495706671d5a16c6de6050b3531d36ede74c5b38fc4add3420145394b45a7"
+  },
+  {
+    "id": "linli-242",
+    "label": "奇想漫画·无语",
+    "file": "linli-242.png",
+    "style": "jojo_chat",
+    "source": "jojo-chat-stickers-24\\release-v1\\transparent\\14.png",
+    "source_sha256": "72020f9283efba6fbde27dd20d80b1203d212f60567501c5b9564720c513d38e"
+  },
+  {
+    "id": "linli-243",
+    "label": "奇想漫画·震惊",
+    "file": "linli-243.png",
+    "style": "jojo_chat",
+    "source": "jojo-chat-stickers-24\\release-v1\\transparent\\15.png",
+    "source_sha256": "4c9a1b5c5846be66219c7b8b7825070f02c4ee18deef3fa8dd9bfb38ffc07389"
+  },
+  {
+    "id": "linli-244",
+    "label": "奇想漫画·心动",
+    "file": "linli-244.png",
+    "style": "jojo_chat",
+    "source": "jojo-chat-stickers-24\\release-v1\\transparent\\16.png",
+    "source_sha256": "81d04f26f796e0a99b2d88e4c7156c619f0af1fbf2ffe5a688d421e26b728e19"
+  },
+  {
+    "id": "linli-245",
+    "label": "奇想漫画·拥抱",
+    "file": "linli-245.png",
+    "style": "jojo_chat",
+    "source": "jojo-chat-stickers-24\\release-v1\\transparent\\17.png",
+    "source_sha256": "8a00a4177948dee0497a9db934a8a0e43a06e8cb5d412cbeb2a150437f58b93c"
+  },
+  {
+    "id": "linli-246",
+    "label": "奇想漫画·挥手",
+    "file": "linli-246.png",
+    "style": "jojo_chat",
+    "source": "jojo-chat-stickers-24\\release-v1\\transparent\\18.png",
+    "source_sha256": "91982397bc324cd0c8f215c865510794a1fa21019822b19823181b1690d94249"
+  },
+  {
+    "id": "linli-247",
+    "label": "奇想漫画·偷笑",
+    "file": "linli-247.png",
+    "style": "jojo_chat",
+    "source": "jojo-chat-stickers-24\\release-v1\\transparent\\19.png",
+    "source_sha256": "135153bb92db1cce9d696f8dfa1967dd7946c545b6fa42a738c084332b173f9c"
+  },
+  {
+    "id": "linli-248",
+    "label": "奇想漫画·哭",
+    "file": "linli-248.png",
+    "style": "jojo_chat",
+    "source": "jojo-chat-stickers-24\\release-v1\\transparent\\20.png",
+    "source_sha256": "d0c20dd4958bdd537924c2359284b96941ecb538132e168cddcbc806a6b7407c"
+  },
+  {
+    "id": "linli-249",
+    "label": "奇想漫画·累",
+    "file": "linli-249.png",
+    "style": "jojo_chat",
+    "source": "jojo-chat-stickers-24\\release-v1\\transparent\\21.png",
+    "source_sha256": "18d99ed650062cd8dc59fe4b0d914fbd90ecdb6ed1dc2d8c0dadcb7088f5fdae"
+  },
+  {
+    "id": "linli-250",
+    "label": "奇想漫画·思考",
+    "file": "linli-250.png",
+    "style": "jojo_chat",
+    "source": "jojo-chat-stickers-24\\release-v1\\transparent\\22.png",
+    "source_sha256": "3a63de049413c94715b552f21a870265c5c7d04ad4ce3508eccdd2ebda513a93"
+  },
+  {
+    "id": "linli-251",
+    "label": "奇想漫画·期待",
+    "file": "linli-251.png",
+    "style": "jojo_chat",
+    "source": "jojo-chat-stickers-24\\release-v1\\transparent\\23.png",
+    "source_sha256": "328d8fdaf778e4469a78e6fae0b4523dccfc043e8f74c10936dd0c699fd06548"
+  },
+  {
+    "id": "linli-252",
+    "label": "奇想漫画·再见",
+    "file": "linli-252.png",
+    "style": "jojo_chat",
+    "source": "jojo-chat-stickers-24\\release-v1\\transparent\\24.png",
+    "source_sha256": "36af19a67dc38edd1e2717cc151ca74aaa83088ef879bf43d0768eb9bad6c542"
+  },
+  {
+    "id": "linli-253",
+    "label": "动图·探头看看",
+    "file": "linli-253.gif",
+    "style": "animated",
+    "source": "animated-stickers\\20260924-set20\\release-v3\\01-peek.gif",
+    "source_sha256": "113e2a34904e2d1454a8c87c69538e0aadcaa11b58a4bf29f4b9c555bb5500f8"
+  },
+  {
+    "id": "linli-254",
+    "label": "动图·热茶吹气",
+    "file": "linli-254.gif",
+    "style": "animated",
+    "source": "animated-stickers\\20260924-set20\\release-v3\\02-hot-tea.gif",
+    "source_sha256": "afa8b4888e289482948d1dca61a0ae6e47239f51ea27797033fe7c5f9ba82508"
+  },
+  {
+    "id": "linli-255",
+    "label": "动图·抱枕犯困",
+    "file": "linli-255.gif",
+    "style": "animated",
+    "source": "animated-stickers\\20260924-set20\\release-v3\\03-sleepy-pillow.gif",
+    "source_sha256": "139306c8b4d6c692fe4718783402515d20e60d08fef127095dfa21a3ffb3cc65"
+  },
+  {
+    "id": "linli-256",
+    "label": "动图·窗边挥手",
+    "file": "linli-256.gif",
+    "style": "animated",
+    "source": "animated-stickers\\20260924-set20\\release-v3\\04-window-wave.gif",
+    "source_sha256": "1fd7d78080de0e7a8da49021c2504a4612398de21e773f1d1d3f7a8b0efd5f78"
+  },
+  {
+    "id": "linli-257",
+    "label": "动图·拆信惊喜",
+    "file": "linli-257.gif",
+    "style": "animated",
+    "source": "animated-stickers\\20260924-set20\\release-v3\\05-letter-surprise.gif",
+    "source_sha256": "7b8e4d682e7be5cbd11f05946b4b08b03ff7c0d0b3b08acf894491edcf2ed163"
+  },
+  {
+    "id": "linli-258",
+    "label": "动图·画小爱心",
+    "file": "linli-258.gif",
+    "style": "animated",
+    "source": "animated-stickers\\20260924-set20\\release-v3\\06-draw-heart.gif",
+    "source_sha256": "c477bc0376d124afc731a22f444b1bc629466e54c02ecd7e782ae894e6d1aaa7"
+  },
+  {
+    "id": "linli-259",
+    "label": "动图·撑伞等候",
+    "file": "linli-259.gif",
+    "style": "animated",
+    "source": "animated-stickers\\20260924-set20\\release-v3\\07-rainy-wait.gif",
+    "source_sha256": "919ec82889f18886c7f34990eaabbf658d9e16fe4ff1b7e713b57013efe07baf"
+  },
+  {
+    "id": "linli-260",
+    "label": "动图·眨眼调皮",
+    "file": "linli-260.gif",
+    "style": "animated",
+    "source": "animated-stickers\\20260924-set20\\release-v3\\08-wink.gif",
+    "source_sha256": "a294369ae6ad68f42a271d7788b390ae12b94809086e61709802fb67fd13e789"
+  },
+  {
+    "id": "linli-261",
+    "label": "动图·鼓腮假生气",
+    "file": "linli-261.gif",
+    "style": "animated",
+    "source": "animated-stickers\\20260924-set20\\release-v3\\09-mock-angry.gif",
+    "source_sha256": "5b4c00b272dfca1f2c132aa830f8f6a41c34ec24317adb53207cbd99ada7fc82"
+  },
+  {
+    "id": "linli-262",
+    "label": "动图·书后探头",
+    "file": "linli-262.gif",
+    "style": "animated",
+    "source": "animated-stickers\\20260924-set20\\release-v3\\10-book-peek.gif",
+    "source_sha256": "00e66cc0a14cb97c84ad7b45c887d5871022cfc0835312343186d5bffd190093"
+  },
+  {
+    "id": "linli-263",
+    "label": "动图·开心小跳舞",
+    "file": "linli-263.gif",
+    "style": "animated",
+    "source": "animated-stickers\\20260924-set20\\release-v3\\11-dance.gif",
+    "source_sha256": "e5ead69464e38cfe377c5d297984d3cb603e02789414ac1b29b933a2949ab1f2"
+  },
+  {
+    "id": "linli-264",
+    "label": "动图·撒花",
+    "file": "linli-264.gif",
+    "style": "animated",
+    "source": "animated-stickers\\20260924-set20\\release-v3\\12-confetti.gif",
+    "source_sha256": "abc45dfcf324dae04481956f07fe132b4e659f568b6a70e26d21ca38abb5387d"
+  },
+  {
+    "id": "linli-265",
+    "label": "动图·伸懒腰",
+    "file": "linli-265.gif",
+    "style": "animated",
+    "source": "animated-stickers\\20260924-set20\\release-v3\\13-stretch.gif",
+    "source_sha256": "62bba79a9347c12cc22869bfe0ac08818dc69008a8b1a62c63169e1896537602"
+  },
+  {
+    "id": "linli-266",
+    "label": "动图·开心跳跃",
+    "file": "linli-266.gif",
+    "style": "animated",
+    "source": "animated-stickers\\20260924-set20\\release-v3\\14-happy-jump.gif",
+    "source_sha256": "37bb082daa572941cc9a91fea347ac3d1de547f33eddeb06d6b75990544fb03d"
+  },
+  {
+    "id": "linli-267",
+    "label": "动图·害羞脸红",
+    "file": "linli-267.gif",
+    "style": "animated",
+    "source": "animated-stickers\\20260924-set20\\release-v3\\15-shy-blush.gif",
+    "source_sha256": "e34f577bd7a41b725a31eabc12964e86e7ca5c1d22669aeed0ae6bf73c22b9aa"
+  },
+  {
+    "id": "linli-268",
+    "label": "动图·难过振作",
+    "file": "linli-268.gif",
+    "style": "animated",
+    "source": "animated-stickers\\20260924-set20\\release-v3\\16-sad-recover.gif",
+    "source_sha256": "50d97b8ba36220e7a4267412a239207a84bdb93133472fe2fdf57e3ddbf8dd21"
+  },
+  {
+    "id": "linli-269",
+    "label": "动图·安慰拥抱",
+    "file": "linli-269.gif",
+    "style": "animated",
+    "source": "animated-stickers\\20260924-set20\\release-v3\\17-comfort-hug.gif",
+    "source_sha256": "f94a8b7ca47a68a1a5a37a8b809f282c6bc322da5cc7f22add562041f052c040"
+  },
+  {
+    "id": "linli-270",
+    "label": "动图·认真思考",
+    "file": "linli-270.gif",
+    "style": "animated",
+    "source": "animated-stickers\\20260924-set20\\release-v3\\18-thinking.gif",
+    "source_sha256": "137ba01a9ced1c0ea1f2b068cc701f479814bc0d6f9aad19de75b78636446034"
+  },
+  {
+    "id": "linli-271",
+    "label": "动图·松一口气",
+    "file": "linli-271.gif",
+    "style": "animated",
+    "source": "animated-stickers\\20260924-set20\\release-v3\\19-relieved-sigh.gif",
+    "source_sha256": "8ff5d790300f27a8d5f42dec145799af5a6160e4e82fcb2172b1d876f0c89285"
+  },
+  {
+    "id": "linli-272",
+    "label": "动图·困困挥手",
+    "file": "linli-272.gif",
+    "style": "animated",
+    "source": "animated-stickers\\20260924-set20\\release-v3\\20-sleepy-wave.gif",
+    "source_sha256": "6c1265f67dc6e2c3e447e238e2948666c2d5f0e16c76d5699a838e5099ee4eb8"
   }
 ]

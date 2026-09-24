@@ -5491,6 +5491,15 @@ async def _run_reply_pipeline_for_letter(
             letters_adapter.build_reply_context(ReplyMode(exact_mode)),
             letter.get('image_reply_settings', {}),
         )
+        if exact_mode == ReplyMode.TEXT_LETTER.value:
+            from original_client_letter_contract import _published
+            context = replace(context, sticker_history=tuple(
+                row.get('reply_sticker_id')
+                for row in store.letters
+                if row.get('letter_id') != letter_id
+                and row.get('letter_status') == 'COMPLETED'
+                and _published(row, now=None)
+            ))
         return await asyncio.wait_for(
             reply_pipeline.run(request, context),
             timeout=_reply_pipeline_timeout_seconds(exact_mode),
