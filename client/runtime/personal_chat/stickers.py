@@ -4,8 +4,8 @@ import re
 from runtime.letter_stickers.selection import allowed_stickers, _labels
 
 
-def choices(rows, view):
-    delivered = [r for r in rows if r.get('channel') == 'wechat' and r.get('delivery_status') == 'DELIVERED']
+def choices(rows, view, *, channel='wechat'):
+    delivered = [r for r in rows if r.get('channel') == channel and r.get('delivery_status') == 'DELIVERED']
     since = 0
     for row in reversed(delivered):
         if row.get('sticker_delivery_status') in {'SENDING', 'DELIVERED', 'UNKNOWN'}:

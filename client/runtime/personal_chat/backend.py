@@ -82,8 +82,8 @@ async def generate(server, event, row):
     context = adapter.build_reply_context(ReplyMode.FUTURE_IM, future_im_enabled=True)
     from runtime.image_reply import photo_reply_context
     context = photo_reply_context(context, row['image_reply_settings'], channel=event.channel)
-    from .stickers import choices, extract
-    sticker_choices = choices(server.store.personal_chats, context.private_behavior) if event.channel == 'wechat' else {}
+    from .stickers import choices
+    sticker_choices = choices(server.store.personal_chats, context.private_behavior, channel=event.channel)
     delayed_delivery = False
     try:
         sent_at = datetime.fromisoformat(row['user_sent_at']) if row.get('user_sent_at') else None
