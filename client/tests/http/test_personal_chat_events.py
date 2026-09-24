@@ -23,6 +23,14 @@ def test_qq_faces_preserve_owner_boundary(changes):
     assert owner_message('qq', payload, account_id='100', owner_id='200') is None
 
 
+def test_qq_quoted_reply_keeps_new_text_without_inventing_quoted_content():
+    segments = [{'type': 'reply', 'data': {'id': '42'}},
+                {'type': 'text', 'data': {'text': 'new message'}}]
+    result = owner_message('qq', qq(message=segments), account_id='100', owner_id='200')
+    assert result.text == 'new message'
+    assert owner_message('qq', qq(message=segments[:1]), account_id='100', owner_id='200') is None
+
+
 def qq(**changes):
     return {"post_type": "message", "message_type": "private", "self_id": 100,
             "user_id": 200, "message_id": 1, "message": [{"type": "text", "data": {"text": "晚饭\n吃什么？"}}], **changes}

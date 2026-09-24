@@ -43,7 +43,7 @@ def owner_message(channel: str, payload: Mapping, *, account_id: str, owner_id: 
                 or str(payload.get("user_id", "")) != owner_id or owner_id == account_id):
             return None
         segments = payload.get("message")
-        if not isinstance(segments, list) or any(not isinstance(s, dict) or s.get("type") not in {"text", "image", "face"}
+        if not isinstance(segments, list) or any(not isinstance(s, dict) or s.get("type") not in {"text", "image", "face", "reply"}
             or not isinstance(s.get("data"), dict) for s in segments):
             return None
         if any(s['type'] == 'text' and not isinstance(s['data'].get('text'), str) for s in segments):
@@ -55,7 +55,7 @@ def owner_message(channel: str, payload: Mapping, *, account_id: str, owner_id: 
         # QQ faces are not downloadable pictures. Preserve the surrounding text
         # without guessing an emotion from an opaque platform-specific face ID.
         text = "".join(s['data']['text'] if s['type'] == 'text' else
-                       '[图片]' if s['type'] == 'image' else '[QQ表情]' for s in segments)
+                       '[图片]' if s['type'] == 'image' else '[QQ表情]' for s in segments if s['type'] != 'reply')
         message_id = payload.get("message_id")
     elif channel == "wechat":
         if (payload.get("group_id") or payload.get("message_type") != 1
