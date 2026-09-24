@@ -47,10 +47,14 @@ def _pixels(path):
     return hashlib.sha256(raw).hexdigest(), width, height, 'data:image/jpeg;base64,' + base64.b64encode(output.getvalue()).decode('ascii')
 
 
-async def describe_image(server, path, source='generated'):
-    if source not in {'generated', 'user'}:
-        raise ValueError('IMAGE_SOURCE_INVALID')
-    digest, width, height, uri = await asyncio.to_thread(_pixels, path)
+def _vision_connection(server):
+    from original_client_relay_api import RELAY_BASE
+    # An explicitly selected Olivia cloud account also supplies its vision model.
+    # Never send the text-provider key to another provider or use a custom GPU URL.
+    cloud_url = os.environ.get('OLIVIA_GPU_API_URL', '').rstrip('/')
+    cloud_key = os.environ.get('OLIVIA_GPU_API_KEY', '')
+    if cloud_url + '/v1' == RELAY_BASE and cloud_key.startswith('olivia-'):
+        return RELAY_BASE, cloud_key
     config = server.letters_adapter.config
     key = os.environ.get(getattr(config, 'api_key_env', ''), '')
     gateway = server.letters_adapter.gateway
@@ -58,14 +62,26 @@ async def describe_image(server, path, source='generated'):
     if callable(getattr(gateway, '_key', None)):
         key = gateway._key() or key
     url = str(getattr(config, 'base_url', '')).rstrip('/')
+    return url, key
+
+
+async def describe_image(server, path, source='generated'):
+    if source not in {'generated', 'user'}:
+        raise ValueError('IMAGE_SOURCE_INVALID')
+    digest, width, height, uri = await asyncio.to_thread(_pixels, path)
+    url, key = _vision_connection(server)
     if not key or not url:
         raise RuntimeError('IMAGE_VISION_NOT_CONFIGURED')
     payload = {'model': 'qwen3.7-flash', 'stream': False, 'max_tokens': 512, 'response_format': {'type': 'json_object'},
                'messages': [{'role': 'system', 'content': _PROMPT},
                             {'role': 'user', 'content': [{'type': 'text', 'text': '请观察图片。'},
                                  {'type': 'image_url', 'image_url': {'url': uri}}]}]}
+    from original_client_relay_api import RELAY_BASE
+    from runtime.remote_generation import gpu_tls_context
+    tls = {'ssl': gpu_tls_context()} if url == RELAY_BASE else {}
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60)) as session:
         async with session.post(url + '/chat/completions', json=payload, allow_redirects=False,
+                                **tls,
                                 headers={'Authorization': 'Bearer ' + key,
                                          'X-Request-ID': 'image-observation-' + digest[:32]}) as response:
             if response.status != 200:

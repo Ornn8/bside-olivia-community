@@ -13,6 +13,19 @@ def envelope(**values):
     return json.dumps(body | values, ensure_ascii=False)
 
 
+@pytest.mark.parametrize('marker', ['[QQ表情]', '(QQ表情)', '（QQ表情）', '【QQ表情】'])
+@pytest.mark.parametrize('delivery', ['text', 'voice'])
+def test_incoming_face_placeholder_cannot_leak_into_reply_or_speech(marker, delivery):
+    decision = decode(envelope(text='那画面也太可爱了吧' + marker + '，哈哈🙂', delivery=delivery),
+                      user='小猫在踩奶[QQ表情]', now=1)
+    assert decision['text'] == '那画面也太可爱了吧，哈哈🙂'
+
+
+def test_placeholder_only_reply_is_rejected_instead_of_sending_empty_text():
+    with pytest.raises(ValueError, match='DECISION_INVALID'):
+        decode(envelope(text='[QQ表情]'), user='[QQ表情]', now=1)
+
+
 def test_explicit_followup_persists_deadline_and_temporary_pause_expires():
     now = datetime(2026, 9, 13, 12, tzinfo=LOCAL)
     later = now + timedelta(days=1)

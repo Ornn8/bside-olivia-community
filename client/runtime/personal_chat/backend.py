@@ -28,7 +28,15 @@ def _publish_status(server, runtime):
         state = row.get("delivery_status")
         if state in {"GENERATING", "GENERATED", "SENDING", "DELIVERY_UNCONFIRMED", "DELIVERED", "FAILED"}:
             counts[state] = counts.get(state, 0) + 1
-    value = {"channels": dict(runtime["status"]), "errors": dict(runtime.get("errors", {})),
+    errors = dict(runtime.get('errors', {}))
+    latest = {row.get('channel'): row for row in server.store.personal_chats}
+    for channel, row in latest.items():
+        if channel in runtime['status'] and row.get('delivery_status') == 'FAILED':
+            code = row.get('error_code', '')
+            errors.setdefault(channel, code if isinstance(code, str) and
+                              re.fullmatch(r'(?:PERSONAL_CHAT|IMAGE|LLM)_[A-Z0-9_]{1,80}', code)
+                              else 'PERSONAL_CHAT_GENERATION_FAILED')
+    value = {"channels": dict(runtime["status"]), "errors": errors,
              "last_seen_at": dict(runtime.get("last_seen_at", {})),
              "delivery_health": dict(runtime.get("delivery_health", {})),
              "e2e_verified_at": dict(runtime.get("e2e_verified_at", {})),
@@ -57,6 +65,10 @@ async def generate(server, event, row):
         if asyncio.get_running_loop().time() >= deadline:
             raise RuntimeError("PERSONAL_CHAT_MEMORY_UNAVAILABLE")
         await asyncio.sleep(.25)
+    # Freeze before generation so the writer and attachment use one preference.
+    if 'image_reply_settings' not in row:
+        row['image_reply_settings'] = server.video_reply_settings_store.image_snapshot()
+        server._persist_store_state()
     from runtime.image_understanding import understand_incoming, incoming_context
     await understand_incoming(server, event, row)
     content = event.text + incoming_context(row)
@@ -68,8 +80,10 @@ async def generate(server, event, row):
                                          datetime.now().timestamp())
     voice_available = event.channel != 'wechat' and bool(row.get('voice_available')) and server._voice_reply_configured(os.environ)
     context = adapter.build_reply_context(ReplyMode.FUTURE_IM, future_im_enabled=True)
-    from .stickers import choices, extract
-    sticker_choices = choices(server.store.personal_chats, context.private_behavior) if event.channel == 'wechat' else {}
+    from runtime.image_reply import photo_reply_context
+    context = photo_reply_context(context, row['image_reply_settings'], channel=event.channel)
+    from .stickers import choices
+    sticker_choices = choices(server.store.personal_chats, context.private_behavior, channel=event.channel)
     delayed_delivery = False
     try:
         sent_at = datetime.fromisoformat(row['user_sent_at']) if row.get('user_sent_at') else None
@@ -154,6 +168,14 @@ async def commit(server, row):
             failures.append(exc)
     if failures:
         raise failures[0]
+
+
+async def prepare_chat_photo(server, row, send):
+    from runtime.image_reply import prepare
+    from .service import photo_notice
+    await prepare(server, row, row.get('content', ''), row['reply_text'], channel='qq',
+                  on_ready=lambda: photo_notice(row, send, server._persist_store_state,
+                      'progress', '好，我准备一张照片，稍等一下。'))
 
 
 async def deliver_photo(server, row, send):
@@ -356,11 +378,10 @@ def install_personal_chat(app, server):
                     return key in allowed_stickers(context.private_behavior)
                 except Exception:
                     return False
-            from runtime.image_reply import prepare as prepare_photo
             service = PersonalChatService(server.store.personal_chats, server._persist_store_state,
                 lambda event, row: generate(server, event, row), lambda row: recoverable_commit(server, row), bindings,
                 sticker_allowed=sticker_allowed, photo=lambda row, send: deliver_photo(server, row, send),
-                prepare_photo=lambda row: prepare_photo(server, row, row.get('content', ''), row['reply_text'], channel='qq'))
+                prepare_photo=lambda row, send: prepare_chat_photo(server, row, send))
             from .probe import ProbeJournal
             journal = ProbeJournal(server._state_root() / "personal-chat-diagnostics")
             runtime = {"stop": stop_event, "tasks": [], "service": service, "status": {},
@@ -431,6 +452,7 @@ def install_personal_chat(app, server):
                     for attempt in range(2):
                         try:
                             await service.handle(event, send)
+                            runtime['errors'].pop(event.channel, None)
                             break
                         except Exception:
                             retryable = any(r.get('delivery_status') == 'FAILED' and r.get('generation_attempts', 0) < 2

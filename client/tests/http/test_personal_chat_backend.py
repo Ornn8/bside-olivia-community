@@ -67,7 +67,10 @@ def test_backend_generate_uses_real_pipeline_persona_memory_and_world(monkeypatc
         async def complete(self, messages, *, request_id=None):
             calls.append(tuple(dict(m) for m in messages))
             from tests.http.test_personal_chat_decision import envelope
-            return GatewayResponse(text=envelope(text="那你明天再跟我说嘛。"), request_id=request_id or "test",
+            from runtime.personal_chat.presentation import CURRENT
+            candidates = CURRENT.get()['sticker_choices']
+            assert candidates
+            return GatewayResponse(text=envelope(text="那你明天再跟我说嘛。", sticker=next(iter(candidates))), request_id=request_id or "test",
                                    provider="synthetic", model="synthetic")
     adapter = local_server.LetterAdapter(GatewayConfig(provider="openai_compatible",
         base_url="http://127.0.0.1:9/v1", model="synthetic", persona_v2_enabled=True,
@@ -85,15 +88,22 @@ def test_backend_generate_uses_real_pipeline_persona_memory_and_world(monkeypatc
         MEMORY_READY_REPLY_TIMEOUT_SECONDS=.1, _conversation_memory_ready_for_reply=lambda: True,
         _CURRENT_LETTER_MEMORY_SOURCE=source, _CURRENT_LETTER_RECEIPT=receipt,
         GatewayRequestScope=GatewayRequestScope, supports_scoped_reasoning=lambda config: False,
-        _reply_pipeline_timeout_seconds=lambda mode: 2, store=SimpleNamespace(personal_chats=[]))
+        _reply_pipeline_timeout_seconds=lambda mode: 2, store=SimpleNamespace(personal_chats=[
+            dict(channel='qq', delivery_status='DELIVERED') for _ in range(4)]),
+        video_reply_settings_store=SimpleNamespace(image_snapshot=lambda: {'enabled': True, 'resolution': '1K'}),
+        _persist_store_state=lambda: None)
     event = PersonalMessage("qq", "100", "200", "1", "今天钢琴练得怎么样？")
     original_run = pipeline.run
     async def bounded_run(request, context):
         assert request.max_input_chars == 40000 + len(event.text)
+        assert any(f.fact_id == 'runtime.photo_attachment' and '已开启' in f.statement
+                   for f in context.world_facts)
         return await original_run(request, context)
     monkeypatch.setattr(pipeline, 'run', bounded_run)
     async def scenario():
-        result = await backend.generate(server, event, {"life_received_at": datetime.now(timezone.utc).isoformat()})
+        row = {"life_received_at": datetime.now(timezone.utc).isoformat()}
+        result = await backend.generate(server, event, row)
+        assert row['sticker_id'].startswith('linli-')
         assert source.get() == "previous-source" and receipt.get() is None
         return result
     assert asyncio.run(scenario()) == "那你明天再跟我说嘛。"

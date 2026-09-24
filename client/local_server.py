@@ -5450,11 +5450,13 @@ async def _run_reply_pipeline_for_letter(
                 else None
             ),
         )
+        from runtime.image_reply import photo_reply_context
+        context = photo_reply_context(
+            letters_adapter.build_reply_context(ReplyMode(exact_mode)),
+            letter.get('image_reply_settings', {}),
+        )
         return await asyncio.wait_for(
-            reply_pipeline.run(
-                request,
-                letters_adapter.build_reply_context(ReplyMode(exact_mode)),
-            ),
+            reply_pipeline.run(request, context),
             timeout=_reply_pipeline_timeout_seconds(exact_mode),
         )
     finally:

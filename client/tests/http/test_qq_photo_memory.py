@@ -27,6 +27,17 @@ def observation(source='generated'):
                 observed_at=datetime.now(timezone.utc).isoformat(), evidence_kind='visual_observation')
 
 
+def test_vision_uses_selected_olivia_cloud_account_not_text_provider(monkeypatch):
+    monkeypatch.setenv('OLIVIA_GPU_API_URL', 'https://175.24.191.6')
+    monkeypatch.setenv('OLIVIA_GPU_API_KEY', 'olivia-synthetic-photo-account')
+    server = SimpleNamespace(letters_adapter=SimpleNamespace(
+        config=SimpleNamespace(base_url='https://api.deepseek.com/v1', api_key_env=''),
+        gateway=SimpleNamespace(_key=lambda: 'synthetic-deepseek-secret')))
+    assert vision._vision_connection(server) == ('https://175.24.191.6/v1', 'olivia-synthetic-photo-account')
+    monkeypatch.setenv('OLIVIA_GPU_API_URL', 'https://custom.example')
+    assert vision._vision_connection(server) == ('https://api.deepseek.com/v1', 'synthetic-deepseek-secret')
+
+
 def test_qq_images_owner_only_and_burst_preserves_original_ids():
     payload = dict(post_type='message', message_type='private', self_id=100, user_id=200,
                    message_id=1, message=[dict(type='image', data={'url': 'https://gchat.qpic.cn/a.png'})])
@@ -212,13 +223,15 @@ def test_legacy_photo_recovery_does_not_duplicate_text_on_replay():
     asyncio.run(scenario())
 
 
-def test_qq_waits_for_photo_before_delivering_text():
+@pytest.mark.parametrize('commit_fails', [False, True])
+def test_qq_waits_for_photo_before_delivering_text(commit_fails):
     async def scenario():
         rows, sent = [], []
         started, finish = asyncio.Event(), asyncio.Event()
         async def generate(event, row): return '一起送达。'
-        async def commit(row): pass
-        async def prepare(row):
+        async def commit(row):
+            if commit_fails: raise RuntimeError('synthetic memory failure')
+        async def prepare(row, send):
             started.set()
             await finish.wait()
             row['image_status'] = 'COMPLETED'
@@ -236,10 +249,16 @@ def test_qq_waits_for_photo_before_delivering_text():
         await asyncio.wait_for(started.wait(), 1)
         assert sent == [] and rows[0]['delivery_status'] == 'GENERATED'
         finish.set()
-        await task
+        if commit_fails:
+            with pytest.raises(RuntimeError): await task
+        else:
+            await task
         await asyncio.gather(*service.photo_tasks.values())
         assert sent == ['text', 'image']
-        await service.handle(event, send)
+        if commit_fails:
+            with pytest.raises(RuntimeError): await service.handle(event, send)
+        else:
+            await service.handle(event, send)
         assert sent == ['text', 'image']
     asyncio.run(scenario())
 

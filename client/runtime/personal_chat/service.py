@@ -6,6 +6,25 @@ from datetime import datetime, timezone
 from .events import PersonalMessage
 
 
+async def photo_notice(row, send, persist, kind, text):
+    """At most one attempt per notice, including uncertain platform delivery."""
+    key = 'image_' + kind + '_notice'
+    if row.get(key):
+        return
+    row[key] = 'SENDING'
+    persist()
+    try:
+        receipt = await send(text)
+        row[key] = 'DELIVERED' if isinstance(receipt, (str, int)) and not isinstance(receipt, bool) and str(receipt) else 'UNKNOWN'
+    except asyncio.CancelledError:
+        row[key] = 'UNKNOWN'
+        raise
+    except Exception:
+        row[key] = 'UNKNOWN'
+    finally:
+        persist()
+
+
 class PersonalChatService:
     def __init__(self, rows, persist, generate, commit, bindings, *, sticker_allowed=lambda key: True, photo=None, prepare_photo=None):
         self.rows, self.persist = rows, persist
@@ -72,8 +91,8 @@ class PersonalChatService:
                 # Generated-but-unsent is resumable. SENDING is deliberately
                 # not: the platform may have delivered before a crash/timeout.
                 if row.get("delivery_status") == "DELIVERED":
-                    await self.commit(row)
                     self._schedule_photo(row, send)
+                    await self.commit(row)
                     return
                 if row.get('delivery_status') == 'SKIPPED':
                     return
@@ -132,8 +151,11 @@ class PersonalChatService:
                         raise ValueError("PERSONAL_CHAT_REPLY_INVALID")
                     row.update(reply_text=text, delivery_status="GENERATED")
                     self.persist()
-                except BaseException:
-                    row.update(delivery_status="FAILED", letter_status="FAILED", error_code="PERSONAL_CHAT_GENERATION_FAILED")
+                except BaseException as exc:
+                    code = str(exc)
+                    if not re.fullmatch(r'(?:PERSONAL_CHAT|IMAGE|LLM)_[A-Z0-9_]{1,80}', code):
+                        code = 'PERSONAL_CHAT_GENERATION_FAILED'
+                    row.update(delivery_status="FAILED", letter_status="FAILED", error_code=code)
                     self.persist()
                     raise
             if callable(getattr(send, 'is_available', None)) and not send.is_available():
@@ -155,7 +177,7 @@ class PersonalChatService:
                     self.persist()
                     return
             if event.channel == 'qq' and callable(self.prepare_photo) and callable(getattr(send, 'image', None)):
-                await self.prepare_photo(row)
+                await self.prepare_photo(row, send)
                 if callable(getattr(send, 'is_available', None)) and not send.is_available():
                     raise RuntimeError('PERSONAL_CHAT_CHANNEL_DISCONNECTED')
             audio = row.get('prepared_audio')
@@ -215,8 +237,10 @@ class PersonalChatService:
                     except Exception:
                         row['sticker_delivery_status'] = 'UNKNOWN'
                 self.persist()
-            await self.commit(row)
             self._schedule_photo(row, send)
+            if event.channel == 'qq' and row.get('image_status') == 'FAILED':
+                await photo_notice(row, send, self.persist, 'failure', '照片这次没生成成功，没能发给你。稍后再试一下。')
+            await self.commit(row)
 
     def _schedule_photo(self, row, send):
         # New replies already prepared their photo; retain this recovery path for saved replies.
@@ -233,6 +257,9 @@ class PersonalChatService:
             except Exception:
                 row['image_error_code'] = 'PERSONAL_CHAT_IMAGE_UNAVAILABLE'
                 self.persist()
+                if row.get('image_delivery_status') != 'DELIVERED':
+                    await photo_notice(row, send, self.persist, 'failure',
+                        '照片没能确认发送成功，先告诉你一声。')
             finally:
                 self.photo_tasks.pop(key, None)
         self.photo_tasks[key] = asyncio.create_task(deliver())
