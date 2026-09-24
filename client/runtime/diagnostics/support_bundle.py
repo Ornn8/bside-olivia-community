@@ -227,6 +227,18 @@ def _project_install(value: object) -> dict[str, object]:
     return result
 
 
+def project_chat_task(value: Mapping[str, object]) -> dict[str, object]:
+    result = {}
+    if value.get('channel') in ('qq', 'wechat'):
+        result['channel'] = value['channel']
+    if value.get('delivery_status') in ('GENERATING', 'GENERATED', 'SENDING', 'DELIVERY_UNCONFIRMED', 'DELIVERED', 'FAILED', 'SKIPPED'):
+        result['delivery_status'] = value['delivery_status']
+    code = value.get('consumer_error_code')
+    if isinstance(code, str) and _CODE_RE.fullmatch(code):
+        result['consumer_error_code'] = code
+    return result
+
+
 def _project_tasks(value: object) -> dict[str, object]:
     source = _mapping(value)
     pending = source.get("pending")
@@ -241,6 +253,7 @@ def _project_tasks(value: object) -> dict[str, object]:
     for index, value in enumerate(raw_items, start=1):
         item = _mapping(value)
         projected: dict[str, object] = {"index": index, "status": _status(item.get("status"))}
+        projected.update(project_chat_task(item))
         from .photo import project_photo
         projected.update(project_photo(item))
         if item.get('reply_capability_tier') in ('text', 'audio', 'video'):

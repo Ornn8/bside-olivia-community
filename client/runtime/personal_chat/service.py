@@ -1,18 +1,44 @@
 """One owner, two transports, and the existing canonical exchange consumers."""
 import asyncio
 import re
+import inspect
+from contextvars import ContextVar
 from datetime import datetime, timezone
 
 from .events import PersonalMessage
+QUEUE_NOTICE = ContextVar('personal_chat_queue_notice', default=None)
+
+
+def queue_notice_text(rows):
+    from .initiative_profile import profile_from_rows
+    profile = profile_from_rows(rows)
+    if profile.caution != 'normal':
+        return '我这边还要等一会儿，晚点再回复你，你先忙自己的就好。'
+    return {
+        'reserved': '我这边还需要等一会儿，稍后再回复你。',
+        'familiar': '我这边还得等一会儿，等好了再跟你聊。',
+        'trusted': '稍等我一会儿，等好了我就来找你聊，你先忙。',
+        'close': '等我一会儿呀，等好了就回来陪你聊，不用一直守着。',
+        'committed': '让我等这一会儿，等好了就回来陪你。你先做自己的事，别一直等着呀。',
+    }[profile.tier]
+
+
+async def persist_state(persist):
+    result = persist()
+    if inspect.isawaitable(result):
+        await result
 
 
 async def photo_notice(row, send, persist, kind, text):
+    await delivery_notice(row, send, persist, 'image_' + kind + '_notice', text)
+
+
+async def delivery_notice(row, send, persist, key, text):
     """At most one attempt per notice, including uncertain platform delivery."""
-    key = 'image_' + kind + '_notice'
     if row.get(key):
         return
     row[key] = 'SENDING'
-    persist()
+    await persist_state(persist)
     try:
         receipt = await send(text)
         row[key] = 'DELIVERED' if isinstance(receipt, (str, int)) and not isinstance(receipt, bool) and str(receipt) else 'UNKNOWN'
@@ -22,7 +48,7 @@ async def photo_notice(row, send, persist, kind, text):
     except Exception:
         row[key] = 'UNKNOWN'
     finally:
-        persist()
+        await persist_state(persist)
 
 
 class PersonalChatService:
@@ -37,11 +63,27 @@ class PersonalChatService:
         # One owner shares memory/world across both channels; serialize exchanges.
         self.lock = asyncio.Lock()
         self.batch_lock = asyncio.Lock()
+        self.proactive_generation = None
+        self.user_revision = 0
+
+    async def _generate(self, event, row, send):
+        async def queued():
+            if event.channel == 'qq' and row.get('origin') != 'proactive':
+                await delivery_notice(row, send, self.persist, 'queue_notice',
+                    queue_notice_text(self.rows))
+        token = QUEUE_NOTICE.set(queued)
+        try:
+            return await self.generate(event, row)
+        finally:
+            QUEUE_NOTICE.reset(token)
 
     async def handle(self, event, send):
         from .events import combine
         if not isinstance(event, PersonalMessage) or self.bindings.get(event.channel) != (event.account_id, event.owner_id):
             raise ValueError('PERSONAL_CHAT_OWNER_MISMATCH')
+        self.user_revision += 1
+        if self.proactive_generation is not None:
+            self.proactive_generation.cancel()
         # A platform replay can regroup a previously delivered burst differently.
         # Resolve original IDs before choosing a new canonical exchange identity.
         async with self.batch_lock:
@@ -73,17 +115,20 @@ class PersonalChatService:
                 await self._handle_one(fresh, send.for_exchange(fresh) if callable(getattr(send, 'for_exchange', None)) else send)
 
     async def proactive(self, event, send, eligible=lambda: True, followup=None):
+        revision = self.user_revision
         async with self.batch_lock:
-            if not eligible():
+            if not eligible() or revision != self.user_revision:
                 return
-            await self._handle_one(event, send, proactive=True, followup=followup)
+            await self._handle_one(event, send, proactive=True, followup=followup, proactive_revision=revision)
 
-    async def _handle_one(self, event, send, proactive=False, followup=None):
+    async def _handle_one(self, event, send, proactive=False, followup=None, proactive_revision=None):
         if not isinstance(event, PersonalMessage) or self.bindings.get(event.channel) != (event.account_id, event.owner_id):
             raise ValueError("PERSONAL_CHAT_OWNER_MISMATCH")
         if (not event.text.strip() and not proactive) or len(event.text) > 10000:
             raise ValueError("PERSONAL_CHAT_INPUT_INVALID")
         async with self.lock:
+            if proactive and proactive_revision != self.user_revision:
+                return
             row = next((r for r in self.rows if r.get("letter_id") == event.exchange_id), None)
             if row is not None:
                 if row.get("content") != event.text:
@@ -107,7 +152,7 @@ class PersonalChatService:
                     # after this owner's conversation has moved on elsewhere.
                     row.update(delivery_status='SKIPPED', letter_status='SKIPPED',
                                error_code='PERSONAL_CHAT_STALE_REPLY')
-                    self.persist()
+                    await persist_state(self.persist)
                     return
                 if row.get("delivery_status") not in {"GENERATED", "FAILED", "GENERATING"}:
                     raise RuntimeError("PERSONAL_CHAT_DELIVERY_REQUIRES_ATTENTION")
@@ -127,7 +172,7 @@ class PersonalChatService:
                     if followup:
                         row.update(followup_source_id=followup['letter_id'], followup_quote=followup['followup_quote'])
                 self.rows.append(row)
-                self.persist()
+                await persist_state(self.persist)
             if row.get("delivery_status") != "GENERATED":
                 if row.get("generation_attempts", 0) >= 2:
                     raise RuntimeError("PERSONAL_CHAT_GENERATION_RETRY_EXHAUSTED")
@@ -139,24 +184,44 @@ class PersonalChatService:
                     row.pop('followup_quote', None)
                 row["generation_attempts"] = row.get("generation_attempts", 0) + 1
                 row.update(delivery_status="GENERATING", letter_status="PROCESSING")
-                self.persist()
+                await persist_state(self.persist)
                 try:
                     row['voice_available'] = callable(getattr(send, 'audio', None))
-                    text = await self.generate(event, row)
+                    if proactive:
+                        if proactive_revision != self.user_revision:
+                            row.update(delivery_status='SKIPPED', letter_status='SKIPPED',
+                                       error_code='PERSONAL_CHAT_USER_PRIORITY')
+                            await persist_state(self.persist)
+                            return
+                        task = asyncio.create_task(self._generate(event, row, send))
+                        self.proactive_generation = task
+                        try:
+                            text = await task
+                        except asyncio.CancelledError:
+                            if asyncio.current_task().cancelling():
+                                raise
+                            row.update(delivery_status='SKIPPED', letter_status='SKIPPED',
+                                       error_code='PERSONAL_CHAT_USER_PRIORITY')
+                            await persist_state(self.persist)
+                            return
+                        finally:
+                            self.proactive_generation = None
+                    else:
+                        text = await self._generate(event, row, send)
                     if proactive and text.strip() == '[[skip]]':
                         row.update(delivery_status='SKIPPED', letter_status='SKIPPED')
-                        self.persist()
+                        await persist_state(self.persist)
                         return
                     if not isinstance(text, str) or not text.strip() or len(text) > 10000:
                         raise ValueError("PERSONAL_CHAT_REPLY_INVALID")
                     row.update(reply_text=text, delivery_status="GENERATED")
-                    self.persist()
+                    await persist_state(self.persist)
                 except BaseException as exc:
                     code = str(exc)
                     if not re.fullmatch(r'(?:PERSONAL_CHAT|IMAGE|LLM)_[A-Z0-9_]{1,80}', code):
                         code = 'PERSONAL_CHAT_GENERATION_FAILED'
                     row.update(delivery_status="FAILED", letter_status="FAILED", error_code=code)
-                    self.persist()
+                    await persist_state(self.persist)
                     raise
             if callable(getattr(send, 'is_available', None)) and not send.is_available():
                 raise RuntimeError('PERSONAL_CHAT_CHANNEL_DISCONNECTED')
@@ -166,6 +231,11 @@ class PersonalChatService:
             if not text:
                 raise ValueError('PERSONAL_CHAT_REPLY_INVALID')
             if proactive:
+                if proactive_revision != self.user_revision:
+                    row.update(delivery_status='SKIPPED', letter_status='SKIPPED',
+                               error_code='PERSONAL_CHAT_USER_PRIORITY')
+                    await persist_state(self.persist)
+                    return
                 normalized = lambda value: re.sub(r'[\s。.]', '', value)
                 cutoff = datetime.now(timezone.utc).timestamp() - 86400
                 if any(old is not row and old.get('delivery_status') in {'DELIVERED', 'SENDING', 'DELIVERY_UNCONFIRMED'}
@@ -174,12 +244,8 @@ class PersonalChatService:
                        for old in self.rows):
                     row.update(delivery_status='SKIPPED', letter_status='SKIPPED',
                                error_code='PERSONAL_CHAT_DUPLICATE_CONTENT')
-                    self.persist()
+                    await persist_state(self.persist)
                     return
-            if event.channel == 'qq' and callable(self.prepare_photo) and callable(getattr(send, 'image', None)):
-                await self.prepare_photo(row, send)
-                if callable(getattr(send, 'is_available', None)) and not send.is_available():
-                    raise RuntimeError('PERSONAL_CHAT_CHANNEL_DISCONNECTED')
             audio = row.get('prepared_audio')
             if audio and callable(getattr(send, 'prepare_audio', None)):
                 try:
@@ -190,7 +256,7 @@ class PersonalChatService:
             if not (audio and callable(getattr(send, 'audio', None))):
                 row['reply_text'] = text
             row["delivery_status"] = "SENDING"
-            self.persist()
+            await persist_state(self.persist)
             receipt = None
             try:
                 if audio and callable(getattr(send, 'audio', None)):
@@ -201,7 +267,7 @@ class PersonalChatService:
                     row['delivered_format'] = 'text'
             except BaseException:
                 row["error_code"] = "PERSONAL_CHAT_DELIVERY_UNKNOWN"
-                self.persist()
+                await persist_state(self.persist)
                 raise
             classifier = getattr(send, 'delivery_confirmation', None)
             if callable(classifier):
@@ -213,7 +279,7 @@ class PersonalChatService:
                     row.update(delivery_status='DELIVERY_UNCONFIRMED',
                                letter_status='PROCESSING',
                                error_code='PERSONAL_CHAT_DELIVERY_UNCONFIRMED')
-                    self.persist()
+                    await persist_state(self.persist)
                     return
             row.update(delivery_status="DELIVERED", letter_status="COMPLETED", reply_revision=1,
                        private_world_status="PENDING", daily_life_status="PENDING",
@@ -223,27 +289,27 @@ class PersonalChatService:
             row["private_world_reply_sha256"] = hashlib.sha256(row["reply_text"].encode()).hexdigest()
             row["private_world_semantic_key"] = "canonical." + hashlib.sha256(event.exchange_id.encode()).hexdigest()
             row.pop("error_code", None)
-            self.persist()
+            await persist_state(self.persist)
             if row.get('sticker_id') and callable(getattr(send, 'image', None)):
                 from pathlib import Path
                 if not re.fullmatch(r'linli-\d{2,3}', row['sticker_id']) or not self.sticker_allowed(row['sticker_id']):
                     row['sticker_delivery_status'] = 'LOCKED'
                 else:
                     row['sticker_delivery_status'] = 'SENDING'
-                    self.persist()
+                    await persist_state(self.persist)
                     try:
                         await send.image(Path(__file__).resolve().parents[1] / 'letter_stickers' / (row['sticker_id'] + '.png'))
                         row['sticker_delivery_status'] = 'DELIVERED'
                     except Exception:
                         row['sticker_delivery_status'] = 'UNKNOWN'
-                self.persist()
+                await persist_state(self.persist)
             self._schedule_photo(row, send)
             if event.channel == 'qq' and row.get('image_status') == 'FAILED':
                 await photo_notice(row, send, self.persist, 'failure', '照片这次没生成成功，没能发给你。稍后再试一下。')
             await self.commit(row)
 
     def _schedule_photo(self, row, send):
-        # New replies already prepared their photo; retain this recovery path for saved replies.
+        # Media runs after the text ACK and never holds the conversation lock.
         key = row['letter_id']
         if (not callable(self.photo) or row.get('channel') != 'qq' or not callable(getattr(send, 'image', None))
                 or key in self.photo_tasks or row.get('image_delivery_status') in {'SENDING', 'UNKNOWN', 'DELIVERED'}
@@ -251,12 +317,17 @@ class PersonalChatService:
             return
         async def deliver():
             try:
+                if callable(self.prepare_photo):
+                    await self.prepare_photo(row, send)
                 await self.photo(row, send)
+                if row.get('image_status') == 'FAILED':
+                    await photo_notice(row, send, self.persist, 'failure',
+                        '照片这次没生成成功，没能发给你。稍后再试一下。')
             except asyncio.CancelledError:
                 raise
             except Exception:
                 row['image_error_code'] = 'PERSONAL_CHAT_IMAGE_UNAVAILABLE'
-                self.persist()
+                await persist_state(self.persist)
                 if row.get('image_delivery_status') != 'DELIVERED':
                     await photo_notice(row, send, self.persist, 'failure',
                         '照片没能确认发送成功，先告诉你一声。')
@@ -266,7 +337,9 @@ class PersonalChatService:
 
     async def recover(self):
         """Recover local consumers only; never initiate an outbound resend."""
-        async with self.lock:
-            for row in self.rows:
+        for row in list(self.rows):
+            async with self.lock:
                 if row.get("delivery_status") == "DELIVERED":
                     await self.commit(row)
+            # Let a waiting message proceed between recovered exchanges.
+            await asyncio.sleep(0)

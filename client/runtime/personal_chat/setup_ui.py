@@ -368,8 +368,12 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
         box.append(managed);
       }
 
+      if (status.reply_errors?.qq) {
+        box.append(node("div", "普通聊天回复异常", "olivia-chat-error"));
+        renderError(box, {code: status.reply_errors.qq});
+      }
       if (status.e2e_verified_at?.qq) {
-        box.append(node("div", "端到端连接已验证：QQ 客户端确实收到了 Olivia 的测试回复。", "olivia-chat-copy"));
+        box.append(node("div", "曾通过端到端验证：QQ 收到过测试回复。当前连接及回复异常请以上方状态为准。", "olivia-chat-copy"));
       } else if (listener === "CONNECTED") {
         const pending = (status.connection_test_pending || []).includes("qq");
         box.append(node("div",
