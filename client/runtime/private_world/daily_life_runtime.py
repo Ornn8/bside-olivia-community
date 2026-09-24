@@ -265,15 +265,23 @@ class DailyLifeRuntime:
         async with self._lock:
             local_time = now.astimezone(_SHANGHAI)
             source_id = f"day:{local_time:%Y%m%d}:{local_time.hour // 6}"
-            if self._memory_retry_source_id is not None:
-                if self._memory_retry_source_id == source_id and self._memory_retry_after and now < self._memory_retry_after:
-                    self._retry_after = self._memory_retry_after
-                    return
-                self._clear_memory_refresh_failure()
             try:
                 state = self.store.snapshot(now)
                 if not state["stale"]:
                     return
+                previous = state["current"]
+                if previous is not None:
+                    # Keep retries in the same six-hour budget, but let a new
+                    # published moment advance again within that budget.
+                    digest = hashlib.sha256(previous["source_id"].encode("utf-8")).hexdigest()[:12]
+                    source_id += f":{digest}"
+                    if state["rhythm"]["phase"] in {"bathing", "sleep", "interrupted_rest"}:
+                        return
+                if self._memory_retry_source_id is not None:
+                    if self._memory_retry_source_id == source_id and self._memory_retry_after and now < self._memory_retry_after:
+                        self._retry_after = self._memory_retry_after
+                        return
+                    self._clear_memory_refresh_failure()
                 if self.store.has_source(source_id):
                     return
                 failure_count, retry_after = self._refresh_retry_state(source_id)

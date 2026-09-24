@@ -1457,6 +1457,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const load = async (refresh = false) => {
       if (busy || !alive()) return;
       busy = true;
+      let refreshing = false;
       if (refresh && relationship.open) relationship.refresh();
       try {
         let payload = await (refresh ? requestMutation(DAILY_LIFE_PATH, {}) : requestJson(DAILY_LIFE_PATH));
@@ -1468,13 +1469,16 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           if (!alive()) return;
           draw(payload);
         }
-        if (payload.refreshing) window.setTimeout(() => load(), 1500);
+        refreshing = payload.refreshing;
       } catch (_error) {
         if (alive()) {
           status.textContent = "近况暂时无法读取，请稍后重试。";
           if (panel.children.length <= 2) panel.replaceChildren(heading, status, button("重试", () => load()));
         }
-      } finally { busy = false; }
+      } finally {
+        busy = false;
+        if (alive()) window.setTimeout(() => load(), refreshing ? 1500 : 60000);
+      }
     };
     panel.replaceChildren(heading, status);
     await load();

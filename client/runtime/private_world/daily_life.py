@@ -27,7 +27,14 @@ _ID = re.compile(r"^[A-Za-z0-9._:-]{1,160}$")
 _STATUSES = {"planned", "ongoing", "paused", "completed", "cancelled", "awaiting_user"}
 _EXCHANGE_UPDATE_FIELDS = frozenset({"id", "title", "detail", "status", "kind", "actor", "quote"})
 _VISIBLE = "(kind IN ('daily','media','image') OR json_array_length(payload,'$.updates') > 0 OR json_type(payload,'$.current')='object')"
-FRESH_FOR = timedelta(hours=6)
+# Recent observations remain bounded for reply context; publication timing is
+# derived from the last published moment instead of a fixed six-hour deadline.
+RECENT_OBSERVATION_WINDOW = timedelta(hours=6)
+
+
+def _refresh_delay(source_id: str) -> timedelta:
+    spread = int.from_bytes(hashlib.sha256(source_id.encode("utf-8")).digest()[:2], "big") % 121
+    return timedelta(minutes=180 + spread)  # A stable 3-5 hours per moment.
 # Common conversational/time words are not evidence that a task is relevant.
 _QUERY_STOP_WORDS = set("今天 明天 昨天 晚上 现在 这次 上次 已经 还是 一下 一些 一点 我们 你们 我的 你的 她的 自己 时候 最近 然后 但是 还有 就是 觉得 可以 没有 怎么 什么 这个 那个 这件 那件".split())
 
@@ -581,7 +588,7 @@ class DailyLifeStore:
     def _read_observations(self, db, now: datetime) -> list[dict]:
         rows = db.execute("SELECT kind,payload FROM life_moments WHERE occurred_at<=? "
             "AND occurred_at>=? AND (kind='daily' OR (kind='exchange' AND json_type(payload,'$.current')='object')) "
-            "ORDER BY occurred_at DESC,source_id DESC LIMIT 4", (_time(now), _time(now - FRESH_FOR))).fetchall()
+            "ORDER BY occurred_at DESC,source_id DESC LIMIT 4", (_time(now), _time(now - RECENT_OBSERVATION_WINDOW))).fetchall()
         result = []
         for kind, raw in rows:
             payload = json.loads(raw)
@@ -614,7 +621,7 @@ class DailyLifeStore:
             "schema_version": "olivia.daily-life.v1", "status": "READY",
             "current": current,
             "rhythm": rhythm(now, exchanges, shifts),
-            "stale": current is None or now - datetime.fromisoformat(current["occurred_at"]) >= FRESH_FOR,
+            "stale": current is None or now - datetime.fromisoformat(current["occurred_at"]) >= _refresh_delay(current["source_id"]),
             "projects": [p for p in projects if p["kind"] == "linli"][:6],
             "shared": [p for p in projects if p["kind"] == "shared"][:6],
             "moments": self._moments(rows),

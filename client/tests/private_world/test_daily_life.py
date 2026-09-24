@@ -401,7 +401,9 @@ def test_runtime_refresh_is_cached_and_failed_generation_keeps_public_state(tmp_
         assert gateway.calls == 1
         before = runtime.snapshot(NOW)["current"]
         await runtime.refresh(NOW + timedelta(hours=8))
-        result = runtime.snapshot(NOW + timedelta(hours=8))
+        assert gateway.calls == 1  # Rest hours postpone autonomous updates.
+        await runtime.refresh(NOW + timedelta(hours=15))
+        result = runtime.snapshot(NOW + timedelta(hours=15))
         assert result["current"] == before
         assert result["stale"] is True
         assert result["error_code"] == "DAILY_LIFE_GENERATION_UNAVAILABLE"
