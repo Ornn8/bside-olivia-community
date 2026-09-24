@@ -24,6 +24,7 @@ import aiohttp
 from jsonschema import Draft202012Validator, ValidationError
 
 from runtime.diagnostics.usage_metrics import record_usage, purpose_for
+from runtime.tls import client_tls_context
 from runtime.reply.model_capabilities import model_capabilities
 from runtime.reply.model_request_policy import reasoning_request_parameters
 
@@ -965,6 +966,7 @@ class OpenAICompatibleAdapter(Gateway):
                     self.mark_network_call()
                     async with session.post(
                         endpoint or self._url(),
+                        ssl=client_tls_context(),
                         json=body,
                         headers=self._headers(key, request_id),
                     ) as response:
@@ -1361,6 +1363,7 @@ class OpenAICompatibleAdapter(Gateway):
                     self.mark_network_call()
                     async with session.post(
                         self._url(),
+                        ssl=client_tls_context(),
                         json=body,
                         headers=self._headers(key, request),
                     ) as response:

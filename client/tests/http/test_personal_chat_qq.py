@@ -11,6 +11,42 @@ run_qq = partial(_run_qq, merge_seconds=0)
 TOKEN = "synthetic-onebot-token"
 
 
+def test_reply_to_slow_message_keeps_its_source_when_new_message_arrives():
+    async def scenario():
+        stop, started, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        sent = []
+        async def handler(message, send):
+            if message.message_id == '1':
+                started.set()
+                await release.wait()
+            await send.for_exchange(message)('reply ' + message.message_id)
+            if message.message_id == '2':
+                stop.set()
+        async def socket(request):
+            ws = web.WebSocketResponse()
+            await ws.prepare(request)
+            await login(ws)
+            await ws.send_json(event(1))
+            await started.wait()
+            await ws.send_json(event(2))
+            release.set()
+            for identifier in (301, 302):
+                reply = await ws.receive_json()
+                sent.append(reply['params']['message'])
+                await ws.send_json({'echo': reply['echo'], 'status': 'ok', 'retcode': 0,
+                                    'data': {'message_id': identifier}})
+            await stop.wait()
+            await ws.close()
+            return ws
+        app = web.Application()
+        app.router.add_get('/', socket)
+        async with TestServer(app) as server:
+            await asyncio.wait_for(run_qq(str(server.make_url('/')), TOKEN, '100', '200', handler, stop), 3)
+        assert sent == [[{'type': 'reply', 'data': {'id': str(i)}},
+                         {'type': 'text', 'data': {'text': 'reply ' + str(i)}}] for i in (1, 2)]
+    asyncio.run(scenario())
+
+
 def event(identifier=1, **overrides):
     return {"post_type": "message", "message_type": "private", "self_id": 100,
         "user_id": 200, "message_id": identifier,

@@ -3776,6 +3776,16 @@ async def route(
                     'router_invalid_content': 'REPLY_ROUTE_INVALID_CONTENT'}.get(reason, 'VIDEO_TRIAGE_UNAVAILABLE')
             from runtime.diagnostics.failure_context import project_failure_context
             detail = project_failure_context(getattr(decision, "diagnostic", None) or {})
+            if code == 'VIDEO_TRIAGE_UNAVAILABLE':
+                kind = detail.get('exception_type')
+                if kind in {'ClientConnectorCertificateError', 'ClientConnectorSSLError'}:
+                    code = 'LLM_TLS_FAILED'
+                elif kind == 'ClientConnectorDNSError':
+                    code = 'LLM_DNS_FAILED'
+                elif kind in {'ClientConnectorError', 'ServerDisconnectedError', 'ClientPayloadError'}:
+                    code = 'LLM_CONNECTION_FAILED'
+                elif detail.get('http_status', 0) >= 500:
+                    code = 'LLM_SERVICE_UNAVAILABLE'
             if not detail:
                 detail = {"failure_stage": "route_validation"}
             _safe_log("reply_route_classification_failed", status="FAILED", error_code=code, **detail)

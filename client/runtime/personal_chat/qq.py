@@ -67,14 +67,14 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
     pending = {}
     processing = False
 
-    async def send_item(item):
+    async def send_item(item, reply_to=None):
         echo = uuid.uuid4().hex
         future = asyncio.get_running_loop().create_future()
         pending[echo] = future
         try:
             await ws.send_json({"action": "send_private_msg", "echo": echo,
                 "params": {"user_id": int(owner_id),
-                    "message": [item]}})
+                    "message": ([{'type': 'reply', 'data': {'id': reply_to}}] if reply_to is not None else []) + [item]}})
             result = _ack(await asyncio.wait_for(future, ack_timeout))
             identifier = result.get("message_id")
             if isinstance(identifier, bool) or not isinstance(identifier, (str, int)) or not str(identifier):
@@ -101,6 +101,20 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
     send.audio = send_audio
     send.image = send_image
     send.is_available = lambda: not ws.closed
+
+    def for_exchange(event):
+        if (event.channel, event.account_id, event.owner_id) != ('qq', account_id, owner_id):
+            raise ValueError('QQ_REPLY_OWNER_MISMATCH')
+        async def correlated(text):
+            if not isinstance(text, str) or not text.strip() or len(text) > 10000:
+                raise ValueError('QQ_REPLY_INVALID')
+            return await send_item({'type': 'text', 'data': {'text': text}}, event.message_id)
+        correlated.audio = send_audio
+        correlated.image = send_image
+        correlated.is_available = send.is_available
+        return correlated
+
+    send.for_exchange = for_exchange
 
     async def reader():
         async for message in ws:

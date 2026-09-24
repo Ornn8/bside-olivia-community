@@ -1630,6 +1630,11 @@ def test_packaged_backend_reply_startup_includes_photo_modules(tmp_path):
 import asyncio
 import local_server as server
 from runtime.image_understanding import commit_image_memory
+from runtime.tls import client_tls_context
+import ssl
+tls = client_tls_context()
+assert tls.check_hostname and tls.verify_mode == ssl.CERT_REQUIRED
+assert tls.cert_store_stats()['x509_ca'] > 100
 server._refresh_proactive_context = lambda: None
 server._proactive_settings = lambda: {'enabled': False}
 server._schedule_pending_reply_jobs = lambda: None
