@@ -16,6 +16,21 @@ class UTCHost(datetime):
         return super().astimezone(tz or timezone.utc)
 
 
+@pytest.mark.parametrize('raw,reason', [
+    ('private broken output', 'JSON_SYNTAX'),
+    ('{}', 'FIELDS'),
+    (json.dumps(dict(text='hello', delivery='text', listening='keep',
+        initiative='pause', pause_until=None, letter='keep', letter_until=None,
+        followup_at=None, evidence='private unsupported quote', sticker=None, skip=False)),
+     'UNSUPPORTED_PREFERENCE_CHANGE'),
+])
+def test_decision_rejection_reports_safe_category_without_model_text(raw, reason):
+    with pytest.raises(ValueError, match='^PERSONAL_CHAT_DECISION_INVALID$') as error:
+        decision.decode(raw, user='hello', now=1)
+    assert error.value.reason == reason
+    assert 'private' not in str(error.value) + error.value.reason
+
+
 @pytest.mark.parametrize('stamp,awake', [
     ('2026-09-13T00:29:00+00:00', False),
     ('2026-09-13T00:30:00+00:00', True),

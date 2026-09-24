@@ -120,7 +120,9 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
       [data-olivia-personal-chat-setup] .olivia-chat-action:focus-visible{outline:2px solid #ded9d1;outline-offset:3px}
       [data-olivia-personal-chat-setup] .olivia-chat-action:disabled{opacity:.45;cursor:default}
       [data-olivia-personal-chat-setup] .olivia-chat-fields{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
-      [data-olivia-personal-chat-setup] .olivia-chat-input{min-width:0;border:1px solid rgba(255,255,255,.14);border-radius:8px;padding:8px 10px;background:rgba(0,0,0,.18);color:inherit;outline:none}
+      [data-olivia-personal-chat-setup] .olivia-chat-input{min-width:0;border:1px solid rgba(255,255,255,.14);border-radius:8px;padding:8px 10px;background:#18191c;color:#f1eee8;caret-color:#f1eee8;color-scheme:dark;outline:none}
+      [data-olivia-personal-chat-setup] .olivia-chat-input::placeholder{color:#aaa;opacity:1}
+      [data-olivia-personal-chat-setup] .olivia-chat-input:focus-visible{outline:2px solid #ded9d1;outline-offset:2px}
       [data-olivia-personal-chat-setup] .olivia-chat-wide{grid-column:1/-1}
       [data-olivia-personal-chat-setup] .olivia-chat-qr{display:block;width:210px;height:210px;object-fit:contain;background:#fff;border-radius:8px;padding:8px;margin:12px auto 0}
       [data-olivia-personal-chat-setup] .olivia-chat-error{font-size:12px;color:#d9a2a2;margin-top:8px;white-space:pre-wrap}
@@ -154,6 +156,7 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
       }
       const code = error?.code || error?.message || String(error || "连接失败");
       target.textContent = ({
+        QQ_BOT_AND_OWNER_MUST_DIFFER: "这里请填写你用来和机器人聊天的个人 QQ 号，不能填写刚扫码登录的机器人 QQ 号。",
         NAPCAT_START_TIMEOUT: "QQ 组件在一分钟内未就绪。请检查安全软件拦截，并导出诊断包排查；可点击重试。",
         NAPCAT_LOGIN_OPEN_FAILED: "登录窗口未能打开。可以直接扫描本页二维码；需要额外验证时，请设置默认浏览器后再点“打开 QQ 登录窗口”。",
         NAPCAT_LOGIN_UNAVAILABLE: "暂未取得 QQ 登录信息，请稍后刷新二维码。",
@@ -353,8 +356,10 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
       if (napcat.state === "ONEBOT_READY") {
         const managed = node("div", null, "olivia-chat-subcard");
         managed.append(node("div", "OneBot 已就绪", "olivia-chat-name"));
-        managed.append(node("div", "机器人 QQ 已由 NapCat 自动识别并复核。现在只需要填写你自己的 QQ 号。", "olivia-chat-copy"));
-        const owner = input("你的 QQ 号");
+        managed.append(node("div", "刚扫码登录的是机器人账号，已自动识别。下方请填写你用来和机器人聊天的个人 QQ 号。", "olivia-chat-copy"));
+        const owner = input("用于和机器人聊天的个人 QQ 号");
+        owner.inputMode = "numeric";
+        owner.setAttribute("aria-label", "用于和机器人聊天的个人 QQ 号");
         owner.style.marginTop = "10px";
         managed.append(owner);
         const controls = node("div", null, "olivia-chat-actions");

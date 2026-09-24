@@ -35,6 +35,9 @@ def photo_reply_context(context, settings, *, channel='letter'):
 
 
 def _retryable(exc):
+    from llm_gateway import GatewayError
+    if isinstance(exc, GatewayError):
+        return exc.retryable
     code = getattr(exc, 'code', '')
     return (isinstance(exc, (TimeoutError, ConnectionError)) or code in {
         'GPU_CONNECT_FAILED', 'GPU_CONNECTION_TIMEOUT', 'GPU_CONNECTION_FAILED',

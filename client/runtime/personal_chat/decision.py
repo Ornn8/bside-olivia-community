@@ -34,23 +34,23 @@ def decode(raw, *, user, now, proactive=False):
         required = {'text','delivery','listening','initiative','pause_until','letter','letter_until',
                     'followup_at','evidence','sticker','skip'}
         if not isinstance(data, dict) or not required <= data.keys() or data.keys() - required - {'letter_invitation'}:
-            raise ValueError()
+            raise ValueError("FIELDS")
         if not isinstance(data['text'], str) or type(data['skip']) is not bool:
-            raise ValueError()
+            raise ValueError("TEXT_OR_SKIP_TYPE")
         # Incoming platform placeholders must not reach either QQ text or TTS.
         for marker in ('[QQ表情]', '(QQ表情)', '（QQ表情）', '【QQ表情】'):
             data['text'] = data['text'].replace(marker, '')
         if data['delivery'] not in {'text','voice'} or data['listening'] not in {'keep','text_only','voice_ok'}:
-            raise ValueError()
+            raise ValueError("DELIVERY_OR_LISTENING")
         if data['initiative'] not in {'keep','pause','open'} or data['letter'] not in {'keep','pause','open'}:
-            raise ValueError()
+            raise ValueError("PREFERENCES")
         if type(data.get('letter_invitation', False)) is not bool or not isinstance(data['evidence'], str):
-            raise ValueError()
+            raise ValueError("EVIDENCE_TYPE")
         if data['sticker'] is not None and not isinstance(data['sticker'], str):
-            raise ValueError()
+            raise ValueError("STICKER_TYPE")
         changes = any(data[k] != 'keep' for k in ('listening','initiative','letter')) or data['followup_at'] is not None
         if changes and (proactive or not data['evidence'].strip() or data['evidence'] not in user):
-            raise ValueError()
+            raise ValueError("UNSUPPORTED_PREFERENCE_CHANGE")
         data['followup_cancel'] = data['followup_at'] == 'cancel'
         if data['followup_cancel']:
             data['followup_at'] = None
@@ -60,22 +60,28 @@ def decode(raw, *, user, now, proactive=False):
                 continue
             parsed = datetime.fromisoformat(value)
             if parsed.tzinfo is None or not now < parsed.timestamp() <= now + 7 * 86400:
-                raise ValueError()
+                raise ValueError("TIME_RANGE")
             data[key] = parsed.timestamp()
             if key == 'followup_at':
                 local = parsed.astimezone(LOCAL)
                 if local.hour * 60 + local.minute < 510:
-                    raise ValueError()
+                    raise ValueError("QUIET_HOURS")
         if data['followup_at'] and data['initiative'] == 'pause' and data['pause_until'] is None:
             data['pause_until'] = data['followup_at']
         if data['pause_until'] and data['initiative'] != 'pause' or data['letter_until'] and data['letter'] != 'pause':
-            raise ValueError()
+            raise ValueError("PAUSE_CONFLICT")
         if data['followup_at'] and data['pause_until'] and data['pause_until'] > data['followup_at']:
-            raise ValueError()
+            raise ValueError("FOLLOWUP_CONFLICT")
         if data['skip'] and (not proactive or data['text'].strip()) or not data['skip'] and not data['text'].strip():
-            raise ValueError()
+            raise ValueError("EMPTY_OR_SKIPPED_REPLY")
         if '[[' in data['text'] or ']]' in data['text']:
-            raise ValueError()
+            raise ValueError("CONTROL_MARKER")
         return data
     except (ValueError, TypeError, KeyError, OverflowError) as exc:
-        raise ValueError('PERSONAL_CHAT_DECISION_INVALID') from exc
+        error = ValueError('PERSONAL_CHAT_DECISION_INVALID')
+        if isinstance(locals().get('data'), dict):
+            error.missing_fields = sorted(required - data.keys())
+            error.extra_field_count = len(data.keys() - required - {'letter_invitation'})
+        reasons = {'FOLLOWUP_CONFLICT', 'FIELDS', 'STICKER_TYPE', 'UNSUPPORTED_PREFERENCE_CHANGE', 'QUIET_HOURS', 'EVIDENCE_TYPE', 'PAUSE_CONFLICT', 'TEXT_OR_SKIP_TYPE', 'PREFERENCES', 'DELIVERY_OR_LISTENING', 'EMPTY_OR_SKIPPED_REPLY', 'TIME_RANGE', 'CONTROL_MARKER'}
+        error.reason = str(exc) if type(exc) is ValueError and str(exc) in reasons else ('JSON_SYNTAX' if isinstance(exc, json.JSONDecodeError) else 'VALUE_TYPE_OR_TIME')
+        raise error from exc

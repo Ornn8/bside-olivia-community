@@ -2,18 +2,37 @@
 import asyncio
 import json
 import logging
+import re
 import uuid
 
 import aiohttp
 
 from .events import owner_message, combine, mergeable_by_sent_time
 from .probe import checked_url
+from .qq_faces import FACE_IDS
 
 log = logging.getLogger(__name__)
 
 
 class QQAuthRequired(ValueError):
     pass
+
+
+def text_segments(text):
+    """Convert exact catalog labels, never interpret arbitrary CQ commands."""
+    segments = []
+    offset = 0
+    for match in re.finditer(r'\[([^\[\]\r\n]{1,32})\]', text):
+        face_id = FACE_IDS.get(match.group(1).casefold())
+        if face_id is None:
+            continue
+        if match.start() > offset:
+            segments.append({'type': 'text', 'data': {'text': text[offset:match.start()]}})
+        segments.append({'type': 'face', 'data': {'id': face_id}})
+        offset = match.end()
+    if offset < len(text):
+        segments.append({'type': 'text', 'data': {'text': text[offset:]}})
+    return segments
 
 
 def _ack(raw):
@@ -74,7 +93,7 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
         try:
             await ws.send_json({"action": "send_private_msg", "echo": echo,
                 "params": {"user_id": int(owner_id),
-                    "message": ([{'type': 'reply', 'data': {'id': reply_to}}] if reply_to is not None else []) + [item]}})
+                    "message": ([{'type': 'reply', 'data': {'id': reply_to}}] if reply_to is not None else []) + (item if isinstance(item, list) else [item])}})
             result = _ack(await asyncio.wait_for(future, ack_timeout))
             identifier = result.get("message_id")
             if isinstance(identifier, bool) or not isinstance(identifier, (str, int)) or not str(identifier):
@@ -88,7 +107,7 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
     async def send(text):
         if not isinstance(text, str) or not text.strip() or len(text) > 10000:
             raise ValueError('QQ_REPLY_INVALID')
-        return await send_item({'type': 'text', 'data': {'text': text}})
+        return await send_item(text_segments(text))
 
     async def send_audio(path):
         from pathlib import Path
@@ -108,7 +127,7 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
         async def correlated(text):
             if not isinstance(text, str) or not text.strip() or len(text) > 10000:
                 raise ValueError('QQ_REPLY_INVALID')
-            return await send_item({'type': 'text', 'data': {'text': text}}, event.message_id)
+            return await send_item(text_segments(text), event.message_id)
         correlated.audio = send_audio
         correlated.image = send_image
         correlated.is_available = send.is_available

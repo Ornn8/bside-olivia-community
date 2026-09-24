@@ -686,8 +686,12 @@ def install_setup_routes(app: web.Application, server) -> None:
                 "managed": managed,
             }
             _write_config(server, config)
-            runtime["qq"] = {"state": "READY_RESTART"}
-            return web.json_response({"status": "READY_RESTART"})
+            from .backend import ACTIVATE_SAVED_CONFIG
+            activate = request.app.get(ACTIVATE_SAVED_CONFIG)
+            activated = await activate() if activate is not None else False
+            state = "CONNECTING" if activated else "READY_RESTART"
+            runtime["qq"] = {"state": state}
+            return web.json_response({"status": state})
         except Exception as exc:
             code = _failure_code(exc)
             runtime["qq"] = {"state": "FAILED", "error": code}

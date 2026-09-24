@@ -3728,7 +3728,13 @@ async def route(
         if row is None: return err(404, 'IMAGE_NOT_FOUND', {})
         from original_client_letter_contract import serialize_letter_detail
         detail = serialize_letter_detail(row)
-        return ok({key:detail[key] for key in ('imageStatus','replyImageUrl','imageResolution','imageRenderMode') if key in detail})
+        result = {key:detail[key] for key in ('imageStatus','replyImageUrl','imageResolution','imageRenderMode') if key in detail}
+        from runtime.diagnostics.photo import project_photo
+        facts = project_photo(row)
+        for source, target in (('image_error_code', 'imageErrorCode'), ('image_phase', 'imagePhase'), ('image_cloud_status', 'imageCloudStatus')):
+            if source in facts:
+                result[target] = facts[source]
+        return ok(result)
 
     if p == '/toy/image/ack':
         if not companion_confirmed: return err(403, 'COMPANION_CONFIRMATION_REQUIRED', {})
