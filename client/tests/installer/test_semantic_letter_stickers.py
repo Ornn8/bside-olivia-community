@@ -9,17 +9,18 @@ def test_progressive_unlock_and_unknown_is_not_high():
     familiar=allowed_stickers(PrivateBehaviorView(familiarity=L.HIGH))
     close=allowed_stickers(PrivateBehaviorView(familiarity=L.HIGH,trust=L.MEDIUM,comfort=L.MEDIUM))
     assert set(base)<set(familiar)<set(close)
-    assert len(close)==72
+    assert len(close)==236
     assert 'linli-25' not in base and 'linli-25' in familiar
     assert 'linli-27' not in familiar and 'linli-27' in close
 
 
 def test_high_closeness_unlocks_new_whimsical_sets_only_with_trust_and_comfort():
     high = PrivateBehaviorView(familiarity=L.HIGH, trust=L.HIGH, comfort=L.HIGH, closeness=L.HIGH)
-    assert len(allowed_stickers(PrivateBehaviorView())) == 29
-    assert len(allowed_stickers(PrivateBehaviorView(familiarity=L.MEDIUM))) == 54
-    assert len(allowed_stickers(high)) == 108
+    assert len(allowed_stickers(PrivateBehaviorView())) == 193
+    assert len(allowed_stickers(PrivateBehaviorView(familiarity=L.MEDIUM))) == 218
+    assert len(allowed_stickers(high)) == 272
     assert 'linli-108' in allowed_stickers(high)
+    assert 'linli-272' in allowed_stickers(PrivateBehaviorView())
     from dataclasses import replace
     for field in ('trust', 'comfort', 'closeness'):
         for level in (L.UNKNOWN, L.LOW, L.MEDIUM):
@@ -41,14 +42,17 @@ def test_selection_removed_before_text_consumers_and_locked_choice_falls_back():
 
 def test_candidates_only_contain_unlocked_choices():
     note=selection_instruction(allowed_stickers(PrivateBehaviorView()))
-    assert 'linli-07' in note and 'linli-27' not in note
+    assert 'linli-07=' in note and 'linli-27=' not in note
 
 
-def test_one_generation_call_metadata_does_not_reach_review():
+def test_one_generation_call_metadata_does_not_reach_review(monkeypatch):
     import asyncio
     from reply_orchestrator import ReplyRequest, ReplyResult, ReplyState
     from runtime.reply.reply_pipeline import ReplyPipeline, UnavailableRewriter
+    from runtime.reply import reply_pipeline
     from runtime.reply.reply_reviewer import NullReviewer
+    monkeypatch.setattr(reply_pipeline, 'weighted_candidates',
+                        lambda allowed, history, *, limit: ('linli-07',))
     class Writer:
         calls=0
         async def run(self, request):

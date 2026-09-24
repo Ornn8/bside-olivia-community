@@ -27,7 +27,9 @@ def test_patch_preserves_unrelated_members_and_is_idempotent(tmp_path):
         assert patched.count('signature:i.mail.received?.signature') == 2
         assert patched.count('["bodyText","signature","stickerId",') == 2
         assert 'class:"olivia-letter-signature"},v(A.signature),1)' in patched
-        assert sum(n.endswith('.png') for n in z.namelist())==108
+        assert sum(n.endswith('.png') for n in z.namelist())==252
+        assert sum(n.endswith('.gif') for n in z.namelist())==20
+        assert 'oliviaLetterStickerAsset(A.stickerId)' in patched
     before=path.read_bytes()
     assert patch_letter_stickers(path)=='ALREADY_PATCHED'
     assert path.read_bytes()==before
@@ -39,7 +41,7 @@ def test_patch_preserves_unrelated_members_and_is_idempotent(tmp_path):
     legacy = legacy.replace('n("div",mw,v(o(I)),1)', 'A.imageRequestId?n("olivia-photo",{"letter-id":A.imageRequestId},null,8,["letter-id"]):Y("",!0),n("div",mw,v(o(I)),1)')
     assert patch_photos(legacy) == patched
 
-    # Upgrade an already-patched 54-image archive without reinjecting native props.
+    # Upgrade an already-patched archive without reinjecting native props.
     old=tmp_path/'old54.dat'
     with zipfile.ZipFile(path) as src, zipfile.ZipFile(old,'w') as dst:
         for info in src.infolist():
@@ -49,8 +51,23 @@ def test_patch_preserves_unrelated_members_and_is_idempotent(tmp_path):
     assert patch_letter_stickers(old)=='PATCHED'
     with zipfile.ZipFile(old) as z:
         assert z.read('assets/main-31595bd3.js').decode()==patched
-        assert 'assets/letter-stickers/linli-108.png' in z.namelist()
+        assert 'assets/letter-stickers/linli-272.gif' in z.namelist()
     assert patch_letter_stickers(old)=='ALREADY_PATCHED'
+
+    # Existing v4 installations must switch native rendering from PNG-only to extension-aware assets.
+    from installer.patch_letter_stickers import MARKER, PREVIOUS_MARKER
+    v4=tmp_path/'v4.dat'
+    legacy_js=(patched.replace(MARKER,PREVIOUS_MARKER,1)
+               .replace('oliviaLetterStickerAsset(A.stickerId)',
+                        'oliviaLetterSticker(A.stickerId)+".png"',1)
+               .replace('import{oliviaLetterStickerAsset}from',
+                        'import{oliviaLetterSticker}from',1))
+    with zipfile.ZipFile(path) as src, zipfile.ZipFile(v4,'w') as dst:
+        for info in src.infolist():
+            dst.writestr(info,legacy_js if info.filename=='assets/main-31595bd3.js' else src.read(info))
+    assert patch_letter_stickers(v4)=='PATCHED'
+    with zipfile.ZipFile(v4) as z:
+        assert z.read('assets/main-31595bd3.js').decode()==patched
 
 
 def test_unknown_frontend_is_rejected_without_writing(tmp_path):
@@ -66,25 +83,31 @@ def test_unknown_frontend_is_rejected_without_writing(tmp_path):
 def test_frontend_uses_metadata_and_rejects_invalid_paths():
     script = Path('runtime/letter_stickers/select.js').resolve()
     program = '''const fs=require('fs'),vm=require('vm');
-const s=fs.readFileSync(process.argv[1],'utf8').replace('export function','function');
+const s=fs.readFileSync(process.argv[1],'utf8').replaceAll('export function','function');
 const ctx={};vm.createContext(ctx);vm.runInContext(s,ctx);
-const cases=['linli-07','linli-108','../../key.txt','linli-109','linli-0108'];
-console.log(JSON.stringify(cases.map(t=>[ctx.oliviaLetterSticker(t),ctx.oliviaLetterSticker(t)])));
+const cases=['linli-07','linli-108','linli-109','linli-253','linli-272','../../key.txt','linli-273','linli-0108'];
+console.log(JSON.stringify(cases.map(t=>[ctx.oliviaLetterSticker(t),ctx.oliviaLetterStickerAsset(t)])));
 '''
     rows = json.loads(subprocess.check_output(['node','-e',program,str(script)],text=True,encoding='utf-8'))
-    assert all(a==b for a,b in rows)
     assert rows[0][0]=='linli-07'
     assert rows[1][0]=='linli-108'
-    assert all(row[0]=='linli-01' for row in rows[2:])
+    assert rows[2] == ['linli-109','linli-109.png']
+    assert rows[3] == ['linli-253','linli-253.gif']
+    assert rows[4] == ['linli-272','linli-272.gif']
+    assert all(row == ['linli-01','linli-01.png'] for row in rows[5:])
 
 
-def test_assets_are_exactly_108_real_transparent_pngs():
-    import cv2
+def test_assets_are_valid_images_with_catalog_entries():
+    from PIL import Image
     root=Path('runtime/letter_stickers')
     files=list(root.glob('linli-*.png'))
-    assert len(files)==108
+    gifs=list(root.glob('linli-*.gif'))
+    assert len(files)==252 and len(gifs)==20
+    catalog=json.loads((root/'catalog.json').read_text(encoding='utf-8'))
+    assert {item['file'] for item in catalog} == {f.name for f in files+gifs}
     for file in files:
-        im=cv2.imread(str(file),cv2.IMREAD_UNCHANGED)
-        assert im.shape==(512,512,4)
-        lo,hi=im[:,:,3].min(),im[:,:,3].max()
-        assert lo==0 and hi>100
+        with Image.open(file) as image:
+            image.verify()
+    for file in gifs:
+        with Image.open(file) as image:
+            assert image.n_frames > 1

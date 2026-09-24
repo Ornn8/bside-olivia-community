@@ -21,11 +21,14 @@ def test_missing_invalid_and_truncated_signature_default():
     assert split_signature('我今天遇到林离。')[0] == '我今天遇到林离。'
 
 
-def test_one_call_body_never_contains_signature_or_sticker():
+def test_one_call_body_never_contains_signature_or_sticker(monkeypatch):
     from reply_orchestrator import ReplyRequest, ReplyResult, ReplyState
     from runtime.reply.reply_context import ReplyContext, ReplyMode, TrustedTime
     from runtime.reply.reply_pipeline import ReplyPipeline, UnavailableRewriter
+    from runtime.reply import reply_pipeline
     from runtime.reply.reply_reviewer import NullReviewer
+    monkeypatch.setattr(reply_pipeline, 'weighted_candidates',
+                        lambda allowed, history, *, limit: ('linli-07',))
     class Writer:
         calls = 0
         async def run(self, request):

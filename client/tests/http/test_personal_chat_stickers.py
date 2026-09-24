@@ -11,6 +11,7 @@ from runtime.letter_stickers.selection import allowed_stickers
 @pytest.mark.parametrize('channel', ['wechat', 'qq'])
 def test_stickers_are_occasional_and_illegal_metadata_never_enters_text(channel):
     assert choices([], SimpleNamespace(), channel=channel) == {}
+    assert choices([dict(channel=channel, delivery_status='DELIVERED')], SimpleNamespace(), channel=channel)
     rows = [dict(channel=channel, delivery_status='DELIVERED') for _ in range(4)]
     candidates = choices(rows, SimpleNamespace(), channel=channel)
     assert len(candidates) == 10
@@ -83,7 +84,7 @@ def test_image_failure_does_not_undo_text_memory_or_resend_on_replay(channel):
 
 
 def test_candidates_never_unlock_assets_and_weights_favor_older_unused(monkeypatch):
-    from runtime.personal_chat import stickers
+    from runtime.letter_stickers import selection
     rows = [dict(channel='wechat', delivery_status='DELIVERED', sticker_id='linli-01',
                  sticker_delivery_status='DELIVERED'),
             dict(channel='wechat', delivery_status='DELIVERED', sticker_id='linli-03',
@@ -93,16 +94,28 @@ def test_candidates_never_unlock_assets_and_weights_favor_older_unused(monkeypat
     def pick(population, weights):
         captured.append(dict(zip(population, weights)))
         return [population[0]]
-    monkeypatch.setattr(stickers.random, 'choices', pick)
+    monkeypatch.setattr(selection.random, 'choices', pick)
     low = SimpleNamespace()
     result = choices(rows, low)
     assert set(result) <= set(allowed_stickers(low))
     assert captured[0]['linli-04'] > captured[0]['linli-01'] > captured[0]['linli-03']
+    assert captured[0]['linli-229'] < captured[0]['linli-228']
     assert 'linli-108' not in captured[0]
     high = SimpleNamespace(familiarity='high', trust='high', comfort='high', closeness='high')
     captured.clear()
     choices(rows, high)
     assert 'linli-108' in captured[0]
+
+
+def test_sticker_opportunity_alternates_after_two_and_three_replies():
+    rows = [dict(channel='qq', delivery_status='DELIVERED')]
+    assert choices(rows, SimpleNamespace(), channel='qq')
+    rows.append(dict(channel='qq', delivery_status='DELIVERED', sticker_id='linli-01',
+                     sticker_delivery_status='DELIVERED'))
+    rows.append(dict(channel='qq', delivery_status='DELIVERED'))
+    assert not choices(rows, SimpleNamespace(), channel='qq')
+    rows.append(dict(channel='qq', delivery_status='DELIVERED'))
+    assert choices(rows, SimpleNamespace(), channel='qq')
 
 
 @pytest.mark.parametrize('channel', ['wechat', 'qq'])

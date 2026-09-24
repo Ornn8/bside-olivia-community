@@ -360,7 +360,7 @@ def serialize_letter_detail(
             payload['replyImageUrl'] = _safe_local_media_url(letter.get('reply_image_url'))
             payload['imageResolution'] = letter.get('image_resolution', '1K')
             payload['imageRenderMode'] = letter.get('image_render_mode', 'native')
-    if published and isinstance(sticker_id, str) and sticker_id in {f"linli-{i:02d}" for i in range(1, 109)}:
+    if published and isinstance(sticker_id, str) and sticker_id in {f"linli-{i:02d}" for i in range(1, 273)}:
         payload["replyStickerId"] = sticker_id
     if published and _audio_reply(letter):
         payload["replyAudioUrl"] = _safe_local_media_url(letter.get("reply_audio_url"))

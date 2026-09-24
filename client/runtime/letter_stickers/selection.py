@@ -1,11 +1,14 @@
 """Reply-call metadata: relation eligibility, compact instruction, strict extraction."""
 import json
+import random
 import re
 from functools import lru_cache
 from pathlib import Path
 
 BASE = frozenset((1,3,4,6,7,8,9,10,11,12,13,14,15,20,22,23,24,35,41,42,45,47,48,49,50,51,52,53,54))
 FAMILIAR = frozenset((2,16,17,18,21,25,26,29,30,32,36,37,38,39,43,46))
+NEW_STICKERS = range(109, 273)
+JOJO_STICKERS = frozenset(f'linli-{i:03d}' for i in range(229, 253))
 
 
 def allowed_stickers(view):
@@ -19,12 +22,43 @@ def allowed_stickers(view):
             ids.update(range(1,73))
             if all(value(key)=='high' for key in ('closeness','trust','comfort')):
                 ids.update(range(73,109))
+    ids.update(NEW_STICKERS)
     return tuple(f'linli-{i:02d}' for i in sorted(ids))
 
 
 @lru_cache(maxsize=1)
+def _catalog():
+    return json.loads(Path(__file__).with_name('catalog.json').read_text(encoding='utf-8'))
+
+
+@lru_cache(maxsize=1)
 def _labels():
-    return {item['id']:item['label'] for item in json.loads(Path(__file__).with_name('catalog.json').read_text(encoding='utf-8'))}
+    return {item['id']: item['label'] for item in _catalog()}
+
+
+@lru_cache(maxsize=1)
+def _files():
+    return {item['id']: item['file'] for item in _catalog()}
+
+
+def asset_filename(sticker_id):
+    return _files()[sticker_id]
+
+
+def weighted_candidates(allowed, history, *, limit, appeared=None):
+    """Keep the existing recency/count lottery; Linli chooses the final image."""
+    available = list(allowed)
+    counts = {key: history.count(key) for key in available}
+    last = {key: index for index, key in enumerate(history if appeared is None else appeared)
+            if key is not None}
+    weights = {key: (1 + min(256, len(history) - last.get(key, -1))) / (1 + counts[key])
+               * (0.1 if key in JOJO_STICKERS else 1.0) for key in available}
+    selected = []
+    for _ in range(min(limit, len(available))):
+        key = random.choices(available, weights=[weights[item] for item in available])[0]
+        selected.append(key)
+        available.remove(key)
+    return tuple(selected)
 
 
 def selection_instruction(allowed):
