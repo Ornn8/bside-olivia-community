@@ -56,6 +56,7 @@
     "LLM_SETUP_HOST_FORBIDDEN": {"http_statuses": [403], "status": "FAILED", "response_fields": ["status", "error_code"]},
     "LLM_SETUP_JSON_INVALID": {"http_statuses": [400], "status": "FAILED", "response_fields": ["status", "error_code"]},
     "LLM_SETUP_KEY_REQUIRED": {"http_statuses": [400, 409], "status": "FAILED", "response_fields": ["status", "error_code"]},
+    "LLM_SETUP_MEMORY_PREPARING": {"http_statuses": [409], "status": "FAILED", "response_fields": ["status", "error_code"]},
     "LLM_SETUP_KEY_UNAVAILABLE": {"http_statuses": [503], "status": "FAILED", "response_fields": ["status", "error_code"]},
     "LLM_SETUP_LOGIN_REQUIRED": {"http_statuses": [403], "status": "FAILED", "response_fields": ["status", "error_code"]},
     "LLM_SETUP_ORIGIN_FORBIDDEN": {"http_statuses": [403], "status": "FAILED", "response_fields": ["status", "error_code"]},

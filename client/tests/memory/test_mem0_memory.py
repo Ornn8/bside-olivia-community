@@ -2357,14 +2357,17 @@ def test_status_during_late_write_preserves_outbox_settlement(tmp_path: Path) ->
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize('provider_start_delay', [0, 0.15])
 def test_timed_out_exchange_settlement_is_bounded_when_provider_stays_blocked(
     tmp_path: Path,
+    provider_start_delay: float,
 ) -> None:
     entered = threading.Event()
     release = threading.Event()
 
     class BlockingExactQueryMem0(FakeMem0):
         def get_all(self, **kwargs):
+            time.sleep(provider_start_delay)
             entered.set()
             release.wait()
             return super().get_all(**kwargs)
@@ -2380,12 +2383,13 @@ def test_timed_out_exchange_settlement_is_bounded_when_provider_stays_blocked(
         source_id="reply:write-timeout:bounded-settle",
         user_id="local-user",
     )
-    assert entered.is_set()
-    assert timed_out.error_code == "MEM0_WRITE_TIMEOUT"
-
     delayed_release = threading.Timer(0.4, release.set)
-    delayed_release.start()
     try:
+        # Timeout bounds the caller, not when a loaded CI worker is scheduled.
+        # Establish the blocked provider before measuring settlement latency.
+        assert entered.wait(timeout=5.0)
+        assert timed_out.error_code == "MEM0_WRITE_TIMEOUT"
+        delayed_release.start()
         started = time.monotonic()
         settled = adapter.settle_exchange_write(
             source_id="reply:write-timeout:bounded-settle",
@@ -2395,7 +2399,8 @@ def test_timed_out_exchange_settlement_is_bounded_when_provider_stays_blocked(
     finally:
         release.set()
         delayed_release.cancel()
-        delayed_release.join(timeout=1.0)
+        if delayed_release.ident is not None:
+            delayed_release.join(timeout=1.0)
 
     assert elapsed < 0.3
     assert settled.status is MemoryWriteStatus.UNAVAILABLE

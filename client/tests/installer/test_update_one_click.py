@@ -16,9 +16,11 @@ def test_one_click_update(outcome):
     source = BOOTSTRAP_JAVASCRIPT.split("const renderLocalUpdatePanel = ", 1)[1].split(
         "const loadDialogData = ", 1
     )[0].strip().removesuffix(";")
+    helper = BOOTSTRAP_JAVASCRIPT.split("const setDiagnosticDetails = ", 1)[1].split(
+        "const memoryClearFailureMessage = ", 1)[0].strip().removesuffix(";")
     script = r'''
 const assert = require('node:assert/strict');
-const {source, outcome} = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
+const {source, helper, outcome} = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
 const buttons = [], calls = [];
 function element(value = '') {
   return {textContent: value, children: [], disabled: false,
@@ -27,6 +29,7 @@ function element(value = '') {
 }
 const document = {createElement: () => element()};
 const text = (tag, value) => element(value);
+const setDiagnosticDetails = eval('(' + helper + ')');
 const setupInput = () => ({wrapper: element(), input: element()});
 const button = (label, click) => { const b = element(label); b.click = click; buttons.push(b); return b; };
 const actions = () => element();
@@ -50,9 +53,13 @@ render(panel);
   assert(buttons.every(b => !b.disabled));
   const result = panel.children.at(-1).textContent;
   assert(result.includes(outcome === 'success' ? '1.2.3 已安装' : outcome === 'cancel' ? '已取消' : '尚未安装'));
-  if (outcome === 'offline') assert(panel.children.some(c => c.textContent.includes('patch.oliviapatch')));
+  if (outcome === 'offline') {
+    assert(panel.children.some(c => c.textContent.includes('patch.oliviapatch')));
+    assert.equal(panel.children.at(-1).__oliviaDiagnosticDetails.__oliviaCodeNode.textContent,'UPDATE_CHECKSUM_UNAVAILABLE');
+    assert(!result.includes('UPDATE_CHECKSUM_UNAVAILABLE'));
+  }
 })().catch(e => { console.error(e); process.exitCode = 1; });
 '''
-    result = subprocess.run([node, "-e", script], input=json.dumps({"source": source, "outcome": outcome}),
+    result = subprocess.run([node, "-e", script], input=json.dumps({"source": source, "helper": helper, "outcome": outcome}),
                             text=True, encoding="utf-8", capture_output=True, timeout=20)
     assert result.returncode == 0, result.stderr

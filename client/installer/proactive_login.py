@@ -103,11 +103,12 @@ def run(
     """Run the quiet login worker until settings disable it or it is stopped."""
 
     root = install_root.expanduser().resolve()
-    lease = _try_acquire_instance(root)
+    from installer.user_data_root import resolve_user_data_root
+    data_root = resolve_user_data_root(root)
+    lease = _try_acquire_instance(data_root.parent)
     if lease is None:
         return 0
     try:
-        data_root = root / "data"
         while _enabled(_read_settings(data_root)):
             try:
                 scan(data_root, now=clock())
@@ -199,6 +200,12 @@ def _validated_login_paths(
     """Resolve the installed data root, stable launcher, and hidden interpreter."""
 
     root = data_root.expanduser().resolve().parent
+    configured_install = os.environ.get('OLIVIA_INSTALL_ROOT')
+    if configured_install:
+        from installer.user_data_root import resolve_user_data_root
+        candidate = Path(configured_install).expanduser().resolve()
+        if resolve_user_data_root(candidate).resolve() == data_root.expanduser().resolve():
+            root = candidate
     pythonw = python_executable or (
         root.parent / "runtime" / EMBEDDED_RUNTIME_DIR / "pythonw.exe"
     )

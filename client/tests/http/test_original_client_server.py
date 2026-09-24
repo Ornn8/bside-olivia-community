@@ -261,6 +261,29 @@ def test_configured_runtime_mounts_capability_from_installed_layout(
     assert runtime.public_status()["capability_installer_mounted"] is True
 
 
+def test_production_setup_completion_waits_for_live_memory(tmp_path, monkeypatch):
+    from original_client_setup_api import LLMSetupError
+    created = []
+    original = original_client_server.LLMSetupService
+    def capture(*args, **kwargs):
+        service = original(*args, **kwargs)
+        monkeypatch.setattr(service, '_config', lambda: SimpleNamespace(requires_api_key=False))
+        created.append(service)
+        return service
+    monkeypatch.setattr(original_client_server, 'LLMSetupService', capture)
+    ready = [False]
+    server = SimpleNamespace(handler=_fallback, _official_history_memory_available=lambda: ready[0])
+    create_configured_original_client_server_runtime(
+        server_module=server, environ={'OLIVIA_LOCAL_DATA_ROOT': str(tmp_path / 'data')})
+    import pytest
+    with pytest.raises(LLMSetupError, match='LLM_SETUP_MEMORY_PREPARING'):
+        created[0].complete(skipped=False)
+    assert not (tmp_path / 'data/config/initial_setup.json').exists()
+    ready[0] = True
+    created[0].complete(skipped=False)
+    assert (tmp_path / 'data/config/initial_setup.json').is_file()
+
+
 class MemoryAdminFixture:
     def status(self) -> MemoryAdminStatus:
         return MemoryAdminStatus(

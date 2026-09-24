@@ -64,11 +64,16 @@ jobs:
         run: |
           $output = Join-Path $env:RUNNER_TEMP "olivia-local-release"
           New-Item -ItemType Directory -Path $output -Force | Out-Null
+          $wheelDir = Join-Path $env:RUNNER_TEMP "olivia-image-wheel"
+          python -m pip download --only-binary=:all: --no-deps --platform win_amd64 --python-version 312 --implementation cp --abi cp312 --dest $wheelDir "Pillow==12.3.0"
+          if ($LASTEXITCODE -ne 0) { throw "image dependency download failed" }
           python -m installer build-update `
             --source "$PWD" `
             --output "$output\Olivia-$env:VERSION.oliviapatch" `
             --version "$env:VERSION" `
-            --source-commit "$env:GITHUB_SHA"
+            --source-commit "$env:GITHUB_SHA" `
+            --image-dependency-wheel "$wheelDir\pillow-12.3.0-cp312-cp312-win_amd64.whl"
+          if ($LASTEXITCODE -ne 0) { throw "update build failed" }
           "RELEASE_DIR=$output" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Build checksum manifest

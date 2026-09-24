@@ -14,6 +14,7 @@ def test_progress_can_close_and_reopen_without_submitting_again():
         'const showLocalImportProgress =', 1)[1].split('const mountShell =', 1)[0]
     harness = r'''
 const assert = require('node:assert/strict');
+const setDiagnosticDetails = () => {};
 class Element {
   constructor() { this.children=[]; this.style={}; this.attrs={}; this.events={}; }
   append(...nodes) { for (const n of nodes) { n.remove(); n.parent=this; this.children.push(n); } }

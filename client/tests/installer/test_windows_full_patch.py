@@ -2252,6 +2252,32 @@ def test_repeat_install_rejects_a_broken_versions_junction_without_mutation(
     assert marker.read_bytes() == marker_before
 
 
+def test_repeat_install_preserves_backup_when_rollback_also_fails(
+    fixture_inputs, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    official, payload, manifest, _feapp, _webplayer = fixture_inputs
+    target = tmp_path / "installed"
+    install_full_patch(official, target, payload, manifest)
+    old = target / "local_backend" / "old-sentinel.txt"
+    old.write_text("old payload must survive", encoding="utf-8")
+    replace = full_patch.os.replace
+
+    def fail_publish_and_restore(source, destination):
+        source = Path(source)
+        if source.name == "START.cmd" or (
+            source.parent.name == ".rollback" and source.name == "local_backend"
+        ):
+            raise PermissionError("synthetic locked file")
+        return replace(source, destination)
+
+    monkeypatch.setattr(full_patch.os, "replace", fail_publish_and_restore)
+    with pytest.raises(PatchInstallError, match="PATCH_PAYLOAD_ROLLBACK_FAILED"):
+        install_full_patch(official, target, payload, manifest)
+    backups = list(tmp_path.glob(".installed.payload-staging-*/.rollback/local_backend/old-sentinel.txt"))
+    assert len(backups) == 1
+    assert backups[0].read_text(encoding="utf-8") == "old payload must survive"
+
+
 def test_windows_patch_docs_define_full_refresh_update_state_retirement() -> None:
     documentation = (
         Path(__file__).parents[2] / "docs" / "WINDOWS_FULL_PATCH.md"

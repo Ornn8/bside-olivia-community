@@ -106,18 +106,18 @@ vm.runInNewContext(source, context);
 
 
 def test_ready_mem0_reports_loaded_when_companion_runtime_is_available() -> None:
-    assert _render_ready_mem0_status(companion_state="available") == "已安装并已加载"
+    assert _render_ready_mem0_status(companion_state="available") == "记忆已准备好，可以继续连接回信服务"
 
 
 def test_ready_mem0_does_not_promise_restart_fixes_unavailable_runtime() -> None:
     assert _render_ready_mem0_status(companion_state="unavailable") == (
-        "组件已安装，记忆尚未加载；请查看长期记忆页"
+        "记忆包已安装，正在准备记忆服务"
     )
 
 
 def test_ready_mem0_reports_not_loaded_when_companion_is_offline() -> None:
     assert _render_ready_mem0_status(companion_state=None) == (
-        "组件已安装，记忆尚未加载；请查看长期记忆页"
+        "记忆包已安装，正在准备记忆服务"
     )
 
 
@@ -174,7 +174,7 @@ process.stdout.write(JSON.stringify([message({code:"MEMORY_ADMIN_BUSY"}),message
 
 @pytest.mark.parametrize("state,reason,expected", [
     ("available", None, "本机陪伴服务已连接。"),
-    ("unavailable", "MEM0_INITIALIZATION_FAILED", "本机陪伴服务已连接；长期记忆暂不可用（MEM0_INITIALIZATION_FAILED）。"),
+    ("unavailable", "MEM0_INITIALIZATION_FAILED", "本机陪伴服务已连接；长期记忆尚未准备好。"),
 ])
 def test_memory_poll_updates_dialog_status_without_reopening(state, reason, expected):
     node = shutil.which("node")
@@ -184,6 +184,7 @@ def test_memory_poll_updates_dialog_status_without_reopening(state, reason, expe
 const fs = require("fs"), source = fs.readFileSync(0, "utf8");
 const section = source.split("  const renderCompanionStatus =")[1].split("\n\n  const renderMemoryPanel =")[0];
 let pending, rendered;
+const setDiagnosticDetails = () => {};
 const window = {clearTimeout: () => {}, setTimeout: fn => {pending = fn;}};
 const STATUS_PATH = "/status";
 const capability = JSON.parse(process.argv[1]);
@@ -533,7 +534,7 @@ def test_original_settings_private_world_entry_shows_character_life_not_scores()
     source = BOOTSTRAP_JAVASCRIPT
 
     assert "林离的生活" in source
-    assert "原因代码" in source
+    assert "诊断详情" in source
     for forbidden in (
         "CANDIDATES_PATH",
         "legacyPrivateWorldLabels",
@@ -637,10 +638,10 @@ vm.runInNewContext(source, context);
         "近况已保存。", "状态：未启用", "状态：暂不可用", "状态：暂不可用",
         "状态：暂不可用", "状态：暂不可用", "状态：暂不可用", "状态：暂不可用",
     ]
-    assert rendered[2][2] == "原因代码：PRIVATE_WORLD_STORAGE_UNAVAILABLE"
-    assert rendered[3][2] == "原因代码：无"
-    assert rendered[4][2] == "原因代码：无"
-    assert rendered[7][2] == "原因代码：无"
+    assert rendered[2][2] == "生活记录暂时无法读取，请稍后重新打开此页面。"
+    assert rendered[3][2] == rendered[2][2]
+    assert rendered[4][2] == rendered[2][2]
+    assert rendered[7][2] == rendered[2][2]
     assert rendered[0][0] == "林离的生活"
     assert rendered[0][2] == "更新近况"
 

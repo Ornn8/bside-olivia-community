@@ -8,12 +8,14 @@ from dataclasses import dataclass
 from enum import StrEnum
 import errno
 import hashlib
+import importlib
 import json
 import os
 from pathlib import Path, PurePosixPath
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from typing import Any, Protocol
@@ -996,6 +998,16 @@ class ManagedMem0Runtime:
         staging.write_text("\n".join(kept) + "\n", encoding="utf-8")
         staging.replace(path)
 
+    def _activate_current_runtime(self) -> None:
+        """Called only after verification; ._pth changes affect future processes."""
+        if Path(sys.executable).resolve() != self.python_executable:
+            return
+        paths = [str(safe_managed_target(self.owner_root, relative)) for relative in (
+            'runtime/mem0-site-packages', 'runtime/mem0-site-packages/win32',
+            'runtime/mem0-site-packages/win32/lib')]
+        sys.path[:0] = [path for path in paths if path not in sys.path]
+        importlib.invalidate_caches()
+
     def _command(self, *, target: Path, source: str | None, wheelhouse: Path | None) -> list[str]:
         command = [
             str(self.python_executable),
@@ -1031,6 +1043,7 @@ class ManagedMem0Runtime:
         progress: Progress,
     ) -> None:
         if self.ready():
+            self._activate_current_runtime()
             return
         attempts: tuple[tuple[str | None, Path | None], ...]
         if offline_root is not None:
@@ -1119,6 +1132,7 @@ class ManagedMem0Runtime:
             self._update_pth(enabled=True)
             if not self._verify(self.target):
                 raise RuntimeError("MEM0_RUNTIME_VERIFY_FAILED")
+            self._activate_current_runtime()
         except Exception:
             shutil.rmtree(self.target, ignore_errors=True)
             if backup.exists():

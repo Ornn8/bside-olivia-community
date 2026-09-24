@@ -834,7 +834,18 @@ def main(argv: list[str] | None = None) -> int:
         if health != "UNAVAILABLE":
             print("STALE_BACKEND_RUNNING")
             return 2
-    data_root = root / "data"
+    from installer.user_data_root import resolve_user_data_root
+    from installer.repair_image_dependency import ensure_bundled_image_dependency
+    data_root = resolve_user_data_root(root)
+    if data_root != root / 'data':
+        import atexit
+        from installer.version_launcher import _try_acquire_start_instance
+        original_instance = _try_acquire_start_instance(data_root.parent)
+        if original_instance is None:
+            print('ORIGINAL_DATA_ALREADY_IN_USE')
+            return 2
+        atexit.register(original_instance.close)
+    ensure_bundled_image_dependency()
     data_root.mkdir(parents=True, exist_ok=True)
     client_environment = os.environ.copy()
     backend_environment = client_environment.copy()
