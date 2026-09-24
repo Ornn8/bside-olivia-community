@@ -1,4 +1,4 @@
-#ifndef PayloadRoot
+﻿#ifndef PayloadRoot
   #error PayloadRoot is required
 #endif
 #ifndef OutputDir
@@ -429,7 +429,7 @@ end;
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   Result := '';
-  { Silent setup does not visit NextButtonClick; retain its failure exit code. }
+  { Silent setup skips the interactive retry handler; retain its failure exit code. }
   if not InstallSucceeded then
     Result := RunInstallation;
 end;
