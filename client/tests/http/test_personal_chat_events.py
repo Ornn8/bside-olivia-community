@@ -2,6 +2,27 @@ from runtime.personal_chat.events import owner_message
 import pytest
 
 
+@pytest.mark.parametrize('segments, expected', [
+    ([{'type': 'text', 'data': {'text': 'hello'}},
+      {'type': 'face', 'data': {'id': '76'}},
+      {'type': 'text', 'data': {'text': ' again'}}], 'hello[QQ表情] again'),
+    ([{'type': 'face', 'data': {'id': '76'}}], '[QQ表情]'),
+])
+def test_qq_faces_do_not_silently_discard_owner_messages(segments, expected):
+    event = owner_message('qq', qq(message=segments), account_id='100', owner_id='200')
+    assert event is not None
+    assert event.text == expected
+    assert event.images == ()
+
+
+@pytest.mark.parametrize('changes', [
+    {'user_id': 300}, {'message_type': 'group'}, {'post_type': 'message_sent'},
+])
+def test_qq_faces_preserve_owner_boundary(changes):
+    payload = qq(message=[{'type': 'face', 'data': {'id': '76'}}], **changes)
+    assert owner_message('qq', payload, account_id='100', owner_id='200') is None
+
+
 def qq(**changes):
     return {"post_type": "message", "message_type": "private", "self_id": 100,
             "user_id": 200, "message_id": 1, "message": [{"type": "text", "data": {"text": "晚饭\n吃什么？"}}], **changes}

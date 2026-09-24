@@ -116,6 +116,9 @@ def _project_health(value: object) -> dict[str, object]:
         if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
             raise _invalid()
         check = _mapping(checks[name])
+        if name == "memory_install":
+            projected[name] = project_memory_install(check)
+            continue
         if name == "history_import":
             projected[name] = project_history_import(check)
             continue
@@ -164,6 +167,29 @@ def _project_health(value: object) -> dict[str, object]:
                 entry["worker_running"] = check["worker_running"]
         projected[name] = entry
     return {"checks": projected, "status": _status(source.get("status"))}
+
+
+def project_memory_install(value: object) -> dict[str, object]:
+    from mem0_capability_install import MEM0_INSTALL_FAILURE_CODES
+    source = _mapping(value)
+    state = source.get("state")
+    result = {"state": state if isinstance(state, str) and state in {
+        "missing", "queued", "downloading", "verifying", "ready", "paused",
+        "repair", "incompatible", "unavailable"} else "unavailable"}
+    for name, allowed in (
+        ("phase", {"idle", "queued", "preflight", "package", "runtime", "model", "verification", "complete", "uninstall"}),
+        ("source", {"offline", "auto", "official", "offline-package"}),
+    ):
+        if isinstance(source.get(name), str) and source[name] in allowed:
+            result[name] = source[name]
+    reason = source.get("reason_code", source.get("error_code"))
+    if isinstance(reason, str) and reason in MEM0_INSTALL_FAILURE_CODES | {"MEM0_DIAGNOSTIC_BUSY"}:
+        result["error_code"] = reason
+    for name in ("downloaded_bytes", "total_bytes", "remaining_bytes", "installed_bytes"):
+        count = source.get(name)
+        if type(count) is int and 0 <= count <= 10**15:
+            result[name] = count
+    return result
 
 
 def project_history_import(value: object) -> dict[str, object]:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 import threading
@@ -417,6 +418,57 @@ class _Layer:
     def uninstall(self) -> None:
         self.uninstalls += 1
         self.is_ready = False
+
+
+@pytest.mark.parametrize("failure,expected", [
+    (PermissionError(13, "secret-user-path"), "MEM0_CAPABILITY_PERMISSION_DENIED"),
+    (OSError(28, "secret-user-path"), "MEM0_CAPABILITY_DISK_SPACE_LOW"),
+    (RuntimeError("MEM0_RUNTIME_VERIFY_FAILED"), "MEM0_RUNTIME_VERIFY_FAILED"),
+    (RuntimeError("secret-token"), "MEM0_CAPABILITY_INSTALL_FAILED"),
+])
+def test_install_preserves_safe_failure_and_stage(failure, expected):
+    class Broken(_Layer):
+        def install(self, **kwargs):
+            raise failure
+    installer = Mem0CapabilityInstaller(runtime=_Layer(), model=Broken(),
+        version="fixture", estimated_download_bytes=20,
+        license_summary="fixture", requires_gpu=False)
+    assert installer.install(source_mode="auto") == "REJECTED"
+    status = installer.status().to_dict()
+    assert status["phase"] == "model"
+    assert status["reason_code"] == expected
+    assert "secret" not in json.dumps(status)
+
+
+@pytest.mark.parametrize("stderr,expected", [
+    ("ERROR: [WinError 5] Access is denied: C:/Users/secret", "MEM0_CAPABILITY_PERMISSION_DENIED"),
+    ("ERROR: [Errno 28] No space left on device", "MEM0_CAPABILITY_DISK_SPACE_LOW"),
+    ("ERROR: THESE PACKAGES DO NOT MATCH THE HASHES", "MEM0_RUNTIME_HASH_MISMATCH"),
+    ("ERROR: No matching distribution found for private-package", "MEM0_RUNTIME_PACKAGE_UNAVAILABLE"),
+])
+def test_pip_failure_classifies_without_retaining_stderr(stderr, expected):
+    import sys
+    from mem0_capability_install import _run_command
+    with pytest.raises(RuntimeError, match="^" + expected + "$"):
+        _run_command([sys.executable, "-c", "import sys; sys.stderr.write(" + repr(stderr) + ");sys.exit(1)"],
+            environment=os.environ, pause_requested=threading.Event(),
+            progress=lambda _: None, progress_roots=())
+
+
+def test_offline_package_failure_keeps_package_stage():
+    from contextlib import contextmanager
+    class InvalidPackage:
+        @contextmanager
+        def prepare(self):
+            raise RuntimeError("MEM0_OFFLINE_PACKAGE_HASH_MISMATCH")
+            yield  # pragma: no cover
+    installer = Mem0CapabilityInstaller(runtime=_Layer(), model=_Layer(),
+        version="fixture", estimated_download_bytes=20,
+        license_summary="fixture", requires_gpu=False,
+        offline_package_factory=lambda _: InvalidPackage())
+    assert installer.install(source_mode="offline", offline_root=Path("fixture.zip")) == "REJECTED"
+    assert installer.status().phase == "package"
+    assert installer.status().reason_code == "MEM0_OFFLINE_PACKAGE_HASH_MISMATCH"
 
 
 def test_capability_installs_only_after_explicit_start_and_publishes_progress() -> None:

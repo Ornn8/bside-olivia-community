@@ -247,4 +247,4 @@ def test_invalid_memory_offline_package_is_rejected_before_either_layer_runs(
     assert installer.install(source_mode="offline", offline_root=archive) == "REJECTED"
     status = installer.status()
     assert status.state is CapabilityState.REPAIR
-    assert status.reason_code == "MEM0_CAPABILITY_INSTALL_FAILED"
+    assert status.reason_code == "MEM0_OFFLINE_PACKAGE_HASH_MISMATCH"
