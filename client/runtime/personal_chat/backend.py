@@ -9,16 +9,74 @@ from pathlib import Path
 
 from aiohttp import web
 
-from .service import PersonalChatService
+from .service import PersonalChatService, persist_state
 from runtime.private_world.life_rhythm import LOCAL
 
 
 _RUNTIME = web.AppKey("personal_chat", dict)
+_CONSUMER_TIMEOUT_SECONDS = 15
+_VOICE_QUEUE_TIMEOUT_SECONDS = 10 * 60
+_VOICE_RENDER_TIMEOUT_SECONDS = 20 * 60
+
+
+async def prepare_chat_audio(server, text, path):
+    """Keep the media slot until the worker really exits, even after fallback."""
+    from runtime.media.voice_direction import TextOnlyVoicePlan
+    from runtime.remote_pipeline import PROGRESS_CALLBACK
+    from .service import QUEUE_NOTICE
+    config_path = Path(os.environ['OLIVIA_TTS_CONFIG'])
+    notice = QUEUE_NOTICE.get()
+    if server.media_semaphore.locked() and notice is not None:
+        await notice()
+    await asyncio.wait_for(server.media_semaphore.acquire(), _VOICE_QUEUE_TIMEOUT_SECONDS)
+    loop = asyncio.get_running_loop()
+    queued = asyncio.Event()
+    active = True
+    def progress(phase, task):
+        if active and task.get('status') == 'queued':
+            loop.call_soon_threadsafe(queued.set)
+    token = PROGRESS_CALLBACK.set(progress)
+    try:
+        worker = asyncio.create_task(asyncio.to_thread(server.render_reply_audio, text, path,
+            tts_config_path=config_path,
+            voice_performance_plan=TextOnlyVoicePlan(text), environment=dict(os.environ)))
+    finally:
+        PROGRESS_CALLBACK.reset(token)
+    def finished(task):
+        server.media_semaphore.release()
+        if not task.cancelled():
+            task.exception()
+    worker.add_done_callback(finished)
+    async def notify_queue():
+        await queued.wait()
+        if notice is not None:
+            await notice()
+    notification = asyncio.create_task(notify_queue())
+    try:
+        return await asyncio.wait_for(asyncio.shield(worker), _VOICE_RENDER_TIMEOUT_SECONDS)
+    finally:
+        active = False
+        notification.cancel()
+        await asyncio.gather(notification, return_exceptions=True)
 
 
 def _failure_code(exc):
     code = str(exc)
-    return code if re.fullmatch(r"(?:PERSONAL_CHAT|WECHAT|QQ)_[A-Z0-9_]{1,80}", code) else "PERSONAL_CHAT_UNAVAILABLE"
+    return code if re.fullmatch(r"(?:PERSONAL_CHAT|WECHAT|QQ|LLM|IMAGE)_[A-Z0-9_]{1,80}", code) else "PERSONAL_CHAT_UNAVAILABLE"
+
+
+def reply_errors(server, runtime):
+    errors = {channel: _failure_code(RuntimeError(code))
+              for channel, code in runtime.get('errors', {}).items() if channel in ('qq', 'wechat')}
+    latest = {row.get('channel'): row for row in getattr(server.store, 'personal_chats', [])}
+    for channel, row in latest.items():
+        if channel in runtime.get('status', {}) and (row.get('delivery_status') in {'FAILED', 'DELIVERY_UNCONFIRMED'}
+                or row.get('delivery_status') == 'SENDING' and row.get('error_code')):
+            code = row.get('error_code', '')
+            errors.setdefault(channel, code if isinstance(code, str) and
+                              re.fullmatch(r'(?:PERSONAL_CHAT|IMAGE|LLM)_[A-Z0-9_]{1,80}', code)
+                              else 'PERSONAL_CHAT_GENERATION_FAILED')
+    return errors
 
 
 def _publish_status(server, runtime):
@@ -28,14 +86,7 @@ def _publish_status(server, runtime):
         state = row.get("delivery_status")
         if state in {"GENERATING", "GENERATED", "SENDING", "DELIVERY_UNCONFIRMED", "DELIVERED", "FAILED"}:
             counts[state] = counts.get(state, 0) + 1
-    errors = dict(runtime.get('errors', {}))
-    latest = {row.get('channel'): row for row in server.store.personal_chats}
-    for channel, row in latest.items():
-        if channel in runtime['status'] and row.get('delivery_status') == 'FAILED':
-            code = row.get('error_code', '')
-            errors.setdefault(channel, code if isinstance(code, str) and
-                              re.fullmatch(r'(?:PERSONAL_CHAT|IMAGE|LLM)_[A-Z0-9_]{1,80}', code)
-                              else 'PERSONAL_CHAT_GENERATION_FAILED')
+    errors = reply_errors(server, runtime)
     value = {"channels": dict(runtime["status"]), "errors": errors,
              "last_seen_at": dict(runtime.get("last_seen_at", {})),
              "delivery_health": dict(runtime.get("delivery_health", {})),
@@ -46,6 +97,10 @@ def _publish_status(server, runtime):
     writer = getattr(server, "_atomic_write_store_file", None)
     if callable(writer):
         writer(server._state_root() / "personal-chat-status.json", json.dumps(value, sort_keys=True))
+
+
+async def persist_chat(server):
+    await persist_state(getattr(server, '_persist_store_state_async', server._persist_store_state))
 
 
 async def generate(server, event, row):
@@ -68,7 +123,7 @@ async def generate(server, event, row):
     # Freeze before generation so the writer and attachment use one preference.
     if 'image_reply_settings' not in row:
         row['image_reply_settings'] = server.video_reply_settings_store.image_snapshot()
-        server._persist_store_state()
+        await persist_chat(server)
     from runtime.image_understanding import understand_incoming, incoming_context
     await understand_incoming(server, event, row)
     content = event.text + incoming_context(row)
@@ -109,7 +164,7 @@ async def generate(server, event, row):
                            if server.supports_scoped_reasoning(adapter.config) else None))
         result = await asyncio.wait_for(server.reply_pipeline.run(request,
             context),
-            server._reply_pipeline_timeout_seconds(ReplyMode.TEXT_LETTER.value))
+            server._reply_pipeline_timeout_seconds(ReplyMode.FUTURE_IM.value))
         if result.state is not ReplyState.COMPLETED:
             raise RuntimeError("PERSONAL_CHAT_GENERATION_FAILED")
         from .decision import decode
@@ -136,13 +191,9 @@ async def generate(server, event, row):
         row['presentation_status'] = 'VALIDATED'
         row.update(requested_format=mode, listening_preference='voice_ok')
         if mode == 'voice' and voice_available and text != '[[skip]]':
-            from runtime.media.voice_direction import TextOnlyVoicePlan
             path = server._state_root() / 'media' / (event.exchange_id + '.wav')
             try:
-                async with server.media_semaphore:
-                    metadata = await asyncio.to_thread(server.render_reply_audio, text, path,
-                        tts_config_path=Path(os.environ['OLIVIA_TTS_CONFIG']),
-                        voice_performance_plan=TextOnlyVoicePlan(text), environment=dict(os.environ))
+                metadata = await prepare_chat_audio(server, text, path)
                 row.update(prepared_audio=str(path), reply_audio_duration=metadata['duration_seconds'])
             except Exception:
                 row.pop('prepared_audio', None)
@@ -174,7 +225,7 @@ async def prepare_chat_photo(server, row, send):
     from runtime.image_reply import prepare
     from .service import photo_notice
     await prepare(server, row, row.get('content', ''), row['reply_text'], channel='qq',
-                  on_ready=lambda: photo_notice(row, send, server._persist_store_state,
+                  on_ready=lambda: photo_notice(row, send, lambda: persist_chat(server),
                       'progress', '好，我准备一张照片，稍等一下。'))
 
 
@@ -183,24 +234,24 @@ async def deliver_photo(server, row, send):
     from runtime.image_understanding import commit_image_memory
     if row.get('delivery_status') != 'DELIVERED':
         return
-    await prepare(server, row, row.get('content', ''), row['reply_text'], channel='qq')
+    await prepare_chat_photo(server, row, send)
     if row.get('image_status') != 'COMPLETED' or not row.get('prepared_image'):
         return
     if callable(getattr(send, 'is_available', None)) and not send.is_available():
         return  # Safe to send the saved picture only when a later owner replay reconnects.
     row['image_delivery_status'] = 'SENDING'
-    server._persist_store_state()
+    await persist_chat(server)
     try:
         receipt = await send.image(row['prepared_image'])
         if isinstance(receipt, bool) or not isinstance(receipt, (str, int)) or not str(receipt):
             raise RuntimeError('QQ_SEND_UNCONFIRMED')
     except BaseException:
         row['image_delivery_status'] = 'UNKNOWN'
-        server._persist_store_state()
+        await persist_chat(server)
         raise
     row.update(image_delivery_status='DELIVERED', image_delivery_receipt=str(receipt),
                image_world_status='PENDING')
-    server._persist_store_state()
+    await persist_chat(server)
     await commit_image_memory(server, row)
 
 
@@ -217,14 +268,14 @@ async def _commit_mailbox_notice(server, row):
 async def _commit_world(server, row):
     if row.get("private_world_status") == "PENDING":
         if not server._commit_private_world_letter(row):
-            server._persist_store_state()
+            await persist_chat(server)
             raise RuntimeError("PERSONAL_CHAT_WORLD_COMMIT_UNAVAILABLE")
-        server._persist_store_state()
+        await persist_chat(server)
     if row.get("delivered_format") == "audio" and row.get("media_world_status") != "COMMITTED":
         server._record_published_media(row, reply_text=row["reply_text"],
             delivery_id=row["private_world_delivery_id"], path=Path(row["prepared_audio"]),
             components=("speech",), presentation="audio")
-        server._persist_store_state()
+        await persist_chat(server)
         if row.get("media_world_status") != "COMMITTED":
             raise RuntimeError("PERSONAL_CHAT_AUDIO_WORLD_UNAVAILABLE")
 
@@ -242,14 +293,15 @@ async def _commit_candidates(server, row):
             if status not in {"CREATED", "DUPLICATE", "SKIPPED"}:
                 raise RuntimeError("PERSONAL_CHAT_CANDIDATE_UNAVAILABLE")
             row["candidate_delivery_status"] = status
-        server._persist_store_state()
+        await persist_chat(server)
 
 async def _commit_life(server, row):
     if row.get("daily_life_status") != "COMMITTED":
         server._schedule_daily_life_exchange(row)
         task = server.daily_life_tasks.get(f"reply:{row['letter_id']}:1")
         if task is not None:
-            await task
+            # This task is owned by the daily-life runtime, not this waiter.
+            await asyncio.shield(task)
         if row.get("daily_life_status") != "COMMITTED":
             raise RuntimeError("PERSONAL_CHAT_DAILY_LIFE_UNAVAILABLE")
 
@@ -260,7 +312,7 @@ async def _commit_memory(server, row):
         if row.get('origin') != 'proactive':
             server.letters_adapter.remember_conversation(row["content"], row["reply_text"])
         row["legacy_memory_delivered"] = True
-        server._persist_store_state()
+        await persist_chat(server)
 
 
 async def recoverable_commit(server, row):
@@ -269,20 +321,24 @@ async def recoverable_commit(server, row):
     if now < row.get('consumer_retry_at', 0):
         return
     try:
-        await commit(server, row)
+        try:
+            async with asyncio.timeout(_CONSUMER_TIMEOUT_SECONDS):
+                await commit(server, row)
+        except TimeoutError as exc:
+            raise RuntimeError('PERSONAL_CHAT_CONSUMER_TIMEOUT') from exc
     except asyncio.CancelledError:
         raise
     except Exception as exc:
         row["consumer_error_code"] = _failure_code(exc)
         row["consumer_failures"] = row.get("consumer_failures", 0) + 1
         row['consumer_retry_at'] = now + min(3600, 30 * 2 ** min(row['consumer_failures'] - 1, 7))
-        server._persist_store_state()
+        await persist_chat(server)
         server._safe_log("personal_chat_consumer_pending", error_code=row["consumer_error_code"])
     else:
         if row.pop("consumer_error_code", None) is not None:
             row.pop("consumer_failures", None)
             row.pop('consumer_retry_at', None)
-            server._persist_store_state()
+            await persist_chat(server)
 
 
 class _Cursor:
@@ -378,7 +434,7 @@ def install_personal_chat(app, server):
                     return key in allowed_stickers(context.private_behavior)
                 except Exception:
                     return False
-            service = PersonalChatService(server.store.personal_chats, server._persist_store_state,
+            service = PersonalChatService(server.store.personal_chats, lambda: persist_chat(server),
                 lambda event, row: generate(server, event, row), lambda row: recoverable_commit(server, row), bindings,
                 sticker_allowed=sticker_allowed, photo=lambda row, send: deliver_photo(server, row, send),
                 prepare_photo=lambda row, send: prepare_chat_photo(server, row, send))

@@ -18,6 +18,8 @@ import uuid
 import hashlib
 import inspect
 import threading
+import copy
+from concurrent.futures import ThreadPoolExecutor
 import tempfile as _tempfile
 import webbrowser as _webbrowser
 from dataclasses import asdict, replace
@@ -1231,17 +1233,14 @@ def _load_store_state() -> None:
             _safe_log("store_primary_repair_failed", error_code=StoreStateUnavailable.code)
 
 
-def _persist_store_state() -> None:
-    global _store_state_error_code
+_store_writer = ThreadPoolExecutor(max_workers=1, thread_name_prefix="olivia-state-writer")
+
+
+def _submit_store_state():
     _require_store_state_available()
     root = _state_root()
     if root is None:
-        return
-    try:
-        root.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        _store_state_error_code = StoreStateUnavailable.code
-        raise StoreStateUnavailable(StoreStateUnavailable.code) from None
+        return None
     payload = {
         "letters": store.letters,
         "personal_chats": store.personal_chats,
@@ -1251,6 +1250,18 @@ def _persist_store_state() -> None:
         "settings": store.settings,
         "request_keys": store.request_keys,
     }
+    # Capture mutable state on the caller thread; serialize/write snapshots in
+    # submission order so a slow older save cannot overwrite a newer one.
+    return _store_writer.submit(_write_store_snapshot, root, copy.deepcopy(payload))
+
+
+def _write_store_snapshot(root, payload):
+    global _store_state_error_code
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        _store_state_error_code = StoreStateUnavailable.code
+        raise StoreStateUnavailable(StoreStateUnavailable.code) from None
     serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
     try:
         _atomic_write_store_file(root / "state.json", serialized)
@@ -1262,6 +1273,25 @@ def _persist_store_state() -> None:
         _atomic_write_store_file(root / "state.json.bak", serialized)
     except StoreStateUnavailable:
         _safe_log("store_backup_failed", error_code=StoreStateUnavailable.code)
+
+
+def _persist_store_state() -> None:
+    future = _submit_store_state()
+    if future is not None:
+        future.result()
+
+
+async def _persist_store_state_async() -> None:
+    pending = _submit_store_state()
+    if pending is None:
+        return
+    future = asyncio.wrap_future(pending)
+    try:
+        await asyncio.shield(future)
+    except asyncio.CancelledError:
+        # A cancelled handler must not abandon a pending SENDING reservation.
+        await asyncio.shield(future)
+        raise
 
 
 _memory_config = load_memory_config()

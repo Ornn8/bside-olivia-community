@@ -224,7 +224,7 @@ def test_legacy_photo_recovery_does_not_duplicate_text_on_replay():
 
 
 @pytest.mark.parametrize('commit_fails', [False, True])
-def test_qq_waits_for_photo_before_delivering_text(commit_fails):
+def test_qq_delivers_text_before_waiting_for_photo(commit_fails):
     async def scenario():
         rows, sent = [], []
         started, finish = asyncio.Event(), asyncio.Event()
@@ -247,7 +247,7 @@ def test_qq_waits_for_photo_before_delivering_text(commit_fails):
         event = PersonalMessage('qq', '100', '200', '1', '给我照片')
         task = asyncio.create_task(service.handle(event, send))
         await asyncio.wait_for(started.wait(), 1)
-        assert sent == [] and rows[0]['delivery_status'] == 'GENERATED'
+        assert sent == ['text'] and rows[0]['delivery_status'] == 'DELIVERED'
         finish.set()
         if commit_fails:
             with pytest.raises(RuntimeError): await task
