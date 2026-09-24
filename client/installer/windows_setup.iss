@@ -232,6 +232,7 @@ var
   ExitCode: Integer;
   ExecSucceeded: Boolean;
   DiagnosticContent: AnsiString;
+  ResolvedProductRoot: AnsiString;
 begin
   Result := '';
   StableInstallCode := '';
@@ -290,6 +291,11 @@ begin
       ExecSucceeded := False;
       ExitCode := -1;
       Log('Olivia installer progress capture failed.');
+    end;
+    if ExecSucceeded and (ExitCode = 0) then
+    begin
+      if LoadStringFromFile(SetupResultPath + '.product-root', ResolvedProductRoot) then
+        InstallDirPage.Values[0] := UTF8Decode(ResolvedProductRoot);
     end;
     if (not ExecSucceeded) or (ExitCode <> 0) then
     begin

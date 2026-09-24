@@ -246,6 +246,25 @@ trap {
 }
 
 $productRoot = [IO.Path]::GetFullPath($Destination)
+function Resolve-ProductRoot {
+    param([string]$Selected)
+    $current = [IO.Path]::GetFullPath($Selected)
+    if ($current -eq [IO.Path]::GetPathRoot($current)) { return $current }
+    $current = $current.TrimEnd('\')
+    $ancestor = $current
+    while ($ancestor) {
+        if ((Test-Path -LiteralPath $ancestor) -and (([IO.File]::GetAttributes($ancestor) -band [IO.FileAttributes]::ReparsePoint) -ne 0)) { throw 'OFFLINE_CORE_RUNTIME_PARENT_INVALID' }
+        $ancestor = Split-Path -Parent $ancestor
+    }
+    while ((Split-Path -Leaf $current) -ieq 'install') {
+        $markerPath = Join-Path $current '.olivia-full-patch.json'
+        $hasData = Test-Path -LiteralPath (Join-Path $current 'data\state.json') -PathType Leaf
+        if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf) -and -not $hasData) { break }
+        $current = Split-Path -Parent $current
+    }
+    return $current
+}
+$productRoot = Resolve-ProductRoot $productRoot
 $legacyDefaultInstall = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'BSideOliviaLocal\install'))
 if ([string]::Equals($productRoot.TrimEnd('\'), $legacyDefaultInstall.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)) {
     $productRoot = Split-Path -Parent $productRoot
@@ -1801,7 +1820,7 @@ function Test-ManagedServerDependencies {
     )
 
     try {
-        & $PythonExe '-c' 'import aiohttp,jsonschema' 2>$null
+        & $PythonExe '-c' 'import aiohttp,jsonschema,io; from PIL import Image; b=io.BytesIO(); Image.new("RGB",(2,2)).save(b,format="PNG"); b.seek(0); Image.open(b).load()' 2>$null
         return $LASTEXITCODE -eq 0
     } catch {
         if ($LASTEXITCODE -eq 0) { throw }
@@ -2027,4 +2046,8 @@ if (-not $SkipShortcut) {
     & (Join-Path $PSScriptRoot 'Create-Shortcut.ps1') -InstallRoot $Destination
 }
 Exit-ManagedInstallLock
+if ($SetupResultPath) {
+    [IO.File]::WriteAllText($SetupResultPath + '.product-root', $productRoot, [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText($SetupResultPath, 'OLIVIA_SETUP_OK', [Text.UTF8Encoding]::new($false))
+}
 exit 0

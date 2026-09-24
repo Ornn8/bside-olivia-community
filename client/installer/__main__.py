@@ -35,6 +35,7 @@ def main(argv: list[str] | None = None) -> int:
     build_update.add_argument("--source", type=Path, required=True)
     build_update.add_argument("--output", type=Path, required=True)
     build_update.add_argument("--version", required=True)
+    build_update.add_argument("--image-dependency-wheel", type=Path)
     build_update.add_argument("--source-commit", required=True)
     rollback = sub.add_parser("rollback-update")
     rollback.add_argument("--installation", type=Path, required=True)
@@ -61,6 +62,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.source,
                 args.output,
                 version=args.version,
+                image_dependency_wheel=args.image_dependency_wheel,
                 expected_source_commit=args.source_commit,
             )
         else:

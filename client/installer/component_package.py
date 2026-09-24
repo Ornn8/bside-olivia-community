@@ -182,6 +182,7 @@ def build_component_package(
     *,
     version: str,
     expected_source_commit: str,
+    image_dependency_wheel: str | os.PathLike[str] | None = None,
 ) -> dict[str, object]:
     """Build a deterministic package plus independent manifest/package digests."""
 
@@ -220,6 +221,12 @@ def build_component_package(
         except PatchInstallError as exc:
             raise ComponentPackageBuildError(str(exc)) from exc
         _verify_source(source_root, source_commit)
+        if image_dependency_wheel is not None:
+            from installer.repair_image_dependency import WHEEL, SHA256
+            wheel = Path(image_dependency_wheel)
+            if _sha256(wheel) != SHA256:
+                raise ComponentPackageBuildError('UPDATE_IMAGE_WHEEL_HASH_MISMATCH')
+            shutil.copyfile(wheel, payload / 'installer' / WHEEL)
         (payload / "installer" / "release-version.json").write_text(
             json.dumps({"version": version}) + "\n", encoding="utf-8"
         )

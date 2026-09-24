@@ -46,7 +46,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--skip-key", action="store_true")
     args = parser.parse_args(argv)
     root = args.installation.expanduser().resolve()
-    data_root = root / "data"
+    from installer.user_data_root import resolve_user_data_root
+    data_root = resolve_user_data_root(root)
     data_root.mkdir(parents=True, exist_ok=True)
     result: dict[str, object] = {"status": "CONFIGURED", "key": "unchanged", "reference": None}
     if not args.skip_key:
