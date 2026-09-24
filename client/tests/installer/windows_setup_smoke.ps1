@@ -37,6 +37,8 @@ param(
     [switch]$NonInteractive
 )
 $utf8NoBom = [Text.UTF8Encoding]::new($false)
+[void][IO.Directory]::CreateDirectory($Destination)
+[IO.File]::AppendAllText((Join-Path $Destination 'attempts.txt'), "attempt`n", $utf8NoBom)
 [IO.File]::WriteAllText(
     $SetupResultPath,
     'OLIVIA_SETUP_ERROR=TEST_INSTALL_FAILURE',
@@ -60,6 +62,9 @@ exit 23
     )
     $process = Start-Process -FilePath $setup -ArgumentList $arguments -WindowStyle Hidden -PassThru -Wait
     if ($process.ExitCode -ne 7) { throw 'SETUP_SMOKE_EXIT_CODE_INVALID' }
+    if (@(Get-Content -LiteralPath (Join-Path $install 'attempts.txt')).Count -ne 1) {
+        throw 'SETUP_SMOKE_REPEATED_INSTALL'
+    }
 
     $logText = Get-Content -Raw -LiteralPath $log
     if ($logText -notmatch 'Olivia installer code: TEST_INSTALL_FAILURE') {

@@ -1,4 +1,4 @@
-﻿#ifndef PayloadRoot
+#ifndef PayloadRoot
   #error PayloadRoot is required
 #endif
 #ifndef OutputDir
