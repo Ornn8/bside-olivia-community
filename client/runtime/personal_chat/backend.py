@@ -371,7 +371,7 @@ def install_personal_chat(app, server):
             from .initiative import Initiative
             initiative = Initiative(server.store.personal_chats)
 
-            async def handle(event, send):
+            async def handle_connection_test(event, send):
                 # Connection diagnostics are never persona/memory inputs. The first
                 # leg only proves inbound reception plus an outbound API attempt.
                 # E2E verification is recorded only after the owner echoes the
@@ -394,7 +394,7 @@ def install_personal_chat(app, server):
                     }:
                         runtime["errors"].pop(event.channel, None)
                     _publish_status(server, runtime)
-                    return
+                    return True
                 if text == "/连接测试":
                     if journal.reserve(event.exchange_id):
                         code = f"{secrets.randbelow(10000):04d}"
@@ -412,10 +412,15 @@ def install_personal_chat(app, server):
                         if confirmation == "UNCONFIRMED":
                             runtime["errors"][event.channel] = "PERSONAL_CHAT_DELIVERY_UNCONFIRMED"
                         _publish_status(server, runtime)
-                    return
+                    return True
                 if isinstance(pending, dict) and re.fullmatch(r"[0-9]{4}", text):
                     runtime["errors"][event.channel] = "PERSONAL_CHAT_CONNECTION_TEST_CODE_MISMATCH"
                     _publish_status(server, runtime)
+                    return True
+                return False
+
+            async def handle(event, send):
+                if await handle_connection_test(event, send):
                     return
                 try:
                     if event.channel not in selected_channels(server):
@@ -444,6 +449,18 @@ def install_personal_chat(app, server):
                                      error_code=runtime['errors'][event.channel])
                 finally:
                     _publish_status(server, runtime)
+
+            def is_control_message(event):
+                text = event.text.strip()
+                if text == '/连接测试':
+                    return True
+                pending = runtime['connection_tests'].get(event.channel)
+                return (isinstance(pending, dict)
+                        and datetime.now(LOCAL).timestamp() - float(pending.get('created_at', 0)) <= 600
+                        and re.fullmatch(r'[0-9]{4}', text) is not None)
+
+            handle.is_control_message = is_control_message
+            handle.handle_control = handle_connection_test
 
             async def run(name, factory):
                 def on_state(state):

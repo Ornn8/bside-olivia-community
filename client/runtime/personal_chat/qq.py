@@ -24,6 +24,16 @@ def _ack(raw):
 
 async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_timeout, merge_seconds=2, state_callback=None):
     queue = asyncio.Queue(maxsize=32)
+    control_queue = asyncio.Queue(maxsize=32)
+    classify_control = getattr(handle_message, 'is_control_message', None)
+    handle_control = getattr(handle_message, 'handle_control', handle_message)
+
+    def enqueue(event):
+        target = control_queue if callable(classify_control) and classify_control(event) else queue
+        try:
+            target.put_nowait(event)
+        except asyncio.QueueFull:
+            raise RuntimeError("QQ_OWNER_QUEUE_FULL") from None
     login_echo = uuid.uuid4().hex
     await ws.send_json({"action": "get_login_info", "echo": login_echo})
     async with asyncio.timeout(ack_timeout):
@@ -52,10 +62,7 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
             # after the returned bot identity has been verified.
             event = owner_message("qq", raw, account_id=account_id, owner_id=owner_id)
             if event is not None:
-                try:
-                    queue.put_nowait(event)
-                except asyncio.QueueFull:
-                    raise RuntimeError("QQ_OWNER_QUEUE_FULL") from None
+                enqueue(event)
 
     pending = {}
     processing = False
@@ -115,11 +122,16 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
                 continue
             event = owner_message("qq", raw, account_id=account_id, owner_id=owner_id)
             if event:
-                try:
-                    queue.put_nowait(event)
-                except asyncio.QueueFull:
-                    # Never block the ACK reader behind generation work.
-                    raise RuntimeError("QQ_OWNER_QUEUE_FULL") from None
+                enqueue(event)
+
+    async def control_worker():
+        # Keep the socket reader free to receive the diagnostic send's ACK.
+        while True:
+            event = await control_queue.get()
+            try:
+                await handle_control(event, send)
+            finally:
+                control_queue.task_done()
 
     async def worker():
         nonlocal processing
@@ -157,19 +169,22 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
 
     reader_task = asyncio.create_task(reader())
     worker_task = asyncio.create_task(worker())
+    control_task = asyncio.create_task(control_worker())
     stop_task = asyncio.create_task(stop_event.wait())
     try:
-        await asyncio.wait({reader_task, worker_task, stop_task}, return_when=asyncio.FIRST_COMPLETED)
+        await asyncio.wait({reader_task, worker_task, control_task, stop_task}, return_when=asyncio.FIRST_COMPLETED)
+        if control_task.done():
+            control_task.result()
         if worker_task.done():
             worker_task.result()
         if reader_task.done():
             reader_task.result()
-            if not stop_event.is_set() and (processing or not queue.empty()):
+            if not stop_event.is_set() and (processing or not queue.empty() or not control_queue.empty()):
                 raise RuntimeError("QQ_CONNECTION_LOST_DURING_EXCHANGE")
     finally:
-        for task in (reader_task, worker_task, stop_task):
+        for task in (reader_task, worker_task, control_task, stop_task):
             task.cancel()
-        await asyncio.gather(reader_task, worker_task, stop_task, return_exceptions=True)
+        await asyncio.gather(reader_task, worker_task, control_task, stop_task, return_exceptions=True)
 
 
 async def run_qq(url, token, account_id, owner_id, handle_message, stop_event,

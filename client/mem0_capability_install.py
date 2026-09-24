@@ -6,6 +6,7 @@ from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from enum import StrEnum
+import errno
 import hashlib
 import json
 import os
@@ -30,6 +31,27 @@ Progress = Callable[[int, int, str], None]
 _RUNTIME_BYTECODE_POLICY = "pip-compile-v1"
 _RUNTIME_PREPARATION_PROGRESS = "python-runtime-preparation"
 _OFFLINE_SOURCE = "offline-package"
+MEM0_INSTALL_FAILURE_CODES = frozenset({
+    "MEM0_CAPABILITY_INSTALL_FAILED", "MEM0_CAPABILITY_VERIFY_FAILED",
+    "MEM0_CAPABILITY_PERMISSION_DENIED", "MEM0_CAPABILITY_DISK_SPACE_LOW",
+    "MEM0_CAPABILITY_FILE_IN_USE", "MEM0_OFFLINE_PACKAGE_INVALID",
+    "MEM0_OFFLINE_PACKAGE_HASH_MISMATCH",
+    "MEM0_RUNTIME_DOWNLOAD_FAILED", "MEM0_RUNTIME_VERIFY_FAILED",
+    "MEM0_RUNTIME_PTH_UNAVAILABLE", "MEM0_RUNTIME_HASH_MISMATCH",
+    "MEM0_RUNTIME_PACKAGE_UNAVAILABLE",
+})
+
+
+def _install_failure_code(exc: Exception) -> str:
+    if isinstance(exc, OSError):
+        if exc.errno == errno.ENOSPC or getattr(exc, "winerror", None) == 112:
+            return "MEM0_CAPABILITY_DISK_SPACE_LOW"
+        if getattr(exc, "winerror", None) in {32, 33}:
+            return "MEM0_CAPABILITY_FILE_IN_USE"
+        if exc.errno in {errno.EACCES, errno.EPERM}:
+            return "MEM0_CAPABILITY_PERMISSION_DENIED"
+    code = str(exc)
+    return code if code in MEM0_INSTALL_FAILURE_CODES else "MEM0_CAPABILITY_INSTALL_FAILED"
 
 
 class CapabilityState(StrEnum):
@@ -259,7 +281,10 @@ class Mem0OfflinePackage:
                     if digest.hexdigest() != sha256:
                         raise RuntimeError("MEM0_OFFLINE_PACKAGE_HASH_MISMATCH")
             yield staging
-        except (OSError, zipfile.BadZipFile) as exc:
+        except OSError as exc:
+            code = _install_failure_code(exc)
+            raise RuntimeError(code if code != "MEM0_CAPABILITY_INSTALL_FAILED" else "MEM0_OFFLINE_PACKAGE_INVALID") from exc
+        except zipfile.BadZipFile as exc:
             raise RuntimeError("MEM0_OFFLINE_PACKAGE_INVALID") from exc
         finally:
             shutil.rmtree(staging, ignore_errors=True)
@@ -779,8 +804,31 @@ def _run_command(
         command,
         env=dict(environment),
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
     )
+    # Drain continuously with bounded memory. Only fixed categories survive;
+    # pip paths, URLs and credentials never enter logs or exported state.
+    failure_code = "MEM0_RUNTIME_DOWNLOAD_FAILED"
+    def drain_errors() -> None:
+        nonlocal failure_code
+        tail = b""
+        assert process.stderr is not None
+        while chunk := process.stderr.read(4096):
+            tail = (tail + chunk)[-8192:]
+            lowered = tail.lower()
+            for markers, code in (
+                ((b"no space left", b"winerror 112", b"errno 28"), "MEM0_CAPABILITY_DISK_SPACE_LOW"),
+                ((b"winerror 32", b"winerror 33"), "MEM0_CAPABILITY_FILE_IN_USE"),
+                ((b"permission denied", b"access is denied", b"winerror 5"), "MEM0_CAPABILITY_PERMISSION_DENIED"),
+                ((b"do not match the hashes",), "MEM0_RUNTIME_HASH_MISMATCH"),
+                ((b"no matching distribution",), "MEM0_RUNTIME_PACKAGE_UNAVAILABLE"),
+            ):
+                if any(marker in lowered for marker in markers):
+                    failure_code = code
+                    break
+        process.stderr.close()
+    reader = threading.Thread(target=drain_errors, daemon=True, name="mem0-pip-errors")
+    reader.start()
     next_measurement = time.monotonic()
     while process.poll() is None:
         if pause_requested.is_set():
@@ -790,13 +838,17 @@ def _run_command(
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=5)
+            reader.join(timeout=5)
             raise _DownloadPaused
         now = time.monotonic()
         if now >= next_measurement:
             progress(max(0, _tree_size(progress_roots) - baseline))
             next_measurement = now + 1.0
         time.sleep(0.1)
-    return int(process.returncode or 0)
+    reader.join(timeout=5)
+    if process.returncode:
+        raise RuntimeError(failure_code)
+    return 0
 
 
 class ManagedMem0Runtime:
@@ -1001,6 +1053,7 @@ class ManagedMem0Runtime:
             }
         )
         installed = False
+        failure_code = "MEM0_RUNTIME_DOWNLOAD_FAILED"
         reported_progress = 0
 
         def report_observed(observed_bytes: int) -> None:
@@ -1034,20 +1087,26 @@ class ManagedMem0Runtime:
                 self.download_bytes,
                 _RUNTIME_PREPARATION_PROGRESS,
             )
-            result = self.runner(
-                self._command(target=self.staging, source=source, wheelhouse=wheelhouse),
-                environment=environment,
-                pause_requested=pause_requested,
-                progress=report_observed,
-                progress_roots=(self.cache, self.staging),
-            )
+            try:
+                result = self.runner(
+                    self._command(target=self.staging, source=source, wheelhouse=wheelhouse),
+                    environment=environment,
+                    pause_requested=pause_requested,
+                    progress=report_observed,
+                    progress_roots=(self.cache, self.staging),
+                )
+            except _DownloadPaused:
+                raise
+            except (OSError, RuntimeError) as exc:
+                failure_code = _install_failure_code(exc)
+                result = 1
             if result == 0:
                 self.last_source = source
                 installed = True
                 break
         if not installed:
             shutil.rmtree(self.staging, ignore_errors=True)
-            raise RuntimeError("MEM0_RUNTIME_DOWNLOAD_FAILED")
+            raise RuntimeError(failure_code)
         if not self._verify(self.staging):
             shutil.rmtree(self.staging, ignore_errors=True)
             raise RuntimeError("MEM0_RUNTIME_VERIFY_FAILED")
@@ -1654,7 +1713,7 @@ class Mem0CapabilityInstaller:
                 return "PAUSED"
             self._status = self._new_status(
                 CapabilityState.DOWNLOADING,
-                "runtime",
+                "package" if offline else "runtime",
                 self._progress_floor,
                 source=source_mode,
             )
@@ -1665,6 +1724,11 @@ class Mem0CapabilityInstaller:
         )
         try:
             with package_context as prepared_root:
+                with self._lock:
+                    self._status = self._new_status(
+                        CapabilityState.DOWNLOADING, "runtime", self._progress_floor,
+                        source=source_mode,
+                    )
                 self.runtime.install(
                     source_mode=source_mode,
                     offline_root=prepared_root,
@@ -1673,6 +1737,11 @@ class Mem0CapabilityInstaller:
                 )
                 if self._pause.is_set():
                     raise _DownloadPaused
+                with self._lock:
+                    self._status = self._new_status(
+                        CapabilityState.DOWNLOADING, "model", self.runtime_bytes,
+                        source=source_mode,
+                    )
                 self.model.install(
                     source_mode=source_mode,
                     offline_root=prepared_root,
@@ -1700,7 +1769,7 @@ class Mem0CapabilityInstaller:
                     source=source_mode,
                 )
             return "PAUSED"
-        except Exception:
+        except Exception as exc:
             with self._lock:
                 self._status = self._new_status(
                     CapabilityState.REPAIR,
@@ -1708,7 +1777,7 @@ class Mem0CapabilityInstaller:
                     self._status.downloaded_bytes,
                     current=self._status.current_file,
                     source=source_mode,
-                    reason="MEM0_CAPABILITY_INSTALL_FAILED",
+                    reason=_install_failure_code(exc),
                 )
             return "REJECTED"
         with self._lock:

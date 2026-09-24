@@ -272,6 +272,32 @@ def test_video_diagnostic_reads_existing_state_without_starting_installation(mon
         installer._lock.release()
 
 
+def test_memory_diagnostic_snapshots_without_model_probe():
+    from threading import Lock
+    from types import SimpleNamespace
+    class Backend:
+        def diagnostic_status_history(self): return ()
+        def read_status(self):
+            return CompanionReadStatus(memory=CompanionCapability("available"),
+                private_world=CompanionCapability("available"), candidates=CompanionCapability("available"))
+    def forbidden(): raise AssertionError("must not probe model")
+    installer = SimpleNamespace(_lock=Lock(), status=forbidden,
+        _status=SimpleNamespace(to_dict=lambda: {"state": "repair", "phase": "runtime",
+            "reason_code": "MEM0_RUNTIME_VERIFY_FAILED", "source": "offline",
+            "current_file": "private-secret", "remaining_bytes": 96}))
+    collect = _diagnostic_source(Backend(), setup_service=None, launcher_tail_provider=None,
+        runtime_tail_provider=None, capability_installer=installer)
+    actual = collect()["health"]["checks"]["memory_install"]
+    assert actual == {"state": "repair", "phase": "runtime", "source": "offline",
+        "error_code": "MEM0_RUNTIME_VERIFY_FAILED", "remaining_bytes": 96}
+    installer._lock.acquire()
+    try:
+        assert collect()["health"]["checks"]["memory_install"] == {
+            "state": "unavailable", "error_code": "MEM0_DIAGNOSTIC_BUSY"}
+    finally:
+        installer._lock.release()
+
+
 @pytest.mark.parametrize("route", ["text_letter", "voice_reply", "singing_video", "voice_song_video"])
 def test_diagnostic_source_projects_profiles_setup_and_recent_task_states(route) -> None:
     class Backend:

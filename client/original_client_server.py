@@ -482,6 +482,7 @@ def _diagnostic_source(
     task_snapshot_provider: Callable[[], Sequence[Mapping[str, object]]] | None = None,
     history_import_provider: Callable[[], Mapping[str, object]] | None = None,
     video_capability_installer: VideoCapabilityInstaller | None = None,
+    capability_installer: Mem0CapabilityInstaller | None = None,
 ) -> Callable[[], Mapping[str, object]]:
     """Bind only safe, aggregate collectors for a diagnostic export request."""
 
@@ -641,6 +642,15 @@ def _diagnostic_source(
         if not isinstance(capabilities, Mapping):
             raise RuntimeError("DIAGNOSTIC_HEALTH_UNAVAILABLE")
         checks: dict[str, object] = {}
+        if capability_installer is not None:
+            from runtime.diagnostics.support_bundle import project_memory_install
+            if not capability_installer._lock.acquire(blocking=False):
+                checks["memory_install"] = {"state": "unavailable", "error_code": "MEM0_DIAGNOSTIC_BUSY"}
+            else:
+                try:
+                    checks["memory_install"] = project_memory_install(capability_installer._status.to_dict())
+                finally:
+                    capability_installer._lock.release()
         if history_import_provider is not None:
             try:
                 checks["history_import"] = project_history_import(history_import_provider())
@@ -920,6 +930,7 @@ def create_original_client_server_runtime(
             task_snapshot_provider=task_snapshot_provider,
             history_import_provider=history_import_provider,
             video_capability_installer=video_capability_installer,
+            capability_installer=capability_installer,
         ),
         trusted_origins=origins,
     )

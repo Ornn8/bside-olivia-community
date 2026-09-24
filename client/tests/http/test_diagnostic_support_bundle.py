@@ -70,6 +70,24 @@ def _source() -> dict[str, object]:
     }
 
 
+def test_memory_install_diagnostics_only_keep_safe_stage_and_counts():
+    source = _source()
+    source["health"]["checks"]["memory_install"] = {
+        "state": "repair", "phase": "runtime", "source": "offline",
+        "reason_code": "MEM0_RUNTIME_HASH_MISMATCH", "downloaded_bytes": 100,
+        "total_bytes": 200, "remaining_bytes": 100,
+        "current_file": "C:/Users/private-secret", "stderr": "private-secret",
+        "install_locations": ["private-secret"],
+    }
+    with zipfile.ZipFile(io.BytesIO(build_diagnostic_bundle(source))) as archive:
+        raw = archive.read("health.json")
+    actual = json.loads(raw)["checks"]["memory_install"]
+    assert actual == {"state": "repair", "phase": "runtime", "source": "offline",
+        "error_code": "MEM0_RUNTIME_HASH_MISMATCH", "downloaded_bytes": 100,
+        "total_bytes": 200, "remaining_bytes": 100}
+    assert b"private-secret" not in raw
+
+
 def test_lipsync_context_strictly_projects_labels_and_booleans():
     source = _source()
     source['media_provider_tail'] = [
