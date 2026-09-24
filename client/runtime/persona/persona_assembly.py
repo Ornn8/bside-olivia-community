@@ -23,6 +23,7 @@ from runtime.reply.prompt_budget import (
 )
 from runtime.reply.reply_context import ReplyContext, RELATIONSHIP_FACT_AUTHORITY, WORLD_STATE_UNAVAILABLE
 from runtime.private_world.life_rhythm import LOCAL, RHYTHM_FACT_AUTHORITY
+from runtime.chinese_calendar import calendar_context
 
 
 _FORBIDDEN_RULES = (
@@ -94,6 +95,12 @@ _CONTINUATION_CUE_RE = re.compile(
 )
 _STYLE_EXAMPLE_LIMIT = 2
 _CURRENT_LIFE_FRAGMENT_IDS = frozenset({"linli.daily-life", "linli.rhythm"})
+_CALENDAR_CUE_RE = re.compile(
+    r"节日|过节|假期|放假|农历|几号|什么日子|特别的日子|"
+    r"春节|除夕|元宵|清明|端午|七夕|中秋|重阳|腊八|国庆|元旦|劳动节|"
+    r"月饼|粽子|汤圆|团圆|赏月|祭祖|"
+    r"(?:今天|明天|后天).{0,12}(?:安排|计划|打算|日子)"
+)
 _STYLE_TOKEN_RE = re.compile(r"[A-Za-z0-9]+|[\u3400-\u9fff]")
 _STYLE_SITUATIONS = (
     (
@@ -373,13 +380,20 @@ def _persona_blocks(
 
     # The clock changes each request; keep it out of the stable persona prefix.
     # It remains required, even if optional life/state evidence is cropped.
+    local_day = context.trusted_time.instant.astimezone(LOCAL).date()
+    festival_facts = (
+        calendar_context(local_day)
+        if snapshot.status == "READY" and _CALENDAR_CUE_RE.search(user_input)
+        else None
+    )
     blocks.append(_json_block(
         "runtime_time", "runtime_time", PromptSection.MODE_CONSTRAINTS,
         {"trusted_time": context.to_dict()["trusted_time"],
-         **({"world_state_status": "unavailable", "world_state_meaning": WORLD_STATE_UNAVAILABLE}
-            if not context.world_state_available else {}),
-         **({"character_local_time": context.trusted_time.instant.astimezone(LOCAL).isoformat()}
-            if snapshot.status == "READY" else {})},
+          **({"world_state_status": "unavailable", "world_state_meaning": WORLD_STATE_UNAVAILABLE}
+             if not context.world_state_available else {}),
+          **({"character_local_time": context.trusted_time.instant.astimezone(LOCAL).isoformat()}
+             if snapshot.status == "READY" else {}),
+          **({"chinese_calendar": festival_facts} if festival_facts is not None else {})},
     ))
     # Per-turn channel and delivery state must not invalidate the persona prefix.
     presentation = _im_presentation() if persona_mode == "future_im" else {}
