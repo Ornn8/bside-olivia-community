@@ -63,14 +63,14 @@ def test_qwen_route_validation_reason_survives_export(change, detail):
     ("router_invalid_result", "REPLY_ROUTE_INVALID_RESULT"),
     ("private-key-and-content", "VIDEO_TRIAGE_UNAVAILABLE"),
 ])
-def test_preview_failure_reaches_export_without_private_input(tmp_path, monkeypatch, reason, expected):
+def test_preview_failure_reaches_export_without_private_input(tmp_path, monkeypatch, reason, expected, diagnostic=None):
     import local_server as server
 
     monkeypatch.setattr(server, "video_reply_settings_store", VideoReplySettingsStore.initialize(tmp_path))
     monkeypatch.setattr(server, "_RUNTIME_DIAGNOSTIC_EVENTS", deque(maxlen=200))
 
     async def classify(*args):
-        return SimpleNamespace(status="unavailable", reason_code=reason)
+        return SimpleNamespace(status="unavailable", reason_code=reason, diagnostic=diagnostic)
 
     monkeypatch.setattr(server, "_classify_managed_route", classify)
 
@@ -89,6 +89,19 @@ def test_preview_failure_reaches_export_without_private_input(tmp_path, monkeypa
     exported = _project_tail(records, runtime=True)
     assert expected.encode() in exported
     assert b"private-" not in exported
+
+
+@pytest.mark.parametrize('diagnostic,expected', [
+    ({'exception_type': 'ClientConnectorCertificateError'}, 'LLM_TLS_FAILED'),
+    ({'exception_type': 'ClientConnectorSSLError'}, 'LLM_TLS_FAILED'),
+    ({'exception_type': 'ClientConnectorDNSError'}, 'LLM_DNS_FAILED'),
+    ({'exception_type': 'ClientConnectorError'}, 'LLM_CONNECTION_FAILED'),
+    ({'exception_type': 'ServerDisconnectedError'}, 'LLM_CONNECTION_FAILED'),
+    ({'http_status': 503}, 'LLM_SERVICE_UNAVAILABLE'),
+])
+def test_transport_failure_has_actionable_safe_code(tmp_path, monkeypatch, diagnostic, expected):
+    test_preview_failure_reaches_export_without_private_input(
+        tmp_path, monkeypatch, 'router_unavailable', expected, diagnostic)
 
 
 @pytest.mark.parametrize("code,accepted", [("REPLY_ROUTE_CLIENT_TIMEOUT", True), ("private-key", False), (["private-key"], False)])

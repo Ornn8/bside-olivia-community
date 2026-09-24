@@ -10,6 +10,7 @@ CODES = {"PROVIDER_QUOTA_EXHAUSTED", "PROVIDER_TIMEOUT", "PROVIDER_PROTOCOL", "P
 CODES |= {'PROVIDER_USAGE_PENDING', 'PROVIDER_REQUEST_DUPLICATE', 'PROVIDER_AUTH_FAILED'}
 KINDS = {"TimeoutError", "TypeError", "ValueError", "AttributeError", "RuntimeError", "ClientConnectorError", "ClientConnectorCertificateError", "ClientConnectorSSLError", "ServerDisconnectedError", "ClientPayloadError", "OTHER"}
 DETAILS = {"invalid_json", "invalid_response_shape", "missing_tools", "invalid_tool_entry", "invalid_tool_name", "invalid_tool_arguments"}
+KINDS.add('ClientConnectorDNSError')
 DETAILS |= {'structured_truncated', 'structured_validation_failed', 'tool_truncated',
             'unexpected_tool', 'invalid_tool_schema', 'invalid_tool_count', 'unsupported_tool_fallback',
             'unsupported_response_format', 'unsupported_tools', 'unsupported_tool_choice'}

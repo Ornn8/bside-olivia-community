@@ -7,7 +7,7 @@ from pathlib import Path
 import tempfile
 import time
 import uuid
-import ssl
+from runtime.tls import client_tls_context as gpu_tls_context
 from urllib.parse import urlsplit
 from aiohttp import ClientSession, ClientTimeout, ClientError, ClientSSLError, ClientConnectorError, TCPConnector
 from runtime.cloud_service import endpoint, CloudError
@@ -18,14 +18,6 @@ def connection_error(exc):
     if isinstance(exc, TimeoutError): return CloudError('GPU_CONNECTION_TIMEOUT')
     if isinstance(exc, ClientConnectorError): return CloudError('GPU_CONNECT_FAILED')
     return CloudError('GPU_CONNECTION_FAILED')
-
-
-def gpu_tls_context():
-    # Keep system roots (including user-managed CAs), supplement with Mozilla roots.
-    # Hostname, expiry and signature verification remain enabled.
-    context = ssl.create_default_context()
-    context.load_verify_locations(cafile=str(Path(__file__).with_name('gpu_ca_bundle.txt')))
-    return context
 
 
 class RemoteGeneration:
