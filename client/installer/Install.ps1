@@ -1882,7 +1882,7 @@ function Test-ManagedServerDependencies {
     )
 
     try {
-        & $PythonExe '-c' 'import aiohttp,jsonschema,io; from PIL import Image; b=io.BytesIO(); Image.new("RGB",(2,2)).save(b,format="PNG"); b.seek(0); Image.open(b).load()' 2>$null
+        & $PythonExe '-c' "import aiohttp,jsonschema,io; from PIL import Image; b=io.BytesIO(); Image.new('RGB',(2,2)).save(b,format='PNG'); b.seek(0); Image.open(b).load()" 2>$null
         return $LASTEXITCODE -eq 0
     } catch {
         if ($LASTEXITCODE -eq 0) { throw }

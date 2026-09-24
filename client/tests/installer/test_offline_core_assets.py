@@ -376,6 +376,26 @@ def test_installer_only_requests_explicit_graceful_window_close(
     assert transaction.read_text(encoding="utf-8") == "must-not-be-touched"
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell native argument quoting")
+def test_dependency_probe_runs_real_python_png_roundtrip(tmp_path: Path) -> None:
+    import sys
+    for name in ("PIL.Image", "aiohttp", "jsonschema"):
+        pytest.importorskip(name)
+    source = (ROOT / "installer/Install.ps1").read_text(encoding="utf-8-sig")
+    function = "function Test-ManagedServerDependencies" + source.split(
+        "function Test-ManagedServerDependencies", 1
+    )[1].split("\n}\n", 1)[0] + "\n}\n"
+    script = tmp_path / "real-dependency-probe.ps1"
+    python_literal = "'" + sys.executable.replace("'", "''") + "'"
+    script.write_text(function + "if (-not (Test-ManagedServerDependencies -PythonExe "
+                      + python_literal + ")) { exit 3 }\n", encoding="utf-8")
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def _run_install_preflight(
     product_root: Path,
     tmp_path: Path,
