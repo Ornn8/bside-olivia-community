@@ -57,6 +57,13 @@ def test_router_timeout_uses_portable_environment_configuration():
     assert router.timeout_seconds == 90.0
 
 
+def test_router_default_does_not_cancel_before_configured_provider_timeout():
+    gateway = _Gateway(_route_arguments())
+    gateway.config = GatewayConfig(timeout_seconds=180)
+    router = LetterReplyRouter(gateway, environ={})
+    assert router.timeout_seconds >= gateway.config.timeout_seconds
+
+
 def test_music_performance_uses_one_fixed_accepted_base(tmp_path):
     performance = tmp_path / "accepted-performance.mp4"
     performance.write_bytes(b"scene")

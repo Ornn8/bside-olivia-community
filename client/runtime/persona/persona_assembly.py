@@ -457,7 +457,9 @@ def _persona_blocks(
             _json_block(
                 "untrusted_history",
                 _budget_id("history", fragment.fragment_id),
-                PromptSection.HISTORY,
+                # The delivered conversation tail is continuity, not optional
+                # retrieval. Do not drop what we just said before old memories.
+                PromptSection.RECENT_DIALOGUE if fragment.fragment_id == 'chat.recent' else PromptSection.HISTORY,
                 {"untrusted": True, "text": fragment.text},
             )
         )

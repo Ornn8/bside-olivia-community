@@ -3043,7 +3043,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   };
   const routeRequest = async (path, body) => {
     const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), 300000);
+    const timeout = window.setTimeout(() => controller.abort(), 330000);
     try {
       const response = await fetch(new URL(path, apiBase), {
         method: body ? "POST" : "GET", cache: "no-store", credentials: "omit",

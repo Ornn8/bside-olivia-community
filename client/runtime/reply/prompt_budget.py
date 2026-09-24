@@ -31,6 +31,7 @@ class PromptSection(str, Enum):
     WORLD_FACT = "world_fact"
     PUBLIC_CANON = "public_canon"
     HISTORY = "history"
+    RECENT_DIALOGUE = "recent_dialogue"
     EVIDENCE_SUMMARY = "evidence_summary"
     CURRENT_LIFE = "current_life"
     SOFT_CANON = "soft_canon"
@@ -45,6 +46,7 @@ _REQUIRED = frozenset(
         PromptSection.MODE_CONSTRAINTS,
         PromptSection.MODE_STYLE,
         PromptSection.USER_INPUT,
+        PromptSection.RECENT_DIALOGUE,
     }
 )
 _DROP_ORDER = (
