@@ -362,10 +362,17 @@ def _repair_native_letter_refresh(source: str) -> str:
         'const K=t.value.find(ye=>ye.id===B);K&&(K.detailLoaded=!1,K.sent.content="");const W=',
         'const W=',
     )
-    return source.replace(
-        't.value[ye]=re,Ee.detailLoaded&&await z(re.id)',
-        'Ee.detailLoaded?await z(re.id):t.value[ye]=re',
+    refresh = 'Ee.detailLoaded?await z(re.id):t.value[ye]=re'
+    # Older staged bundles may contain the former poll patch repeatedly. Fold
+    # every copy into the same single refresh before patching again.
+    source = re.sub(
+        r'(?:Ee\.detailLoaded\?await z\(re\.id\):)*t\.value\[ye\]=re(?:,Ee\.detailLoaded&&await z\(re\.id\))',
+        refresh,
+        source,
     )
+    if refresh + '}}N()' not in source:
+        source = source.replace('t.value[ye]=re)}}N()', refresh + '}}N()', 1)
+    return source
 
 
 def _repair_mailbox_write_access(root: Path) -> str:
@@ -433,12 +440,6 @@ def _repair_mailbox_write_access(root: Path) -> str:
     ).replace(
         're.isUnread!==Ee.isUnread||re.letterStatus!==Ee.letterStatus)',
         're.isUnread!==Ee.isUnread||re.videoPending!==Ee.videoPending||re.letterStatus!==Ee.letterStatus)',
-    )
-    # A list row has no reply body/video URL. Reload an open detail on delivery
-    # instead of marking the empty summary as an already-loaded reply.
-    source = source.replace(
-        't.value[ye]=re)}}N()',
-        't.value[ye]=re,Ee.detailLoaded&&await z(re.id))}}N()',
     )
     offline_guard = 'Te.interceptors.request.use(e=>{const t=Ie();if(t.isOfflineMode)throw new Ol(e);'
     if offline_guard in source:
