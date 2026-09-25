@@ -6,7 +6,7 @@ import base64
 from pathlib import Path
 
 
-SETTINGS_UI_VERSION = "p03.original-settings-manage.v47"
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v48"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
@@ -138,7 +138,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       this.toggleAttribute('data-open',open);
       this.querySelector('button')?.setAttribute('aria-expanded',String(open));
       const caption=this.querySelector('.olivia-letter-photo-print span');
-      if(caption)caption.textContent=open?'点击收起':'随信附照';
+      if(caption)caption.textContent=open?'收起照片':'查看照片';
       document.removeEventListener('pointerdown',this.outside);
       document.removeEventListener('keydown',this.escape);
       if(open){document.addEventListener('pointerdown',this.outside);document.addEventListener('keydown',this.escape);this.ackPhoto();}
@@ -164,7 +164,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           link.onclick=e=>{e.stopPropagation();this.setOpen(!this.hasAttribute('data-open'));};
           link.title='查看随信照片';link.className='olivia-letter-photo-print';
           const img=document.createElement('img');img.alt='随信照片，点击查看大图';
-          const caption=document.createElement('span');caption.textContent='随信附照';
+          const caption=document.createElement('span');caption.textContent='查看照片';
           img.onload=()=>{if(id===this.getAttribute('letter-id'))this.ackPhoto();};
           img.onerror=()=>{if(this.isConnected&&id===this.getAttribute('letter-id')){this.setOpen(false);delete this.dataset.loaded;this.textContent='照片读取暂时中断，正在重试…';this.timer=setTimeout(()=>this.refresh(),5000);}};
           img.src=url.href;link.append(img,caption);this.replaceChildren(link);this.dataset.loaded=url.href;return;
@@ -4270,13 +4270,13 @@ BOOTSTRAP_JAVASCRIPT = r'''
     .mail-responsive-card:has(olivia-photo .olivia-letter-photo-print)>.mail-box-reply-content{position:relative;z-index:1}
     .mail-responsive-card:has(olivia-photo[data-open]){z-index:5}
     olivia-photo{display:block;flex:none;margin:8px 20px 16px;max-width:100%;color:#bbb6ad;overflow-wrap:anywhere;font-family:system-ui,sans-serif;font-size:13px;line-height:1.6}
-    olivia-photo:has(.olivia-letter-photo-print){position:absolute;right:24px;bottom:8px;z-index:0;display:block;max-width:calc(100% - 48px);margin:0;transform:rotate(4deg);transform-origin:bottom center}
+    olivia-photo:has(.olivia-letter-photo-print){position:absolute;right:24px;bottom:8px;z-index:0;display:block;max-width:calc(100% - 48px);margin:0}
     olivia-photo[data-open]{top:16px;bottom:auto;z-index:3;transform:none}
     .olivia-letter-photo-print{display:block;max-width:100%;padding:8px 8px 4px;border:0;background:#f3eee4;color:#514638;text-decoration:none;box-shadow:0 4px 12px #0003;cursor:zoom-in}
-    .olivia-letter-photo-print img{display:block;max-width:100%;max-height:200px;width:auto;height:auto;object-fit:contain}
+    .olivia-letter-photo-print img{display:none;max-width:100%;width:auto;height:auto;object-fit:contain}
     .olivia-letter-photo-print span{display:block;padding:4px 0;text-align:center;font:16px/1.5 SentyTEA,serif}
     olivia-photo[data-open] .olivia-letter-photo-print{cursor:zoom-out;box-shadow:0 12px 32px #0006}
-    olivia-photo[data-open] img{max-height:min(360px,60vh,var(--photo-open-height,360px))}
+    olivia-photo[data-open] img{display:block;max-height:min(360px,60vh,var(--photo-open-height,360px))}
     .olivia-letter-photo-print:focus-visible{outline:2px solid #d6c3a4;outline-offset:4px}
     olivia-photo:empty{display:none}
     .tp-el-overlay:has(.video-preview-dialog){z-index:10000!important}
@@ -4294,6 +4294,8 @@ BOOTSTRAP_JAVASCRIPT = r'''
     olivia-letter-audio .voice-wave canvas{display:block;width:100%;height:60px;pointer-events:none}
     olivia-letter-audio .voice-wave input{position:absolute;left:0;bottom:-5px;width:100%;height:20px;margin:0;opacity:0;touch-action:pan-y}
     olivia-letter-audio .voice-wave:focus-within{outline:1px solid currentColor;outline-offset:3px}
+    olivia-letter-audio .voice-volume-control{display:flex;align-items:center;justify-content:center;gap:8px;font-size:12px}
+    olivia-letter-audio .voice-volume{width:110px;flex:none;margin:3px 0 0}
     olivia-letter-audio time{font-family:Arial,sans-serif;font-size:11px;font-variant-numeric:tabular-nums;white-space:nowrap}
     olivia-letter-audio .voice-status{font-size:13px;line-height:1.7}
     olivia-letter-audio .song-controls{display:flex;align-items:center;gap:12px;margin:14px 0;padding:12px 16px;border:1px solid #a48c5c66;border-radius:12px;background:#a48c5c14;color:#78613b}
@@ -4403,6 +4405,8 @@ BOOTSTRAP_JAVASCRIPT = r'''
       const status=document.createElement('div');status.className='voice-status';status.setAttribute('role','status');
       if(url){
         const audio=new Audio();audio.crossOrigin='anonymous';audio.src=url;this.audio=audio;audio.preload='metadata';
+        let savedVolume=100;try{savedVolume=Number(localStorage.getItem('olivia.letter.voice-volume')??100)}catch(_){};
+        audio.volume=Number.isFinite(savedVolume)?Math.max(0,Math.min(100,savedVolume))/100:1;
         const row=document.createElement('div');row.className='voice-controls';
         const button=document.createElement('button');button.type='button';icon(button,true);button.setAttribute('aria-label','播放语音');
         const seek=document.createElement('input');seek.type='range';seek.min='0';seek.max='0';seek.step='0.1';seek.value='0';seek.setAttribute('aria-label','语音播放进度');
@@ -4416,7 +4420,10 @@ BOOTSTRAP_JAVASCRIPT = r'''
         audio.onerror=()=>{status.textContent='语音暂时无法播放，请稍后重新打开信件。'};
         audio.onended=sync;
         const wave=document.createElement('div');wave.className='voice-wave';
-        row.append(button,wave,stamp);this.append(row);this.waveCleanup=letterWave(wave,seek,audio,url);
+        const volume=document.createElement('input');volume.type='range';volume.className='voice-volume';volume.min='0';volume.max='100';volume.step='1';volume.value=String(Math.round(audio.volume*100));volume.setAttribute('aria-label','语音音量');
+        volume.oninput=()=>{audio.volume=Number(volume.value)/100;try{localStorage.setItem('olivia.letter.voice-volume',volume.value)}catch(_){}};
+        const volumeControl=document.createElement('label');volumeControl.className='voice-volume-control';volumeControl.textContent='音量';volumeControl.append(volume);
+        row.append(button,wave,stamp,volumeControl);this.append(row);this.waveCleanup=letterWave(wave,seek,audio,url);
         const styles=document.createElement('select');styles.className='olivia-wave-style';styles.setAttribute('aria-label','波形样式');styles.title='选择波形样式';
         for(const [value,label] of [['bars','淡墨呼吸'],['dots','浮动墨点'],['ribbon','轻柔声带'],['ripple','声音涟漪']]){const option=document.createElement('option');option.value=value;option.textContent=label;styles.append(option)}
         try{styles.value=localStorage.getItem('olivia.letter.wave-style')||'bars'}catch(_){}if(!styles.value)styles.value='bars';

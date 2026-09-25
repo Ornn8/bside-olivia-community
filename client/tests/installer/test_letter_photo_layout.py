@@ -64,7 +64,7 @@ def test_photo_follows_fixed_paper_without_covering_body(status):
             assert boxes['paper']['height'] == 365, 'Attachments must not stretch the paper'
             assert boxes['body']['height'] == 230, 'Attachments must not squeeze the body'
             if status == 'COMPLETED':
-                assert boxes['photo']['top'] < boxes['paper']['bottom'] < boxes['photo']['bottom']
+                assert boxes['photo']['top'] >= boxes['paper']['bottom'], 'Closed photo must not cover the letter'
                 assert boxes['next'] - boxes['paper']['bottom'] <= 60, 'Tucked photos must not add a full row'
             else:
                 assert boxes['photo']['top'] >= boxes['paper']['bottom']
@@ -72,17 +72,20 @@ def test_photo_follows_fixed_paper_without_covering_body(status):
         assert page.locator('textarea').evaluate('(el)=>{el.scrollTop=el.scrollHeight;return el.scrollTop>0}'), 'Long letters remain scrollable'
         if status == 'COMPLETED':
             button = page.locator('olivia-photo button')
+            assert not page.locator('olivia-photo img').is_visible()
             assert not acknowledgements, 'A tucked photo has not been opened yet'
             with page.expect_request('**/toy/image/ack'):
-                page.get_by_text('随信附照', exact=True).click()
+                page.get_by_text('查看照片', exact=True).click()
             assert button.get_attribute('aria-expanded') == 'true'
+            assert page.locator('olivia-photo img').is_visible()
             assert page.locator('olivia-photo img').evaluate('''img=>{const r=img.getBoundingClientRect();return img.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2))}'''), 'Opened photo must be above the paper'
             page.keyboard.press('Escape')
             assert button.get_attribute('aria-expanded') == 'false'
-            page.get_by_text('随信附照', exact=True).click()
-            page.get_by_text('点击收起', exact=True).click()
+            assert not page.locator('olivia-photo img').is_visible()
+            page.get_by_text('查看照片', exact=True).click()
+            page.get_by_text('收起照片', exact=True).click()
             assert button.get_attribute('aria-expanded') == 'false'
-            page.get_by_text('随信附照', exact=True).click()
+            page.get_by_text('查看照片', exact=True).click()
             page.locator('#next').click()
             assert button.get_attribute('aria-expanded') == 'false'
         if status == 'FAILED':
