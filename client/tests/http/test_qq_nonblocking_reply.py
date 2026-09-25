@@ -71,6 +71,7 @@ def test_remote_gpu_queued_progress_notifies_from_worker(monkeypatch, tmp_path):
     monkeypatch.setenv('OLIVIA_TTS_CONFIG', str(tmp_path / 'config.json'))
     release = threading.Event()
     def render(*args, **kwargs):
+        assert kwargs['environment']['OLIVIA_MEDIA_CHANNEL'] == 'qq'
         PROGRESS_CALLBACK.get()('generation', {'status': 'queued'})
         assert release.wait(2)
         return {'duration_seconds': 1}
@@ -90,18 +91,18 @@ def test_remote_gpu_queued_progress_notifies_from_worker(monkeypatch, tmp_path):
     asyncio.run(scenario())
 
 
-def test_voice_queue_times_out_without_starting_renderer(monkeypatch, tmp_path):
+def test_voice_submits_while_other_media_holds_slot(monkeypatch, tmp_path):
     monkeypatch.setenv('OLIVIA_TTS_CONFIG', str(tmp_path / 'config.json'))
-    monkeypatch.setattr(backend, '_VOICE_QUEUE_TIMEOUT_SECONDS', .01)
     async def scenario():
         server = SimpleNamespace(media_semaphore=asyncio.Semaphore(0),
-            render_reply_audio=lambda *a, **k: pytest.fail('must not render'))
-        with pytest.raises(TimeoutError):
-            await backend.prepare_chat_audio(server, 'hello', tmp_path / 'voice.wav')
+            render_reply_audio=lambda *a, **k: {'duration_seconds': 1})
+        result = await asyncio.wait_for(backend.prepare_chat_audio(server, 'hello', tmp_path / 'voice.wav'), 1)
+        assert result == {'duration_seconds': 1}
+        assert server.media_semaphore.locked()
     asyncio.run(scenario())
 
 
-def test_voice_timeout_keeps_slot_until_worker_finishes(monkeypatch, tmp_path):
+def test_voice_timeout_does_not_take_or_release_other_media_slot(monkeypatch, tmp_path):
     monkeypatch.setenv('OLIVIA_TTS_CONFIG', str(tmp_path / 'config.json'))
     monkeypatch.setattr(backend, '_VOICE_RENDER_TIMEOUT_SECONDS', .02)
     release = threading.Event()
@@ -113,7 +114,7 @@ def test_voice_timeout_keeps_slot_until_worker_finishes(monkeypatch, tmp_path):
         try:
             with pytest.raises(TimeoutError):
                 await backend.prepare_chat_audio(server, 'hello', tmp_path / 'voice.wav')
-            assert server.media_semaphore.locked()
+            assert not server.media_semaphore.locked()
         finally:
             release.set()
         await asyncio.wait_for(server.media_semaphore.acquire(), 1)

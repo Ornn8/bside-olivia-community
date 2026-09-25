@@ -26,7 +26,7 @@ def _fixture(tmp_path: Path) -> SimpleNamespace:
     )
 
 def _prepare(_source: Path, _audio: Path, target: Path, *, environment, deadline) -> None:
-    assert environment["TEMP"] and deadline > 0
+    assert environment["TEMP"] and deadline is None
     _write(target)
 
 def _render(fixture: SimpleNamespace, **kwargs):
@@ -84,8 +84,8 @@ def test_invalid_output_is_not_published(tmp_path: Path, monkeypatch, failure) -
         _render(fixture, environment={"PATH": "", "OLIVIA_LOCAL_DATA_ROOT": str(data_root)})
     assert str(caught.value) == "LATENTSYNC_FAILED" and not fixture.output.exists()
 
-@pytest.mark.parametrize(("configured", "expected"), [(None, 1800.0), ("999999", 3600.0)])
-def test_render_uses_bounded_timeout(tmp_path: Path, monkeypatch, configured, expected) -> None:
+@pytest.mark.parametrize(("configured", "expected"), [(None, None), ("1", None)])
+def test_render_ignores_legacy_elapsed_timeout(tmp_path: Path, monkeypatch, configured, expected) -> None:
     fixture, observed = _fixture(tmp_path), {}
     def run(command, *, deadline, **_kwargs):
         observed["timeout"] = deadline
@@ -94,14 +94,13 @@ def test_render_uses_bounded_timeout(tmp_path: Path, monkeypatch, configured, ex
         return subprocess.CompletedProcess(command, 0, b"frame=25\nout_time_us=1000000\nprogress=end\n", b"")
     monkeypatch.setattr(latentsync_reply, "_prepare_source_clip", _prepare)
     monkeypatch.setattr(latentsync_reply, "run_managed_process", run)
-    monkeypatch.setattr(latentsync_reply.time, "monotonic", lambda: 0.0)
     environment = {"PATH": ""}
     if configured is not None:
         environment["OLIVIA_LATENTSYNC_TIMEOUT_SECONDS"] = configured
     _render(fixture, environment=environment)
     assert observed["timeout"] == expected
 
-def test_prepare_worker_validation_share_one_absolute_deadline(tmp_path: Path, monkeypatch) -> None:
+def test_prepare_worker_validation_have_no_elapsed_deadline(tmp_path: Path, monkeypatch) -> None:
     fixture, observed = _fixture(tmp_path), {}
     def prepare(_source, _audio, target, *, environment, deadline):
         observed["prepare"] = deadline
@@ -114,9 +113,8 @@ def test_prepare_worker_validation_share_one_absolute_deadline(tmp_path: Path, m
         return subprocess.CompletedProcess(command, 0, b"frame=25\nout_time_us=1000000\nprogress=end\n", b"")
     monkeypatch.setattr(latentsync_reply, "_prepare_source_clip", prepare)
     monkeypatch.setattr(latentsync_reply, "run_managed_process", run)
-    monkeypatch.setattr(latentsync_reply.time, "monotonic", lambda: 0.0)
     _render(fixture)
-    assert observed == {"prepare": 1800.0, "worker": 1800.0, "validation": 1800.0}
+    assert observed == {"prepare": None, "worker": None, "validation": None}
 
 def test_exhausted_total_deadline_is_redacted(tmp_path: Path, monkeypatch) -> None:
     fixture, clock = _fixture(tmp_path), [0.0]
@@ -127,7 +125,6 @@ def test_exhausted_total_deadline_is_redacted(tmp_path: Path, monkeypatch) -> No
         raise subprocess.TimeoutExpired(command, 0, stderr=b"private")
     monkeypatch.setattr(latentsync_reply, "_prepare_source_clip", prepare)
     monkeypatch.setattr(latentsync_reply, "run_managed_process", expired)
-    monkeypatch.setattr(latentsync_reply.time, "monotonic", lambda: clock[0])
     data_root = tmp_path / "data"
     with pytest.raises(latentsync_reply.LatentSyncReplyError) as caught:
         _render(fixture, environment={"PATH": "", "OLIVIA_LOCAL_DATA_ROOT": str(data_root)})

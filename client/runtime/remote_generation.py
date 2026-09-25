@@ -219,9 +219,9 @@ class RemoteGeneration:
         progress('submission', {})
         task = await self.request('submit', submission)
         progress('generation', task)
-        deadline = time.monotonic() + timeout
+        deadline = None if kind in {'video', 'lipsync', 'original_video', 'cover_video'} else time.monotonic() + timeout
         while task['status'] in ('queued', 'running') or task.get('stage') == 'uploading':
-            if time.monotonic() >= deadline:
+            if deadline is not None and time.monotonic() >= deadline:
                 await self.request('cancel', {'task_id': task['task_id']})
                 raise CloudError('GPU_TASK_TIMEOUT', 504)
             await asyncio.sleep(1)

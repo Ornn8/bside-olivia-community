@@ -28,6 +28,8 @@ def generate(kind, data, output, *, environment=None, assets=None):
     from runtime.media.music_reply import _media_duration_seconds
     from runtime.cloud_service import CloudError
     env = environment if environment is not None else os.environ
+    if kind == 'tts' and env.get('OLIVIA_MEDIA_CHANNEL') == 'qq':
+        data = {**data, 'channel': 'qq'}
     api = RemoteGeneration(env.get('OLIVIA_GPU_API_URL', ''), env.get('OLIVIA_GPU_API_KEY', ''))
     progress = PROGRESS_CALLBACK.get()
     if progress is not None:
