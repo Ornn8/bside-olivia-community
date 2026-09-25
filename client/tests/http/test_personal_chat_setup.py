@@ -71,14 +71,14 @@ def test_selected_channel_can_add_other_channel_without_losing_binding(tmp_path,
     assert setup._selected_channels(server) == {initial}
     assert setup._store_setup_choice(server, additional) == ['qq', 'wechat']
     assert setup._selected_channels(server) == {'qq', 'wechat'}
-    assert server.persist_calls == 1
+    assert setup._selected_channels(_Server(tmp_path)) == {'qq', 'wechat'}
     assert setup._store_setup_choice(server, additional) == ['qq', 'wechat']
-    # A subsequent explicit refusal must still close access after setup.
+    # Narrative/model-derived choices cannot roll back explicit settings.
     server.store.letters.append(dict(letter_id='later-reply', letter_status='COMPLETED',
-        published_at=server.store.letters[0]['contact_setup_choice_at'] + 1,
+        published_at=9999999999,
         contact_invitation_id='invite', content='later',
         contact_choice={'choice': 'later', 'quote': 'later'}))
-    assert setup._selected_channels(server) == set()
+    assert setup._selected_channels(server) == {'qq', 'wechat'}
 
 
 def test_wechat_qr_is_rendered_locally_and_rejects_foreign_targets() -> None:
@@ -156,7 +156,7 @@ def test_completed_invitation_can_choose_channel_directly_in_settings(tmp_path: 
         async with TestClient(TestServer(app)) as client:
             before = await client.get(setup.STATUS_PATH, headers=headers)
             assert before.status == 200
-            assert (await before.json())["contact_state"] == "invited"
+            assert (await before.json())["contact_state"] == "available"
 
             selected = await client.post(
                 setup.CHANNEL_CHOICE_PATH,
@@ -172,8 +172,26 @@ def test_completed_invitation_can_choose_channel_directly_in_settings(tmp_path: 
             assert body["selected_channels"] == ["wechat"]
 
     asyncio.run(scenario())
-    assert server.store.letters[0]["contact_setup_choice"] == "wechat"
-    assert server.persist_calls == 1
+    assert setup._selected_channels(_Server(tmp_path)) == {'wechat'}
+
+
+def test_fresh_user_can_choose_both_without_relationship_or_invitation(tmp_path):
+    from runtime.personal_chat import setup
+    server = _Server(tmp_path)
+    assert setup._contact_access(server)['state'] == 'available'
+    assert setup._store_setup_choice(server, 'both') == ['qq', 'wechat']
+    restarted = _Server(tmp_path)
+    assert setup._selected_channels(restarted) == {'qq', 'wechat'}
+    assert setup._contact_access(restarted)['state'] == 'both'
+    assert not restarted.store.letters
+
+
+def test_existing_bindings_survive_missing_invitation_after_upgrade(tmp_path):
+    from runtime.personal_chat import setup
+    folder = tmp_path / 'personal-chat'
+    folder.mkdir()
+    (folder / 'config.json').write_text(json.dumps({'qq': {}, 'wechat': {}}))
+    assert setup._selected_channels(_Server(tmp_path)) == {'qq', 'wechat'}
 
 
 def test_qq_setup_tests_loopback_and_never_persists_plaintext_token(

@@ -1,5 +1,6 @@
 """Same-call IM envelope. Only validated decisions may become delivered state."""
 import json
+import re
 from datetime import datetime
 from runtime.private_world.life_rhythm import LOCAL
 from .presentation import VOICE_POLICY
@@ -30,11 +31,21 @@ INSTRUCTION += VOICE_POLICY
 
 def decode(raw, *, user, now, proactive=False):
     try:
+        # Tolerate a whole JSON code block, never extract JSON from mixed prose.
+        if isinstance(raw, str):
+            fenced = re.fullmatch(r'\s*```(?:json)?\s*\n(.*?)\n```\s*', raw, re.DOTALL | re.IGNORECASE)
+            if fenced:
+                raw = fenced.group(1)
         data = json.loads(raw)
         required = {'text','delivery','listening','initiative','pause_until','letter','letter_until',
-                    'followup_at','evidence','sticker','skip'}
-        if not isinstance(data, dict) or not required <= data.keys() or data.keys() - required - {'letter_invitation'}:
+                    'followup_at','evidence','skip'}
+        if not isinstance(data, dict) or not required <= data.keys():
             raise ValueError("FIELDS")
+        # Extra model annotations are not executable preferences. Optional media
+        # metadata must not discard an otherwise valid reply.
+        data = {key: value for key, value in data.items() if key in required | {'letter_invitation', 'sticker'}}
+        if not isinstance(data.get('sticker'), str):
+            data['sticker'] = None
         if not isinstance(data['text'], str) or type(data['skip']) is not bool:
             raise ValueError("TEXT_OR_SKIP_TYPE")
         # Incoming platform placeholders must not reach either QQ text or TTS.
@@ -46,8 +57,6 @@ def decode(raw, *, user, now, proactive=False):
             raise ValueError("PREFERENCES")
         if type(data.get('letter_invitation', False)) is not bool or not isinstance(data['evidence'], str):
             raise ValueError("EVIDENCE_TYPE")
-        if data['sticker'] is not None and not isinstance(data['sticker'], str):
-            raise ValueError("STICKER_TYPE")
         changes = any(data[k] != 'keep' for k in ('listening','initiative','letter')) or data['followup_at'] is not None
         if changes and (proactive or not data['evidence'].strip() or data['evidence'] not in user):
             raise ValueError("UNSUPPORTED_PREFERENCE_CHANGE")
@@ -81,7 +90,7 @@ def decode(raw, *, user, now, proactive=False):
         error = ValueError('PERSONAL_CHAT_DECISION_INVALID')
         if isinstance(locals().get('data'), dict):
             error.missing_fields = sorted(required - data.keys())
-            error.extra_field_count = len(data.keys() - required - {'letter_invitation'})
+            error.extra_field_count = len(data.keys() - required - {'letter_invitation', 'sticker'})
         reasons = {'FOLLOWUP_CONFLICT', 'FIELDS', 'STICKER_TYPE', 'UNSUPPORTED_PREFERENCE_CHANGE', 'QUIET_HOURS', 'EVIDENCE_TYPE', 'PAUSE_CONFLICT', 'TEXT_OR_SKIP_TYPE', 'PREFERENCES', 'DELIVERY_OR_LISTENING', 'EMPTY_OR_SKIPPED_REPLY', 'TIME_RANGE', 'CONTROL_MARKER'}
         error.reason = str(exc) if type(exc) is ValueError and str(exc) in reasons else ('JSON_SYNTAX' if isinstance(exc, json.JSONDecodeError) else 'VALUE_TYPE_OR_TIME')
         raise error from exc

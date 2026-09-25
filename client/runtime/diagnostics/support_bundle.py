@@ -175,7 +175,7 @@ def project_memory_install(value: object) -> dict[str, object]:
     state = source.get("state")
     result = {"state": state if isinstance(state, str) and state in {
         "missing", "queued", "downloading", "verifying", "ready", "paused",
-        "repair", "incompatible", "unavailable"} else "unavailable"}
+        "repair", "incompatible", "unavailable", "unknown"} else "unavailable"}
     for name, allowed in (
         ("phase", {"idle", "queued", "preflight", "package", "runtime", "model", "verification", "complete", "uninstall"}),
         ("source", {"offline", "auto", "official", "offline-package"}),
@@ -183,7 +183,7 @@ def project_memory_install(value: object) -> dict[str, object]:
         if isinstance(source.get(name), str) and source[name] in allowed:
             result[name] = source[name]
     reason = source.get("reason_code", source.get("error_code"))
-    if isinstance(reason, str) and reason in MEM0_INSTALL_FAILURE_CODES | {"MEM0_DIAGNOSTIC_BUSY"}:
+    if isinstance(reason, str) and reason in MEM0_INSTALL_FAILURE_CODES | {"MEM0_DIAGNOSTIC_BUSY", "MEM0_DIAGNOSTIC_NOT_CHECKED"}:
         result["error_code"] = reason
     for name in ("downloaded_bytes", "total_bytes", "remaining_bytes", "installed_bytes"):
         count = source.get(name)

@@ -650,7 +650,10 @@ def _diagnostic_source(
                 checks["memory_install"] = {"state": "unavailable", "error_code": "MEM0_DIAGNOSTIC_BUSY"}
             else:
                 try:
-                    checks["memory_install"] = project_memory_install(capability_installer._status.to_dict())
+                    snapshot = capability_installer._status.to_dict()
+                    if snapshot.get("state") == "missing" and not getattr(capability_installer, "_readiness_checked", False):
+                        snapshot = {"state": "unknown", "error_code": "MEM0_DIAGNOSTIC_NOT_CHECKED"}
+                    checks["memory_install"] = project_memory_install(snapshot)
                 finally:
                     capability_installer._lock.release()
         if history_import_provider is not None:
@@ -1197,8 +1200,12 @@ def _recent_diagnostic_tasks(letters) -> tuple[Mapping[str, object], ...]:
     def priority(item):
         active = str(item.get("letter_status", "")).lower() in {"pending", "processing"} or str(item.get("media_status", "")).lower() in {"pending", "queued", "processing"}
         active = active or str(item.get('image_status', '')).upper() in {'PLANNING', 'GENERATING', 'RETRY_PENDING'}
+        # Recent failures need the same priority as unfinished work; otherwise
+        # old unconfirmed deliveries can occupy every diagnostic slot forever.
+        failed = any(str(item.get(key, '')).upper() == 'FAILED'
+                     for key in ('letter_status', 'delivery_status', 'media_status', 'image_status'))
         created = item.get("created_at", 0)
-        return (active, created if type(created) in {int, float} else 0)
+        return (active or failed, created if type(created) in {int, float} else 0)
     return tuple(sorted((item for item in letters if isinstance(item, Mapping)),
                         key=priority, reverse=True)[:20])
 

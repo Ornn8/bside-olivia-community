@@ -8,6 +8,23 @@ import pytest
 from mem0_capability_install import ManagedMem0Runtime
 
 
+def test_image_dependency_prepend_does_not_hide_existing_memory_runtime(tmp_path):
+    root = tmp_path / 'product'
+    executable = root / 'runtime/python/python.exe'
+    executable.parent.mkdir(parents=True)
+    requirements = root / 'local_backend/installer/requirements.txt'
+    requirements.parent.mkdir(parents=True)
+    layer = ManagedMem0Runtime(install_root=root, python_executable=executable,
+        requirements=requirements, sources=('https://official.invalid',), download_bytes=1)
+    registered = [str(layer.target), str(layer.target/'win32'), str(layer.target/'win32/lib')]
+    pth = executable.parent/'python312._pth'
+    # repair_image_dependency.repair() prepends this path without removing Mem0.
+    pth.write_text('\n'.join(['image-dependency-fixed', *registered, 'python312.zip', 'import site'])+'\n')
+    assert layer._registered()
+    pth.write_text('\n'.join(['image-dependency-fixed', *registered[1:], 'python312.zip'])+'\n')
+    assert not layer._registered()
+
+
 @pytest.mark.parametrize('same_python,verification', [(True, 'ok'), (False, 'ok'),
     (True, 'fail_staging'), (True, 'fail_final')])
 def test_verified_runtime_becomes_importable_without_restart(tmp_path, monkeypatch, same_python, verification):

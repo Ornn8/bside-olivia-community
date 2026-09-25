@@ -370,8 +370,15 @@ def _repair_native_letter_refresh(source: str) -> str:
         refresh,
         source,
     )
-    if refresh + '}}N()' not in source:
-        source = source.replace('t.value[ye]=re)}}N()', refresh + '}}N()', 1)
+    # This tail closes an &&(comma-expression) before the else/for blocks.
+    # Preserve its ')' on fresh installs and restore it in broken upgrades.
+    # Collapse repeated prefixes left by the former non-idempotent patch too.
+    source = re.sub(
+        r'(?:Ee\.detailLoaded\?await z\(re\.id\):)*t\.value\[ye\]=re\)?\}\}N\(\)',
+        refresh + ')}}N()',
+        source,
+        count=1,
+    )
     return source
 
 

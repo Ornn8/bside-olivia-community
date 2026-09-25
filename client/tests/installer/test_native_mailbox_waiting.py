@@ -9,6 +9,42 @@ from patch_feapp import MAILBOX_WRITE_ANCHOR_0627
 from patch_feapp import _repair_mailbox_waiting_footer
 
 
+@pytest.mark.parametrize('tail', [
+    't.value[ye]=re)',
+    't.value[ye]=re,Ee.detailLoaded&&await z(re.id))',
+    'Ee.detailLoaded?await z(re.id):t.value[ye]=re',
+    'Ee.detailLoaded?await z(re.id):t.value[ye]=re)',
+    'Ee.detailLoaded?await z(re.id):Ee.detailLoaded?await z(re.id):t.value[ye]=re',
+])
+def test_native_poll_group_survives_fresh_upgrade_and_broken_bundle_repair(tail):
+    from runtime.personal_chat._patch_companion_settings_base import _repair_native_letter_refresh
+
+    # Preserve the native &&(comma-expression) and for/else closing delimiters.
+    source = ('async function poll(rows){for(const re of rows){const ye=0;'
+              'if(!t.value.length)t.value.push(re);else{const Ee=t.value[ye];'
+              're.changed&&(visits++,Ee.material&&(re.material=Ee.material),'
+              + tail + '}}N()}')
+    patched = _repair_native_letter_refresh(source)
+    assert _repair_native_letter_refresh(patched) == patched
+    script = '''const assert=require('node:assert/strict');
+const t={value:[{id:'letter',detailLoaded:true,material:'paper'}]};
+let visits=0,refreshes=0,polls=0;
+const z=async id=>{refreshes++;assert.equal(id,'letter')};const N=()=>polls++;
+''' + patched + '''
+(async()=>{
+ const original=t.value[0];
+ await poll([{id:'letter',changed:true}]);
+ assert.equal(t.value[0],original);assert.equal(refreshes,1);
+ await poll([{id:'letter',changed:false}]);assert.equal(refreshes,1);
+ t.value=[{id:'letter',detailLoaded:false}];const row={id:'letter',changed:true};
+ await poll([row]);assert.equal(t.value[0],row);
+ assert.equal(visits,2);assert.equal(polls,3);
+})().catch(e=>{console.error(e);process.exitCode=1});
+'''
+    result = subprocess.run([shutil.which('node'), '-e', script], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
 def test_native_send_interceptor_waits_for_route_consent_and_patch_is_idempotent(tmp_path):
     main = tmp_path / MAIN_JS_0627
     main.parent.mkdir(parents=True)

@@ -905,7 +905,9 @@ class ManagedMem0Runtime:
         except (OSError, UnicodeError, RuntimeError):
             return False
         expected = [str(self.target), str(self.target / "win32"), str(self.target / "win32" / "lib")]
-        return lines[:3] == expected
+        # Other verified repairs (for example Pillow) may prepend their own
+        # directory. Registration depends on presence, not absolute line slots.
+        return all(path in lines for path in expected)
 
     def ready(self) -> bool:
         try:
@@ -1553,6 +1555,7 @@ class Mem0CapabilityInstaller:
         self._progress_floor = 0
         self._installed_bytes = 0
         self._installed_measurement_complete = False
+        self._readiness_checked = False
         self._install_locations = (
             ("installation_root", "runtime/mem0-site-packages"),
             ("local_data_root", "memory/model-cache"),
@@ -1611,6 +1614,7 @@ class Mem0CapabilityInstaller:
         except Exception:
             ready = False
         with self._lock:
+            self._readiness_checked = True
             active = self._status.state in {
                 CapabilityState.QUEUED,
                 CapabilityState.DOWNLOADING,
