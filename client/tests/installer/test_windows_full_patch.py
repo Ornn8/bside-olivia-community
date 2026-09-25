@@ -1604,6 +1604,8 @@ def test_copy_payload_includes_runtime_packages_used_by_product_imports(
     copy_project_payload(repo_root, destination)
 
     for relative in (
+        "runtime/chinese_calendar.py",
+        "runtime/_chinese_calendar_data.py",
         "runtime/memory/bounded_daemon_call.py",
         "runtime/memory/memory_port.py",
         "runtime/media/music_duration.py",

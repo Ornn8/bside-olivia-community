@@ -58,6 +58,8 @@ PAYLOAD_EXTRA_DIRS = (
     "runtime/diagnostics",
 )
 PAYLOAD_EXTRA_FILES = (
+    "runtime/chinese_calendar.py",
+    "runtime/_chinese_calendar_data.py",
     "runtime/image_reply.py",
     "runtime/image_understanding.py",
     "runtime/cloud_service.py",
@@ -124,6 +126,8 @@ PAYLOAD_REQUIRED_ROOT_FILES = {
     "video_capability_install.py",
 }
 PAYLOAD_REQUIRED_RELATIVE_FILES = {
+    "runtime/chinese_calendar.py",
+    "runtime/_chinese_calendar_data.py",
     "runtime/image_reply.py",
     "runtime/image_understanding.py",
     "contracts/component_update_package.example.json",
