@@ -66,6 +66,16 @@ def _failure_code(exc):
     return code if re.fullmatch(r"(?:PERSONAL_CHAT|WECHAT|QQ|LLM|IMAGE)_[A-Z0-9_]{1,80}", code) else "PERSONAL_CHAT_UNAVAILABLE"
 
 
+def _generation_failure_code(code):
+    from runtime.diagnostics.failure_context import CODES
+    known = CODES | {'INPUT_TOO_LONG', 'RECALL_CONTEXT_BUDGET_EXCEEDED',
+                     'PERSONA_NOT_READY', 'IDEMPOTENCY_CONFLICT',
+                     'LLM_TIMEOUT', 'LLM_INTERNAL'}
+    if isinstance(code, str) and code in known:
+        return code if code.startswith('LLM_') else 'PERSONAL_CHAT_' + code
+    return 'PERSONAL_CHAT_GENERATION_FAILED'
+
+
 def reply_errors(server, runtime):
     errors = {channel: _failure_code(RuntimeError(code))
               for channel, code in runtime.get('errors', {}).items() if channel in ('qq', 'wechat')}
@@ -163,11 +173,14 @@ async def generate(server, event, row):
             max_input_chars=min(adapter.config.max_input_chars, 40000 + len(content or '')),
             gateway_scope=(server.GatewayRequestScope.PERSONAL_CHAT_JSON
                            if server.supports_scoped_reasoning(adapter.config) else None))
-        result = await asyncio.wait_for(server.reply_pipeline.run(request,
-            context),
-            server._reply_pipeline_timeout_seconds(ReplyMode.FUTURE_IM.value))
+        try:
+            result = await asyncio.wait_for(server.reply_pipeline.run(request,
+                context),
+                server._reply_pipeline_timeout_seconds(ReplyMode.FUTURE_IM.value))
+        except TimeoutError:
+            raise RuntimeError('PERSONAL_CHAT_GENERATION_TIMEOUT') from None
         if result.state is not ReplyState.COMPLETED:
-            raise RuntimeError("PERSONAL_CHAT_GENERATION_FAILED")
+            raise RuntimeError(_generation_failure_code(result.error_code))
         from .decision import decode
         try:
             decision = decode(result.text, user=event.text, now=datetime.now().timestamp(), proactive=row.get('origin') == 'proactive')
@@ -372,16 +385,25 @@ def _absolute_file(value):
 
 
 def selected_channels(server):
-    """Saved, evidenced contact choice takes precedence over development bindings."""
+    """Explicit settings selection survives restarts and relationship changes."""
     from .contact_invitation import status
     from runtime.reply.proactive_letters import read_json
+    root = server._state_root()
+    if root is not None:
+        saved = read_json(root / 'personal-chat' / 'setup-choice.json')
+        if isinstance(saved.get('channels'), list):
+            return set(saved['channels']) & {'qq', 'wechat'}
     port = getattr(server, 'private_world_port', None)
     access = status(server.store.letters, port.snapshot() if port is not None else None)
     if 'invitation_id' in access:
         return set(access['channels'])
-    # Existing explicitly authorized test bindings survive upgrades only until
-    # an actual invitation/choice exists. Credentials alone never unlock access.
-    saved = read_json(server._state_root() / 'personal-chat' / 'existing-access.json')
+    if root is None:
+        return set()
+    # Preserve previously saved bindings even when old invitation rows are absent.
+    configured = read_json(root / 'personal-chat' / 'config.json')
+    if configured:
+        return set(configured) & {'qq', 'wechat'}
+    saved = read_json(root / 'personal-chat' / 'existing-access.json')
     return set(saved.get('channels', [])) & {'qq', 'wechat'}
 
 

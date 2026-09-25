@@ -10,6 +10,31 @@ from runtime.personal_chat.events import PersonalMessage
 from runtime.personal_chat.service import PersonalChatService
 
 
+@pytest.mark.parametrize('code', ['PERSONAL_CHAT_PROVIDER_TIMEOUT', 'PERSONAL_CHAT_PROVIDER_PROTOCOL',
+                                 'LLM_TIMEOUT', 'PERSONAL_CHAT_GENERATION_TIMEOUT'])
+def test_generation_reason_survives_persistence_and_status(code):
+    async def scenario():
+        rows = []
+        async def generate(event, row):
+            raise RuntimeError(code)
+        async def commit(row):
+            pytest.fail('Failed generation must not commit memory')
+        async def send(text):
+            pytest.fail('Failed generation must not send content')
+        service = PersonalChatService(rows, lambda: None, generate, commit, {'qq': ('100', '200')})
+        with pytest.raises(RuntimeError, match='^' + code + '$'):
+            await service.handle(PersonalMessage('qq', '100', '200', '1', 'hello'), send)
+        assert rows[-1]['delivery_status'] == 'FAILED'
+        assert rows[-1]['error_code'] == code
+        server = SimpleNamespace(store=SimpleNamespace(personal_chats=rows))
+        assert backend.reply_errors(server, {'status': {'qq': 'CONNECTED'}})['qq'] == code
+    asyncio.run(scenario())
+
+
+def test_unknown_pipeline_error_does_not_expose_private_exception_text():
+    assert backend._generation_failure_code('private user content and key') == 'PERSONAL_CHAT_GENERATION_FAILED'
+
+
 @pytest.mark.parametrize('tier', ['reserved', 'familiar', 'trusted', 'close', 'committed'])
 def test_queue_notice_uses_relationship_once_and_keeps_reply(tier):
     from runtime.personal_chat.service import QUEUE_NOTICE, queue_notice_text

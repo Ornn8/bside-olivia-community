@@ -150,41 +150,17 @@ def _selected_channels(server) -> set[str]:
 
 
 def _contact_access(server) -> dict[str, object]:
-    from .contact_invitation import status
-
-    port = getattr(server, "private_world_port", None)
-    snapshot = port.snapshot() if port is not None else None
-    value = status(server.store.letters, snapshot)
-    return dict(value) if isinstance(value, dict) else {"state": "locked", "channels": []}
+    channels = sorted(_selected_channels(server))
+    return {"state": "both" if len(channels) == 2 else channels[0] if channels else "available",
+            "channels": channels}
 
 
 def _store_setup_choice(server, choice: str) -> list[str]:
     if choice not in {"qq", "wechat", "both"}:
         raise RuntimeError("PERSONAL_CHAT_CHANNEL_CHOICE_INVALID")
-    access = _contact_access(server)
-    invitation_id = access.get("invitation_id")
-    if access.get("state") not in {"invited", "qq", "wechat", "both"} or not isinstance(invitation_id, str):
-        raise RuntimeError("PERSONAL_CHAT_INVITATION_REQUIRED")
-    invitation = next(
-        (
-            row
-            for row in server.store.letters
-            if row.get("letter_id") == invitation_id
-            and row.get("origin") == "proactive"
-            and row.get("proactive_kind") == "contact_invitation"
-            and row.get("letter_status") == "COMPLETED"
-        ),
-        None,
-    )
-    if invitation is None:
-        raise RuntimeError("PERSONAL_CHAT_INVITATION_REQUIRED")
-    persist = getattr(server, "_persist_store_state", None)
-    if not callable(persist):
-        raise RuntimeError("PERSONAL_CHAT_DURABLE_STATE_REQUIRED")
-    channels = set(access.get('channels', [])) | ({'qq', 'wechat'} if choice == 'both' else {choice})
-    invitation["contact_setup_choice"] = 'both' if len(channels) == 2 else choice
-    invitation["contact_setup_choice_at"] = time.time()
-    persist()
+    channels = _selected_channels(server) | ({'qq', 'wechat'} if choice == 'both' else {choice})
+    _atomic_text(_root(server) / 'personal-chat' / 'setup-choice.json',
+                 json.dumps({'channels': sorted(channels)}) + '\n')
     return sorted(channels)
 
 

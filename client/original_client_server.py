@@ -1197,8 +1197,12 @@ def _recent_diagnostic_tasks(letters) -> tuple[Mapping[str, object], ...]:
     def priority(item):
         active = str(item.get("letter_status", "")).lower() in {"pending", "processing"} or str(item.get("media_status", "")).lower() in {"pending", "queued", "processing"}
         active = active or str(item.get('image_status', '')).upper() in {'PLANNING', 'GENERATING', 'RETRY_PENDING'}
+        # Recent failures need the same priority as unfinished work; otherwise
+        # old unconfirmed deliveries can occupy every diagnostic slot forever.
+        failed = any(str(item.get(key, '')).upper() == 'FAILED'
+                     for key in ('letter_status', 'delivery_status', 'media_status', 'image_status'))
         created = item.get("created_at", 0)
-        return (active, created if type(created) in {int, float} else 0)
+        return (active or failed, created if type(created) in {int, float} else 0)
     return tuple(sorted((item for item in letters if isinstance(item, Mapping)),
                         key=priority, reverse=True)[:20])
 

@@ -59,13 +59,17 @@ def test_native_store_roundtrip_keeps_chat_outside_inbox(tmp_path, monkeypatch):
     assert [row["letter_id"] for row in reloaded.letters] == ["native-letter"]
 
 
-def test_backend_generate_uses_real_pipeline_persona_memory_and_world(monkeypatch):
+@pytest.mark.parametrize('failure_code', [None, 'PROVIDER_TIMEOUT', 'PROVIDER_PROTOCOL', 'LLM_TIMEOUT', 'outer_timeout'])
+def test_backend_generate_uses_real_pipeline_persona_memory_and_world(monkeypatch, failure_code):
     import local_server
     calls = []
     class Provider:
         stream_enabled = False
         async def complete(self, messages, *, request_id=None):
             calls.append(tuple(dict(m) for m in messages))
+            if failure_code:
+                from llm_gateway import GatewayError
+                raise GatewayError(failure_code, retryable=True)
             from tests.http.test_personal_chat_decision import envelope
             from runtime.personal_chat.presentation import CURRENT
             candidates = CURRENT.get()['sticker_choices']
@@ -99,11 +103,23 @@ def test_backend_generate_uses_real_pipeline_persona_memory_and_world(monkeypatc
         return 2
     server._reply_pipeline_timeout_seconds = chat_timeout
     async def bounded_run(request, context):
+        if failure_code == 'outer_timeout':
+            raise TimeoutError()
         assert request.max_input_chars == 40000 + len(event.text)
         assert any(f.fact_id == 'runtime.photo_attachment' and '已开启' in f.statement
                    for f in context.world_facts)
         return await original_run(request, context)
     monkeypatch.setattr(pipeline, 'run', bounded_run)
+    if failure_code:
+        async def failure_scenario():
+            row = {"life_received_at": datetime.now(timezone.utc).isoformat()}
+            expected = ('PERSONAL_CHAT_GENERATION_TIMEOUT' if failure_code == 'outer_timeout'
+                        else failure_code if failure_code.startswith('LLM_') else 'PERSONAL_CHAT_' + failure_code)
+            with pytest.raises(RuntimeError, match='^' + expected + '$'):
+                await backend.generate(server, event, row)
+            assert source.get() == "previous-source" and receipt.get() is None
+        asyncio.run(failure_scenario())
+        return
     async def scenario():
         row = {"life_received_at": datetime.now(timezone.utc).isoformat()}
         result = await backend.generate(server, event, row)

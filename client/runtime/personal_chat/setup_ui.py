@@ -143,7 +143,7 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
     const root = document.createElement("section");
     root.dataset.oliviaPersonalChatSetup = "true";
     const title = node("div", "QQ / 微信聊天", "olivia-chat-title");
-    const copy = node("div", "收到林离的联系方式邀请后，可以直接在这里选择并绑定。微信直接扫码；QQ 可以由 Olivia 一键准备本地 QQ 组件，不需要手填 OneBot 参数。", "olivia-chat-copy");
+    const copy = node("div", "在这里选择并绑定聊天方式。微信直接扫码；QQ 可以由 Olivia 一键准备本地 QQ 组件，不需要手填 OneBot 参数。", "olivia-chat-copy");
     const content = document.createElement("div");
     root.append(title, copy, content);
     anchor.after(root);
@@ -181,7 +181,7 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
 
     const renderChannelChoice = (selected = []) => {
       const box = node("div", null, "olivia-chat-channel");
-      box.append(node("div", selected.length ? "添加聊天方式" : "已经收到联系方式邀请", "olivia-chat-name"));
+      box.append(node("div", selected.length ? "添加聊天方式" : "选择聊天方式", "olivia-chat-name"));
       box.append(node("div", selected.length ? "可以继续添加另一种聊天方式，已绑定的渠道会保留。" : "不用再寄一封信确认。直接选择你想使用的聊天方式；选择微信会立即打开扫码绑定。", "olivia-chat-copy"));
       const actions = node("div", null, "olivia-chat-actions");
       if (!selected.includes("wechat")) actions.append(action(selected.length ? "添加微信" : "微信", async () => chooseChannel("wechat", box)));
@@ -413,13 +413,8 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
           catch (_) { status.qq_login = {}; }
         }
         const fragment = document.createDocumentFragment();
-        if (!selected.length && status.contact_state === "invited") {
+        if (!selected.length) {
           fragment.append(renderChannelChoice());
-        } else if (!selected.length) {
-          const message = status.contact_state === "eligible"
-            ? "关系条件已经满足，等待林离自然提出交换联系方式。"
-            : "还没有可绑定的聊天渠道。收到林离的联系方式邀请后，这里会自动打开选择入口。";
-          fragment.append(node("div", message, "olivia-chat-copy"));
         } else {
           if (selected.includes("wechat")) fragment.append(renderWechat(status));
           if (selected.includes("qq")) fragment.append(renderQQ(status));
