@@ -99,7 +99,7 @@ def test_candidates_never_unlock_assets_and_weights_favor_older_unused(monkeypat
     result = choices(rows, low)
     assert set(result) <= set(allowed_stickers(low))
     assert captured[0]['linli-04'] > captured[0]['linli-01'] > captured[0]['linli-03']
-    assert captured[0]['linli-229'] < captured[0]['linli-228']
+    assert 'linli-229' not in captured[0]  # Expanded styles are QQ-only.
     assert 'linli-108' not in captured[0]
     high = SimpleNamespace(familiarity='high', trust='high', comfort='high', closeness='high')
     captured.clear()

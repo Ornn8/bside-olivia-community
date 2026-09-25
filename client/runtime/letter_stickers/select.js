@@ -1,11 +1,11 @@
 // Render persisted backend-validated metadata; old letters receive a base illustration.
 export function oliviaLetterSticker(value) {
- return typeof value==='string'&&/^linli-(0[1-9]|[1-9][0-9]|1[0-9][0-9]|2[0-6][0-9]|27[0-2])$/.test(value)?value:'linli-01';
+ return typeof value==='string'&&/^linli-(0[1-9]|[1-9][0-9]|10[0-8])$/.test(value)?value:'linli-01';
 }
 
 export function oliviaLetterStickerAsset(value) {
  const id=oliviaLetterSticker(value);
- return id+(Number(id.slice(6))>=253?'.gif':'.png');
+ return id+'.png';
 }
 
 if(typeof document!=='undefined'&&!document.getElementById('olivia-letter-sticker-style')) {

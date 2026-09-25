@@ -9,18 +9,18 @@ def test_progressive_unlock_and_unknown_is_not_high():
     familiar=allowed_stickers(PrivateBehaviorView(familiarity=L.HIGH))
     close=allowed_stickers(PrivateBehaviorView(familiarity=L.HIGH,trust=L.MEDIUM,comfort=L.MEDIUM))
     assert set(base)<set(familiar)<set(close)
-    assert len(close)==236
+    assert len(close)==72
     assert 'linli-25' not in base and 'linli-25' in familiar
     assert 'linli-27' not in familiar and 'linli-27' in close
 
 
 def test_high_closeness_unlocks_new_whimsical_sets_only_with_trust_and_comfort():
     high = PrivateBehaviorView(familiarity=L.HIGH, trust=L.HIGH, comfort=L.HIGH, closeness=L.HIGH)
-    assert len(allowed_stickers(PrivateBehaviorView())) == 193
-    assert len(allowed_stickers(PrivateBehaviorView(familiarity=L.MEDIUM))) == 218
-    assert len(allowed_stickers(high)) == 272
+    assert len(allowed_stickers(PrivateBehaviorView())) == 29
+    assert len(allowed_stickers(PrivateBehaviorView(familiarity=L.MEDIUM))) == 54
+    assert len(allowed_stickers(high)) == 108
     assert 'linli-108' in allowed_stickers(high)
-    assert 'linli-272' in allowed_stickers(PrivateBehaviorView())
+    assert 'linli-272' not in allowed_stickers(PrivateBehaviorView())
     from dataclasses import replace
     for field in ('trust', 'comfort', 'closeness'):
         for level in (L.UNKNOWN, L.LOW, L.MEDIUM):

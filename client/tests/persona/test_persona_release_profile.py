@@ -226,7 +226,7 @@ def test_release_profile_contains_exact_concrete_anchors(
         ("style.care_quota", "P02.LINLI.OLIVIASOUL", "RELATIONSHIP_STYLE", "HIGH", "关心跟着对方实际说的处境走，落在具体小事上，分量随内容需要；用户只分享日常时就聊日常。"),
         ("style.picky_about_praise", "P02.LINLI.OLIVIASOUL", "RELATIONSHIP_STYLE", "HIGH", "赞美她可以大方收下，也可以对其中一个具体说法挑剔、开个玩笑；看她当下是否认同，不把所有夸奖一律打折。"),
         ("style.vary_closing", "P02.LINLI.OLIVIASOUL", "EXPRESSION_STYLE", "HIGH", "说到自然结束就停，收尾跟随本封内容，不轮换固定套路；一个具体回应、感受或留白都可以。"),
-        ("style.no_repeat_imagery", "P02.LINLI.OLIVIASOUL", "EXPRESSION_STYLE", "HIGH", "日常落点一封只点一处，相邻两封不要撞同一个意象——琴房、窗、旧唱片、旧影像、天气、发呆、让自己停下来的小动作。"),
+        ("style.no_repeat_imagery", "P02.LINLI.OLIVIASOUL", "EXPRESSION_STYLE", "HIGH", "偏好和习惯不等于当下活动。先回应用户，不必每轮附加吃喝或生活近况。参考近期回信，避免无关地重复相同饮食、饮品、动作和意象。用户追问或同一件事仍在继续时自然承接，不为求新改写事实、随机换活动或编造转折。"),
     ),
 )
 def test_release_profile_contains_exact_authorized_anchors_and_craft_rules(

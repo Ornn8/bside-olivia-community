@@ -17,7 +17,7 @@ def choices(rows, view, *, channel='wechat'):
     history = [row.get('sticker_id') for row in delivered]
     appeared = [row.get('sticker_id') if row.get('sticker_delivery_status') in
                 {'SENDING', 'DELIVERED', 'UNKNOWN'} else None for row in delivered]
-    sampled = weighted_candidates(allowed_stickers(view), history, appeared=appeared, limit=10)
+    sampled = weighted_candidates(allowed_stickers(view, channel=channel), history, appeared=appeared, limit=10)
     return {key: _labels()[key] for key in sampled}
 
 
