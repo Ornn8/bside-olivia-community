@@ -47,25 +47,53 @@ def test_bath_props_remain_idempotent_after_sticker_props_are_inserted():
 def test_native_download_saves_voice_and_letter_with_existing_button(tmp_path):
     import subprocess
     from patch_companion_settings import _repair_native_letter_audio
-    source = 'O.replyTextImage&&await yn(O.replyTextImage,`${R}/mail-${H}-reply.png`),yt.hide(),Ds(R)'
+    source = ('const O=await a.value.capture(),H=((ne=M.value)==null?void 0:ne.sent.subject)??"letter";'
+              'if(O.sentTextImage&&await yn(O.sentTextImage,`${R}/mail-${H}-sent.png`),O.replyVideoUrl)'
+              '{yt.hide(),await d.startVideoDownload(O.replyVideoUrl,R);return}'
+              'O.replyTextImage&&await yn(O.replyTextImage,`${R}/mail-${H}-reply.png`),yt.hide(),Ds(R)')
     patched = _repair_native_letter_audio(source)
     assert _repair_native_letter_audio(patched) == patched
+    previous = source.replace(
+        'O.replyTextImage&&await yn(O.replyTextImage,`${R}/mail-${H}-reply.png`),yt.hide(),Ds(R)',
+        'O.replyTextImage&&await yn(O.replyTextImage,`${R}/mail-${H}-reply.png`);'
+        'const replyAudio=M.value?.received?.audioUrl;const replySong=M.value?.received?.songUrl;'
+        'if(replyAudio||replySong){yt.hide();await d.startVideoDownload([replyAudio,replySong].filter(Boolean),R);return}'
+        'yt.hide(),Ds(R)',
+    )
+    upgraded = _repair_native_letter_audio(previous)
+    assert 'if(replyAudio||replySong||replyImage)' in upgraded
+    assert upgraded == patched
     script = tmp_path / 'download.cjs'
     script.write_text('''const assert=require('node:assert/strict');
-async function run(audioUrl){
- const calls=[],O={replyTextImage:'paper'},R='chosen-folder',H='letter';
- const M={value:{received:{audioUrl}}};
+async function run({audioUrl='',imageId='',imageStatus='NOT_REQUESTED',imageUrl='',videoUrl='',failStatus=false}={}){
+ const calls=[],R='chosen-folder',S='letter-id',m={value:'http://127.0.0.1:8899'};
+ const M={value:{sent:{subject:'letter'},received:{audioUrl,imageRequestId:imageId}}};
+ const a={value:{capture:async()=>({sentTextImage:'sent-paper',replyTextImage:'reply-paper',replyVideoUrl:videoUrl})}};
+ const fetch=async endpoint=>{calls.push(['status',endpoint.href]);if(failStatus)throw Error('offline');
+   return {ok:true,json:async()=>({code:0,data:{imageStatus,replyImageUrl:imageUrl}})}};
  const yn=async(...args)=>calls.push(['image',...args]);
  const yt={hide(){}}; const Ds=p=>calls.push(['open',p]);
- const d={startVideoDownload:async(...args)=>calls.push(['audio',...args])};
+ const d={startVideoDownload:async(...args)=>calls.push(['media',...args])};
  await (async()=>{''' + patched + '''})();return calls;
 }
 (async()=>{
- assert.deepEqual(await run('http://127.0.0.1:8899/toy/media/voice.wav'),[
- ['image','paper','chosen-folder/mail-letter-reply.png'],
- ['audio',['http://127.0.0.1:8899/toy/media/voice.wav'],'chosen-folder']]);
- assert.deepEqual(await run(''),[['image','paper','chosen-folder/mail-letter-reply.png'],['open','chosen-folder']]);
-})();''', encoding='utf-8')
+ const photo='http://127.0.0.1:8899/toy/media/photo-'+ 'a'.repeat(32)+'.png';
+ const status='http://127.0.0.1:8899/toy/image/status?letter_id=photo-letter';
+ const sent=['image','sent-paper','chosen-folder/mail-letter-sent.png'];
+ const reply=['image','reply-paper','chosen-folder/mail-letter-reply.png'];
+ assert.deepEqual(await run({audioUrl:'http://127.0.0.1:8899/toy/media/voice.wav'}),[
+   sent,reply,['media',['http://127.0.0.1:8899/toy/media/voice.wav'],'chosen-folder']]);
+ assert.deepEqual(await run({imageId:'photo-letter',imageStatus:'COMPLETED',imageUrl:photo}),[
+   ['status',status],sent,reply,['media',[photo],'chosen-folder']]);
+ assert.deepEqual(await run({imageId:'photo-letter',imageStatus:'COMPLETED',imageUrl:photo,videoUrl:'video.mp4'}),[
+   ['status',status],sent,['media',['video.mp4',photo],'chosen-folder']]);
+ assert.deepEqual(await run({imageId:'photo-letter',imageStatus:'PROCESSING'}),[
+   ['status',status],sent,reply,['open','chosen-folder']]);
+ assert.deepEqual(await run({imageId:'photo-letter',imageStatus:'COMPLETED',imageUrl:'https://evil.example/photo.png'}),[
+   ['status',status],sent,reply,['open','chosen-folder']]);
+ assert.deepEqual(await run({imageId:'photo-letter',failStatus:true,audioUrl:'voice.wav'}),[
+   ['status',status],sent,reply,['media',['voice.wav'],'chosen-folder']]);
+})().catch(e=>{console.error(e);process.exitCode=1});''', encoding='utf-8')
     subprocess.run(['node', str(script)], check=True, capture_output=True)
 
 
