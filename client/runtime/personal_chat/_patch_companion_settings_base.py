@@ -701,6 +701,15 @@ __all__ = [
 
 def _repair_native_letter_audio(source: str) -> str:
     """Extend native props and paper content; keep original imagery and type."""
+    local_photo_base = (
+        'const base=new URL(document.querySelector("script[data-olivia-companion-settings]")?.dataset.apiBase||""),'
+        'endpoint=new URL("/toy/image/status",base);'
+        'if(base.protocol!=="http:"||!["127.0.0.1","localhost"].includes(base.hostname)||!base.port)throw Error("PHOTO_BASE_INVALID");'
+    )
+    source = source.replace(
+        'const base=new URL(m.value),endpoint=new URL("/toy/image/status",base);',
+        local_photo_base,
+    )
     # Native downloads return task IDs before completion. Queue both files once
     # and track every task; two calls would overwrite the active task/poller.
     source = source.replace('sourceUrls:[B],destPath:K', 'sourceUrls:Array.isArray(B)?B:[B],destPath:K')
@@ -718,7 +727,7 @@ def _repair_native_letter_audio(source: str) -> str:
         source = source.replace(
             'if(O.sentTextImage&&await yn(O.sentTextImage,`${R}/mail-${H}-sent.png`),O.replyVideoUrl){',
             'let replyImage="";const imageId=M.value?.received?.imageRequestId;'
-            'if(imageId){try{const base=new URL(m.value),endpoint=new URL("/toy/image/status",base);'
+            'if(imageId){try{' + local_photo_base +
             'endpoint.searchParams.set("letter_id",imageId);const response=await fetch(endpoint),body=await response.json();'
             'const raw=body?.data?.replyImageUrl;'
             'if(response.ok&&body?.code===0&&body?.data?.imageStatus==="COMPLETED"&&typeof raw==="string"){'

@@ -53,6 +53,13 @@ def test_native_download_saves_voice_and_letter_with_existing_button(tmp_path):
               'O.replyTextImage&&await yn(O.replyTextImage,`${R}/mail-${H}-reply.png`),yt.hide(),Ds(R)')
     patched = _repair_native_letter_audio(source)
     assert _repair_native_letter_audio(patched) == patched
+    legacy_photo = patched.replace(
+        'const base=new URL(document.querySelector("script[data-olivia-companion-settings]")?.dataset.apiBase||""),'
+        'endpoint=new URL("/toy/image/status",base);'
+        'if(base.protocol!=="http:"||!["127.0.0.1","localhost"].includes(base.hostname)||!base.port)throw Error("PHOTO_BASE_INVALID");',
+        'const base=new URL(m.value),endpoint=new URL("/toy/image/status",base);',
+    )
+    assert legacy_photo != patched and _repair_native_letter_audio(legacy_photo) == patched
     previous = source.replace(
         'O.replyTextImage&&await yn(O.replyTextImage,`${R}/mail-${H}-reply.png`),yt.hide(),Ds(R)',
         'O.replyTextImage&&await yn(O.replyTextImage,`${R}/mail-${H}-reply.png`);'
@@ -66,7 +73,9 @@ def test_native_download_saves_voice_and_letter_with_existing_button(tmp_path):
     script = tmp_path / 'download.cjs'
     script.write_text('''const assert=require('node:assert/strict');
 async function run({audioUrl='',imageId='',imageStatus='NOT_REQUESTED',imageUrl='',videoUrl='',failStatus=false}={}){
- const calls=[],R='chosen-folder',S='letter-id',m={value:'http://127.0.0.1:8899'};
+  const calls=[],R='chosen-folder',S='letter-id',m={value:'https://account.example'};
+  const document={querySelector:selector=>selector==='script[data-olivia-companion-settings]'
+    ?{dataset:{apiBase:'http://127.0.0.1:8899/'}}:null};
  const M={value:{sent:{subject:'letter'},received:{audioUrl,imageRequestId:imageId}}};
  const a={value:{capture:async()=>({sentTextImage:'sent-paper',replyTextImage:'reply-paper',replyVideoUrl:videoUrl})}};
  const fetch=async endpoint=>{calls.push(['status',endpoint.href]);if(failStatus)throw Error('offline');
