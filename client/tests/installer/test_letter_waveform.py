@@ -7,6 +7,35 @@ import pytest
 from original_client_settings_ui import BOOTSTRAP_JAVASCRIPT
 
 
+def test_letter_voice_volume_is_adjustable_and_remembered():
+    playwright = pytest.importorskip('playwright.sync_api')
+    source = BOOTSTRAP_JAVASCRIPT
+    start = source.index("(() => {\n  if (!window.customElements || customElements.get('olivia-letter-audio'))")
+    end = source.index("  customElements.define('olivia-letter-audio',LetterAudio);", start)
+    component = source[start:source.index('})();', end) + 5]
+    with playwright.sync_playwright() as p:
+        try:
+            browser = p.chromium.launch(channel='msedge', headless=True)
+        except playwright.Error:
+            pytest.skip('Microsoft Edge is unavailable')
+        page = browser.new_page()
+        errors = []
+        page.on('pageerror', lambda error: errors.append(str(error)))
+        page.route('http://127.0.0.1:8876/**', lambda route: route.fulfill(status=200, content_type='text/html', body='<html><body></body></html>'))
+        page.goto('http://127.0.0.1:8876/')
+        page.add_script_tag(content=component)
+        assert page.evaluate("!!customElements.get('olivia-letter-audio')")
+        page.locator('body').evaluate('el => el.innerHTML = `<olivia-letter-audio audio-url="http://127.0.0.1:8876/toy/media/voice.wav"></olivia-letter-audio>`')
+        assert page.locator('olivia-letter-audio .voice-controls').count(), errors
+        slider = page.get_by_role('slider', name='语音音量')
+        assert slider.input_value() == '100'
+        slider.fill('35')
+        assert page.locator('olivia-letter-audio').evaluate('el => el.audio.volume') == pytest.approx(.35)
+        page.locator('body').evaluate('el => el.innerHTML = `<olivia-letter-audio audio-url="http://127.0.0.1:8876/toy/media/voice.wav"></olivia-letter-audio>`')
+        assert page.get_by_role('slider', name='语音音量').input_value() == '35'
+        browser.close()
+
+
 def test_waveform_media_read_allows_only_trusted_origin(tmp_path, monkeypatch):
     import asyncio
     from aiohttp.test_utils import make_mocked_request
