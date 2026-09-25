@@ -45,6 +45,9 @@ async function poll(re){const ye=0,Ee=t.value[ye];Ee.detailLoaded&&(re.detailLoa
     main.write_text('/*'+MAILBOX_WRITE_ANCHOR_0627+'*/\n'+source, encoding='utf-8')
     _repair_mailbox_write_access(tmp_path)
     patched = main.read_text(encoding='utf-8')
+    assert _repair_mailbox_write_access(tmp_path) == 'ALREADY_PATCHED'
+    assert main.read_text(encoding='utf-8') == patched
+    assert patched.count('Ee.detailLoaded?await z(re.id):t.value[ye]=re') == 1
     script = '''
 const assert=require('node:assert/strict');
 const original={id:'letter',detailLoaded:true,sent:{content:'user'},received:{content:'reply',signature:'Lin',audioUrl:'audio'}};

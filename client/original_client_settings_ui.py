@@ -4279,6 +4279,7 @@ BOOTSTRAP_JAVASCRIPT = r'''
     olivia-photo[data-open] img{max-height:min(360px,60vh,var(--photo-open-height,360px))}
     .olivia-letter-photo-print:focus-visible{outline:2px solid #d6c3a4;outline-offset:4px}
     olivia-photo:empty{display:none}
+    .tp-el-overlay:has(.video-preview-dialog){z-index:10000!important}
     olivia-letter-audio .voice-controls{position:relative;display:flex;flex-direction:column;align-items:center;gap:5px;padding:8px 0 12px;color:#514638}
     olivia-letter-audio .voice-controls>button{position:absolute;top:21px;left:calc(50% - 105px)}
     olivia-letter-audio .voice-controls[data-wave-style="ripple"]>button{left:calc(50% - 15px);top:21px;z-index:1}

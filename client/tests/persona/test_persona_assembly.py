@@ -190,6 +190,23 @@ def _style_snapshot(*exemplars: PersonaStyleExemplar) -> PersonaSnapshot:
     )
 
 
+@pytest.mark.parametrize("mode", (ReplyMode.TEXT_LETTER, ReplyMode.FUTURE_IM))
+def test_chinese_festival_uses_beijing_date_only_when_relevant(mode):
+    def calendar_at(instant: datetime, user_input: str):
+        context = ReplyContext.create(mode, trusted_time=TrustedTime(instant),
+                                      future_im_enabled=mode is ReplyMode.FUTURE_IM)
+        system = assemble_persona(_style_snapshot(), context, user_input=user_input,
+                                  max_units=30000).system_content
+        runtime_time = json.loads(re.search(r"<runtime_time>\s*(.*?)\s*</runtime_time>", system, re.S)[1])
+        return runtime_time.get("chinese_calendar")
+
+    before = datetime(2026, 9, 24, 15, 59, tzinfo=timezone.utc)
+    during = datetime(2026, 9, 24, 16, 1, tzinfo=timezone.utc)
+    assert calendar_at(before, "明天中秋有什么安排？")["festivals_today"] == []
+    assert calendar_at(during, "今天中秋有什么安排？")["festivals_today"] == ["中秋节"]
+    assert calendar_at(during, "晚上好，刚吃完饭。") is None
+
+
 def test_public_source_identifier_is_not_character_knowledge():
     snapshot = _style_snapshot()
     fact = replace(_declaration("public.preference", "PUBLIC_CANON", "BACKGROUND", "林离喜欢黑胶。"),
