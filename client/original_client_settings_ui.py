@@ -4294,7 +4294,8 @@ BOOTSTRAP_JAVASCRIPT = r'''
     olivia-letter-audio .voice-wave canvas{display:block;width:100%;height:60px;pointer-events:none}
     olivia-letter-audio .voice-wave input{position:absolute;left:0;bottom:-5px;width:100%;height:20px;margin:0;opacity:0;touch-action:pan-y}
     olivia-letter-audio .voice-wave:focus-within{outline:1px solid currentColor;outline-offset:3px}
-    olivia-letter-audio .voice-volume{width:130px;max-width:60%;flex:none;margin:3px 0 0}
+    olivia-letter-audio .voice-volume-control{display:flex;align-items:center;justify-content:center;gap:8px;font-size:12px}
+    olivia-letter-audio .voice-volume{width:110px;flex:none;margin:3px 0 0}
     olivia-letter-audio time{font-family:Arial,sans-serif;font-size:11px;font-variant-numeric:tabular-nums;white-space:nowrap}
     olivia-letter-audio .voice-status{font-size:13px;line-height:1.7}
     olivia-letter-audio .song-controls{display:flex;align-items:center;gap:12px;margin:14px 0;padding:12px 16px;border:1px solid #a48c5c66;border-radius:12px;background:#a48c5c14;color:#78613b}
@@ -4421,7 +4422,8 @@ BOOTSTRAP_JAVASCRIPT = r'''
         const wave=document.createElement('div');wave.className='voice-wave';
         const volume=document.createElement('input');volume.type='range';volume.className='voice-volume';volume.min='0';volume.max='100';volume.step='1';volume.value=String(Math.round(audio.volume*100));volume.setAttribute('aria-label','语音音量');
         volume.oninput=()=>{audio.volume=Number(volume.value)/100;try{localStorage.setItem('olivia.letter.voice-volume',volume.value)}catch(_){}};
-        row.append(button,wave,stamp,volume);this.append(row);this.waveCleanup=letterWave(wave,seek,audio,url);
+        const volumeControl=document.createElement('label');volumeControl.className='voice-volume-control';volumeControl.textContent='音量';volumeControl.append(volume);
+        row.append(button,wave,stamp,volumeControl);this.append(row);this.waveCleanup=letterWave(wave,seek,audio,url);
         const styles=document.createElement('select');styles.className='olivia-wave-style';styles.setAttribute('aria-label','波形样式');styles.title='选择波形样式';
         for(const [value,label] of [['bars','淡墨呼吸'],['dots','浮动墨点'],['ribbon','轻柔声带'],['ripple','声音涟漪']]){const option=document.createElement('option');option.value=value;option.textContent=label;styles.append(option)}
         try{styles.value=localStorage.getItem('olivia.letter.wave-style')||'bars'}catch(_){}if(!styles.value)styles.value='bars';
