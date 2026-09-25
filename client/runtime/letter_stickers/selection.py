@@ -11,7 +11,7 @@ NEW_STICKERS = range(109, 273)
 JOJO_STICKERS = frozenset(f'linli-{i:03d}' for i in range(229, 253))
 
 
-def allowed_stickers(view):
+def allowed_stickers(view, *, channel='letter'):
     value=lambda key:getattr(getattr(view,key,None),'value',getattr(view,key,None))
     familiar=value('familiarity') in {'medium','high'} or value('relationship_stage') in {'familiar','close','committed'}
     ids=set(BASE)
@@ -22,7 +22,8 @@ def allowed_stickers(view):
             ids.update(range(1,73))
             if all(value(key)=='high' for key in ('closeness','trust','comfort')):
                 ids.update(range(73,109))
-    ids.update(NEW_STICKERS)
+    if channel == 'qq':
+        ids.update(NEW_STICKERS)
     return tuple(f'linli-{i:02d}' for i in sorted(ids))
 
 

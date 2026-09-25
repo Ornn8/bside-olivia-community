@@ -4,8 +4,11 @@ import re
 
 CURRENT = ContextVar('personal_chat_presentation', default=None)
 VOICE_POLICY = (
-    'QQ在voice_available为true时，可以适当增加选择voice的机会：日常闲聊、问候、分享近况、'
-    '轻松陪伴和亲昵回应都可以自然地用语音，不必等待用户主动要求。'
+    'QQ在voice_available为true且当前适合说话时，日常短聊、问候、分享近况、'
+    '轻松陪伴和符合当前关系的亲昵回应优先考虑voice，不必等待用户主动要求。'
+    '用户明确想听声音或以语音聊天时优先用voice；亲近程度只影响语气，不是使用语音的门槛。'
+    'recent_delivery_formats按先后列出最近实际送达的载体，不是用户偏好。若连续多轮都是text，'
+    '本轮又适合口头表达，应主动选择voice，不要习惯性照抄JSON示例中的text。'
     '这只是提高语音使用倾向，不是默认每次发语音；结合当轮语境、表达意愿和最近的交流方式，'
     '让文字与语音自然穿插，不按固定比例凑次数，也不机械交替。'
     '长篇分析、步骤、地址、代码、数字等需要反复查看的内容，或用户本轮明确要求文字时选择text；'
@@ -14,6 +17,15 @@ VOICE_POLICY = (
     '世界状态不适合说话或voice_available为false时用text。'
     '微信只发文字和表情，不发音频文件或拨电话。'
 )
+
+
+def recent_delivery_formats(rows, *, channel, binding_id):
+    return [('voice' if row['delivered_format'] == 'audio' else 'text')
+            for row in rows if row.get('channel') == channel and row.get('binding_id') == binding_id
+            and row.get('delivery_status') == 'DELIVERED'
+            and row.get('delivered_format') in {'audio', 'text'}][-6:]
+
+
 INSTRUCTION = (
     '这是熟人之间的日常聊天，亲昵程度沿用实际关系；关系高时自然关心、逗对方、表达想念，'
     '不必每次解释关系边界，也不凭渠道自动认定恋爱关系。'

@@ -140,7 +140,7 @@ async def generate(server, event, row):
     content = event.text + incoming_context(row)
     source = server._CURRENT_LETTER_MEMORY_SOURCE.set(f"reply:{event.exchange_id}:1")
     receipt = server._CURRENT_LETTER_RECEIPT.set(datetime.fromisoformat(row["life_received_at"]))
-    from .presentation import CURRENT, parse, parse_social
+    from .presentation import CURRENT, parse, parse_social, recent_delivery_formats
     from .initiative import letter_invitation_allowed
     allowed = letter_invitation_allowed(server.store.personal_chats, getattr(server.store, 'letters', []),
                                          datetime.now().timestamp())
@@ -158,6 +158,8 @@ async def generate(server, event, row):
     except (TypeError, ValueError):
         pass
     presentation = CURRENT.set({'voice_available': voice_available, 'listening_preference': 'voice_ok',
+                                'recent_delivery_formats': recent_delivery_formats(server.store.personal_chats,
+                                    channel=event.channel, binding_id=event.binding_id),
                                 'structured': True, 'decision_now': datetime.now(LOCAL).isoformat(),
                                 'due_followup': row.get('followup_quote'),
                                 'channel': event.channel, 'incoming_format': event.input_kind,
@@ -463,7 +465,7 @@ def install_personal_chat(app, server):
                 from runtime.letter_stickers.selection import allowed_stickers
                 try:
                     context = server.letters_adapter.build_reply_context(ReplyMode.FUTURE_IM, future_im_enabled=True)
-                    return key in allowed_stickers(context.private_behavior)
+                    return key in allowed_stickers(context.private_behavior, channel='qq')
                 except Exception:
                     return False
             service = PersonalChatService(server.store.personal_chats, lambda: persist_chat(server),

@@ -292,7 +292,9 @@ class PersonalChatService:
             await persist_state(self.persist)
             if row.get('sticker_id') and callable(getattr(send, 'image', None)):
                 from pathlib import Path
-                if not re.fullmatch(r'linli-\d{2,3}', row['sticker_id']) or not self.sticker_allowed(row['sticker_id']):
+                if (not re.fullmatch(r'linli-\d{2,3}', row['sticker_id'])
+                        or (event.channel != 'qq' and int(row['sticker_id'][6:]) > 108)
+                        or not self.sticker_allowed(row['sticker_id'])):
                     row['sticker_delivery_status'] = 'LOCKED'
                 else:
                     row['sticker_delivery_status'] = 'SENDING'
