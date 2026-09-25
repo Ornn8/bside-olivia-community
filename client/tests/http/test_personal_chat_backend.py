@@ -59,8 +59,10 @@ def test_native_store_roundtrip_keeps_chat_outside_inbox(tmp_path, monkeypatch):
     assert [row["letter_id"] for row in reloaded.letters] == ["native-letter"]
 
 
-@pytest.mark.parametrize('failure_code', [None, 'PROVIDER_TIMEOUT', 'PROVIDER_PROTOCOL', 'LLM_TIMEOUT', 'outer_timeout'])
-def test_backend_generate_uses_real_pipeline_persona_memory_and_world(monkeypatch, failure_code):
+@pytest.mark.parametrize('failure_code,envelope_variant',
+    [(None, variant) for variant in ('plain', 'fenced', 'missing_sticker', 'numeric_sticker', 'extra_fields')]
+    + [(code, 'plain') for code in ('PROVIDER_TIMEOUT', 'PROVIDER_PROTOCOL', 'LLM_TIMEOUT', 'outer_timeout')])
+def test_backend_generate_uses_real_pipeline_persona_memory_and_world(monkeypatch, failure_code, envelope_variant):
     import local_server
     calls = []
     class Provider:
@@ -74,7 +76,17 @@ def test_backend_generate_uses_real_pipeline_persona_memory_and_world(monkeypatc
             from runtime.personal_chat.presentation import CURRENT
             candidates = CURRENT.get()['sticker_choices']
             assert candidates
-            return GatewayResponse(text=envelope(text="那你明天再跟我说嘛。", sticker=next(iter(candidates))), request_id=request_id or "test",
+            body = json.loads(envelope(text="那你明天再跟我说嘛。", sticker=next(iter(candidates))))
+            if envelope_variant == 'missing_sticker':
+                body.pop('sticker')
+            elif envelope_variant == 'numeric_sticker':
+                body['sticker'] = 1
+            elif envelope_variant == 'extra_fields':
+                body['reason'] = '普通聊天'
+            raw = json.dumps(body)
+            if envelope_variant == 'fenced':
+                raw = '```json\n' + raw + '\n```'
+            return GatewayResponse(text=raw, request_id=request_id or "test",
                                    provider="synthetic", model="synthetic")
     adapter = local_server.LetterAdapter(GatewayConfig(provider="openai_compatible",
         base_url="http://127.0.0.1:9/v1", model="synthetic", persona_v2_enabled=True,
@@ -123,7 +135,10 @@ def test_backend_generate_uses_real_pipeline_persona_memory_and_world(monkeypatc
     async def scenario():
         row = {"life_received_at": datetime.now(timezone.utc).isoformat()}
         result = await backend.generate(server, event, row)
-        assert row['sticker_id'].startswith('linli-')
+        if envelope_variant in ('missing_sticker', 'numeric_sticker'):
+            assert 'sticker_id' not in row
+        else:
+            assert row['sticker_id'].startswith('linli-')
         assert source.get() == "previous-source" and receipt.get() is None
         return result
     assert asyncio.run(scenario()) == "那你明天再跟我说嘛。"

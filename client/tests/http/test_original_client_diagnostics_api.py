@@ -272,6 +272,25 @@ def test_video_diagnostic_reads_existing_state_without_starting_installation(mon
         installer._lock.release()
 
 
+def test_unchecked_memory_install_is_not_exported_as_missing():
+    from threading import Lock
+    from types import SimpleNamespace
+    class Backend:
+        def diagnostic_status_history(self): return ()
+        def read_status(self):
+            return CompanionReadStatus(memory=CompanionCapability('unavailable'),
+                private_world=CompanionCapability('available'), candidates=CompanionCapability('available'))
+    installer = SimpleNamespace(_lock=Lock(), _readiness_checked=False,
+        _status=SimpleNamespace(to_dict=lambda: {'state':'missing','phase':'idle',
+            'installed_bytes':0,'remaining_bytes':332631647}))
+    collect = _diagnostic_source(Backend(), setup_service=None, launcher_tail_provider=None,
+        runtime_tail_provider=None, capability_installer=installer)
+    assert collect()['health']['checks']['memory_install'] == {
+        'state':'unknown','error_code':'MEM0_DIAGNOSTIC_NOT_CHECKED'}
+    installer._readiness_checked = True
+    assert collect()['health']['checks']['memory_install']['state'] == 'missing'
+
+
 def test_memory_diagnostic_snapshots_without_model_probe():
     from threading import Lock
     from types import SimpleNamespace

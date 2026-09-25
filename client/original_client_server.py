@@ -650,7 +650,10 @@ def _diagnostic_source(
                 checks["memory_install"] = {"state": "unavailable", "error_code": "MEM0_DIAGNOSTIC_BUSY"}
             else:
                 try:
-                    checks["memory_install"] = project_memory_install(capability_installer._status.to_dict())
+                    snapshot = capability_installer._status.to_dict()
+                    if snapshot.get("state") == "missing" and not getattr(capability_installer, "_readiness_checked", False):
+                        snapshot = {"state": "unknown", "error_code": "MEM0_DIAGNOSTIC_NOT_CHECKED"}
+                    checks["memory_install"] = project_memory_install(snapshot)
                 finally:
                     capability_installer._lock.release()
         if history_import_provider is not None:

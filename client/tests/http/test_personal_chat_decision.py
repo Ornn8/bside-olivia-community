@@ -13,6 +13,37 @@ def envelope(**values):
     return json.dumps(body | values, ensure_ascii=False)
 
 
+@pytest.mark.parametrize('variant', ['fenced', 'missing_sticker', 'numeric_sticker', 'extra_fields'])
+def test_harmless_envelope_variations_preserve_reply_without_changing_preferences(variant):
+    body = json.loads(envelope(text='今天练得挺顺，休息一下。'))
+    if variant == 'missing_sticker':
+        body.pop('sticker')
+    elif variant == 'numeric_sticker':
+        body['sticker'] = 1
+    elif variant == 'extra_fields':
+        body.update(reason='普通聊天', followup_cancel=True, initiative_preference='open')
+    raw = json.dumps(body)
+    if variant == 'fenced':
+        raw = '```json\n' + raw + '\n```'
+    result = decode(raw, user='今天钢琴练得怎么样？', now=1)
+    assert result['text'] == body['text']
+    assert result['sticker'] is None
+    assert result['initiative'] == result['letter'] == result['listening'] == 'keep'
+    assert result['followup_at'] is None and result['followup_cancel'] is False
+    assert 'reason' not in result and 'initiative_preference' not in result
+
+
+@pytest.mark.parametrize('raw', [
+    '说明\n```json\n' + envelope() + '\n```',
+    '```json\n' + envelope() + '\n```\n其他文字',
+    '```json\n' + envelope(initiative='open', evidence='可以主动找我') + '\n```',
+    envelope().replace('"initiative": "keep", ', ''),
+])
+def test_envelope_tolerance_does_not_guess_controls_or_extract_partial_json(raw):
+    with pytest.raises(ValueError, match='PERSONAL_CHAT_DECISION_INVALID'):
+        decode(raw, user='你好', now=1)
+
+
 @pytest.mark.parametrize('marker', ['[QQ表情]', '(QQ表情)', '（QQ表情）', '【QQ表情】'])
 @pytest.mark.parametrize('delivery', ['text', 'voice'])
 def test_incoming_face_placeholder_cannot_leak_into_reply_or_speech(marker, delivery):
