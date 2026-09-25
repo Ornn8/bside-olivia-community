@@ -714,6 +714,19 @@ def _repair_native_letter_audio(source: str) -> str:
         'const replyAudio=M.value?.received?.audioUrl;if(replyAudio){yt.hide();await d.startVideoDownload(replyAudio,R);return}',
         'const replyAudio=M.value?.received?.audioUrl;const replySong=M.value?.received?.songUrl;'
         'if(replyAudio||replySong){yt.hide();await d.startVideoDownload([replyAudio,replySong].filter(Boolean),R);return}')
+    if 'const imageId=M.value?.received?.imageRequestId;' not in source:
+        source = source.replace(
+            'if(O.sentTextImage&&await yn(O.sentTextImage,`${R}/mail-${H}-sent.png`),O.replyVideoUrl){',
+            'let replyImage="";const imageId=M.value?.received?.imageRequestId;'
+            'if(imageId){try{const base=new URL(m.value),endpoint=new URL("/toy/image/status",base);'
+            'endpoint.searchParams.set("letter_id",imageId);const response=await fetch(endpoint),body=await response.json();'
+            'const raw=body?.data?.replyImageUrl;'
+            'if(response.ok&&body?.code===0&&body?.data?.imageStatus==="COMPLETED"&&typeof raw==="string"){'
+            'const candidate=new URL(raw);'
+            'if(candidate.origin===base.origin&&/^\\/toy\\/media\\/photo-[a-f0-9]{32}\\.png$/.test(candidate.pathname)'
+            '&&!candidate.search&&!candidate.hash)replyImage=candidate.href}}catch{}}'
+            'if(O.sentTextImage&&await yn(O.sentTextImage,`${R}/mail-${H}-sent.png`),O.replyVideoUrl){',
+        )
     source = source.replace(
         'O.replyTextImage&&await yn(O.replyTextImage,`${R}/mail-${H}-reply.png`),yt.hide(),Ds(R)',
         'O.replyTextImage&&await yn(O.replyTextImage,`${R}/mail-${H}-reply.png`);'
@@ -722,6 +735,14 @@ def _repair_native_letter_audio(source: str) -> str:
         'if(replyAudio||replySong){yt.hide();await d.startVideoDownload([replyAudio,replySong].filter(Boolean),R);return}'
         'yt.hide(),Ds(R)',
     )
+    if 'const imageId=M.value?.received?.imageRequestId;' in source:
+        source = source.replace(
+            'await d.startVideoDownload(O.replyVideoUrl,R);return}',
+            'await d.startVideoDownload([O.replyVideoUrl,replyImage].filter(Boolean),R);return}',
+        ).replace(
+            'if(replyAudio||replySong){yt.hide();await d.startVideoDownload([replyAudio,replySong].filter(Boolean),R);return}',
+            'if(replyAudio||replySong||replyImage){yt.hide();await d.startVideoDownload([replyAudio,replySong,replyImage].filter(Boolean),R);return}',
+        )
     source = source.replace(
         'A.videoPending?"林离录视频中":o(i)("mailbox_waiting_for_reply")',
         'A.videoPending?"林离录视频中":["PENDING","QUEUED","PROCESSING"].includes(A.audioStatus)?"林离正在录语音…":o(i)("mailbox_waiting_for_reply")',
