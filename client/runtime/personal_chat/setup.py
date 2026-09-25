@@ -620,19 +620,20 @@ def install_setup_routes(app: web.Application, server) -> None:
             if managed:
                 from . import napcat_installer
 
-                if runtime.get("napcat_state") != "ONEBOT_READY":
-                    raise RuntimeError("QQ_LOGIN_UNAVAILABLE")
+                # Background status probes are short-lived snapshots. A transient
+                # timeout must not veto an explicit binding request without a live check.
                 expected = str(runtime.get("napcat_account") or "")
-                if not _QQ_ID.fullmatch(expected):
-                    raise RuntimeError("QQ_LOGIN_UNAVAILABLE")
                 url, token = await asyncio.to_thread(
                     napcat_installer.managed_connection, _root(server)
                 )
-                account = await _qq_probe(url, token, expected)
+                account = await _qq_probe(url, token, expected if _QQ_ID.fullmatch(expected) else None)
                 if not await asyncio.to_thread(
                     napcat_installer.account_config_ready, _root(server), account
                 ):
                     raise RuntimeError("NAPCAT_ONEBOT_CONFIG_PENDING")
+                runtime["napcat_account"] = account
+                runtime["napcat_state"] = "ONEBOT_READY"
+                runtime.pop("napcat_error", None)
             else:
                 account = str(body.get("account", "")).strip()
                 token = str(body.get("token", ""))

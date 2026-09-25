@@ -244,8 +244,9 @@ def test_qq_setup_tests_loopback_and_never_persists_plaintext_token(
     assert config["qq"]["credentials_file"].endswith("qq.dpapi")
 
 
+@pytest.mark.parametrize('cached_state', ['ONEBOT_READY', 'ONEBOT_PROBING', 'IDLE'])
 def test_managed_qq_only_needs_owner_after_napcat_login(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cached_state
 ) -> None:
     import original_client_setup_api
     from runtime.personal_chat import napcat_installer, setup
@@ -261,7 +262,7 @@ def test_managed_qq_only_needs_owner_after_napcat_login(
     async def fake_probe(url: str, token: str, account: str | None = None) -> str:
         assert url == "ws://127.0.0.1:3001"
         assert token == "managed-synthetic-token-123456"
-        assert account == "123456789"
+        assert account == (None if cached_state == 'IDLE' else "123456789")
         return "123456789"
 
     monkeypatch.setattr(setup, "_qq_probe", fake_probe)
@@ -270,8 +271,8 @@ def test_managed_qq_only_needs_owner_after_napcat_login(
     app = web.Application()
     setup.install_setup_routes(app, server)
     runtime = app[setup._SETUP]
-    runtime["napcat_state"] = "ONEBOT_READY"
-    runtime["napcat_account"] = "123456789"
+    runtime["napcat_state"] = cached_state
+    runtime["napcat_account"] = None if cached_state == 'IDLE' else "123456789"
 
     async def scenario() -> None:
         async with TestClient(TestServer(app)) as client:
@@ -289,6 +290,51 @@ def test_managed_qq_only_needs_owner_after_napcat_login(
     assert config["qq"]["account"] == "123456789"
     assert config["qq"]["url"] == "ws://127.0.0.1:3001"
     assert "managed-synthetic-token-123456" not in json.dumps(config)
+
+
+@pytest.mark.parametrize('live_error', [None, 'QQ_ACCOUNT_MISMATCH', 'QQ_LOGIN_UNAVAILABLE', 'NAPCAT_ONEBOT_CONFIG_PENDING'])
+def test_manual_binding_rechecks_after_background_timeout(tmp_path, monkeypatch, live_error):
+    import original_client_setup_api
+    from runtime.personal_chat import setup, napcat_installer
+    calls = []
+    monkeypatch.setattr(setup, '_selected_channels', lambda server: {'qq'})
+    monkeypatch.setattr(napcat_installer, 'find_shell', lambda root: Path('synthetic'))
+    monkeypatch.setattr(napcat_installer, 'onebot_available', lambda: True)
+    monkeypatch.setattr(napcat_installer, 'managed_connection', lambda root: ('ws://127.0.0.1:3001', 'synthetic-token'))
+    monkeypatch.setattr(napcat_installer, 'account_config_ready',
+                        lambda *args: len(calls) < 3 or live_error != 'NAPCAT_ONEBOT_CONFIG_PENDING')
+    monkeypatch.setattr(original_client_setup_api, '_dpapi_protect', lambda value: 'ciphertext')
+    async def probe(url, token, expected=None):
+        calls.append(expected)
+        if len(calls) == 2:
+            raise asyncio.TimeoutError()
+        if len(calls) == 3:
+            assert expected == '123456789'
+            if live_error in {'QQ_ACCOUNT_MISMATCH', 'QQ_LOGIN_UNAVAILABLE'}:
+                raise RuntimeError(live_error)
+        return '123456789'
+    monkeypatch.setattr(setup, '_qq_probe', probe)
+    async def scenario():
+        app = web.Application()
+        setup.install_setup_routes(app, _Server(tmp_path))
+        headers = {setup.CONFIRM_HEADER: setup.CONFIRM_VALUE}
+        async with TestClient(TestServer(app)) as client:
+            await client.get(setup.STATUS_PATH, headers=headers)
+            assert app[setup._SETUP]['napcat_state'] == 'ONEBOT_READY'
+            await client.get(setup.STATUS_PATH, headers=headers)
+            assert app[setup._SETUP]['napcat_state'] == 'ONEBOT_PROBING'
+            response = await client.post(setup.QQ_CONFIGURE_PATH, headers=headers,
+                                         json={'managed': True, 'owner': '987654321'})
+            body = await response.json()
+            assert len(calls) == 3
+            if live_error:
+                assert body['error'] == live_error
+                assert not (tmp_path / 'personal-chat/config.json').exists()
+            else:
+                assert response.status == 200
+                assert app[setup._SETUP]['napcat_state'] == 'ONEBOT_READY'
+                assert (tmp_path / 'personal-chat/config.json').is_file()
+    asyncio.run(scenario())
 
 
 def test_setup_rejects_channels_that_user_has_not_accepted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
