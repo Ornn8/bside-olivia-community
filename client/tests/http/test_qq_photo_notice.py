@@ -25,14 +25,14 @@ def test_notice_attempted_once_even_when_ack_is_unknown(fail):
 
 
 @pytest.mark.parametrize('attach', [False, True])
-def test_progress_only_after_photo_plan_is_ready(monkeypatch, attach):
+def test_photo_preparation_never_sends_canned_progress(monkeypatch, attach):
     async def scenario():
         events = []
-        async def prepare(server, row, text, reply, *, channel, on_ready):
+        async def prepare(server, row, text, reply, *, channel, on_ready=None):
             assert channel == 'qq'
             events.append('plan')
             if attach:
-                await on_ready()
+                assert on_ready is None
                 events.append('generate')
         monkeypatch.setattr('runtime.image_reply.prepare', prepare)
         async def send(text):
@@ -40,7 +40,7 @@ def test_progress_only_after_photo_plan_is_ready(monkeypatch, attach):
             return 'ack'
         await prepare_chat_photo(SimpleNamespace(_persist_store_state=lambda: None),
                                  {'reply_text': '正文'}, send)
-        assert events == (['plan', 'notice', 'generate'] if attach else ['plan'])
+        assert events == (['plan', 'generate'] if attach else ['plan'])
     asyncio.run(scenario())
 
 

@@ -11,7 +11,8 @@ import pytest
 from runtime.media import managed_subprocess
 
 
-def test_windows_success_terminates_assigned_job_before_close(monkeypatch) -> None:
+@pytest.mark.parametrize('timeout', [12, None])
+def test_windows_success_terminates_assigned_job_before_close(monkeypatch, timeout) -> None:
     events: list[str] = []
     active_processes = iter((2, 0))
     monotonic_times = iter((100.0, 100.000003, 100.000004))
@@ -39,10 +40,10 @@ def test_windows_success_terminates_assigned_job_before_close(monkeypatch) -> No
     monkeypatch.setattr(managed_subprocess, "_create_windows_job", lambda: job)
     monkeypatch.setattr(managed_subprocess.subprocess, "Popen", lambda *_a, **_k: Process())
 
-    result = managed_subprocess.run_managed_process(["worker"], timeout_seconds=12)
+    result = managed_subprocess.run_managed_process(["worker"], timeout_seconds=timeout)
 
     assert result.stdout == b"out"
-    assert events[:4] == ["assign", "resume", "reap:12", "terminate"]
+    assert events[:4] == ["assign", "resume", f"reap:{timeout}", "terminate"]
     assert events[4].startswith("reap:")
     assert float(events[4].removeprefix("reap:")) == pytest.approx(15.0)
     assert events[5:] == ["active", "active", "close"]

@@ -167,8 +167,8 @@ def run_managed_process(
     """Run one worker; Windows descendants are owned before they can execute."""
 
     arguments = [str(value) for value in command]
-    if (timeout_seconds is None) == (deadline is None):
-        raise TypeError("provide exactly one of timeout_seconds or deadline")
+    if timeout_seconds is not None and deadline is not None:
+        raise TypeError("provide at most one of timeout_seconds or deadline")
     def wait_budget(fallback: float) -> float:
         if deadline is None:
             return fallback
@@ -220,11 +220,11 @@ def run_managed_process(
         try:
             process_timeout = (
                 timeout_seconds if timeout_seconds is not None
-                else wait_budget(float("inf"))
+                else (wait_budget(float("inf")) if deadline is not None else None)
             )
             if deadline is not None:
                 process_timeout -= min(_TREE_SHUTDOWN_TIMEOUT_SECONDS, process_timeout / 2)
-            if process_timeout <= 0:
+            if process_timeout is not None and process_timeout <= 0:
                 raise deadline_error()
             stdout, stderr = process.communicate(timeout=process_timeout)
         except subprocess.TimeoutExpired:

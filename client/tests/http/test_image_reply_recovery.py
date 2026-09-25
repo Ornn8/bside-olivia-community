@@ -102,6 +102,17 @@ def setup(tmp_path, monkeypatch, failure='download'):
     return server, row, calls
 
 
+def test_qq_photo_submits_while_other_media_holds_slot(tmp_path, monkeypatch):
+    async def scenario():
+        server, row, calls = setup(tmp_path, monkeypatch, failure=None)
+        await server.media_semaphore.acquire()
+        await asyncio.wait_for(image_reply.prepare(server, row, 'photo', 'Here', channel='qq'), 2)
+        assert row['image_status'] == 'COMPLETED'
+        assert len(calls['submits']) == 1
+        assert server.media_semaphore.locked()
+    asyncio.run(scenario())
+
+
 def test_transient_result_download_recovers_same_paid_request(tmp_path, monkeypatch):
     async def scenario():
         server, row, calls = setup(tmp_path, monkeypatch)

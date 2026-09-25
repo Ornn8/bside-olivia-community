@@ -6,6 +6,24 @@ from runtime.remote_generation import RemoteGeneration
 from runtime.cloud_service import CloudError
 
 
+@pytest.mark.parametrize('kind', ['video', 'lipsync', 'original_video', 'cover_video'])
+def test_slow_video_is_not_cancelled_by_elapsed_client_budget(tmp_path, monkeypatch, kind):
+    calls = []
+    async def request(self, action, data):
+        calls.append(action)
+        if action == 'capabilities': return {'kinds': [kind], 'shared_assets': []}
+        assert action in {'submit', 'status'}
+        return {'task_id': 'synthetic', 'status': 'running' if action == 'submit' else 'succeeded'}
+    async def download(self, task, output, **kwargs): return task
+    async def sleep(seconds): pass
+    monkeypatch.setattr(RemoteGeneration, 'request', request)
+    monkeypatch.setattr(RemoteGeneration, '_download', download)
+    monkeypatch.setattr('runtime.remote_generation.asyncio.sleep', sleep)
+    result = asyncio.run(RemoteGeneration().generate(kind, {}, tmp_path / 'output', timeout=-1))
+    assert result['status'] == 'succeeded'
+    assert calls == ['capabilities', 'submit', 'status']
+
+
 @pytest.mark.parametrize('kind,cap', [('tts',100),('cover',100),('original',300),('original_video',500),('image',121)])
 def test_submit_preserves_kind_specific_charge_consent(kind, cap):
     async def scenario():

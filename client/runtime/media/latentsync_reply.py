@@ -5,14 +5,12 @@ from __future__ import annotations
 from contextlib import suppress
 import json
 import logging
-import math
 import os
 import posixpath
 import re
 import shutil
 import subprocess
 import tempfile
-import time
 from pathlib import Path
 from typing import Mapping
 
@@ -20,8 +18,6 @@ from runtime.media.managed_subprocess import run_managed_process
 from runtime.media.media_paths import resolve_media_path
 
 
-_DEFAULT_LATENTSYNC_TIMEOUT_SECONDS = 1800.0
-_MAX_LATENTSYNC_TIMEOUT_SECONDS = 3600.0
 _LOGGER = logging.getLogger(__name__)
 
 _FAILURE_PHASES = frozenset({"source_prepare", "inference", "output_validate"})
@@ -203,26 +199,6 @@ def _reported_process_failure(
     return LatentSyncReplyError("LATENTSYNC_FAILED", diagnostic=diagnostic)
 
 
-def _latentsync_timeout_seconds(
-    requested: float | None,
-    environment: Mapping[str, str],
-) -> float:
-    raw: object = (
-        environment.get("OLIVIA_LATENTSYNC_TIMEOUT_SECONDS")
-        if requested is None
-        else requested
-    )
-    if raw in (None, ""):
-        return _DEFAULT_LATENTSYNC_TIMEOUT_SECONDS
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        return _DEFAULT_LATENTSYNC_TIMEOUT_SECONDS
-    if not math.isfinite(value) or value <= 0:
-        return _DEFAULT_LATENTSYNC_TIMEOUT_SECONDS
-    return min(value, _MAX_LATENTSYNC_TIMEOUT_SECONDS)
-
-
 def resolve_ffmpeg_executable(env: Mapping[str, str] | None = None) -> Path:
     """Resolve the same FFmpeg executable used by the LatentSync renderer."""
 
@@ -296,7 +272,7 @@ def _prepare_source_clip(
     prepared_video: Path,
     *,
     environment: dict[str, str],
-    deadline: float,
+    deadline: float | None,
 ) -> None:
     """Decode only the needed span into a stable LatentSync input."""
 
@@ -364,7 +340,7 @@ def _validate_rendered_video(
     video_path: Path,
     *,
     environment: dict[str, str],
-    deadline: float,
+    deadline: float | None,
 ) -> None:
     paths = {"video": video_path, "output_parent": video_path.parent}
     ffmpeg = shutil.which("ffmpeg", path=environment["PATH"])
@@ -450,11 +426,9 @@ def render_latentsync_video(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     source_environment = os.environ if environment is None else environment
-    timeout_seconds = _latentsync_timeout_seconds(
-        timeout_seconds,
-        source_environment,
-    )
-    deadline = time.monotonic() + timeout_seconds
+    # Video length and GPU contention must not invalidate a completed render.
+    # Retain the legacy argument for callers, but no elapsed-time cutoff applies.
+    deadline = None
     cache_root = provider_cache_root
     if cache_root is None:
         cache_root = resolve_media_path(

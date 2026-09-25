@@ -257,8 +257,9 @@ async def _prepare_once(server, row, content, text, *, channel='letter', on_read
             await on_ready()
         row['image_status'] = 'GENERATING';server._persist_store_state()
         progress('waiting', {})
-        # Serialize with audio generation for the existing one-active-task wallet limit.
-        async with server.media_semaphore:
+        # QQ submits independently; the remote service owns resource admission.
+        from contextlib import nullcontext
+        async with (nullcontext() if channel == 'qq' else server.media_semaphore):
             if not path.exists():
                 _check_receipt(receipt, fingerprint, payload, row.get('image_receipt_required', False))
                 await api.generate('image', payload, path, receipt_path=receipt, validate=validate)
