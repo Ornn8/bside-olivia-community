@@ -102,6 +102,15 @@ def log(msg=""):
     log_line(msg)
 
 
+def say(msg=""):
+    """只打印，不写日志。
+
+    信件正文（用户自己要看的预览、并排对比）一律走这里。日志文件是会被贴出来
+    发给人查问题的，里面只留计数、标识和错误码，不落正文。
+    """
+    print(msg, flush=True)
+
+
 def log_line(msg=""):
     """只写日志，不打印。"""
     if _LOG is not None:
@@ -400,7 +409,7 @@ def _ask_near_choice(conflicts, preset, dry_run):
         r = it["row"]
         t = (datetime.fromtimestamp(r["created_at"], TZ).strftime("%Y-%m-%d %H:%M")
              if r["created_at"] else "时间未知")
-        log("      %s  %-24s  %s"
+        say("      %s  %-24s  %s"
             % (t, _peek(r["content"], 22), it["hit"].get("conflict_kind", "")))
     if n > 8:
         log("      …另有 %d 封" % (n - 8))
@@ -911,7 +920,7 @@ def cmd_pairs(src: Path, out_dir) -> int:
     if blocked:
         log("     进不去的           %d 封，去信或回信是空的：" % len(blocked))
         for r in blocked[:8]:
-            log("         去信 %d 字 · 回信 %d 字   开头：「%s」"
+            say("         去信 %d 字 · 回信 %d 字   开头：「%s」"
                 % (len(r["content"].strip()), len(r["reply_text"].strip()),
                    _peek(r["content"] or r["reply_text"], 24) or "（空）"))
         if len(blocked) > 8:
@@ -1203,12 +1212,22 @@ NATIVE_MARKERS = (
 )
 
 
-def load_state_letters(install: Path) -> list:
-    """读 state.json 里的 letters[]（月离自己写的 + 外部工具导进去的，混在一起）。"""
+def load_state_letters(install: Path, full: bool = False) -> list:
+    """读 state.json 里的 letters[]（月离自己写的 + 外部工具导进去的，混在一起）。
+
+    full=True 时【原样】返回整个数组，带 superseded_by 的、甚至不是字典的都留着，
+    因为下标要能和 state.json 的 letters 一一对上。排顺序必须用这一份：
+    拿过滤过的下标去索引完整数组，会改到前面那一封（藏起来的那些还占着位置）。
+    """
     p = install / "install" / "data" / "state.json"
     try:
         d = json.loads(p.read_text(encoding="utf-8"))
-        return [x for x in (d.get("letters") or [])
+        arr = d.get("letters") or []
+        if not isinstance(arr, list):
+            return []
+        if full:
+            return arr
+        return [x for x in arr
                 if isinstance(x, dict) and not x.get("superseded_by")]
     except Exception:
         return []
@@ -1244,12 +1263,46 @@ def is_iso_stamp(s) -> bool:
         return False
 
 
+def state_letter_key(x) -> str:
+    """一封信的身份标记，用来确认下标指的还是同一封。优先 letter_id（唯一、稳定）；
+    没有就拿去信+回信的正文指纹。改动清单在写之前会按它复查一遍。
+    """
+    if not isinstance(x, dict):
+        return ""
+    lid = x.get("letter_id")
+    if lid:
+        return "id:%s" % lid
+    ck = norm_text(x.get("content"))
+    rk = norm_text(x.get("reply_text"))
+    if not (ck or rk):
+        return ""
+    return "text:" + hashlib.sha256(
+        (ck + "\x00" + rk).encode("utf-8")).hexdigest()[:16]
+
+
+def _resolve_letter(letters: list, idx: int, key: str):
+    """把下标认回来：原下标上还是这封就用它，否则在整个数组里找唯一一封。
+    找不到、或者不止一封（同样的信导过两次）都返回 None —— 定位不了就不动手。
+    """
+    if not key:
+        return None
+    if 0 <= idx < len(letters) and state_letter_key(letters[idx]) == key:
+        return idx
+    found = [i for i, x in enumerate(letters) if state_letter_key(x) == key]
+    return found[0] if len(found) == 1 else None
+
+
 def plan_state_order(state_letters: list, soul_index: dict):
     """算 state.json 里同一分钟那几封该怎么排，返回 (改动清单, 预览)。
     只动外部工具导入、且能在来源里找到的组；只改秒数，不动 letter_id。
+
+    传进来的必须是【完整 letters 数组】（load_state_letters(..., full=True)）：
+    里面的下标原样交给 apply_state_order 写回，藏起来的信照样占着位置。
     """
     groups = {}
     for i, x in enumerate(state_letters):
+        if not isinstance(x, dict) or x.get("superseded_by"):
+            continue          # 藏起来的信不参与排序，但下标不能少算
         ca = x.get("created_at")
         if isinstance(ca, (int, float)) and not isinstance(ca, bool):
             groups.setdefault(int(ca) // 60, []).append(i)
@@ -1277,12 +1330,13 @@ def plan_state_order(state_letters: list, soul_index: dict):
 
         members.sort(key=lambda m: m[1])          # 来源下标小的在前
         shown, changes = [], []
-        for k, (i, si) in enumerate(members):
+        for k, (i, _si) in enumerate(members):
             old = state_letters[i]["created_at"]
             new = mkey * 60 + (n - 1 - k)         # 下标小的拿最大的秒 -> 排上面
             shown.append((new, state_letters[i]))
             if new != old:
-                changes.append((i, old, new, si, state_letters[i]))
+                # 带上身份：写回时按它复查下标指的还是这一封
+                changes.append((i, state_letter_key(state_letters[i]), old, new))
         if changes:
             plan.extend(changes)
             preview.append((mkey * 60, sorted(shown, key=lambda t: t[0], reverse=True)))
@@ -1292,11 +1346,15 @@ def plan_state_order(state_letters: list, soul_index: dict):
 def log_order_preview(preview):
     """把"排完会长什么样"打出来，依据错了用户一眼能看出来。
     必须把【哪头是上】说死：只写"从上到下"的话有人会反着读，以为排反了。
+    正文只打印；日志里只记时间、封数和每封的标识，好让出问题时有据可查。
     """
     for base, items in sorted(preview, reverse=True):
         n = len(items)
-        log("     %s（%d 封同一分钟），下面按【信箱从上到下】列，第 1 条在最上面："
-            % (datetime.fromtimestamp(base, TZ).strftime("%Y-%m-%d %H:%M"), n))
+        when = datetime.fromtimestamp(base, TZ).strftime("%Y-%m-%d %H:%M")
+        log_line("     %s 同一分钟 %d 封：%s"
+                 % (when, n, ", ".join(state_letter_key(x) for _new, x in items)))
+        say("     %s（%d 封同一分钟），下面按【信箱从上到下】列，第 1 条在最上面："
+            % (when, n))
         for pos, (new, x) in enumerate(items, 1):
             if pos == 1:
                 tag = "   ︿ 最上面"
@@ -1304,11 +1362,15 @@ def log_order_preview(preview):
                 tag = "   ﹀ 最下面"
             else:
                 tag = ""
-            log("       %d. %s%s" % (pos, (x.get("content") or "")[:32].replace("\n", " "), tag))
+            say("       %d. %s%s" % (pos, _peek(x.get("content"), 32), tag))
 
 
 def apply_state_order(install: Path, plan: list):
-    """把顺序改动落到 state.json：备份 -> 原子写 -> 立即校验 -> 不对就还原。"""
+    """把顺序改动落到 state.json：备份 -> 定位 -> 原子写 -> 立即校验 -> 不对就还原。
+
+    plan 里的下标是【完整 letters 数组】的下标。写之前先按身份把每一封认回来：
+    认不全就整批不做，改一半比不改难收拾得多。
+    """
     state_path = install / "install" / "data" / "state.json"
     bakdir = install / "install" / "data" / "memory" / "_backups"
     bakdir.mkdir(parents=True, exist_ok=True)
@@ -1320,9 +1382,21 @@ def apply_state_order(install: Path, plan: list):
     n_before = len(letters)
     shutil.copy2(state_path, bak)
 
+    targets, missing = [], 0
+    for i, key, old, new in plan:
+        j = _resolve_letter(letters, i, key)
+        if j is None:
+            missing += 1
+            continue
+        targets.append((j, key, old, new))
+    if missing:
+        log("  ✗ state.json 排序没做：%d 封在文件里定位不到（文件被动过？），宁可不改。" % missing)
+        log("  → 数据一个字节没动，备份留着：%s" % bak)
+        return False
+
     before_json = json.dumps(data, ensure_ascii=False, indent=2)   # 动手前的状态拷贝
-    for i, old, new, si, x in plan:
-        letters[i]["created_at"] = new
+    for j, _key, _old, new in targets:
+        letters[j]["created_at"] = new
 
     tmp = state_path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1339,9 +1413,17 @@ def apply_state_order(install: Path, plan: list):
         if len(al) != n_before:
             problems.append("封数变了：%d -> %d" % (n_before, len(al)))
         else:
-            changed = {i: old for i, old, new, si, x in plan}
+            # 光比数值不够：时间相同的那几封互换了也看不出来，得按身份确认写对了行
+            wrong = 0
+            for j, key, old, new in targets:
+                k2 = _resolve_letter(al, j, key)
+                if k2 is None or al[k2].get("created_at") != new:
+                    wrong += 1
+            if wrong:
+                problems.append("有 %d 封写到的不是目标那封" % wrong)
+            changed = {j: old for j, _key, old, _new in targets}
             for i, x in enumerate(al):
-                if i in changed:
+                if i in changed and isinstance(x, dict):
                     x["created_at"] = changed[i]      # 换回老值再比
             if json.dumps(after, ensure_ascii=False, indent=2) != before_json:
                 problems.append("除了那几处 created_at，还有别的地方被改了")
@@ -1352,6 +1434,8 @@ def apply_state_order(install: Path, plan: list):
         log("  → 已用备份还原：%s" % bak)
         return False
     log("  state.json 排序已写入（封数 %d 未变，其余内容逐字节一致 ✓）" % n_before)
+    log_line("  排了 %d 封的秒数：%s" % (len(targets),
+                                     ", ".join(key for _j, key, _o, _n in targets)))
     log_line("  备份：%s" % bak)
     return True
 
@@ -1479,7 +1563,7 @@ def cmd_check(install_arg) -> int:
     if n_dup_hidden:
         log("       （其中 %d 封是工具藏起来的，界面上看不到）" % n_dup_hidden)
     for k, v in list(dups.items())[:3]:
-        log("       %d 次: %s" % (v, k[0][:34].replace("\n", " ")))
+        say("       %d 次: %s" % (v, k[0][:34].replace("\n", " ")))
 
     # ── 内容完整性 ──
     # 判重按 (去信 + 回信) 比：有行没存下正文的话判重失效、那些信会被【再导一遍】。
@@ -1518,7 +1602,7 @@ def cmd_check(install_arg) -> int:
             % (len(tight_dups) - len(dups)))
         log("       这正是判重最容易漏的情况。把这张截图发出来。")
         for k, v in list(tight_dups.items())[:3]:
-            log("       例：%d 封，%s" % (len(v), v[0]["content"][:34].replace("\n", " ")))
+            say("       例：%d 封，%s" % (len(v), v[0]["content"][:34].replace("\n", " ")))
 
     # 只比"去信"（不管回信）：分辨"同一封来信、回信不一样"，按规则【不算重复】。
     by_content = {}
@@ -1538,7 +1622,7 @@ def cmd_check(install_arg) -> int:
         log("     这些是【同一封来信配了不同的回信】。按现在规则不算重复（不会合并），")
         log("     但如果你觉得该算，把这栏截图发出来，我们再商量怎么办。")
         for k, v in list(c_dups.items())[:2]:
-            log("       例（%d 个版本）: %s" % (len(v), k[:34]))
+            say("       例（%d 个版本）: %s" % (len(v), k[:34]))
 
     # ── 4) 同一分钟并列 ──
     groups = collections.Counter(int(r["ca"]) // 60 for r in legacy + state_rows
@@ -1558,7 +1642,9 @@ def cmd_check(install_arg) -> int:
     log("  发送失败的信（信箱里那张「寄信通道好像有点忙」）")
     log("     一共 %d 封" % len(zs))
     for ln in _zombie_lines(zs):
-        log(ln)
+        say(ln)
+    log_line("  发送失败的信 %d 封：%s"
+             % (len(zs), ", ".join(state_letter_key(x) for x in zs)))
     n_hid = sum(1 for x in zs if x.get("superseded_by"))
     if n_hid:
         log("     其中 %d 封月离已经自己藏了（界面上本来就看不到）" % n_hid)
@@ -1874,16 +1960,15 @@ def cmd_compare(src: Path, install_arg) -> int:
         log("  下面按【源文件里的顺序】摆出来，每组两版并排。")
         log("  其中 %d 组是「一版 = 另一版 + 后面多一截」（加减歌词就是这种）。" % pref)
         log()
+        # 正文只打印：日志文件里不落正文，报告文件里记全（那两个是有意给用户的）
         CONSOLE_MAX = 40
         for idx, card in enumerate(cards):
-            for ln in card:
-                if idx < CONSOLE_MAX:
-                    log(ln)
-                else:
-                    log_line(ln)          # 控制台不刷屏，日志里记全
+            if idx < CONSOLE_MAX:
+                for ln in card:
+                    say(ln)
         if len(cards) > CONSOLE_MAX:
-            log()
-            log("      …另有 %d 组（控制台不刷屏了，完整清单在下面的报告文件里）"
+            say()
+            say("      …另有 %d 组（控制台不刷屏了，完整清单在下面的报告文件里）"
                 % (len(cards) - CONSOLE_MAX))
     else:
         log()
@@ -1894,11 +1979,9 @@ def cmd_compare(src: Path, install_arg) -> int:
             log(ln)
         LOST_MAX = 40
         for k, item in enumerate(lost_items):
-            for ln in item:
-                if k < LOST_MAX:
-                    log(ln)
-                else:
-                    log_line(ln)          # 控制台不刷屏，日志和报告里记全
+            if k < LOST_MAX:
+                for ln in item:
+                    say(ln)               # 正文只打印；报告文件里记全
         if len(lost_items) > LOST_MAX:
             log("     …另有 %d 封（完整清单在报告文件里）" % (len(lost_items) - LOST_MAX))
 
@@ -1907,21 +1990,21 @@ def cmd_compare(src: Path, install_arg) -> int:
             log(ln)
         for item in filled_items:
             for ln in item:
-                log(ln)
+                say(ln)
 
     if fuzzy_head:
         for ln in fuzzy_head:
             log(ln)
         for item in fuzzy_items:
             for ln in item:
-                log(ln)
+                say(ln)
 
     if orphan_head:
         for ln in orphan_head:
             log(ln)
         for item in orphan_items:
             for ln in item:
-                log(ln)
+                say(ln)
 
     # ── 报告文件：放源文件旁边，方便整份发出来核对 ──
     rep = (src if src.is_dir() else src.parent) / (
@@ -2154,7 +2237,9 @@ def cmd_apply(src: Path, install_arg, dry_run: bool = False, near=None) -> int:
 
         soul_index = {(norm_text(r["content"]), norm_text(r["reply_text"])): i
                       for i, r in enumerate(rows)}
-        state_plan, state_preview = plan_state_order(state_all, soul_index)
+        # 排顺序要用【完整数组】：下标得原样写回 state.json，藏起来的信也占位置
+        state_full = load_state_letters(install, full=True)
+        state_plan, state_preview = plan_state_order(state_full, soul_index)
 
         # ── 分类 + 定策略 ── 归类由 classify_source 说了算，compare 用的是同一个
         items, unclaimed_all = classify_source(
@@ -2223,14 +2308,15 @@ def cmd_apply(src: Path, install_arg, dry_run: bool = False, near=None) -> int:
             t = (datetime.fromtimestamp(r["created_at"], TZ).strftime("%Y-%m-%d %H:%M")
                  if r["created_at"] else "时间未知")
             tag = ("修复(%s)" % "+".join(item["reasons"])) if "reasons" in item else "新增"
-            line = "      %-12s %s  %s" % (tag, t, r["content"][:26].replace("\n", " "))
             if shown < 8:
-                log(line)
-            else:
-                log_line(line)
+                say("      %-12s %s  %s" % (tag, t, _peek(r["content"], 26)))
+            # 日志里换成标识：来源第几封 + 字数，不落正文
+            log_line("      %-12s %s  来源第 %d 封 · 去信 %d 字 · 回信 %d 字"
+                     % (tag, t, item["index"] + 1,
+                        len(r["content"]), len(r["reply_text"])))
             shown += 1
         if shown > 8:
-            log("      …另有 %d 封（完整清单记在日志里）" % (shown - 8))
+            log("      …另有 %d 封（完整清单记在日志里，只有标记和字数）" % (shown - 8))
         log()
 
         # ── 报告到此结束。体检模式就停在这儿 ──
@@ -2321,20 +2407,26 @@ def cmd_apply(src: Path, install_arg, dry_run: bool = False, near=None) -> int:
                 # 菜单 8 藏起来的行：别把它弄回可见。隐藏标记就存在 import_kind 上，
                 #   而下面这行赋值会覆盖它，于是修一次、重复就回来了。
                 meta["import_kind"] = HIDDEN_KIND if HIDDEN_KIND_KEY in meta else KIND
-                meta["backup_record"] = item["rec"]
-                meta["import_position"] = item["index"]
-                meta["replied_at"] = item["rec"].get("replied_at")
+                # 顶层正文和 backup_record 必须【写同一版】：月离导出这封信时读的是
+                #   backup_record（runtime/imports/letter_backup.export_letters），
+                #   只改顶层的话，"按库"这个选择会在下次导出、导入时被源文件那版顶掉。
+                rec = dict(item["rec"])
                 if item.get("keep_library_text"):
                     # "按库"/"两个都保留"：库里的正文原样留着，只改时间和排序。
-                    meta["user_content"] = hit.get("raw_content", "")
-                    meta["reply_text"] = hit.get("raw_reply", "")
+                    rec["content"] = hit.get("raw_content", "")
+                    rec["reply_text"] = hit.get("raw_reply", "")
                 elif hit.get("content_is_faked"):
                     # 一边有去信一边没有：以没有去信的那版为准，别把硬加那句写回去。
-                    meta["user_content"] = ""
-                    meta["reply_text"] = item["row"]["reply_text"]
+                    rec["content"] = ""
+                    rec["reply_text"] = item["row"]["reply_text"]
                 else:
-                    meta["user_content"] = item["row"]["content"]
-                    meta["reply_text"] = item["row"]["reply_text"]
+                    rec["content"] = item["row"]["content"]
+                    rec["reply_text"] = item["row"]["reply_text"]
+                meta["backup_record"] = rec
+                meta["import_position"] = item["index"]
+                meta["replied_at"] = rec.get("replied_at")
+                meta["user_content"] = rec["content"]
+                meta["reply_text"] = rec["reply_text"]
                 # 离线配对留下的两个键已经不成立了，清掉免得以后对不上
                 meta.pop("offline_mailbox_publish_status", None)
                 meta.pop("offline_letter_pair_provenance", None)
@@ -2529,8 +2621,9 @@ def cmd_zombies(install_arg, mode=None) -> int:
 
     zs = _zombies_of(data)
     log("  发送失败的信一共 %d 封" % len(zs))
+    log_line("  这些信的标识：%s" % ", ".join(state_letter_key(x) for x in zs))
     for ln in _zombie_lines(zs):
-        log(ln)
+        say(ln)
     n_hidden = sum(1 for x in zs if x.get("superseded_by"))
     if n_hidden:
         log("     其中 %d 封月离已经自己藏了（清不清都行）" % n_hidden)
@@ -2572,7 +2665,8 @@ def cmd_zombies(install_arg, mode=None) -> int:
         if skipped:
             log("  下面这几封不动：")
             for x, why in skipped:
-                log("     [跳过] 「%s」，%s" % (_peek(x.get("content"), 24), why))
+                say("     [跳过] 「%s」，%s" % (_peek(x.get("content"), 24), why))
+                log_line("     [跳过] %s，%s" % (state_letter_key(x), why))
             log()
 
     skip_ids = {id(x) for x, _ in skipped}
@@ -3010,7 +3104,10 @@ def cmd_hide_imported(install_arg, yes=False) -> int:
         ca = x.get("created_at")
         t = (datetime.fromtimestamp(ca, TZ).strftime("%Y-%m-%d %H:%M")
              if isinstance(ca, (int, float)) and not isinstance(ca, bool) else "时间未知")
-        log("     %s  「%s」" % (t, _peek(x.get("content"), 30)))
+        say("     %s  「%s」" % (t, _peek(x.get("content"), 30)))
+        log_line("     %s  %s · 去信 %d 字 · 回信 %d 字"
+                 % (t, state_letter_key(x), len(x.get("content") or ""),
+                    len(x.get("reply_text") or "")))
     if len(todo) > 10:
         log("     …另有 %d 封" % (len(todo) - 10))
     log()
@@ -3346,7 +3443,9 @@ def cmd_hide_dupes(install_arg, mode=None, yes=False, keep=None) -> int:
             return 0
         log("  找到 %d 封是我们藏起来的：" % len(targets))
         for L in targets[:8]:
-            log("     「%s」" % (_peek(L["content"], 34) or "（空）"))
+            say("     「%s」" % (_peek(L["content"], 34) or "（空）"))
+        log_line("  这些行的 memory_id：%s"
+                 % ", ".join(L["mid"] for L in targets[:40]))
         if len(targets) > 8:
             log("     …另有 %d 封" % (len(targets) - 8))
     else:
@@ -3378,7 +3477,7 @@ def cmd_hide_dupes(install_arg, mode=None, yes=False, keep=None) -> int:
         for idx, g in enumerate(preview0[:3], 1):
             log()
             log("     ── [%d/%d] ────────────────────────────────" % (idx, len(preview0)))
-            log("     去信（两边逐字相同，忽略空白，%d 字）：「%s」"
+            say("     去信（两边逐字相同，忽略空白，%d 字）：「%s」"
                 % (len(norm_text(g["older"]["content"])), _peek(g["older"]["content"], 36)))
             log("       ① 旧的（先入库）  %s" % _row_desc(g["older"]))
             log("       ② 新的（后入库）  %s" % _row_desc(g["newer"]))

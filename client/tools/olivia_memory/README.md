@@ -14,6 +14,7 @@
 
 - 只读 `.soul` 源文件；Olivia 自己写的信（`state.json`）一个字节不动。
 - 写库前先 `VACUUM INTO` 备份到 `install\data\memory\_backups\`，写库过程在单个事务里，中途失败整体回滚。
+- 诊断日志（`olivia_memory.log`）只记数量、时间和内部标识，不落信件正文；正文只出现在控制台，以及用户主动生成的对比报告里。
 - 命令行用法与回滚步骤见 `说明.docx` 及 `olivia_memory.py` 内注释；交互菜单默认不猜、要改库的步骤先展示再确认。
 
 ## 依赖
