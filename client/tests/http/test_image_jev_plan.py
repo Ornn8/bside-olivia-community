@@ -126,3 +126,21 @@ def test_photo_writer_keeps_light_posture_and_classroom_consistent_with_the_repl
     assert 'time_of_day' in rules and '回信里描述的光线' in rules
     assert '不把脚搭在桌上' in rules and '不坐在桌子上' in rules
     assert '老师和正在听课的同学' in rules and '空无一人' in rules
+
+
+def test_photo_reference_falls_back_to_last_observed_place_when_world_is_outdated():
+    from datetime import datetime, timezone
+    from runtime import image_reply
+    from runtime.reply.character_emotion_context import freeze_expression_context, store_expression_context
+    last = {'activity': '上心理学', 'evidence_kind': 'published_life', 'location': '学校',
+            'occurred_at': '2026-09-29T06:00:00+00:00'}
+    for world, expected in (
+            ({'stale': True, 'current': None, 'last_observation': last}, '学校'),
+            ({'stale': False, 'current': {**last, 'location': '琴房'}}, '琴房'),
+            ({'stale': True, 'current': None}, None)):
+        row = {'reply_text': '刚下课。'}
+        snapshot = freeze_expression_context('r1', datetime(2026, 9, 29, 8, tzinfo=timezone.utc), world=world)
+        store_expression_context(row, snapshot, row['reply_text'])
+        reference = image_reply._photo_reference(row, row['reply_text'])
+        assert reference['world_current_location'] == expected
+        assert ('world_location_basis' in reference) == (world.get('last_observation') is not None)

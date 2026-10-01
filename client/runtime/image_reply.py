@@ -139,6 +139,15 @@ def _photo_reference(row, text):
         if isinstance(location, str) and location.strip() and len(location) <= 60:
             reference['world_current_location'] = location
         reference['world_activity'] = {k: current[k] for k in ('activity', 'occurred_at') if k in current}
+    else:
+        # The writer hides an outdated activity as last_observation. A photo
+        # still needs a place: use the last published one and say it is that.
+        last = world.get('last_observation')
+        if isinstance(last, dict) and last.get('evidence_kind') == 'published_life':
+            location = last.get('location')
+            if isinstance(location, str) and location.strip() and len(location) <= 60:
+                reference['world_current_location'] = location
+                reference['world_location_basis'] = {'kind': 'last_observation', 'occurred_at': last.get('occurred_at')}
     # Reuse only the bounded projection the writer actually adopted. Strip IDs,
     # quotations and ledger internals; preserve planned/stale/source semantics.
     schedule = world.get('schedule')
