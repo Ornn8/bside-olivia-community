@@ -1141,6 +1141,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         if (id === generation) resultState.textContent = "";
       } catch (error) {
         if (id !== generation || panel.isConnected === false) return;
+        if (collection === "memories") updateSummary({state: "unavailable"});
         resultState.textContent = "读取失败，已显示的记录保留。请点击重试。";
         setDiagnosticDetails(resultState, error?.code || "COMPANION_READ_UNAVAILABLE");
       }

@@ -101,7 +101,7 @@ def test_patch_adds_original_settings_management_and_preserves_existing_assets(
     for visible_text in (
         "长期记忆",
         "林离世界",
-        "搜索长期记忆",
+        "搜索全部记忆",
         "保存更正",
         "删除",
         "暂停长期记忆",

@@ -51,52 +51,26 @@ const requestJson=()=>{calls++;return new Promise(r=>resolve=r);};
 
 
 def test_memory_summary_tracks_latest_status_and_read_failure():
-    node = shutil.which("node")
-    if node is None:
-        pytest.skip("Node.js is unavailable")
-    panel = BOOTSTRAP_JAVASCRIPT.split("const renderMemoryPanel =", 1)[1]
-    summary = panel.split("const updateSummary =", 1)[1].split("const controls =", 1)[0]
-    load = panel.split("const load = async () => {", 1)[1].split("const search = button", 1)[0]
-    harness = r'''
-const assert = require('node:assert/strict');
-const summary = {textContent: ''}, resultState = {textContent: ''};
-const setDiagnosticDetails = () => {};
-const capability = {state: 'available', count: 5};
-const stateLabels = {available:'AVAILABLE', degraded:'DEGRADED', unavailable:'UNAVAILABLE'};
-const capabilityState = c => c && c.state || 'unavailable';
-const input = {value:''}, list = {replaceChildren(){}}, renderMemories = () => {};
-const originals={replaceChildren(){},append(){}},originalProgress={},text=()=>({}),formatTime=x=>x;
-const MEMORY_PATH = 'memory', STATUS_PATH = 'status';
-let fail = false, failStatus = false;
-const requestJson = async path => {
-  if (fail) throw new Error('timeout');
-  if (failStatus && path === STATUS_PATH) throw new Error('status timeout');
-  return path === MEMORY_PATH ? {memories:[]} : {capabilities:{memory:{state:'degraded'}}};
-};
-'''
-    harness += "const updateSummary =" + summary + "\nlet memoryLoadGeneration = 0;\nconst load = async () => {" + load
+    from tests.installer.test_memory_search_order import run_memory_browser
 
-    harness += r'''
-(async () => {
-  assert.match(summary.textContent, /AVAILABLE/);
-  await load();
-  assert.match(summary.textContent, /DEGRADED/);
-  failStatus = true;
-  await load();
-  assert.doesNotMatch(resultState.textContent, /无法读取/);
-  failStatus = false;
-  fail = true;
-  await load();
-  assert.match(summary.textContent, /UNAVAILABLE/);
-  assert.doesNotMatch(summary.textContent, /5/);
-  fail = false;
-  input.value = 'retry search';
-  await load();
-  assert.match(summary.textContent, /DEGRADED/);
-})().catch(e => { console.error(e); process.exitCode = 1; });
-'''
-    result = subprocess.run([node, "-e", harness], capture_output=True, timeout=20)
-    assert result.returncode == 0, result.stderr.decode("utf-8", errors="replace")
+    run_memory_browser(r'''
+let fail=false,calls=0;
+requestJson=async path=>{
+  assert.equal(path,MEMORY_PATH);calls++;
+  if(fail)throw Error('timeout');
+  return {...page('visible-record'),total_count:7};
+};
+const panel=new Element('div');await renderMemoryPanel(panel,{state:'available',count:5});
+const summary=panel.querySelector('.om-heading').querySelector('p');
+assert.match(summary.textContent,/AVAILABLE.*7/);
+fail=true;await panel.querySelectorAll('button').find(e=>e.textContent==='刷新 / 重试').click();await settle();
+assert.match(summary.textContent,/UNAVAILABLE/);assert.doesNotMatch(summary.textContent,/[57]/);
+assert.match(panel.querySelector('.om-result').textContent,/读取失败.*保留/);
+assert.equal(panel.querySelector('.om-row-excerpt').textContent,'visible-record');
+fail=false;await panel.querySelectorAll('button').find(e=>e.textContent==='刷新 / 重试').click();await settle();
+assert.match(summary.textContent,/AVAILABLE.*7/);assert.equal(panel.querySelector('.om-result').textContent,'');
+assert.equal(calls,3,'one page read per refresh, without an extra status probe');
+''')
 
 
 def test_original_settings_bootstrap_has_valid_javascript(tmp_path: Path) -> None:

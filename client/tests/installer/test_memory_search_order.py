@@ -1,80 +1,100 @@
 import shutil
 import subprocess
+
 import pytest
+
 from original_client_settings_ui import BOOTSTRAP_JAVASCRIPT
 
 DIAGNOSTIC_HELPER = 'const setDiagnosticDetails =' + BOOTSTRAP_JAVASCRIPT.split(
     '  const setDiagnosticDetails =', 1)[1].split('  const memoryClearFailureMessage =', 1)[0]
 
-def test_old_search_response_cannot_overwrite_latest_query():
-    node=shutil.which('node')
+
+def run_memory_browser(scenario):
+    node = shutil.which("node")
     if not node:
-        pytest.skip('Node unavailable')
-    panel=BOOTSTRAP_JAVASCRIPT.split('const renderMemoryPanel =',1)[1]
-    load=panel[panel.index('let memoryLoadGeneration'):panel.index('const search = button')]
-    script='''
-const assert=require('node:assert/strict');
-const MEMORY_PATH='memory',STATUS_PATH='status',input={value:'old'},resultState={},list={replaceChildren(){}},pending=[];
-let displayed;const updateSummary=()=>{};
-const originalProgress={},originalPending=[],originals={replaceChildren(){},append(){}},text=()=>({}),formatTime=x=>x;
-const renderMemories=(_list,rows)=>{displayed=rows[0].memory_id;};
-const requestJson=(path,params)=>path===STATUS_PATH?Promise.resolve({capabilities:{}}):new Promise((resolve,reject)=>(params.collection==='originals'?originalPending:pending).push({resolve,reject}));
-'''+DIAGNOSTIC_HELPER+load+'''
+        pytest.skip("Node unavailable")
+    browser = "const createMemoryBrowser =" + BOOTSTRAP_JAVASCRIPT.split(
+        "const createMemoryBrowser =", 1)[1].split("const renderPrivateWorldPanel =", 1)[0]
+    harness = r'''
+const assert = require('node:assert/strict');
+class Element {
+  constructor(tag){this.tag=tag;this.children=[];this.style={};this.value='';this.textContent='';
+    this.dataset={};this.attributes={};this.events={};this.isConnected=true;}
+  append(...nodes){this.children.push(...nodes);}
+  replaceChildren(...nodes){this.children=nodes;}
+  setAttribute(name,value){this.attributes[name]=String(value);}
+  getAttribute(name){return this.attributes[name]??null;}
+  addEventListener(name,handler){this.events[name]=handler;}
+  querySelectorAll(selector){
+    const nodes=this.children.flatMap(child=>[child,...child.querySelectorAll('*')]);
+    return nodes.filter(n=>selector==='*'||selector===n.tag||
+      selector.startsWith('.')&&n.className?.split(' ').includes(selector.slice(1)));
+  }
+  querySelector(selector){return this.querySelectorAll(selector)[0]||null;}
+  click(){return this.events.click?.();}
+  focus(){}
+}
+const document={createElement:tag=>new Element(tag)},window={clearTimeout(){},setTimeout(){return 1;}};
+const stateLabels={available:'AVAILABLE',degraded:'DEGRADED',unavailable:'UNAVAILABLE'};
+const capabilityState=x=>x?.state||'unavailable',stack=()=>new Element('div'),actions=stack;
+const text=(tag,value,className='')=>{const e=new Element(tag);e.textContent=value;e.className=className;return e;};
+const button=(label,handler)=>{const e=text('button',label);e.addEventListener('click',handler);return e;};
+const formatTime=x=>x, MEMORY_PATH='memory',STATUS_PATH='status';
+const renderMemories=(list,rows)=>{for(const row of rows)list.append(text('p',row.text));};
+let requestJson;
+const settle=()=>new Promise(resolve=>setImmediate(resolve));
+const row=id=>({memory_id:id,text:id,source_id:'reply:fixture',created_at:null});
+const page=id=>({memories:[row(id)],total:1,total_count:1,page:1,limit:20});
+''' + DIAGNOSTIC_HELPER + browser + r'''
+const makeBrowser=()=>{
+  const panel=new Element('div'),summary=text('p',''),status=text('p','');
+  const browser=createMemoryBrowser(panel,{state:'available'},summary,status,
+    latest=>{summary.textContent=JSON.stringify(latest);});
+  panel.append(browser.root);return {panel,summary,status,browser};
+};
 (async()=>{
-const old=load();input.value='new';const latest=load();
-pending[1].resolve({memories:[{memory_id:'new-result'}]});await latest;
-originalPending[1].resolve({indexed_letters:84,archive_total:84,archive_indexed:84,archive_removed:0,originals:[]});await Promise.resolve();
-const progress=originalProgress.textContent;
-originalPending[0].resolve({indexed_letters:0,originals:[]});await Promise.resolve();
-assert.equal(originalProgress.textContent,progress);
-pending[0].resolve({memories:[{memory_id:'old-result'}]});await old;
-assert.equal(displayed,'new-result');
-const failed=load();const newest=load();
-pending[3].resolve({memories:[{memory_id:'newest-result'}]});await newest;
-const message=resultState.textContent;
-pending[2].reject(Error('old failure'));await failed;
-assert.equal(displayed,'newest-result');assert.equal(resultState.textContent,message);
-originalPending[3].resolve({indexed_letters:85,originals:[]});await Promise.resolve();
-const newestProgress=originalProgress.textContent;
-originalPending[2].reject(Error('old original read failure'));await Promise.resolve();await Promise.resolve();
-assert.equal(originalProgress.textContent,newestProgress);
+''' + scenario + r'''
 })().catch(e=>{console.error(e);process.exitCode=1;});
 '''
-    result=subprocess.run([node,'-e',script],capture_output=True,timeout=20)
-    assert result.returncode == 0, result.stderr.decode('utf-8',errors='replace')
+    result = subprocess.run([node, "-"], input=harness.encode("utf-8"), capture_output=True, timeout=20)
+    assert result.returncode == 0, result.stderr.decode("utf-8", errors="replace")
+
+
+def test_old_search_response_cannot_overwrite_latest_query():
+    run_memory_browser(r'''
+const pending=[];requestJson=(_path,params)=>new Promise((resolve,reject)=>pending.push({resolve,reject,params}));
+const {panel,browser,status}=makeBrowser();
+const old=browser.load();panel.__oliviaMemoryBrowserState.memories.query='new';
+const latest=browser.load();
+assert.equal(pending[1].params.query,'new');
+pending[1].resolve(page('new-result'));await latest;
+pending[0].resolve(page('old-result'));await old;
+assert.equal(browser.root.querySelector('.om-row-excerpt').textContent,'new-result');
+const failed=browser.load(),newest=browser.load();
+pending[3].resolve(page('newest-result'));await newest;const message=status.textContent;
+pending[2].reject(Error('old failure'));await failed;
+assert.equal(browser.root.querySelector('.om-row-excerpt').textContent,'newest-result');
+assert.equal(status.textContent,message);
+// Switching collections must also discard a pending memory response.
+const abandoned=browser.load();
+browser.root.querySelectorAll('button').find(e=>e.textContent==='信件原文').click();
+pending[5].resolve({originals:[{source_id:'reply:original',speaker:'user',text:'原文结果',created_at:null,excerpt:false}],total:1,page:1,limit:20});
+await settle();pending[4].resolve(page('wrong-tab'));await abandoned;
+assert.equal(browser.root.querySelector('.om-row-excerpt').textContent,'原文结果');
+''')
 
 
 def test_original_results_remain_mounted_after_panel_finishes_loading():
-    node=shutil.which('node')
-    if not node:
-        pytest.skip('Node unavailable')
-    panel=BOOTSTRAP_JAVASCRIPT.split('const renderMemoryPanel =',1)[1].split('const renderPrivateWorldPanel =',1)[0]
-    script=r'''
-const assert=require('node:assert/strict');
-class Element {
-  constructor(){this.children=[];this.style={};this.value='';this.textContent='';}
-  append(...nodes){this.children.push(...nodes);}
-  replaceChildren(...nodes){this.children=nodes;}
-  setAttribute(){} addEventListener(){}
-}
-const document={createElement:()=>new Element()},window={clearTimeout(){}},stateLabels={available:'可用'};
-const capabilityState=x=>x.state,stack=()=>new Element(),actions=stack;
-const text=(tag,value)=>{const e=new Element();e.textContent=value;return e;};
-const button=(label,handler)=>text('button',label),formatTime=x=>x;
-const MEMORY_PATH='memory',STATUS_PATH='status';
-const renderMemories=(list)=>list.append(text('p','暂无提取记忆'));
-const requestJson=async(path,params)=>params?.collection==='originals'
- ? {indexed_letters:1,archive_total:1,archive_indexed:1,archive_removed:0,originals:[{speaker:'user',text:'开心果冰淇淋。\n第二行',created_at:null,excerpt:false}]}
- : path===STATUS_PATH?{capabilities:{memory:{state:'available',count:0}}}:{memories:[]};
-'''+DIAGNOSTIC_HELPER+ 'const renderMemoryPanel ='+panel+r'''
-(async()=>{
- const root=new Element();await renderMemoryPanel(root,{state:'available',count:0});
- const collect=e=>[e.textContent,...e.children.flatMap(collect)];
- const contents=collect(root);
- assert.ok(contents.includes('信件原文'));assert.ok(contents.includes('提取记忆'));
- assert.ok(contents.some(x=>x.includes('开心果冰淇淋')));
- assert.ok(contents.some(x=>x.includes('已接入 1/1')));
-})().catch(e=>{console.error(e);process.exitCode=1;});
-'''
-    result=subprocess.run([node,'-e',script],capture_output=True,timeout=20)
-    assert result.returncode==0,result.stderr.decode('utf-8',errors='replace')
+    run_memory_browser(r'''
+requestJson=async(_path,params)=>params?.collection==='originals'
+ ? {indexed_letters:1,archive_total:1,archive_indexed:1,archive_removed:0,total:1,page:1,limit:20,
+    originals:[{source_id:'reply:fixture',speaker:'user',text:'开心果冰淇淋。\n第二行',created_at:null,excerpt:false}]}
+ : {memories:[],total:0,total_count:0,page:1,limit:20};
+const panel=new Element('div');await renderMemoryPanel(panel,{state:'available',count:0});
+const find=label=>panel.querySelectorAll('button').find(e=>e.textContent===label);
+await find('信件原文').click();await settle();
+assert.equal(panel.querySelector('.om-original-text').textContent,'开心果冰淇淋。\n第二行');
+await find('记忆管理').click();
+assert.match(panel.querySelector('.om-management').querySelectorAll('p')[0].textContent,/历史信件 1\/1/);
+assert.ok(panel.querySelector('.om-original-text'),'management progress must keep the original mounted');
+''')

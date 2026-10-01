@@ -170,6 +170,7 @@ def test_windows_assign_failure_survives_cleanup_failures(monkeypatch) -> None:
 
 def test_windows_resume_failure_terminates_assigned_job_once(monkeypatch) -> None:
     observed: list[str] = []
+    monkeypatch.setattr(managed_subprocess.time, "monotonic", lambda: 100.0)
     process = SimpleNamespace(
         communicate=lambda timeout: (observed.append(f"reap:{timeout}") or (b"", b"")),
     )
