@@ -398,6 +398,10 @@ def _project_tail_record(value: object, *, runtime: bool) -> dict[str, object]:
         phase = source["phase"]
         if isinstance(phase, str) and _PHASE_RE.fullmatch(phase):
             record["phase"] = phase
+    # Why the launcher retried or replaced something: a bounded token only.
+    reason = source.get("reason")
+    if isinstance(reason, str) and _PHASE_RE.fullmatch(reason):
+        record["reason"] = reason
     for name in ("elapsed_seconds", "preparation_seconds"):
         value = source.get(name)
         if type(value) in (int, float) and 0 <= value <= 3600:

@@ -2101,3 +2101,22 @@ def test_start_refreshes_an_outdated_stable_launcher(tmp_path: Path, monkeypatch
     bare = tmp_path / "no-launcher-dir"
     start_local._refresh_stable_launcher(bare, bare / "data")  # layouts without launcher/ are left alone
     assert not (bare / "launcher").exists()
+
+
+def test_busy_backend_is_given_time_and_replacements_are_explained():
+    from pathlib import Path
+    source = (Path(__file__).resolve().parents[2] / 'installer' / 'start_local.py').read_text(encoding='utf-8')
+    wait = source.index('deadline = time.monotonic() + 15')
+    replaced = source.index('"backend_replaced"')
+    assert wait < replaced < source.index('_stop_backend_server(server)', replaced)
+    for reason in ('not_started', 'exited', 'unresponsive', 'foreign_backend'):
+        assert f'"{reason}"' in source
+
+
+def test_bundle_keeps_launcher_reason_tokens_only():
+    from runtime.diagnostics.support_bundle import _project_tail_record
+    kept = [_project_tail_record(item, runtime=False) for item in (
+        {'event': 'backend_replaced', 'reason': 'unresponsive', 'exit_code': 1},
+        {'event': 'client_retry', 'reason': 'C:/Users/someone/x'})]
+    assert kept[0]['reason'] == 'unresponsive' and kept[0]['exit_code'] == 1
+    assert 'reason' not in kept[1]

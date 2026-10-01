@@ -1144,7 +1144,18 @@ def _launch(args: argparse.Namespace, root: Path, backend: Path, entrypoint: Pat
             and _health(args.port) == "READY"
             and _server_backend_id(args.port) == expected_backend_id
         )
+        # A backend that is still running may simply be busy right after start
+        # (recovering letters and media). Give it time before replacing it.
+        deadline = time.monotonic() + 15
+        while not owned_ready and server is not None and server.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.5)
+            owned_ready = _health(args.port) == "READY" and _server_backend_id(args.port) == expected_backend_id
         if not owned_ready:
+            _append_launcher_event(
+                data_root, "backend_replaced",
+                reason=("not_started" if server is None else "exited" if server.poll() is not None
+                        else "unresponsive" if _health(args.port) != "READY" else "foreign_backend"),
+                **({"exit_code": server.poll()} if server is not None and server.poll() is not None else {}))
             if server is not None:
                 _stop_backend_server(server)
                 server = None
