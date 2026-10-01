@@ -312,6 +312,8 @@ class DailyLifeStore:
                     id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS life_exchange_world_gate (
                     source_id TEXT PRIMARY KEY, decision TEXT NOT NULL, reply_text TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS life_exchange_user_text (
+                    source_id TEXT PRIMARY KEY, user_text TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS life_exchange_world_gate_versions (
                     source_id TEXT PRIMARY KEY, version INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS life_rest_exchanges (
@@ -1004,12 +1006,14 @@ class DailyLifeStore:
                 "ORDER BY occurred_at DESC,source_id DESC LIMIT 4", (_time(since), _time(now))).fetchall()
             texts = dict(db.execute("SELECT source_id,reply_text FROM life_exchange_world_gate WHERE source_id IN "
                 "(SELECT source_id FROM life_moments WHERE occurred_at>? AND occurred_at<=?)", (_time(since), _time(now))))
+            said = dict(db.execute("SELECT source_id,user_text FROM life_exchange_user_text WHERE source_id IN "
+                "(SELECT source_id FROM life_moments WHERE occurred_at>? AND occurred_at<=?)", (_time(since), _time(now))))
         actions = []
         for source, stamp, raw in rows:
             payload = json.loads(raw)
             actions.append({'source_id': source, 'occurred_at': stamp,
                 'evidence_kind': 'character_statement', 'current': payload.get('current'),
-                'reply_text': texts[source],
+                'reply_text': texts[source], **({'user_text': said[source]} if said.get(source) else {}),
                 'updates': [u for u in payload.get('updates', []) if u.get('kind') == 'linli'
                             and u.get('status') in {'planned', 'ongoing', 'paused'}]})
         return actions

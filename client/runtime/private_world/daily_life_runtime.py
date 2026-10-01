@@ -534,6 +534,7 @@ class DailyLifeRuntime:
             # The exchange-facts request already answered this gate: no second call.
             with self.store._db() as db:
                 db.execute('INSERT OR REPLACE INTO life_exchange_world_gate VALUES (?,?,?)', (source_id, decided, reply_text))
+                db.execute('INSERT OR REPLACE INTO life_exchange_user_text VALUES (?,?)', (source_id, user_text or ''))
                 db.execute('INSERT OR REPLACE INTO life_exchange_world_gate_versions VALUES (?,?)', (source_id, _EXCHANGE_WORLD_GATE_VERSION))
             existing, stale = (decided,), False
         # Only earlier negative decisions need re-evaluation after this gate's
@@ -564,6 +565,7 @@ class DailyLifeRuntime:
             decision = result['world_update']
             with self.store._db() as db:
                 db.execute('INSERT OR REPLACE INTO life_exchange_world_gate VALUES (?,?,?)', (source_id, decision, reply_text))
+                db.execute('INSERT OR REPLACE INTO life_exchange_user_text VALUES (?,?)', (source_id, user_text or ''))
                 db.execute('INSERT OR REPLACE INTO life_exchange_world_gate_versions VALUES (?,?)', (source_id, _EXCHANGE_WORLD_GATE_VERSION))
         else:
             decision = existing[0]

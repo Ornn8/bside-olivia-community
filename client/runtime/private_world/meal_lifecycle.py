@@ -125,6 +125,47 @@ def options(slot, old, now, *, classes=(), prospective=False):
     return choices
 
 
+# Contrastive meaning of each kind of meal action. The raw candidates are
+# event data; without these the model treated "skipped" as the safe default.
+_ACTION_CRITERIA = {
+    'eat_now': {'what': '现在开始吃这顿：到了或过了饭点且此刻有空，刚下课、刚起床、练习告一段落；或者交流里对方正在给她做饭、端上饭、叫她吃饭。',
+                'not_for': '她此刻正在上课、排练或睡觉；本轮有明确原因不吃。',
+                'examples': ['十二点下课回到住处', '对方说“开饭啦，快吃吧”', '练完琴有点饿了']},
+    'later': {'what': '这顿要吃，但手头有具体的事要先做完（课程、排练、正在进行的活动），稍后再吃。',
+              'not_for': '没有具体在忙的事只是还没吃；对方已经把饭端到她面前。',
+              'examples': ['还有半小时课，下课再吃', '排练快结束了，结束后去吃']},
+    'skip': {'what': '本轮确有具体原因这顿不吃：已记载的生病没胃口、刚吃过很晚的上一餐还很饱、她自己明确说这顿不吃。',
+             'not_for': '只是没收到消息、没有旧用餐记录、之前那顿跳过了、有点累或心情一般、没有任何具体原因。不吃饭不是默认选择。',
+             'examples': ['发烧没胃口的记录还在', '十一点刚吃完早午饭，现在不饿']},
+    'ate_offline': {'what': '离线期间她照常吃了这顿，补记为已吃（标记为补演）。正常作息下这是默认情况。',
+                    'not_for': '离线期间有明确记载的原因让她没吃。',
+                    'examples': ['程序关着的中午，她照常在家吃了午饭']},
+}
+
+
+def _family(key):
+    if key.startswith(('eat_', 'start_')):
+        return 'eat_now'
+    if key.startswith(('plan_', 'later_')):
+        return 'later'
+    if key.startswith('recovered_'):
+        return 'ate_offline'
+    if key in ('skipped', 'keep_skipped'):
+        return 'skip'
+    return None
+
+
+def _chosen_for_action(candidates, chosen, action):
+    """The candidate matching the chosen action, keeping the chosen food/time when possible."""
+    if action is None or _family(chosen) == action:
+        return chosen
+    family = [key for key in candidates if _family(key) == action]
+    if not family:
+        return chosen
+    index = chosen.split('_')[1] if chosen.count('_') >= 1 and chosen.split('_')[1].isdigit() else None
+    return next((key for key in family if index is not None and key.split('_')[1] == index), family[0])
+
+
 async def advance(store, port, now):
     """At most one JEV call per due meal; failures retain a durable backoff."""
     now = now.astimezone(timezone.utc)
@@ -140,6 +181,10 @@ async def advance(store, port, now):
         key = today+':'+slot
         basis = _recheck_basis(snapshot, now)
         actions = []
+        if not old or old['status'] == 'planned':
+            # What was just said (she is called to the table, food is served)
+            # informs this decision too, not only a reconsidered skip.
+            actions = store.pending_exchange_actions(now)
         if old and old['status'] in {'skipped', 'eating'}:
             actions = store.pending_exchange_actions(now, after=datetime.fromisoformat(old['occurred_at']))
             with store._db() as db:
@@ -176,6 +221,11 @@ async def advance(store, port, now):
             candidates = {key:value for key,value in candidates.items() if outside_class(value)}
         if not candidates:
             continue
+        if (set(candidates) == {'skipped'} and not candidates['skipped'].get('recovered')
+                and (not old or old['status'] == 'planned') and now < _cutoff(slot, now)):
+            # Class or sleep covers every way to eat right now. That is a reason
+            # to wait, not a decision that she skips the meal.
+            continue
         with store._db() as db:
             retry = db.execute('SELECT failures,retry_after FROM life_meal_retry WHERE meal_key=?', (key,)).fetchone()
         if retry and now < datetime.fromisoformat(retry[1]):
@@ -191,7 +241,7 @@ async def advance(store, port, now):
                          rhythm={k: snapshot['rhythm'][k] for k in ('phase', 'rest', 'wellbeing', 'note', 'recovery', 'authored_sleep')
                                  if k in snapshot['rhythm']},
                          previous_meal=old, exchange_actions=actions,
-                          exchange_rule='本轮是角色的自主生活更新，不要求收到交流才可以吃饭。previous_meal.skipped只说明过去那次没吃，不能当成本次继续不吃的理由；下课或恢复后可新开始补吃。新交流中的已经吃完仍须核对原来的eating记录；仅询问、计划、引语不能证明完成。已有eating且明确报告本餐已吃完，可选finish_now；否则continue_eating。',
+                          exchange_rule='本轮是角色的自主生活更新，不要求收到交流才可以吃饭。previous_meal.skipped只说明过去那次没吃，不能当成本次继续不吃的理由；下课或恢复后可新开始补吃。exchange_actions中user_text是对方的话：对方做好饭端上、叫她来吃，可作为她现在开始吃的理由，但对方的话不能证明她已吃完。新交流中的已经吃完仍须核对原来的eating记录；仅询问、计划、引语不能证明完成。已有eating且明确报告本餐已吃完，可选finish_now；否则continue_eating。',
                          recovery=all(c.get('recovered',False) for c in candidates.values()))
             eaten = [m for m in snapshot['world']['meals'] if m['status'] == 'eaten']
             last_eaten = max(eaten, key=lambda m: m.get('finished_at') or m['occurred_at'], default=None)
@@ -207,17 +257,23 @@ async def advance(store, port, now):
                        for key, c in candidates.items()}
             decision_state = {**state, 'meal_candidate_defaults': defaults,
                 'meal_candidate_rule': 'Each meal criterion is the complete event formed by overlaying its fields on meal_candidate_defaults. Missing criterion fields retain the exact shared values, including nulls; an empty criterion means the defaults themselves.'}
+            families = list(dict.fromkeys(f for f in map(_family, candidates) if f))
             answers = await port.ask(decision_state, {'meal':dict(instructions=
                 '从候选选择虚拟角色此刻要执行的新用餐行动，不是判断原文是否已经记载吃过饭。选项会成为新的生活事件，不需要旧事实预先证明新的开始或计划。'
                 '她不能因没有用户消息或没有旧用餐记录就不吃；旧skipped只是历史。结合课表、身体作息、当日其他餐和既有活动选择。'
                 'recovered表示离线期间缺失的角色生活，由你在合理候选时间补演并明确标记，不能伪称观察事实。'
                 '已有开始进食则在给定时长中结束；已吃完不可重吃，跳过不等于全天不能再吃。'
                 '下课后有空闲且长时间未进食，应选择开始或稍后用餐。没食欲、不能用餐等理由不能凭空假定，也不能仅凭疲劳推断；只有确有本轮原因才选keep_skipped。'
-                '计划是未来安排，不提前写成已吃；下课或恢复后可以选择新的补吃。食物不是人格固定口味，兼顾变化。', criteria=offered)},
+                '计划是未来安排，不提前写成已吃；下课或恢复后可以选择新的补吃。食物不是人格固定口味，兼顾变化。'
+                '若有action题，本题选与action所选行动一致的候选，只决定具体食物与时间。', criteria=offered),
+                **({'action': dict(instructions='这顿饭她此刻怎么安排？按课表、作息、当日其他餐和本轮交流判断；没有具体原因时她会正常吃饭。',
+                                   criteria={name: _ACTION_CRITERIA[name] for name in families})} if len(families) > 1 else {})},
                 purpose='world-meal-lifecycle')
             chosen = answers.get('meal') if isinstance(answers,dict) else None
             if chosen not in candidates:
                 raise ValueError('MEAL_DECISION_INVALID')
+            action = answers.get('action')
+            chosen = _chosen_for_action(candidates, chosen, action if action in families else None)
             meal = candidates[chosen]
             if chosen in {'keep_skipped', 'continue_eating'}:
                 with store._db() as db:

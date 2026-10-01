@@ -203,7 +203,7 @@ def test_meal_transport_is_lossless_and_smaller_with_recovery_and_continuation(t
                    for c in restored.values() if c['finished_at'])
         original_state = {k: v for k, v in state.items()
                           if k not in {'meal_candidate_defaults', 'meal_candidate_rule'}}
-        original_question = {'meal': {**question['meal'], 'criteria': restored}}
+        original_question = {**question, 'meal': {**question['meal'], 'criteria': restored}}
         totals[0] += size([original_state, original_question])
         totals[1] += size([state, question])
     assert totals[1] < totals[0]
@@ -225,3 +225,46 @@ def test_runtime_advances_due_meal_even_when_main_activity_is_fresh(tmp_path,mon
     asyncio.run(runtime.refresh(at(8,5)))
     assert meals(store,at(8,5))['breakfast']['status']=='eating'
     assert len(port.calls)==1
+
+
+def test_contrastive_action_picks_the_candidate_family():
+    from runtime.private_world.meal_lifecycle import _ACTION_CRITERIA, _chosen_for_action, _family
+    candidates = {'eat_0': {}, 'eat_1': {}, 'plan_0': {}, 'plan_1': {}, 'skipped': {}}
+    assert {_family(k) for k in candidates} == {'eat_now', 'later', 'skip'}
+    # A skip answer to the event list no longer wins over an explicit "eat now".
+    assert _chosen_for_action(candidates, 'skipped', 'eat_now') == 'eat_0'
+    assert _chosen_for_action(candidates, 'plan_1', 'eat_now') == 'eat_1'
+    assert _chosen_for_action(candidates, 'eat_1', None) == 'eat_1'
+    assert _chosen_for_action({'keep_skipped': {}, 'start_0': {}}, 'keep_skipped', 'eat_now') == 'start_0'
+    for meaning in _ACTION_CRITERIA.values():
+        assert set(meaning) == {'what', 'not_for', 'examples'}
+    assert '不是默认' in _ACTION_CRITERIA['skip']['not_for']
+
+
+def test_class_covering_every_meal_option_waits_instead_of_recording_a_skip(tmp_path, monkeypatch):
+    store, port = DailyLifeStore(tmp_path/'world.db'), Port()
+    real = store.snapshot
+    def busy(now):
+        snapshot = real(now)
+        snapshot['world']['schedule'] = {**snapshot['world'].get('schedule', {}), 'classes': [
+            {'start': at(11, 50).isoformat(), 'end': at(18, 30).isoformat()}]}
+        return snapshot
+    monkeypatch.setattr(store, 'snapshot', busy)
+    asyncio.run(advance(store, port, at(12, 5)))
+    # Only "skipped" survived the class filter: no decision, no recorded skip.
+    assert 'lunch' not in meals(store, at(12, 5))
+    assert not [state for state, _ in port.calls if state['slot'] == 'lunch']
+
+
+def test_user_words_reach_the_meal_decision_before_any_meal_record(tmp_path):
+    from datetime import timezone
+    store, port = DailyLifeStore(tmp_path/'world.db'), Port()
+    store.record_exchange('reply:dinner-call', '开饭啦，给你擦擦嘴角，快吃饭乖', '快擦干净过来吃饭', [],
+                          occurred_at=at(11, 59), current_quote='快擦干净过来吃饭')
+    with store._db() as db:
+        db.execute('INSERT INTO life_exchange_world_gate VALUES (?,?,?)', ('reply:dinner-call', 'reconsider', '快擦干净过来吃饭'))
+        db.execute('INSERT INTO life_exchange_user_text VALUES (?,?)', ('reply:dinner-call', '开饭啦，给你擦擦嘴角，快吃饭乖'))
+    asyncio.run(advance(store, port, at(12, 1)))
+    lunch_call = next(state for state, questions in port.calls if state['slot'] == 'lunch')
+    assert [a.get('user_text') for a in lunch_call['exchange_actions']] == ['开饭啦，给你擦擦嘴角，快吃饭乖']
+    assert 'user_text是对方的话' in lunch_call['exchange_rule']
