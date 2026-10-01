@@ -177,6 +177,7 @@ class CompanionMemorySummary:
     source_id: str
     created_at: str | None
     score: float | None = None
+    updated_at: str | None = None
 
     def __post_init__(self) -> None:
         _identifier(self.memory_id, code="MEMORY_ID_INVALID")
@@ -184,6 +185,8 @@ class CompanionMemorySummary:
         _identifier(self.source_id, code="MEMORY_SOURCE_INVALID")
         if self.created_at is not None:
             _timestamp(self.created_at, code="MEMORY_TIME_INVALID")
+        if self.updated_at is not None:
+            _timestamp(self.updated_at, code="MEMORY_TIME_INVALID")
         if self.score is not None and (
             isinstance(self.score, bool)
             or not isinstance(self.score, (int, float))
@@ -200,6 +203,8 @@ class CompanionMemorySummary:
         }
         if self.score is not None:
             payload["score"] = round(float(self.score), 6)
+        if self.updated_at is not None:
+            payload["updated_at"] = self.updated_at
         return payload
 
 
@@ -401,7 +406,7 @@ async def _status(request: web.Request) -> web.Response:
         return _error("COMPANION_READ_UNAVAILABLE", 503, origin=origin)
 
 
-def _original_payload(value, limit):
+def _original_payload(value, limit, *, maximum_text=4000):
     if not isinstance(value, Mapping):
         raise ValueError("original index response invalid")
     result = {"schema_version": COMPANION_READ_SCHEMA, "status": "READY"}
@@ -423,11 +428,60 @@ def _original_payload(value, limit):
         if not isinstance(row, Mapping) or row.get("speaker") not in {"user", "linli"} or type(row.get("excerpt")) is not bool:
             raise ValueError("original index row invalid")
         _identifier(row.get("source_id"), code="ORIGINAL_SOURCE_INVALID")
-        _text(row.get("text"), maximum=4000, code="ORIGINAL_TEXT_INVALID", allow_empty=True, multiline=True)
+        _text(row.get("text"), maximum=maximum_text, code="ORIGINAL_TEXT_INVALID", allow_empty=True, multiline=True)
         if row.get("created_at") is not None:
             _timestamp(row["created_at"], code="ORIGINAL_TIME_INVALID")
         result["originals"].append({key: row.get(key) for key in ("source_id", "speaker", "created_at", "text", "excerpt")})
     return result
+
+
+async def _browse_memory(request, query, limit, origin):
+    from runtime.memory.browse import validate_options
+    try:
+        if request.query.get("browse") != "1":
+            raise ValueError("invalid browse mode")
+        page = int(request.query.get("page", "1"))
+        days = int(request.query.get("days", "0"))
+        sort = request.query.get("sort", "new")
+        collection = request.query.get("collection", "memories")
+        full = request.query.get("full", "0")
+        if collection not in ("memories", "originals") or full not in ("0", "1"):
+            raise ValueError("invalid collection")
+        validate_options(query=query, page=page, limit=limit, days=days, sort=sort)
+        options = {"query": query, "page": page, "limit": limit, "days": days, "sort": sort}
+        if collection == "originals":
+            source = request.query.get("source_id")
+            if source is not None:
+                _identifier(source, code="ORIGINAL_SOURCE_INVALID")
+            if full == "1" and source is None:
+                raise ValueError("full originals require a source")
+            options.update(source_id=source, full=full == "1")
+        elif full != "0" or "source_id" in request.query:
+            raise ValueError("invalid memory option")
+    except (ValueError, TypeError) as exc:
+        raise OriginalClientCompanionAPIError("MEMORY_BROWSE_OPTIONS_INVALID", status=400) from exc
+    method = "browse_originals_page" if collection == "originals" else "browse_memories"
+    reader = getattr(_backend(request), method, None)
+    if not callable(reader):
+        raise OriginalClientCompanionAPIError("MEMORY_BROWSE_UNAVAILABLE", status=503)
+    value = await asyncio.to_thread(reader, **options)
+    if not isinstance(value, Mapping):
+        raise ValueError("invalid browser result")
+    for key in ("total", "page", "limit"):
+        if type(value.get(key)) is not int or value[key] < (1 if key in ("page", "limit") else 0):
+            raise ValueError("invalid browser counts")
+    if collection == "originals":
+        payload = _original_payload(value, limit, maximum_text=50000 if full == "1" else 4000)
+    else:
+        records = value.get("memories")
+        if (not isinstance(records, (tuple, list)) or len(records) > limit
+                or any(not isinstance(r, CompanionMemorySummary) for r in records)
+                or type(value.get("total_count")) is not int or value["total_count"] < value["total"]):
+            raise ValueError("invalid memory browser result")
+        payload = {"schema_version": COMPANION_READ_SCHEMA, "status": "READY",
+                   "memories": [r.to_dict() for r in records], "total_count": value["total_count"]}
+    payload.update({key: value[key] for key in ("total", "page", "limit")})
+    return web.json_response(payload, headers=_headers(origin))
 
 
 async def _memory(request: web.Request) -> web.Response:
@@ -449,6 +503,8 @@ async def _memory(request: web.Request) -> web.Response:
                 raise OriginalClientCompanionAPIError(
                     "COMPANION_QUERY_INVALID", status=400
                 ) from exc
+        if "browse" in request.query:
+            return await _browse_memory(request, query, limit, origin)
         if request.query.get("collection") == "originals":
             reader = getattr(_backend(request), "browse_originals", None)
             if not callable(reader):

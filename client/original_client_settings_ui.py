@@ -6,7 +6,7 @@ import base64
 from pathlib import Path
 
 
-SETTINGS_UI_VERSION = "p03.original-settings-manage.v52"
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v53"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
@@ -534,6 +534,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const timeoutMs = (
       path === VIDEO_REPLY_SETTINGS_PATH
       || path === LOCAL_LETTER_IMPORT_PATH
+      || path === MEMORY_CLEAR_PATH
       || path.startsWith("/toy/letter/backup/")
     )
       ? 300000
@@ -870,7 +871,11 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
             setButtonsBusy([correct, remove], false);
           }
         });
-        controls.append(correct, remove);
+        const more = document.createElement("details");
+        more.className = "olivia-memory-more";
+        more.append(text("summary", "更多"), remove);
+        controls.className += " om-record-actions";
+        controls.append(correct, more);
         item.append(controls);
       }
       list.append(item);
@@ -911,6 +916,257 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         scheduleMemoryStatusRefresh(panel, Math.min(delay * 2, 5000));
       }
     }, delay);
+  };
+
+  // THESIS: Accumulated memories stay browsable in a fixed-height local browser.
+  // OWN-WORLD: Olivia dark surfaces, warm white text, restrained separators.
+  // STORY: Search the archive, select a record, inspect its source, correct it.
+  // FIRST VIEWPORT: Desktop list/detail columns; fixed paging and record actions.
+  // FORM: User-approved HTML prototype; narrow windows switch list/detail views.
+  // FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md
+  const createMemoryBrowser = (panel, capability, summary, resultState, updateSummary) => {
+    const el = (tag, className) => {
+      const node = document.createElement(tag); node.className = className; return node;
+    };
+    const root = el("div", "om-browser");
+    root.setAttribute("data-olivia-memory-browser", "");
+    const style = document.createElement("style");
+    style.textContent = `
+      [data-olivia-memory-browser]{display:flex;flex-direction:column;min-width:0;min-height:0;height:100%;position:relative;color:#e8e3db;font-size:14px}
+      [data-olivia-memory-browser] *{box-sizing:border-box}
+      [data-olivia-memory-browser] [hidden]{display:none!important}
+      [data-olivia-memory-browser] p{margin:0;line-height:1.8}
+      [data-olivia-memory-browser] button,[data-olivia-memory-browser] input,[data-olivia-memory-browser] select,[data-olivia-memory-browser] textarea{font:inherit;border-radius:8px!important;background:#1a1b1d!important;border:1px solid #4c5055!important;color:#e8e3db!important;padding:8px 12px;min-width:0}
+      [data-olivia-memory-browser] button{cursor:pointer}
+      [data-olivia-memory-browser] button:disabled{opacity:.45;cursor:default}
+      [data-olivia-memory-browser] button:hover:not(:disabled){background:#2b2e31!important}
+      [data-olivia-memory-browser] :focus-visible{outline:2px solid #dfc99f;outline-offset:3px}
+      .om-heading{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:20px;flex-shrink:0}
+      .om-heading p{font-size:13px;color:#b3b5b8}
+      .om-shell{display:flex;flex-direction:column;flex:1;min-width:0;min-height:0;border-radius:12px;background:#1a1b1d;overflow:hidden}
+      .om-toolbar{padding:0 20px 16px;border-bottom:1px solid #383b3e;flex-shrink:0}
+      .om-tabs{display:flex;gap:24px;margin-bottom:14px}
+      [data-olivia-memory-browser] .om-tab{border:0!important;border-bottom:2px solid transparent!important;border-radius:0!important;padding:14px 0 10px!important;background:transparent!important;color:#b3b5b8!important}
+      [data-olivia-memory-browser] .om-tab[aria-selected="true"]{border-bottom-color:#dbd2c5!important;color:#e8e3db!important}
+      .om-tools{display:flex;gap:10px;align-items:center}
+      .om-search{display:flex;flex:1;min-width:0}
+      [data-olivia-memory-browser] .om-search input{width:100%;background:#111213!important}
+      [data-olivia-memory-browser] input::placeholder{color:#b3b5b8}
+      .om-filter{display:flex;align-items:center;gap:6px;min-width:0;color:#b3b5b8;font-size:12px;white-space:nowrap}
+      .om-source-filter{display:flex;align-items:center;gap:12px;margin-top:10px;font-size:12px;color:#b3b5b8}
+      .om-workspace{display:grid;grid-template-columns:minmax(240px,.84fr) minmax(0,1.16fr);flex:1;min-width:0;min-height:0}
+      .om-list-panel{display:flex;flex-direction:column;min-width:0;min-height:0;border-right:1px solid #383b3e}
+      .om-count{font-size:12px;color:#b3b5b8;padding:12px 20px;flex-shrink:0}
+      .om-rows{overflow-y:auto;min-height:0;flex:1;padding:0 10px;scrollbar-width:thin;scrollbar-color:#54585c transparent}
+      [data-olivia-memory-browser] .om-row{display:block;width:100%;text-align:left;border:0!important;border-radius:8px!important;padding:12px!important;margin:2px 0;border-bottom:1px solid #303337!important;background:transparent!important}
+      [data-olivia-memory-browser] .om-row[aria-current="true"]{background:#2c3031!important}
+      .om-row-title{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:600;font-size:14px}
+      .om-row-excerpt{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;color:#b3b5b8;font-size:12px;line-height:1.6;margin-top:4px}
+      .om-row-time{display:block;color:#a4a9af;font-size:11px;margin-top:6px}
+      .om-pagination{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:12px 16px;border-top:1px solid #383b3e;flex-shrink:0;font-size:12px;color:#b3b5b8}
+      [data-olivia-memory-browser] .om-pagination button{padding:5px 8px;font-size:12px}
+      .om-detail{display:flex;flex-direction:column;overflow:hidden;min-width:0;min-height:0}
+      .om-detail-scroll{flex:1;min-height:0;overflow-y:auto;padding:24px 28px;scrollbar-width:thin}
+      .om-detail-footer{flex-shrink:0;border-top:1px solid #383b3e;padding:16px 28px}
+      .om-detail-footer>div{display:flex;flex-wrap:wrap;gap:10px}
+      .om-detail-footer .olivia-memory-more>button{top:auto;bottom:48px}
+      .om-detail h3{font-size:21px;line-height:1.6;margin:0 0 18px;overflow-wrap:anywhere}
+      [data-olivia-memory-browser] .om-detail article{padding:0!important;background:transparent!important;border:0!important;margin:0!important}
+      [data-olivia-memory-browser] .om-detail article>p:first-child{font-size:16px;line-height:1.95;white-space:pre-wrap;overflow-wrap:anywhere;margin:0 0 20px}
+      [data-olivia-memory-browser] .om-detail article>p:not(:first-child){font-size:12px;color:#b3b5b8}
+      .om-detail article>div{display:flex;flex-wrap:wrap;gap:10px;margin-top:20px}
+      .om-detail article>div:has(textarea){display:grid;grid-template-columns:minmax(0,1fr)}
+      .om-detail textarea{width:100%;min-height:140px;resize:vertical;line-height:1.8}
+      .om-detail article>div:has(textarea)>div{display:flex;gap:10px}
+      .om-original-text{white-space:pre-wrap;overflow-wrap:anywhere;font-size:16px;line-height:1.95;margin:20px 0!important}
+      .om-provenance{padding-top:20px;border-top:1px solid #383b3e;margin-top:24px;color:#b3b5b8;font-size:12px}
+      .om-result{flex-shrink:0;color:#b3b5b8;font-size:12px;padding-top:10px;min-height:24px}
+      .om-management{position:absolute;right:0;top:44px;z-index:4;background:#232527;border-radius:12px;padding:22px;width:min(430px,100%);max-height:calc(100% - 44px);overflow:auto;box-shadow:0 12px 40px #0007}
+      .om-management h3{font-size:20px;margin:0 0 15px}
+      .om-management-controls{display:flex;flex-wrap:wrap;gap:10px;margin:18px 0}
+      .om-management p{font-size:12px;color:#b3b5b8}
+      .olivia-memory-more{position:relative}
+      .olivia-memory-more>summary{cursor:pointer;list-style:none;padding:8px 12px;border:1px solid #4c5055;border-radius:8px}
+      .olivia-memory-more>button{position:absolute;top:48px;right:0;min-width:100px;z-index:2;color:#ecaaa2!important;background:#282b2e!important}
+      .om-empty{color:#b3b5b8;font-size:14px;padding:30px 12px}
+      [data-olivia-memory-browser] .om-back{display:none}
+      @media(max-width:700px){
+        .om-tools{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
+        .om-search{grid-column:1/-1}.om-filter select{flex:1}
+        .om-tools>button{grid-column:1/-1;justify-self:start}
+        .om-workspace{display:flex;flex-direction:column}.om-list-panel{flex:1;border-right:0}.om-detail{display:none}
+        [data-olivia-memory-browser][data-reading="true"] .om-list-panel{display:none}
+        [data-olivia-memory-browser][data-reading="true"] .om-toolbar{display:none}
+        [data-olivia-memory-browser][data-reading="true"] .om-detail{display:flex;flex:1}
+        [data-olivia-memory-browser] .om-back{display:block;align-self:flex-start;flex-shrink:0;margin:20px 20px 0}
+        .om-detail-scroll{padding:20px}.om-detail-footer{padding:14px 20px}
+        .om-toolbar{padding:0 14px 14px}
+      }`.replaceAll("[data-olivia-memory-browser]", "[data-olivia-memory-dialog] [data-olivia-memory-browser]");
+    const state = panel.__oliviaMemoryBrowserState || {
+      active: "memories",
+      memories: {query: "", page: 1, days: 0, sort: "new", selected: null, scroll: 0},
+      originals: {query: "", page: 1, days: 0, sort: "new", selected: null, scroll: 0, source_id: null},
+    };
+    panel.__oliviaMemoryBrowserState = state;
+    let generation = 0;
+    const heading = el("div", "om-heading"), management = el("aside", "om-management");
+    management.hidden = true; management.setAttribute("aria-label", "记忆管理");
+    const originalProgress = text("p", "展开管理后可刷新信件接入进度。");
+    const managementControls = el("div", "om-management-controls");
+    const manage = button("记忆管理", async () => {
+      management.hidden = !management.hidden; manage.setAttribute("aria-expanded", String(!management.hidden));
+      if (management.hidden || capability?.reason_code === "MEMORY_ADMIN_PAUSED") return;
+      try {
+        const payload = await requestJson(MEMORY_PATH, {browse: 1, collection: "originals", limit: 1});
+        originalProgress.textContent = "已接入 " + payload.indexed_letters + " 封信。" +
+          (Number.isInteger(payload.archive_total) ? "历史信件 " + payload.archive_indexed + "/" + payload.archive_total + " 封。" : "历史信件总量尚未确定。");
+      } catch (_) { originalProgress.textContent = "接入进度暂时无法读取，可关闭管理后重新打开。"; }
+    });
+    manage.setAttribute("aria-expanded", "false");
+    const closeManagement = button("收起管理", () => { management.hidden = true; manage.setAttribute("aria-expanded", "false"); manage.focus(); });
+    management.append(text("h3", "记忆管理"), originalProgress, managementControls, closeManagement);
+    heading.append(summary, manage);
+    const shell = el("div", "om-shell"), toolbar = el("div", "om-toolbar"), tabs = el("div", "om-tabs");
+    tabs.setAttribute("role", "tablist"); tabs.setAttribute("aria-label", "浏览内容");
+    const tools = el("div", "om-tools"), searchWrap = el("label", "om-search");
+    const input = document.createElement("input"); input.type = "search"; input.maxLength = 500;
+    searchWrap.append(input);
+    const select = (label, values) => {
+      const wrapper = el("label", "om-filter"), control = document.createElement("select");
+      control.setAttribute("aria-label", label);
+      for (const [value, name] of values) { const option = text("option", name); option.value = value; control.append(option); }
+      wrapper.append(text("span", label), control); tools.append(wrapper); return control;
+    };
+    tools.append(searchWrap);
+    const days = select("时间", [["0","全部时间"],["7","最近 7 天"],["30","最近 30 天"],["90","最近 90 天"]]);
+    const sort = select("排序", [["new","最近记录"],["old","最早记录"]]);
+    const sourceFilter = el("div", "om-source-filter");
+    sourceFilter.append(text("span", "正在查看关联原文"), button("显示全部原文", () => { state.originals.source_id = null; state.originals.page = 1; load(); }));
+    const workspace = el("div", "om-workspace"), listPanel = el("section", "om-list-panel");
+    const count = text("p", "", "om-count"), list = el("div", "om-rows"), pagination = el("nav", "om-pagination");
+    list.setAttribute("aria-label", "记忆与原文列表"); pagination.setAttribute("aria-label", "分页");
+    const detail = el("section", "om-detail"); detail.setAttribute("aria-label", "选中条目的详情");
+    const pageLabel = text("span", "");
+    const saveScroll = () => { state[state.active].scroll = list.scrollTop || 0; };
+    const previous = button("上一页", () => { saveScroll(); state[state.active].page--; state[state.active].scroll = 0; load(); });
+    const next = button("下一页", () => { saveScroll(); state[state.active].page++; state[state.active].scroll = 0; load(); });
+    const key = row => state.active === "memories" ? row.memory_id : row.source_id + ":" + row.speaker;
+    const selectRow = row => {
+      state[state.active].selected = key(row);
+      for (const item of list.querySelectorAll("button")) item.setAttribute("aria-current", String(item.dataset.memoryKey === key(row)));
+      detail.replaceChildren(button("返回列表", () => {
+        root.setAttribute("data-reading", "false");
+        Array.from(list.querySelectorAll("button")).find(item => item.dataset.memoryKey === state[state.active].selected)?.focus();
+      }));
+      detail.children[0].className = "om-back";
+      const reading = el("div", "om-detail-scroll");
+      detail.append(reading);
+      if (state.active === "memories") {
+        reading.append(text("h3", row.text.split(/\r?\n/)[0].slice(0, 45)));
+        const record = el("div", "om-record");
+        renderMemories(record, [row], load, resultState); reading.append(record);
+        const recordActions = record.querySelector(".om-record-actions");
+        if (recordActions) {
+          const footer = el("div", "om-detail-footer"); footer.append(recordActions); detail.append(footer);
+        }
+        if (row.updated_at) reading.append(text("p", "最近更新：" + formatTime(row.updated_at), "om-count"));
+        const provenance = el("div", "om-provenance");
+        provenance.append(button("查看关联原文", async () => {
+          saveScroll(); state.active = "originals"; state.originals.source_id = row.source_id;
+          state.originals.query = ""; state.originals.days = 0; state.originals.page = 1; state.originals.selected = null;
+          await load(); root.setAttribute("data-reading", "true");
+        }));
+        reading.append(provenance);
+      } else {
+        reading.append(text("h3", row.speaker === "user" ? "用户来信" : "林离回信"),
+          text("p", row.created_at ? formatTime(row.created_at) : "时间未知", "om-count"), text("p", row.text, "om-original-text"));
+        if (row.excerpt) reading.append(text("p", "当前为原文节选。", "om-count"), button("读取完整原文", async () => {
+          const selected = key(row), collection = state.active;
+          try {
+            const payload = await requestJson(MEMORY_PATH, {browse: 1, collection: "originals", source_id: row.source_id, full: 1, limit: 20});
+            if (collection !== state.active || state[collection].selected !== selected) return;
+            const full = payload.originals?.find(item => item.source_id === row.source_id && item.speaker === row.speaker);
+            if (full) selectRow(full); else resultState.textContent = "这段原文已不可用，可刷新列表。";
+          } catch (_) { resultState.textContent = "完整原文读取失败，可稍后重试。"; }
+        }));
+        const footer = el("div", "om-detail-footer");
+        footer.append(button("返回记忆", () => { saveScroll(); state.active = "memories"; load(); }));
+        detail.append(footer);
+      }
+      root.setAttribute("data-reading", "true");
+    };
+    const syncTools = () => {
+      const view = state[state.active]; input.value = view.query;
+      input.placeholder = state.active === "memories" ? "搜索全部记忆" : "搜索全部信件原文";
+      input.setAttribute("aria-label", input.placeholder); days.value = String(view.days); sort.value = view.sort;
+      sourceFilter.hidden = !(state.active === "originals" && view.source_id);
+      for (const tab of tabs.querySelectorAll("button")) tab.setAttribute("aria-selected", String(tab.dataset.collection === state.active));
+    };
+    for (const [collection, label] of [["memories","记忆"],["originals","信件原文"]]) {
+      const tab = button(label, () => { saveScroll(); state.active = collection; root.setAttribute("data-reading", "false"); load(); });
+      tab.dataset.collection = collection; tab.className = "om-tab"; tab.setAttribute("role", "tab"); tabs.append(tab);
+    }
+    const load = async () => {
+      const id = ++generation, collection = state.active, view = state[collection];
+      syncTools(); previous.disabled = true; next.disabled = true;
+      resultState.textContent = "正在读取……"; setDiagnosticDetails(resultState, []);
+      if (capability?.reason_code === "MEMORY_ADMIN_PAUSED") {
+        list.replaceChildren(text("p", "长期记忆已暂停。恢复后可继续浏览。", "om-empty"));
+        detail.replaceChildren(); pageLabel.textContent = ""; resultState.textContent = ""; return;
+      }
+      try {
+        const payload = await requestJson(MEMORY_PATH, {browse: 1, collection, query: view.query,
+          page: view.page, limit: 20, days: view.days, sort: view.sort, source_id: view.source_id});
+        if (id !== generation || panel.isConnected === false) return;
+        const loaded = (collection === "memories" ? payload.memories : payload.originals) || [];
+        const total = Number.isInteger(payload.total) ? payload.total : loaded.length;
+        const pages = Math.max(1, Math.ceil(total / 20)); view.page = payload.page || 1;
+        count.textContent = (view.query ? "找到 " + total + " 条匹配结果" : "共 " + total + " 条" + (collection === "memories" ? "记忆" : "原文")) + " · 每页 20 条";
+        pageLabel.textContent = "第 " + view.page + " / " + pages + " 页"; previous.disabled = view.page <= 1; next.disabled = view.page >= pages;
+        list.replaceChildren();
+        for (const row of loaded) {
+          const item = button("", () => selectRow(row)); item.className = "om-row"; item.dataset.memoryKey = key(row);
+          item.append(text("span", collection === "memories" ? row.text.split(/\r?\n/)[0] : row.speaker === "user" ? "用户来信" : "林离回信", "om-row-title"),
+            text("span", row.text, "om-row-excerpt"), text("span", (row.updated_at || row.created_at) ? formatTime(row.updated_at || row.created_at) : "时间未知", "om-row-time"));
+          list.append(item);
+        }
+        const selected = loaded.find(row => key(row) === view.selected) || loaded[0];
+        if (selected) selectRow(selected);
+        else {
+          list.append(text("p", view.query ? "没有匹配结果，请尝试其他关键词或时间范围。" : "暂无记录，可更换时间范围查看。", "om-empty"));
+          detail.replaceChildren(text("p", view.source_id ? "没有找到关联原文。这条记忆可能来自手动添加或更正。" : "选中一条记录，在这里阅读完整内容。", "om-empty"));
+        }
+        root.setAttribute("data-reading", "false"); list.scrollTop = view.scroll;
+        if (collection === "memories" && Number.isInteger(payload.total_count)) updateSummary({...capability, count: payload.total_count});
+        if (id === generation) resultState.textContent = "";
+      } catch (error) {
+        if (id !== generation || panel.isConnected === false) return;
+        resultState.textContent = "读取失败，已显示的记录保留。请点击重试。";
+        setDiagnosticDetails(resultState, error?.code || "COMPANION_READ_UNAVAILABLE");
+      }
+    };
+    let searchTimer;
+    input.addEventListener("input", () => {
+      window.clearTimeout(searchTimer); generation++;
+      state[state.active].query = input.value.trim(); state[state.active].page = 1; state[state.active].scroll = 0;
+      if (state.active === "originals") state.originals.source_id = null;
+      searchTimer = window.setTimeout(load, 250);
+    });
+    input.addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); window.clearTimeout(searchTimer); load(); } });
+    for (const [control, name] of [[days,"days"],[sort,"sort"]]) control.addEventListener("change", () => {
+      state[state.active][name] = name === "days" ? Number(control.value) : control.value; state[state.active].page = 1; state[state.active].scroll = 0; load();
+    });
+    root.addEventListener("keydown", event => {
+      if (event.key === "Escape" && !management.hidden) { event.stopPropagation(); closeManagement.click(); }
+      else if (event.key === "Escape" && root.getAttribute("data-reading") === "true" && window.matchMedia?.("(max-width:700px)").matches) {
+        event.stopPropagation(); root.setAttribute("data-reading", "false");
+      }
+    });
+    pagination.append(previous, pageLabel, next); listPanel.append(count, list, pagination); workspace.append(listPanel, detail);
+    toolbar.append(tabs, tools, sourceFilter); shell.append(toolbar, workspace); resultState.className = "om-result";
+    tools.append(button("刷新 / 重试", () => { saveScroll(); load(); }));
+    root.append(style, heading, shell, resultState, management);
+    return {root, load, managementControls};
   };
 
   const renderMemoryPanel = async (panel, capability) => {
@@ -1059,102 +1315,20 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       return;
     }
 
-    const heading = text("h3", "长期记忆（Mem0 + BGE）", "text-text-title text-title-m");
+
     const paused = capability && capability.reason_code === "MEMORY_ADMIN_PAUSED";
     const summary = text("p", "", "text-text-secondary text-body-m font-regular");
     const updateSummary = (latest) => {
       const count = latest && latest.count;
       const isPaused = latest && latest.reason_code === "MEMORY_ADMIN_PAUSED";
-      summary.textContent = `状态：${isPaused ? "已暂停（不检索、不写入）" : stateLabels[capabilityState(latest)]}${Number.isInteger(count) ? `，提取记忆 ${count} 条` : ""}`;
+      summary.textContent = "状态：" + (isPaused ? "已暂停" : stateLabels[capabilityState(latest)]) +
+        (Number.isInteger(count) ? " · " + count + " 条记忆" : "");
     };
     updateSummary(capability);
-    const controls = document.createElement("div");
-    controls.style.display = "flex";
-    controls.style.gap = "10px";
-    controls.style.alignItems = "center";
-
-    const input = document.createElement("input");
-    input.type = "search";
-    input.maxLength = 500;
-    input.placeholder = "搜索长期记忆";
-    input.setAttribute("aria-label", "搜索长期记忆");
-    input.className = "flex-1 min-w-0 rounded-3 border border-grey-5 bg-transparent px-4 py-2.5 text-text-body text-body-m";
-
-    const resultState = text(
-      "p",
-      "正在读取长期记忆……",
-      "text-text-secondary text-body-m font-regular"
-    );
+    const resultState = text("p", "", "text-text-secondary text-body-m font-regular");
     resultState.setAttribute("aria-live", "polite");
-    const list = stack();
-
-    const originals = stack();
-    const originalProgress = text("p", "原文接入状态待查询", "text-text-secondary text-body-m");
-    let memoryLoadGeneration = 0;
-    const load = async () => {
-      const generation = ++memoryLoadGeneration;
-      const query = input.value.trim();
-      resultState.textContent = "正在读取长期记忆……";
-      setDiagnosticDetails(resultState, []);
-      list.replaceChildren();
-      originals.replaceChildren();
-      requestJson(MEMORY_PATH, {query, limit: 20, collection: "originals"}).then((payload) => {
-        if (generation !== memoryLoadGeneration) return;
-        const total = payload.archive_total;
-        originalProgress.textContent = `已索引 ${payload.indexed_letters} 封信。` + (Number.isInteger(total)
-          ? `历史信件已接入 ${payload.archive_indexed}/${total} 封，已移除 ${payload.archive_removed} 封。`
-          : "历史信件尚未完成扫描，接入总量未知。") + (payload.scanned_at ? ` 扫描时间：${formatTime(payload.scanned_at)}` : "");
-        const rows = Array.isArray(payload.originals) ? payload.originals : [];
-        originals.append(text("p", query ? `原文搜索结果：${rows.length} 个片段（最多显示 5 个）` : "最近接入的原文（最多显示 20 段）", "text-text-secondary text-body-m"));
-        for (const row of rows) {
-          originals.append(text("p", `${row.speaker === "user" ? "用户来信" : "林离回信"} · ${row.created_at ? formatTime(row.created_at) : "时间未知"}${row.excerpt ? " · 节选" : ""}`, "text-text-secondary text-caption-m"));
-          const paragraph = text("p", row.text, "text-text-primary text-body-m");
-          paragraph.style.whiteSpace = "pre-wrap";
-          originals.append(paragraph);
-        }
-        if (!rows.length) originals.append(text("p", query ? "没有匹配的信件原文。" : "暂无已索引原文。", "text-text-secondary text-body-m"));
-      }).catch(() => {
-        if (generation === memoryLoadGeneration) originalProgress.textContent = "原文索引暂时无法读取，请点击搜索重试。";
-      });
-      try {
-        const payload = await requestJson(MEMORY_PATH, {
-          query,
-          limit: 50,
-        });
-        if (generation !== memoryLoadGeneration) return;
-        renderMemories(list, payload.memories, load, resultState);
-        try {
-          const latestStatus = await requestJson(STATUS_PATH);
-          const latestCapabilities = latestStatus.capabilities && typeof latestStatus.capabilities === "object"
-            ? latestStatus.capabilities
-            : {};
-          const latestMemory = latestCapabilities.memory;
-          if (generation !== memoryLoadGeneration) return;
-          updateSummary(latestMemory);
-        } catch (_statusError) { /* A failed status refresh does not invalidate loaded records. */ }
-        if (generation !== memoryLoadGeneration) return;
-        resultState.textContent = query
-          ? `提取记忆搜索结果：${Array.isArray(payload.memories) ? payload.memories.length : 0} 条`
-          : "已读取本机长期记忆。";
-      } catch (_error) {
-        if (generation !== memoryLoadGeneration) return;
-        updateSummary({state: "unavailable"});
-        const code = _error?.name === "AbortError" ? "MEMORY_READ_TIMEOUT"
-          : typeof _error?.code === "string" && /^[A-Z][A-Z0-9_]{0,95}$/.test(_error.code)
-            ? _error.code : "COMPANION_READ_UNAVAILABLE";
-        resultState.textContent = "长期记忆暂时无法读取。可点击搜索重试，已有记录会保留。";
-        setDiagnosticDetails(resultState, code);
-      }
-    };
-
-    const search = button("搜索 / 刷新接入进度", load);
-    controls.append(input, search);
-    input.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") {
-        event.preventDefault();
-        load();
-      }
-    });
+    const browser = createMemoryBrowser(panel, capability, summary, resultState, updateSummary);
+    const load = browser.load;
 
     const lifecycleControls = actions();
     const refreshLifecyclePanel = async () => {
@@ -1223,9 +1397,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       }
     });
     lifecycleControls.append(toggle, clear, retryWrites);
-    panel.replaceChildren(heading, summary, lifecycleControls, controls,
-      text("h3", "信件原文", "text-text-primary text-body-l"), originalProgress, originals,
-      text("h3", "提取记忆", "text-text-primary text-body-l"), resultState, list);
+    browser.managementControls.append(lifecycleControls);
+    panel.replaceChildren(browser.root);
     await load();
   };
 
@@ -2896,6 +3069,29 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         : "本地补丁版本：基础安装版";
     }).catch(() => { localVersion.textContent = "本地补丁版本：暂时无法读取"; });
     dialog.append(header, localVersion, status, tabs, panels);
+    if (!initialMode) {
+      dialog.setAttribute("data-olivia-memory-dialog", "");
+      Object.assign(dialog.style, {width: "min(1160px, calc(100vw - 40px))",
+        height: "calc(100vh - 48px)", maxHeight: "calc(100vh - 48px)",
+        display: "flex", flexDirection: "column", overflow: "hidden", padding: "24px",
+        boxSizing: "border-box"});
+      backdrop.style.padding = "20px";
+      header.style.flexShrink = "0";
+      localVersion.style.cssText = "font-size:12px;color:#b3b5b8;margin:8px 0 12px;flex-shrink:0";
+      status.style.cssText = "font-size:12px;margin:0 0 12px;flex-shrink:0";
+      status.setAttribute("data-memory-dialog-status", "");
+      panels.style.cssText = "flex:1;min-height:0;display:flex;flex-direction:column";
+      panelNodes.memory.style.cssText = "flex:1;min-height:0;padding:0;display:grid;grid-template-rows:minmax(0,1fr);background:transparent";
+      theme.textContent += `
+        [data-olivia-memory-dialog] [data-memory-dialog-status][data-state="available"]{display:none!important}
+        [data-olivia-memory-dialog] [hidden]{display:none!important}
+        [data-olivia-memory-dialog]>div:first-child button{background:#1a1b1d!important;color:#e8e3db!important;border-color:#4c5055!important}
+        @media(max-width:700px){
+          [data-olivia-companion-settings-dialog]:has([data-olivia-memory-dialog]){padding:10px!important}
+          [data-olivia-memory-dialog]{width:calc(100vw - 20px)!important;padding:16px!important}
+        }
+      `;
+    }
     if (initialMode) {
       const finishActions = actions();
       finishActions.style.marginTop = "18px";

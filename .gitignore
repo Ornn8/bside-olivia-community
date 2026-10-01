@@ -137,6 +137,7 @@ client/docs/*
 !client/docs/PRIVATE_WORLD_LIFE.md
 !client/docs/WORLD_MEALS_AND_RECOVERY.md
 !client/docs/PROACTIVE_LETTERS.md
+!client/docs/MEMORY_BROWSER.md
 !client/docs/PRIVATE_WORLD_LETTER_ACCEPTANCE_20260905.md
 client/docs/reviews/*
 !client/docs/README.md

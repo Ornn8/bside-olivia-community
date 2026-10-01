@@ -294,6 +294,24 @@ class OriginalClientCompanionServiceBackend(OriginalClientCompanionReadBackend):
             raise OriginalClientCompanionBackendError("ORIGINAL_INDEX_UNAVAILABLE")
         return read(query=query, limit=limit)
 
+    def browse_originals_page(self, **options):
+        if self._memory_admin is None:
+            raise OriginalClientCompanionBackendError("COMPANION_MEMORY_DISABLED")
+        return self._memory_admin.browse_originals_page(now=self._now(), **options)
+
+    def browse_memories(self, **options):
+        if self._memory_admin is None:
+            raise OriginalClientCompanionBackendError("COMPANION_MEMORY_DISABLED")
+        result = self._memory_admin.browse_memories(now=self._now(), **options)
+        records = result["records"]
+        if any(not isinstance(r, ConversationMemoryRecord) for r in records):
+            raise OriginalClientCompanionBackendError("COMPANION_MEMORY_INVALID")
+        return {**{key: result[key] for key in ("total", "total_count", "page", "limit")},
+                "memories": tuple(CompanionMemorySummary(
+                    memory_id=r.memory_id, text=r.text, source_id=r.source_id,
+                    created_at=_memory_timestamp(r), updated_at=r.metadata.get("updated_at"),
+                ) for r in records)}
+
     def _list_memories(self, *, query: str | None, limit: int) -> tuple[CompanionMemorySummary, ...]:
         if self._memory_admin is None:
             raise OriginalClientCompanionBackendError(

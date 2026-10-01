@@ -90,6 +90,57 @@ async def _client(backend: object) -> TestClient:
     return client
 
 
+def test_memory_browser_pages_and_originals_use_the_read_contract() -> None:
+    from jsonschema import Draft202012Validator, FormatChecker
+
+    schema = json.loads((Path(__file__).resolve().parents[2] / "contracts" /
+                         "original_client_memory_browser.schema.json").read_text(encoding="utf-8"))
+    Draft202012Validator.check_schema(schema)
+    validator = Draft202012Validator(schema, format_checker=FormatChecker())
+
+    class BrowserBackend(FixtureBackend):
+        def browse_memories(self, **options):
+            self.memory_requests.append(options)
+            return {"memories": (CompanionMemorySummary(
+                memory_id="old-record", text="老照片的记忆", source_id="reply:old",
+                created_at="2026-08-23T09:00:00+00:00",
+                updated_at="2026-09-30T09:00:00+00:00"),),
+                "total": 1028, "total_count": 1028, "page": 52, "limit": 20}
+
+        def browse_originals_page(self, **options):
+            return {"indexed_letters": 1028, "archive_total": None, "archive_indexed": None,
+                    "archive_removed": None, "scanned_at": None, "page": 1, "limit": 20, "total": 1,
+                    "originals": [{"source_id": options["source_id"], "speaker": "user",
+                                   "created_at": None, "text": "海边" * 3000, "excerpt": False}]}
+
+    async def scenario():
+        backend = BrowserBackend()
+        client = await _client(backend)
+        headers = {"Origin": TRUSTED_ORIGIN}
+        try:
+            response = await client.get("/toy/companion/memory?browse=1&page=52&limit=20&sort=old", headers=headers)
+            assert response.status == 200
+            payload = await response.json()
+            validator.validate(payload)
+            assert payload["page"] == 52 and payload["total_count"] == 1028
+            assert payload["memories"][0]["updated_at"] == "2026-09-30T09:00:00+00:00"
+            assert backend.memory_requests == [{"query": None, "page": 52, "limit": 20, "days": 0, "sort": "old"}]
+            response = await client.get("/toy/companion/memory?browse=1&collection=originals&source_id=reply:old&full=1&limit=20", headers=headers)
+            assert response.status == 200
+            original_payload = await response.json()
+            validator.validate(original_payload)
+            assert len(original_payload["originals"][0]["text"]) == 6000
+            for suffix in ("browse=0", "browse=1&page=0", "browse=1&days=6", "browse=1&sort=unsafe",
+                           "browse=1&collection=originals&full=1", "browse=1&source_id=reply:old"):
+                response = await client.get("/toy/companion/memory?" + suffix, headers=headers)
+                assert response.status == 400, suffix
+            response = await client.get("/toy/companion/memory?browse=1", headers={"Origin": "https://example.invalid"})
+            assert response.status == 403
+        finally:
+            await client.close()
+    asyncio.run(scenario())
+
+
 def test_multiline_memory_survives_status_list_and_search_http_roundtrip():
     from types import SimpleNamespace
     from conversation_memory_admin import MemoryAdminStatus

@@ -203,7 +203,7 @@ const panel = {isConnected: true, __oliviaCompanionStatusNode: statusNode};
 
 # The shipped CEF surface needs explicit no-drag/pointer and display-state guards.
 def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
-    assert SETTINGS_UI_VERSION == "p03.original-settings-manage.v52"
+    assert SETTINGS_UI_VERSION == "p03.original-settings-manage.v53"
     for declaration in (
             'const STATUS_PATH = "/toy/companion/status";',
             'const MEMORY_PATH = "/toy/companion/memory";',
@@ -219,7 +219,7 @@ def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
         assert BOOTSTRAP_JAVASCRIPT.count(declaration) == 1
     assert BOOTSTRAP_JAVASCRIPT.count('method: "GET"') == 2
     assert BOOTSTRAP_JAVASCRIPT.count('method: "POST"') == 4
-    assert "limit: 50" in BOOTSTRAP_JAVASCRIPT
+    assert "page: view.page, limit: 20" in BOOTSTRAP_JAVASCRIPT
     assert "input.maxLength = 500" in BOOTSTRAP_JAVASCRIPT
     assert "const LETTER_CHARACTER_LIMIT = 1200;" in BOOTSTRAP_JAVASCRIPT
     assert (
@@ -255,7 +255,7 @@ def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
 def test_proactive_letters_use_native_mailbox_routes_and_settings_contract() -> None:
     source = BOOTSTRAP_JAVASCRIPT
 
-    assert SETTINGS_UI_VERSION == "p03.original-settings-manage.v52"
+    assert SETTINGS_UI_VERSION == "p03.original-settings-manage.v53"
     assert 'const PROACTIVE_STATUS_PATH = "/toy/proactive/status";' in source
     assert 'const PROACTIVE_SETTINGS_PATH = "/toy/proactive/settings";' in source
     assert "login_check_enabled" in source
@@ -701,8 +701,7 @@ def test_memory_list_refreshes_the_visible_count_after_mutations() -> None:
     source = BOOTSTRAP_JAVASCRIPT
     assert "const updateSummary = (latest) =>" in source
     assert "const count = latest && latest.count;" in source
-    assert "const latestStatus = await requestJson(STATUS_PATH);" in source
-    assert "updateSummary(latestMemory);" in source
+    assert "updateSummary({...capability, count: payload.total_count});" in source
 
 
 def test_original_settings_management_ui_javascript_is_parseable() -> None:

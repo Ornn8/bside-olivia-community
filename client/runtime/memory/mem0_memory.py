@@ -576,6 +576,18 @@ class DeferredConversationMemoryAdapter:
         with self._using_current() as delegate:
             return delegate.browse_originals(user_id=user_id, query=query, limit=limit)
 
+    def browse_memories(self, **kwargs):
+        with self._using_current() as delegate:
+            return delegate.browse_memories(**kwargs)
+
+    def browse_originals_page(self, **kwargs):
+        with self._using_current() as delegate:
+            return delegate.browse_originals_page(**kwargs)
+
+    def all_memories(self, *, user_id):
+        with self._using_current() as delegate:
+            return delegate.all_memories(user_id=user_id)
+
     def register_archive_sources(self, *, user_id, sources):
         with self._using_current() as delegate:
             return delegate.register_archive_sources(user_id=user_id, sources=sources)
@@ -994,6 +1006,7 @@ def _row_to_record(
             "verbatim",
             _HISTORY_ACTOR_KEY,
             _HISTORY_EXTRACTION_VERSION_KEY,
+            "updated_at",
         }
         and (value is None or isinstance(value, (bool, int, float, str)))
     }
@@ -1037,6 +1050,75 @@ class Mem0ConversationMemoryAdapter:
 
     def browse_originals(self, *, user_id, query, limit):
         return self._originals.browse(self._normalized_user_id(user_id), query, limit)
+
+    def browse_originals_page(self, *, user_id, **kwargs):
+        return self._originals.browse_page(self._normalized_user_id(user_id), **kwargs)
+
+    def all_memories(self, *, user_id):
+        """Walk the existing local store without the legacy top-k list ceiling."""
+        user_id = self._normalized_user_id(user_id)
+        store = getattr(self.backend, "vector_store", None)
+        client = getattr(store, "client", None)
+        if not callable(getattr(client, "scroll", None)):
+            # Legacy/custom ports retain their existing bounded list contract.
+            return self.list_memories(user_id=user_id, limit=1000)
+
+        def read():
+            records = {}
+            for alias in self._configured_user_aliases(user_id):
+                cursor, seen = None, set()
+                filters = store._create_filter(self._provider_filters(alias))
+                if filters is None:
+                    raise Mem0AdapterError("MEM0_LIST_FAILED")
+                while True:
+                    points, next_cursor = client.scroll(
+                        collection_name=store.collection_name, scroll_filter=filters,
+                        limit=256, offset=cursor, with_payload=True, with_vectors=False,
+                    )
+                    for point in points:
+                        payload = point.payload
+                        row = {
+                            "id": str(point.id), "memory": payload.get("data"),
+                            "user_id": payload.get("user_id"), "agent_id": payload.get("agent_id"),
+                            "created_at": payload.get("created_at"),
+                            "metadata": payload,
+                        }
+                        record = _row_to_record(row, user_id=alias, agent_id=self.config.agent_id)
+                        if record is None:
+                            raise Mem0AdapterError("MEM0_LIST_FAILED")
+                        records[record.memory_id] = record
+                    if next_cursor is None:
+                        break
+                    if str(next_cursor) in seen:
+                        raise Mem0AdapterError("MEM0_LIST_FAILED")
+                    seen.add(str(next_cursor))
+                    cursor = next_cursor
+            return tuple(records.values())
+
+        result = self._read_with_timeout(read, failure_code="MEM0_LIST_FAILED")
+        if result is None:
+            raise Mem0AdapterError("MEM0_LIST_FAILED")
+        return result
+
+    def browse_memories(self, *, user_id, query=None, page=1, limit=20, days=0, sort="new", now=None):
+        from .browse import page_bounds, record_time, validate_options
+        validate_options(query=query, page=page, limit=limit, days=days, sort=sort)
+        now = now or datetime.now(timezone.utc)
+        records = self.all_memories(user_id=user_id)
+        keyword = (query or "").strip().casefold()
+        matching = [
+            record for record in records
+            if (not keyword or keyword in record.text.casefold())
+            and (not days or record_time(record) is not None
+                 and 0 <= (now - record_time(record)).total_seconds() <= days * 86400)
+        ]
+        matching.sort(key=lambda r: (
+            (record_time(r).timestamp() if record_time(r) else 0) * (-1 if sort == "new" else 1),
+            r.memory_id,
+        ))
+        page, offset = page_bounds(len(matching), page, limit)
+        return {"records": tuple(matching[offset:offset + limit]), "total": len(matching),
+                "total_count": len(records), "page": page, "limit": limit}
 
     def register_archive_sources(self, *, user_id, sources):
         self._originals.register_archive(self._normalized_user_id(user_id), sources)
@@ -2166,8 +2248,28 @@ class Mem0ConversationMemoryAdapter:
             self._last_error_code = "MEM0_DELETE_TIMEOUT"
             return False
         try:
-            target = next((record for record in self.list_memories(user_id=user_id, limit=1000)
-                           if record.memory_id == memory_id), None)
+            store = getattr(self.backend, "vector_store", None)
+            getter = getattr(store, "get", None)
+            if callable(getter):
+                # During a large clear, validate each exact stored point once;
+                # do not scan the entire archive again for every deletion.
+                point = self._read_with_timeout(
+                    lambda: getter(vector_id=memory_id), failure_code="MEM0_DELETE_FAILED")
+                target = None
+                if point is not None:
+                    if str(point.id) != memory_id:
+                        raise Mem0AdapterError("MEM0_DELETE_FAILED")
+                    payload = point.payload
+                    row = {"id": memory_id, "memory": payload.get("data"),
+                           "user_id": payload.get("user_id"), "agent_id": payload.get("agent_id"),
+                           "created_at": payload.get("created_at"), "metadata": payload}
+                    for alias in self._configured_user_aliases(user_id):
+                        target = _row_to_record(row, user_id=alias, agent_id=self.config.agent_id)
+                        if target is not None:
+                            break
+            else:
+                target = next((record for record in self.all_memories(user_id=user_id)
+                               if record.memory_id == memory_id), None)
             if target is None:
                 return False
             state, value = self._write_with_timeout(
@@ -2194,7 +2296,7 @@ class Mem0ConversationMemoryAdapter:
         if self._write_call.inflight:
             self._last_error_code = "MEM0_CLEAR_TIMEOUT"
             return 0
-        records = self.list_memories(user_id=user_id, limit=1000)
+        records = self.all_memories(user_id=user_id)
         deleted = 0
         try:
             for record in records:
@@ -2202,7 +2304,7 @@ class Mem0ConversationMemoryAdapter:
                     self._last_error_code = "MEM0_CLEAR_FAILED"
                     return 0
                 deleted += 1
-            if self.list_memories(user_id=user_id, limit=1000):
+            if self.all_memories(user_id=user_id):
                 self._last_error_code = "MEM0_CLEAR_FAILED"
                 return 0
             audit_path = self.config.data_root / "history-extraction-audit.sqlite3"

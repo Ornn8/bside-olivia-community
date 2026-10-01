@@ -280,6 +280,43 @@ class SourceRetrieval:
                 'originals': [{'source_id': s, 'speaker': a, 'created_at': stamp, 'text': text[:4000],
                                'excerpt': bool(query) or len(text)>4000} for s,a,stamp,text in rows]}
 
+    def browse_page(self, user, *, query=None, page=1, limit=20, days=0, sort="new",
+                    source_id=None, full=False, now=None):
+        from .browse import page_bounds, validate_options
+        from datetime import timezone
+        validate_options(query=query, page=page, limit=limit, days=days, sort=sort)
+        if (source_id is not None and (not isinstance(source_id, str) or not source_id or len(source_id) > 160)
+                or type(full) is not bool or full and source_id is None):
+            raise ValueError("MEMORY_BROWSE_OPTIONS_INVALID")
+        where, args = ["user=?"], [user]
+        if query and query.strip():
+            where.append("instr(lower(text),lower(?))>0")
+            args.append(query.strip())
+        if days:
+            where.append("julianday(stamp)>=julianday(?)-? AND julianday(stamp)<=julianday(?)")
+            stamp = (now or datetime.now(timezone.utc)).isoformat()
+            args.extend((stamp, days, stamp))
+        with closing(self.connect()) as db:
+            db.execute("BEGIN")
+            if source_id is not None:
+                sources = sorted(self._aliases(db, user, [source_id]))
+                where.append("source IN (" + ",".join("?" for _ in sources) + ")")
+                args.extend(sources)
+            clause = " AND ".join(where)
+            total = db.execute("SELECT COUNT(*) FROM originals WHERE " + clause, args).fetchone()[0]
+            page, offset = page_bounds(total, page, limit)
+            direction = "DESC" if sort == "new" else "ASC"
+            rows = db.execute("SELECT source,actor,stamp,text FROM originals WHERE " + clause +
+                              " ORDER BY julianday(stamp) " + direction + ",source,actor LIMIT ? OFFSET ?",
+                              [*args, limit, offset]).fetchall()
+        result = self.browse(user, "", 1)
+        maximum = 50000 if full else 4000
+        result.update(total=total, page=page, limit=limit,
+                      originals=[{"source_id": s, "speaker": a, "created_at": stamp,
+                                  "text": text[:maximum], "excerpt": len(text) > maximum}
+                                 for s, a, stamp, text in rows])
+        return result
+
     def put(self, user, source, user_text, reply_text, stamp):
         stamp = stamp.isoformat() if stamp is not None else None
         with closing(self.connect()) as db, db:

@@ -334,6 +334,20 @@ class ConversationMemoryAdminService:
         except Exception as exc:
             raise ConversationMemoryAdminError("MEMORY_ADMIN_READ_FAILED") from exc
 
+    def browse_memories(self, **kwargs):
+        self._require_available()
+        try:
+            return self.memory.browse_memories(user_id=self.user_id, **kwargs)
+        except Exception as exc:
+            raise ConversationMemoryAdminError("MEMORY_ADMIN_READ_FAILED") from exc
+
+    def browse_originals_page(self, **kwargs):
+        self._require_available()
+        try:
+            return self.memory.browse_originals_page(user_id=self.user_id, **kwargs)
+        except Exception as exc:
+            raise ConversationMemoryAdminError("MEMORY_ADMIN_READ_FAILED") from exc
+
     def add(
         self,
         text: str,
@@ -940,6 +954,9 @@ class ConversationMemoryAdminService:
             raise ConversationMemoryAdminError("MEMORY_ADMIN_BUSY")
         self._require_provider_available()
         try:
+            all_memories = getattr(self.memory, "all_memories", None)
+            if callable(all_memories):
+                return all_memories(user_id=self.user_id)
             return self.memory.list_memories(
                 user_id=self.user_id,
                 limit=1000,

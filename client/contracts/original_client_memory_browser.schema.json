@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "original_client_memory_browser.schema.json",
+  "title": "Original-client paged memory browser response",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "status", "total", "page", "limit"],
+  "properties": {
+    "schema_version": {"const": "p03.original-companion-read.v1"},
+    "status": {"const": "READY"},
+    "total": {"type": "integer", "minimum": 0},
+    "page": {"type": "integer", "minimum": 1, "maximum": 1000000},
+    "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+    "total_count": {"type": "integer", "minimum": 0},
+    "memories": {"type": "array", "maxItems": 100, "items": {"$ref": "#/$defs/memory"}},
+    "indexed_letters": {"type": "integer", "minimum": 0},
+    "archive_total": {"$ref": "#/$defs/nullable_count"},
+    "archive_indexed": {"$ref": "#/$defs/nullable_count"},
+    "archive_removed": {"$ref": "#/$defs/nullable_count"},
+    "scanned_at": {"$ref": "#/$defs/nullable_timestamp"},
+    "originals": {"type": "array", "maxItems": 100, "items": {"$ref": "#/$defs/original"}}
+  },
+  "oneOf": [
+    {"required": ["memories", "total_count"]},
+    {"required": ["originals", "indexed_letters", "archive_total", "archive_indexed", "archive_removed", "scanned_at"]}
+  ],
+  "$defs": {
+    "identifier": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{1,160}$"},
+    "nullable_count": {"type": ["integer", "null"], "minimum": 0},
+    "nullable_timestamp": {"type": ["string", "null"], "format": "date-time"},
+    "memory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["memory_id", "text", "source_id", "created_at"],
+      "properties": {
+        "memory_id": {"$ref": "#/$defs/identifier"},
+        "text": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "source_id": {"$ref": "#/$defs/identifier"},
+        "created_at": {"$ref": "#/$defs/nullable_timestamp"},
+        "updated_at": {"type": "string", "format": "date-time"},
+        "score": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    },
+    "original": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_id", "speaker", "created_at", "text", "excerpt"],
+      "properties": {
+        "source_id": {"$ref": "#/$defs/identifier"},
+        "speaker": {"enum": ["user", "linli"]},
+        "created_at": {"$ref": "#/$defs/nullable_timestamp"},
+        "text": {"type": "string", "maxLength": 50000},
+        "excerpt": {"type": "boolean"}
+      }
+    }
+  }
+}
