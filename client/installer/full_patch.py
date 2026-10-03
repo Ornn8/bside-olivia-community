@@ -171,6 +171,7 @@ PAYLOAD_REQUIRED_RELATIVE_FILES = {
     "runtime/imports/official_letters.py",
     "runtime/diagnostics/__init__.py",
     "runtime/diagnostics/support_bundle.py",
+    "runtime/reply/stage_recovery.py",
     "runtime/original_client_media_http.py",
     "runtime/video_reply_settings.py",
 }

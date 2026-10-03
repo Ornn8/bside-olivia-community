@@ -680,9 +680,17 @@ def test_soft_style_delivery_is_consistent_across_modes(
         rewriter=_Rewriter("y" * 190),
     )
 
-    assert result.status is expected_status
+    immediate_style = (
+        mode is ReplyMode.FUTURE_IM and initial_verdict is ReviewVerdict.REWRITE
+    )
+    assert result.status is (
+        QualityGateStatus.ACCEPTED_WITH_WARNINGS if immediate_style else expected_status
+    )
     assert result.violation_codes == ("STYLE_DRIFT",)
-    assert result.rewrite_calls == (0 if final_verdict is None else 1)
+    assert result.rewrite_calls == (0 if final_verdict is None or immediate_style else 1)
+    if immediate_style:
+        assert result.text == "x" * 190
+        assert result.reviewer_calls == reviewer.calls == 1
 
 
 @pytest.mark.parametrize('mode', tuple(ReplyMode))
@@ -702,7 +710,7 @@ def test_style_delivery_never_relaxes_protected_or_unknown_findings(mode, code, 
         (ReviewerViolation(code, severity, 0, 5),),
         ReviewerScores(90, 90, 90, 90), IntimacyRequest.NONE, ())
     rewriter = _Rewriter('y' * 190)
-    result = run_reply_quality_gate('x' * 190,
+    result = run_reply_quality_gate('<CONTROL>' + 'x' * 190,
         ReplyContext.create(mode,
             trusted_time=TrustedTime(datetime(2026, 8, 22, tzinfo=timezone.utc)),
             future_im_enabled=mode is ReplyMode.FUTURE_IM),
@@ -712,3 +720,82 @@ def test_style_delivery_never_relaxes_protected_or_unknown_findings(mode, code, 
     assert result.violation_codes == (code,)
     assert result.reviewer_calls == 2
     assert result.rewrite_calls == rewriter.calls == 1
+
+
+@pytest.mark.parametrize('codes', [
+    ('STYLE_DRIFT',),
+    ('GENERIC_COUNSELOR',),
+    ('STYLE_DRIFT', 'GENERIC_COUNSELOR'),
+])
+@pytest.mark.parametrize('allow_rewrite', [True, False])
+def test_im_soft_style_delivers_reviewed_original_without_risking_rewrite_failure(codes, allow_rewrite):
+    class UnavailableRewriter:
+        calls = 0
+
+        def rewrite(self, *args):
+            self.calls += 1
+            raise RuntimeError('REWRITE_PROVIDER_UNAVAILABLE')
+
+    candidate = '谢谢，我知道你的意思了。'
+    review = ReviewResult(
+        ReviewStatus.COMPLETED, ReviewVerdict.REWRITE,
+        tuple(ReviewerViolation(code, 'soft', 0, 2) for code in codes),
+        ReviewerScores(80, 100, 100, 100), IntimacyRequest.NONE, (),
+    )
+    reviewer, rewriter = _Reviewer(review), UnavailableRewriter()
+    result = run_reply_quality_gate(candidate,
+        ReplyContext.create(ReplyMode.FUTURE_IM, future_im_enabled=True,
+            trusted_time=TrustedTime(datetime(2026, 8, 22, tzinfo=timezone.utc))),
+        reviewer=reviewer, rewriter=rewriter, allow_rewrite=allow_rewrite)
+
+    assert result.accepted
+    assert result.status is QualityGateStatus.ACCEPTED_WITH_WARNINGS
+    assert result.text == candidate
+    assert result.violation_codes == codes
+    assert result.error_code is None
+    assert result.deterministic_checks == 1
+    assert result.reviewer_calls == reviewer.calls == 1
+    assert result.rewrite_calls == rewriter.calls == 0
+
+
+@pytest.mark.parametrize('codes,severities,verdict,candidate', [
+    (('STYLE_DRIFT',), ('hard',), ReviewVerdict.REWRITE, '原始回复。'),
+    (('MEMORY_FABRICATION',), ('soft',), ReviewVerdict.REWRITE, '原始回复。'),
+    (('UNKNOWN_SOFT',), ('soft',), ReviewVerdict.REWRITE, '原始回复。'),
+    (('STYLE_DRIFT', 'MEMORY_FABRICATION'), ('soft', 'hard'), ReviewVerdict.REWRITE, '原始回复。'),
+    (('STYLE_DRIFT',), ('soft',), ReviewVerdict.BLOCK, '原始回复。'),
+    ((), (), ReviewVerdict.REWRITE, '原始回复。'),
+    (('STYLE_DRIFT',), ('soft',), ReviewVerdict.REWRITE, '<CONTROL>原始回复。'),
+])
+def test_im_initial_warning_never_bypasses_protected_or_unknown_checks(codes, severities, verdict, candidate):
+    review = ReviewResult(
+        ReviewStatus.COMPLETED, verdict,
+        tuple(ReviewerViolation(code, severity, 0, 2) for code, severity in zip(codes, severities)),
+        ReviewerScores(80, 100, 100, 100), IntimacyRequest.NONE, (),
+    )
+    result = run_reply_quality_gate(candidate,
+        ReplyContext.create(ReplyMode.FUTURE_IM, future_im_enabled=True,
+            trusted_time=TrustedTime(datetime(2026, 8, 22, tzinfo=timezone.utc))),
+        reviewer=_Reviewer(review), rewriter=_NeverRewrite(), allow_rewrite=False)
+
+    assert not result.accepted
+    assert result.status is QualityGateStatus.BLOCKED
+    assert result.error_code == 'REWRITE_BUDGET_EXHAUSTED'
+
+
+@pytest.mark.parametrize('status', [ReviewStatus.UNAVAILABLE, ReviewStatus.INVALID_RESPONSE])
+def test_im_unavailable_review_is_not_a_soft_style_warning(status):
+    review = ReviewResult(
+        status, ReviewVerdict.UNAVAILABLE,
+        (ReviewerViolation('STYLE_DRIFT', 'soft', 0, 2),),
+        ReviewerScores(80, 100, 100, 100), None, None,
+        error_code='REVIEWER_UNAVAILABLE',
+    )
+    result = run_reply_quality_gate('原始回复。',
+        ReplyContext.create(ReplyMode.FUTURE_IM, future_im_enabled=True,
+            trusted_time=TrustedTime(datetime(2026, 8, 22, tzinfo=timezone.utc))),
+        reviewer=_Reviewer(review), rewriter=_NeverRewrite())
+
+    assert not result.accepted
+    assert result.error_code == 'REVIEWER_UNAVAILABLE'
+    assert result.reviewer_calls == 1 and result.rewrite_calls == 0

@@ -455,6 +455,8 @@ def test_diagnostics_modules_are_in_both_formal_packaging_allowlists() -> None:
     assert "runtime/diagnostics/support_bundle.py" in PAYLOAD_REQUIRED_RELATIVE_FILES
     assert _is_release_file("original_client_diagnostics_api.py")
     assert _is_release_file("runtime/diagnostics/support_bundle.py")
+    assert "runtime/reply/stage_recovery.py" in PAYLOAD_REQUIRED_RELATIVE_FILES
+    assert _is_release_file("runtime/reply/stage_recovery.py")
     assert '"original_client_diagnostics_api"' in Path("pyproject.toml").read_text(
         encoding="utf-8"
     )
@@ -476,6 +478,7 @@ def test_full_patch_copies_diagnostics_when_the_release_files_are_tracked(
             "original_client_diagnostics_api.py",
             "runtime/diagnostics/__init__.py",
             "runtime/diagnostics/support_bundle.py",
+            "runtime/reply/stage_recovery.py",
         },
     )
 
@@ -484,6 +487,7 @@ def test_full_patch_copies_diagnostics_when_the_release_files_are_tracked(
 
     assert (destination / "original_client_diagnostics_api.py").is_file()
     assert (destination / "runtime" / "diagnostics" / "support_bundle.py").is_file()
+    assert (destination / "runtime" / "reply" / "stage_recovery.py").is_file()
 
 
 def test_diagnostics_export_fails_closed_when_collection_raises() -> None:

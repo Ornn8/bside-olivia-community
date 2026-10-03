@@ -278,6 +278,7 @@ def project_chat_task(value: Mapping[str, object]) -> dict[str, object]:
     for field, allowed in {
         'candidate_analysis_status': {'COMPLETED', 'FAILED'},
         'candidate_analysis_retry_status': {'TERMINAL_REJECTION', 'EXHAUSTED'},
+        'generation_failure_notice': {'SENDING', 'DELIVERED', 'UNKNOWN'},
     }.items():
         status = value.get(field)
         if isinstance(status, str) and status in allowed:
@@ -291,6 +292,28 @@ def project_chat_task(value: Mapping[str, object]) -> dict[str, object]:
     }:
         result['candidate_analysis_failure_reason'] = reason
     result.update(project_reply_quality(value))
+    # Finite, numeric phase evidence only. Private cached text and keys never
+    # enter diagnostic bundles, including through a malformed nested map.
+    timing = value.get('stage_timing_seconds')
+    if isinstance(timing, Mapping):
+        safe = {name: round(float(timing[name]), 4)
+                for name in ('world', 'emotion', 'interpretation', 'history', 'decision', 'writer', 'quality', 'total')
+                if type(timing.get(name)) in (int, float) and 0 <= timing[name] <= 86400}
+        if safe:
+            result['stage_timing_seconds'] = safe
+    for field in ('stage_cache_hits', 'stage_actual_calls'):
+        counts = value.get(field)
+        if isinstance(counts, Mapping):
+            safe = {name: counts[name] for name in ('writer', 'reviewer', 'rewriter')
+                    if type(counts.get(name)) is int and 0 <= counts[name] <= 100}
+            if safe:
+                result[field] = safe
+    if value.get('voice_prepare_status') in {'running', 'completed', 'timeout', 'failed', 'cancelled'}:
+        result['voice_prepare_status'] = value['voice_prepare_status']
+    for field in ('voice_prepare_seconds', 'voice_prepare_timeout_seconds'):
+        seconds = value.get(field)
+        if type(seconds) in (int, float) and 0 <= seconds <= 86400:
+            result[field] = round(float(seconds), 4)
     if value.get('channel') in ('qq', 'wechat'):
         result['channel'] = value['channel']
     if value.get('delivery_status') in ('RECEIVED', 'GENERATING', 'GENERATED', 'MEDIA_PENDING', 'SENDING', 'DELIVERY_UNCONFIRMED', 'DELIVERED', 'FAILED', 'SKIPPED'):
@@ -308,7 +331,7 @@ def project_chat_task(value: Mapping[str, object]) -> dict[str, object]:
             result['voice_ready'] = value['voice_ready']
         if value.get('delivery_basis') in ('QQ_DEFAULT_VOICE', 'SPEAKER_UNAVAILABLE', 'VERBATIM_TEXT',
                 'JEV_MEDIA_PLAN', 'PROACTIVE_MEDIA_PLAN', 'WECHAT_TEXT', 'TRANSPORT_UNAVAILABLE',
-                'PROVIDER_UNAVAILABLE', 'WRITER_SELECTION', 'VOICE_RENDER_FAILED'):
+                'PROVIDER_UNAVAILABLE', 'WRITER_SELECTION', 'VOICE_RENDER_FAILED', 'VOICE_RENDER_TIMEOUT'):
             result['delivery_basis'] = value['delivery_basis']
         if value.get('requested_format') in ('text', 'voice'):
             result['requested_format'] = value['requested_format']

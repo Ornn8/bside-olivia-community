@@ -229,6 +229,32 @@ def _configured_v2_pipeline(persona_path: Path):
     return pipeline, orchestrator, bridge, provider
 
 
+def test_actual_persona_chat_assembly_excludes_local_recovery_hooks(monkeypatch):
+    from runtime.personal_chat.presentation import CURRENT
+    monkeypatch.setenv('OLIVIA_REPLY_REVIEW_ENABLED', 'false')
+    pipeline, _, _, provider = _configured_v2_pipeline(ROOT / 'linli_character/persona_release_v2.json')
+    pipeline.discover_runtime_ports = False
+    pipeline.current_turn_interpreter = None
+    now = datetime(2026, 10, 3, tzinfo=timezone.utc)
+    context = ReplyContext.create(ReplyMode.FUTURE_IM, future_im_enabled=True, trusted_time=TrustedTime(now))
+    timings = []
+    token = CURRENT.set({'raw_user_text': '今晚慢慢聊。', 'channel': 'qq',
+                         'received_source_id': 'received:synthetic', 'input_revision': 0,
+                         'turn_is_current': lambda: True, 'record_stage_timing': timings.append,
+                         'generation_attempts': 1})
+    try:
+        result = asyncio.run(pipeline.run(ReplyRequest(content='今晚慢慢聊。'), context))
+    finally:
+        CURRENT.reset(token)
+    assert result.state is ReplyState.COMPLETED and len(timings) == 1
+    wire = '\n'.join(m['content'] for m in provider.messages)
+    assert '今晚慢慢聊。' in wire and 'constitution' in wire
+    for local_field in ('turn_is_current', 'record_stage_timing', 'generation_attempts', 'received_source_id'):
+        assert local_field not in wire
+    assert result.stage_actual_calls['writer'] == 1
+    assert not pipeline._stage_recoveries
+
+
 def test_current_turn_runtime_factory_runs_with_real_persona_preparation(monkeypatch):
     monkeypatch.setenv("OLIVIA_LETTER_CURRENT_TURN_INTERPRETATION", "1")
     monkeypatch.setenv("OLIVIA_REPLY_REVIEW_ENABLED", "false")

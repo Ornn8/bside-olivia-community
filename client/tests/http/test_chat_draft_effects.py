@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from reply_orchestrator import ReplyState
+from runtime.reply.reply_context import ReplyContext, ReplyMode, TrustedTime
 from runtime.personal_chat import backend
 from runtime.personal_chat.events import PersonalMessage
 from runtime.personal_chat.service import TURN_IS_CURRENT
@@ -25,12 +26,12 @@ def test_new_input_revision_has_distinct_request_id_and_stale_text_skips_tts(mon
     async def run(request, context):
         seen.append(request.idempotency_key)
         return SimpleNamespace(state=ReplyState.COMPLETED, text=envelope(text='现在醒着就继续聊', delivery='voice'))
-    async def audio(server, text, path):
+    async def audio(server, text, path, **kwargs):
         speech.append(text)
         return {'duration_seconds': 4}
     monkeypatch.setattr(backend, 'prepare_chat_audio', audio)
     server = SimpleNamespace(letters_adapter=SimpleNamespace(config=SimpleNamespace(persona_v2_enabled=True,
-        max_input_chars=50000), persona_v2_path='synthetic', build_reply_context=lambda *a, **k: SimpleNamespace(private_behavior=None)),
+        max_input_chars=50000), persona_v2_path='synthetic', build_reply_context=lambda *a, **k: ReplyContext.create(ReplyMode.FUTURE_IM, trusted_time=TrustedTime(datetime.now(timezone.utc)), future_im_enabled=True)),
         _llm_runtime_ready=lambda _: True, daily_life_runtime=object(), _official_history_private_world_available=lambda: True,
         MEMORY_READY_REPLY_TIMEOUT_SECONDS=1, _conversation_memory_ready_for_reply=lambda: True,
         video_reply_settings_store=SimpleNamespace(image_snapshot=lambda: {'enabled': False}),

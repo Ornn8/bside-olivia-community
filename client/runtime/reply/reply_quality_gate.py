@@ -173,6 +173,28 @@ def run_reply_quality_gate(
             rewrite_calls=0,
             error_code=review.error_code,
         )
+    if (
+        context.mode is ReplyMode.FUTURE_IM
+        and review.status is ReviewStatus.COMPLETED
+        and review.verdict is ReviewVerdict.REWRITE
+        and deterministic.passed
+        and review.violations
+        and all(
+            item.severity == 'soft' and item.code in _SOFT_STYLE_CODES
+            for item in review.violations
+        )
+    ):
+        # Ordinary chat should not depend on a second paid generation merely
+        # for style preferences. Facts, boundaries and unknown findings still
+        # require the existing repair and fresh review below.
+        return QualityGateResult(
+            QualityGateStatus.ACCEPTED_WITH_WARNINGS,
+            candidate,
+            initial_codes,
+            deterministic_checks=1,
+            reviewer_calls=1,
+            rewrite_calls=0,
+        )
     rewrite_required = not deterministic.passed or review.verdict in {
         ReviewVerdict.REWRITE,
         ReviewVerdict.BLOCK,

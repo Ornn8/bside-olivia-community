@@ -83,7 +83,7 @@ def environment(monkeypatch, tmp_path, *, action='send', medium='text', body=Non
         _voice_reply_configured=lambda _:True, _safe_log=lambda *a, **k:None,
         _persist_store_state=lambda:saves.append(deepcopy(rows)),
         video_reply_settings_store=SimpleNamespace(image_snapshot=lambda:{'enabled':True}))
-    async def render(server, text, path):
+    async def render(server, text, path, **kwargs):
         audio.append(text)
         return {'duration_seconds':2}
     monkeypatch.setattr(backend, 'prepare_chat_audio', render)

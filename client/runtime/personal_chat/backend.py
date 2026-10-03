@@ -4,9 +4,12 @@ from contextlib import nullcontext
 from copy import deepcopy
 from datetime import datetime
 import json
+import math
 import os
 import re
 import secrets
+import threading
+from time import monotonic
 from pathlib import Path
 
 from aiohttp import web
@@ -20,6 +23,7 @@ _RUNTIME = web.AppKey("personal_chat", dict)
 ACTIVATE_SAVED_CONFIG = web.AppKey("personal_chat_activate_saved_config", object)
 _CONSUMER_TIMEOUT_SECONDS = 15
 _VOICE_RENDER_TIMEOUT_SECONDS = 20 * 60
+_QQ_DEFAULT_VOICE_TIMEOUT_SECONDS = 60
 
 
 async def _record_semantic_shadow(server, row, task, revision=None):
@@ -86,7 +90,22 @@ async def deliver_speech(server,row,send):
     return await deliver(server,row,send)
 
 
-async def prepare_chat_audio(server, text, path):
+def _qq_default_voice_timeout_seconds():
+    try:
+        value = float(os.environ.get('OLIVIA_QQ_DEFAULT_VOICE_TIMEOUT_SECONDS', ''))
+    except ValueError:
+        return _QQ_DEFAULT_VOICE_TIMEOUT_SECONDS
+    return value if math.isfinite(value) and 5 <= value <= 120 else _QQ_DEFAULT_VOICE_TIMEOUT_SECONDS
+
+
+def _discard_chat_audio(path):
+    try:
+        Path(path).unlink(missing_ok=True)
+    except OSError:
+        pass  # An unused generated artifact cannot block receipt or delivery.
+
+
+async def prepare_chat_audio(server, text, path, *, timeout_seconds=None):
     """Submit chat speech independently of letter and photo media work."""
     from runtime.media.voice_direction import TextOnlyVoicePlan
     from runtime.media.media_paths import configured_media_path
@@ -94,15 +113,38 @@ async def prepare_chat_audio(server, text, path):
     config_path = configured_media_path(os.environ, 'OLIVIA_TTS_CONFIG')
     if config_path is None and not remote_enabled(os.environ):
         raise RuntimeError('PERSONAL_CHAT_TTS_UNAVAILABLE')
-    worker = asyncio.create_task(asyncio.to_thread(server.render_reply_audio, text, path,
-        tts_config_path=config_path,
-        voice_performance_plan=TextOnlyVoicePlan(text),
-        environment={**os.environ, 'OLIVIA_MEDIA_CHANNEL': 'qq'}))
+    timeout = _VOICE_RENDER_TIMEOUT_SECONDS if timeout_seconds is None else timeout_seconds
+    if (type(timeout) not in (int, float) or not math.isfinite(timeout)
+            or not 0 < timeout <= _VOICE_RENDER_TIMEOUT_SECONDS):
+        raise ValueError('PERSONAL_CHAT_TTS_TIMEOUT_INVALID')
+    abandoned = threading.Event()
+    environment = {**os.environ, 'OLIVIA_MEDIA_CHANNEL': 'qq'}
+    def render():
+        try:
+            return server.render_reply_audio(text, path, tts_config_path=config_path,
+                voice_performance_plan=TextOnlyVoicePlan(text),
+                environment=environment)
+        finally:
+            # The blocking cloud/local worker may outlive the asyncio waiter or
+            # even the loop. Its late output is never an outgoing reply.
+            if abandoned.is_set():
+                _discard_chat_audio(path)
+    worker = asyncio.create_task(asyncio.to_thread(render))
     def finished(task):
         if not task.cancelled():
             task.exception()
+        if abandoned.is_set():
+            _discard_chat_audio(path)
     worker.add_done_callback(finished)
-    return await asyncio.wait_for(asyncio.shield(worker), _VOICE_RENDER_TIMEOUT_SECONDS)
+    try:
+        return await asyncio.wait_for(asyncio.shield(worker), timeout)
+    except (TimeoutError, asyncio.CancelledError):
+        # This ends only the wait; it does not promise cancellation/refund of a
+        # submitted provider job. Do not synthesize or send a second voice.
+        abandoned.set()
+        if worker.done():
+            _discard_chat_audio(path)
+        raise
 
 
 def _failure_code(exc):
@@ -317,6 +359,17 @@ async def _generate_billed(server, event, row):
             and os.environ.get('OLIVIA_GPU_API_URL') and os.environ.get('OLIVIA_GPU_API_KEY')):
         semantic_kinds.append('image')
     context = adapter.build_reply_context(ReplyMode.FUTURE_IM, future_im_enabled=True)
+    # A generation retry belongs to the same received turn. Keep its trusted
+    # time stable; all other context/evidence is still rebuilt and hash-checked.
+    from dataclasses import replace
+    from runtime.reply.reply_context import TrustedTime
+    if row.get('generation_context_at'):
+        try:
+            context = replace(context, trusted_time=TrustedTime(
+                datetime.fromisoformat(row['generation_context_at']), source=context.trusted_time.source))
+        except (ValueError, TypeError):
+            row.pop('generation_context_at', None)
+    row.setdefault('generation_context_at', context.trusted_time.instant.isoformat())
     from runtime.image_reply import photo_reply_context
     context = photo_reply_context(context, row['image_reply_settings'], channel=event.channel)
     from .stickers import choices
@@ -333,6 +386,11 @@ async def _generate_billed(server, event, row):
     def turn_is_current():
         current = TURN_IS_CURRENT.get()
         return revision == row.get('input_revision', 0) and (not callable(current) or current())
+    def record_stage_timing(timings):
+        if turn_is_current():
+            from runtime.diagnostics.support_bundle import project_chat_task
+            safe = project_chat_task({'stage_timing_seconds': timings})
+            row.update(safe)
     async def save_companion_decision(record):
         if not turn_is_current():
             raise RuntimeError('JEV_INPUT_SUPERSEDED')
@@ -384,6 +442,9 @@ async def _generate_billed(server, event, row):
                                 'semantic_kinds': semantic_kinds,
                                 'received_source_id': f'reply:{event.exchange_id}:user',
                                 'input_revision': revision,
+                                'turn_is_current': turn_is_current,
+                                'record_stage_timing': record_stage_timing,
+                                'generation_attempts': row.get('generation_attempts', 1),
                                 'companion_decision': row.get('companion_decision'),
                                 'story_continuation': next(({
                                     'source_id': 'speech:' + str(r.get('letter_id')),
@@ -438,7 +499,8 @@ async def _generate_billed(server, event, row):
             _start_semantic_shadow_recorder(server, row, shadow)
         from runtime.diagnostics.support_bundle import project_chat_task
         quality_fields = ('quality_status', 'reviewer_calls', 'rewrite_calls', 'decision_rejection_reason',
-                          'quality_error_code', 'quality_failure_stage', 'quality_violation_codes')
+                          'quality_error_code', 'quality_failure_stage', 'quality_violation_codes',
+                          'stage_timing_seconds', 'stage_cache_hits', 'stage_actual_calls')
         quality = project_chat_task({'channel': event.channel, **{
             field: getattr(result, field, None) for field in quality_fields},
             'quality_error_code': getattr(result, 'error_code', None),
@@ -540,19 +602,47 @@ async def _generate_billed(server, event, row):
                        speech_status='PENDING', speech_delivery_status='PENDING')
             mode = 'text'
         if mode == 'voice' and voice_available and text != '[[skip]]':
-            path = server._state_root() / 'media' / (event.exchange_id + '.wav')
+            # A cancelled older revision can still finish in its worker thread.
+            # Give each render its own output so it cannot overwrite new audio.
+            path = server._state_root() / 'media' / (event.exchange_id + '-' + secrets.token_hex(8) + '.wav')
+            timeout = (_qq_default_voice_timeout_seconds() if basis == 'QQ_DEFAULT_VOICE'
+                       else _VOICE_RENDER_TIMEOUT_SECONDS)
+            started = monotonic()
+            voice_status = 'failed'
+            row.update(voice_prepare_status='running', voice_prepare_timeout_seconds=timeout)
             try:
-                metadata = await prepare_chat_audio(server, text, path)
+                metadata = await prepare_chat_audio(server, text, path, timeout_seconds=timeout)
+                if not turn_is_current():
+                    _discard_chat_audio(path)
+                    return text
                 row.update(prepared_audio=str(path), reply_audio_duration=metadata['duration_seconds'])
-            except Exception:
+                row.pop('voice_fallback', None)
+                voice_status = 'completed'
+            except asyncio.CancelledError:
+                voice_status = 'cancelled'
+                raise
+            except Exception as exc:
+                if not turn_is_current():
+                    _discard_chat_audio(path)
+                    return text
+                voice_status = 'timeout' if isinstance(exc, TimeoutError) else 'failed'
+                _discard_chat_audio(path)
                 row.pop('prepared_audio', None)
-                row['voice_fallback'] = 'PERSONAL_CHAT_TTS_UNAVAILABLE'
+                row['voice_fallback'] = ('PERSONAL_CHAT_TTS_TIMEOUT' if voice_status == 'timeout'
+                                         else 'PERSONAL_CHAT_TTS_UNAVAILABLE')
                 if basis == 'QQ_DEFAULT_VOICE':
                     # Speech is our presentation default, not a promised asset.
-                    # Keep the reply deliverable if this optional render fails.
-                    row['delivery_basis'] = 'VOICE_RENDER_FAILED'
+                    # Deliver only this already-reviewed body when waiting ends.
+                    row['delivery_basis'] = ('VOICE_RENDER_TIMEOUT' if voice_status == 'timeout'
+                                             else 'VOICE_RENDER_FAILED')
                 elif companion is not None or contact is not None:
                     raise RuntimeError('JEV_PLAN_UNSUPPORTED') from None
+                else:
+                    raise RuntimeError(row['voice_fallback']) from None
+            finally:
+                if turn_is_current():
+                    row.update(voice_prepare_status=voice_status,
+                               voice_prepare_seconds=round(monotonic() - started, 3))
         return text
     finally:
         if read_window is not None:
@@ -962,6 +1052,12 @@ def install_personal_chat(app, server):
                     runtime['errors'][event.channel] = _failure_code(exc)
                     server._safe_log('personal_chat_exchange_failed', channel=event.channel,
                                      error_code=runtime['errors'][event.channel])
+                    try:
+                        await service.notify_generation_failure(event, send)
+                    except Exception:
+                        # A notice persistence/transport failure cannot stop reception
+                        # or replace the original generation error.
+                        server._safe_log('personal_chat_failure_notice_unavailable', channel=event.channel)
                 finally:
                     _publish_status(server, runtime)
 

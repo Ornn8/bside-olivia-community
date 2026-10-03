@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from reply_orchestrator import ReplyState
+from runtime.reply.reply_context import ReplyContext, ReplyMode, TrustedTime
 from runtime.personal_chat import backend
 from runtime.personal_chat.events import PersonalMessage
 from runtime.personal_chat.service import PersonalChatService, TURN_IS_CURRENT, _clear_draft
@@ -37,14 +38,14 @@ def server_fixture(monkeypatch, tmp_path, result, *, run_hook=None):
         if run_hook:
             await run_hook()
         return result
-    async def prepare(server, text, path):
+    async def prepare(server, text, path, **kwargs):
         audio.append(text)
         return {'duration_seconds': 2}
     monkeypatch.setattr(backend, 'prepare_chat_audio', prepare)
     row = {'channel': 'qq', 'life_received_at': datetime.now(timezone.utc).isoformat(),
            'voice_available': True, 'input_revision': 0}
     server = SimpleNamespace(letters_adapter=SimpleNamespace(config=SimpleNamespace(persona_v2_enabled=True,
-        max_input_chars=50000), persona_v2_path='synthetic', build_reply_context=lambda *a, **k: SimpleNamespace(private_behavior=None)),
+        max_input_chars=50000), persona_v2_path='synthetic', build_reply_context=lambda *a, **k: ReplyContext.create(ReplyMode.FUTURE_IM, trusted_time=TrustedTime(datetime.now(timezone.utc)), future_im_enabled=True)),
         _llm_runtime_ready=lambda _: True, daily_life_runtime=object(), _official_history_private_world_available=lambda: True,
         MEMORY_READY_REPLY_TIMEOUT_SECONDS=1, _conversation_memory_ready_for_reply=lambda: True,
         video_reply_settings_store=SimpleNamespace(image_snapshot=lambda: {'enabled': True}),
@@ -61,6 +62,32 @@ def pipeline_result(*, timing='now', delivery='text', text=None, error=None, rec
         error_code=error, text=envelope(text='Hello', delivery='voice') if text is None else text,
         companion_decision=deepcopy(RECORD) if record else None,
         companion_timing=timing if record else None, companion_delivery=delivery if record else None)
+
+
+def test_retry_freezes_only_turn_time_and_new_revision_resets_it(monkeypatch, tmp_path):
+    from datetime import timedelta
+    from runtime.personal_chat.service import _clear_draft
+    server, row, *_ = server_fixture(monkeypatch, tmp_path, pipeline_result(record=False))
+    now = datetime(2026, 10, 3, 9, tzinfo=timezone.utc)
+    clocks = iter((now, now + timedelta(seconds=2), now + timedelta(seconds=4)))
+    seen = []
+    def build(*args, **kwargs):
+        return ReplyContext.create(ReplyMode.FUTURE_IM, trusted_time=TrustedTime(next(clocks)),
+                                   future_im_enabled=True)
+    server.letters_adapter.build_reply_context = build
+    async def run(request, context):
+        seen.append(context.trusted_time.instant)
+        return pipeline_result(record=False)
+    server.reply_pipeline.run = run
+    event = PersonalMessage('qq', 'a', 'u', '1', 'Hello')
+    async def scenario():
+        await backend.generate(server, event, row)
+        await backend.generate(server, event, row)
+        _clear_draft(row)
+        row['input_revision'] = 1
+        await backend.generate(server, event, row)
+    asyncio.run(scenario())
+    assert seen == [now, now, now + timedelta(seconds=4)]
 
 
 @pytest.mark.parametrize('channel', ['qq', 'wechat'])
@@ -199,7 +226,7 @@ def test_optional_default_voice_render_failure_still_delivers_reply_text(monkeyp
     rows, sent = [], []
     server.store.personal_chats = rows
     server._persist_store_state = lambda: None
-    async def unavailable(*a): raise RuntimeError('synthetic TTS failure')
+    async def unavailable(*a, **kwargs): raise RuntimeError('synthetic TTS failure')
     monkeypatch.setattr(backend, 'prepare_chat_audio', unavailable)
     async def generate(event, row): return await backend.generate(server, event, row)
     async def commit(row): pass
@@ -318,7 +345,7 @@ def test_pre_writer_save_rejects_obsolete_turn(monkeypatch, tmp_path, supersessi
 
 def test_jev_voice_render_failure_does_not_fall_back_to_text(monkeypatch, tmp_path):
     server, row, _, _, _ = server_fixture(monkeypatch, tmp_path, pipeline_result(delivery='audio_speech'))
-    async def unavailable(*a): raise RuntimeError('synthetic TTS failure')
+    async def unavailable(*a, **kwargs): raise RuntimeError('synthetic TTS failure')
     monkeypatch.setattr(backend, 'prepare_chat_audio', unavailable)
     async def scenario():
         with pytest.raises(RuntimeError, match='JEV_PLAN_UNSUPPORTED'):

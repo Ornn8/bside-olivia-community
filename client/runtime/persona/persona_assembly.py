@@ -687,5 +687,6 @@ def _im_presentation():
     from runtime.personal_chat.presentation import CURRENT
     value = CURRENT.get()
     local_only = {'companion_decision', 'save_companion_decision', 'received_source_id', 'input_revision',
-                  'proactive_decide', 'proactive_decision'}
+                  'proactive_decide', 'proactive_decision', 'turn_is_current',
+                  'record_stage_timing', 'generation_attempts'}
     return {"chat_delivery": {key: item for key, item in value.items() if key not in local_only}} if value is not None else {}

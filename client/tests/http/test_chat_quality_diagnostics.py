@@ -8,6 +8,7 @@ import zipfile
 
 import pytest
 from reply_orchestrator import ReplyState
+from runtime.reply.reply_context import ReplyContext, ReplyMode, TrustedTime
 from runtime.personal_chat import backend
 from runtime.personal_chat.events import PersonalMessage
 from runtime.diagnostics.support_bundle import build_diagnostic_bundle, project_chat_task
@@ -46,7 +47,7 @@ def test_pipeline_quality_persists_before_failure_and_survives_bundle(monkeypatc
         violation_codes=('MEMORY_FABRICATION', 'private violation text'))
     async def run(*a): return result
     server = SimpleNamespace(letters_adapter=SimpleNamespace(config=SimpleNamespace(persona_v2_enabled=True,
-        max_input_chars=50000), persona_v2_path='synthetic', build_reply_context=lambda *a, **k: SimpleNamespace(private_behavior=None)),
+        max_input_chars=50000), persona_v2_path='synthetic', build_reply_context=lambda *a, **k: ReplyContext.create(ReplyMode.FUTURE_IM, trusted_time=TrustedTime(datetime.now(timezone.utc)), future_im_enabled=True)),
         _llm_runtime_ready=lambda _: True, daily_life_runtime=object(), _official_history_private_world_available=lambda: True,
         MEMORY_READY_REPLY_TIMEOUT_SECONDS=1, _conversation_memory_ready_for_reply=lambda: True,
         video_reply_settings_store=SimpleNamespace(image_snapshot=lambda: {'enabled': False}),
@@ -109,6 +110,32 @@ def test_quality_projection_rejects_arbitrary_values_and_boolean_counts():
                               'decision_rejection_reason': 'private text'}) == {'channel': 'qq'}
 
 
+def test_stage_and_voice_diagnostics_are_numeric_bounded_and_idempotent():
+    source = {'channel': 'qq', 'stage_timing_seconds': {'world': .25, 'emotion': .25,
+              'total': .3, 'writer': True, 'quality': float('nan'), 'private input': 'secret'},
+              'stage_cache_hits': {'writer': 1, 'reviewer': 2, 'rewriter': True, 'private': 1},
+              'stage_actual_calls': {'writer': 1, 'reviewer': 3, 'rewriter': -1},
+              'voice_prepare_status': 'timeout', 'voice_prepare_seconds': 60.1,
+              'voice_prepare_timeout_seconds': 60, 'delivery_basis': 'VOICE_RENDER_TIMEOUT',
+              'stage_cache': {'text': 'private model reply', 'key': 'sk-secret'}}
+    result = project_chat_task(source)
+    assert result['stage_timing_seconds'] == {'world': .25, 'emotion': .25, 'total': .3}
+    assert result['stage_cache_hits'] == {'writer': 1, 'reviewer': 2}
+    assert result['stage_actual_calls'] == {'writer': 1, 'reviewer': 3}
+    assert result['voice_prepare_timeout_seconds'] == 60
+    assert result['voice_prepare_status'] == 'timeout'
+    assert result['delivery_basis'] == 'VOICE_RENDER_TIMEOUT'
+    assert 'private' not in json.dumps(result) and 'sk-secret' not in json.dumps(result)
+    assert project_chat_task(result) == result
+
+
+@pytest.mark.parametrize('invalid', [True, float('inf'), float('-inf'), float('nan'), -1, 'sk-secret', 86401])
+def test_malformed_duration_never_enters_bundle(invalid):
+    projected = project_chat_task({'channel': 'qq', 'stage_timing_seconds': {'writer': invalid},
+                                  'voice_prepare_seconds': invalid, 'voice_prepare_timeout_seconds': invalid})
+    assert projected == {'channel': 'qq'}
+
+
 def test_letter_quality_diagnostics_survive_bundle_without_body_or_chat_channel():
     row = {'quality_status': 'blocked', 'reviewer_calls': 1, 'rewrite_calls': 1,
            'quality_error_code': 'REWRITE_INPUT_TOO_LARGE',
@@ -164,3 +191,13 @@ def test_quality_violation_projection_allowlists_codes_and_is_idempotent():
 @pytest.mark.parametrize('invalid', ['MEMORY_FABRICATION', {'code': 'STYLE_DRIFT'}, None, True])
 def test_quality_violation_projection_ignores_malformed_containers(invalid):
     assert project_chat_task({'quality_violation_codes': invalid}) == {}
+
+
+@pytest.mark.parametrize('state', ['SENDING', 'DELIVERED', 'UNKNOWN'])
+def test_generation_failure_notice_is_finite_and_survives_bundle_projection(state):
+    raw = {'channel': 'qq', 'delivery_status': 'FAILED', 'generation_failure_notice': state,
+           'reply_text': 'private unchecked draft', 'failure_notice_text': 'private text'}
+    projected = project_chat_task(raw)
+    assert projected == {'channel': 'qq', 'delivery_status': 'FAILED', 'generation_failure_notice': state}
+    assert project_chat_task(projected) == projected
+    assert project_chat_task({'generation_failure_notice': 'private exception'}) == {}

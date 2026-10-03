@@ -145,6 +145,26 @@ def test_cancelled_reply_cancels_both_semantic_requests():
     asyncio.run(scenario())
 
 
+def test_cancelled_interpretation_child_also_stops_emotion_before_parent_returns():
+    async def scenario():
+        started = asyncio.Event()
+        stopped = asyncio.Event()
+        class Interpreter:
+            async def interpret(self, text):
+                await started.wait()
+                raise asyncio.CancelledError()
+        async def appraise(text, *, now):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                stopped.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(run(appraise, interpreter=Interpreter()), .5)
+        assert stopped.is_set()
+    asyncio.run(scenario())
+
+
 def test_busy_conversation_still_projects_latest_reaction_in_bounded_space():
     from runtime.reply.character_emotion_context import project_emotion
     view = emotion_view()

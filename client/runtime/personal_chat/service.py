@@ -32,7 +32,9 @@ def _clear_draft(row):
                 'mailbox_notice_letter_id', 'decision_rejection_reason', 'semantic_shadow', 'expression_context',
                 'companion_decision', 'companion_timing', 'companion_delivery',
                 'speech_script', 'speech_intent', 'speech_status', 'speech_delivery_status', 'content_review',
-                'proactive_decision', 'proactive_basis', 'proactive_opportunity'):
+                'proactive_decision', 'proactive_basis', 'proactive_opportunity', 'generation_failure_notice',
+                'generation_context_at', 'stage_timing_seconds', 'stage_actual_calls', 'stage_cache_hits',
+                'voice_prepare_seconds', 'voice_prepare_status', 'voice_prepare_timeout_seconds'):
         row.pop(key, None)
 
 
@@ -229,6 +231,20 @@ class PersonalChatService:
                     return
                 event = updated
 
+    async def notify_generation_failure(self, event, send):
+        """One system notice per exhausted input; never publish an unchecked draft."""
+        sources = dict(event.sources).keys()
+        for row in reversed(self.rows):
+            if (row.get('binding_id') != event.binding_id or row.get('origin') == 'proactive'
+                    or row.get('superseded_by') or row.get('delivery_status') != 'FAILED'
+                    or row.get('generation_attempts', 0) < 2
+                    or not sources & row.get('source_messages', {}).keys()):
+                continue
+            correlated = send.for_exchange(event) if callable(getattr(send, 'for_exchange', None)) else send
+            await delivery_notice(row, correlated, self.persist, 'generation_failure_notice',
+                '【系统提示】这条消息的回复生成失败，暂时没能回复。可以稍后重新发一下。')
+            return
+
     async def _handle_batch(self, event, send):
         from .events import combine
         await self._merge_receipts(event)
@@ -353,7 +369,8 @@ class PersonalChatService:
                             'letter_invitation', 'initiative_preference', 'pause_until', 'letter_preference',
                             'letter_until', 'followup_at', 'listening_preference', 'requested_format', 'presentation_status',
                             'delivery_basis', 'voice_ready',
-                            'expression_context', 'companion_timing', 'companion_delivery'):
+                            'expression_context', 'companion_timing', 'companion_delivery',
+                            'voice_prepare_seconds', 'voice_prepare_status', 'voice_prepare_timeout_seconds'):
                     row.pop(key, None)
                 if not proactive:
                     row.pop('followup_quote', None)
