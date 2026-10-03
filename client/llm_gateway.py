@@ -862,8 +862,11 @@ class OpenAICompatibleAdapter(Gateway):
         }
         if key:
             headers["Authorization"] = "Bearer " + key
-        if request_id.startswith("letter-reply:"):
-            headers["Idempotency-Key"] = request_id
+        if request_id.startswith(("letter-reply:", "private-world-candidate:")):
+            # Durable candidate analysis is also a paid operation. Keep its key
+            # across consumers and restarts, including unusually long source IDs.
+            headers["Idempotency-Key"] = (request_id if re.fullmatch(r'[A-Za-z0-9_.:-]{1,100}', request_id)
+                                          else 'consumer:' + hashlib.sha256(request_id.encode()).hexdigest())
         headers["X-Request-ID"] = _wire_request_id(request_id, label)
         return headers
 

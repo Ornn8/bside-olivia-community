@@ -7,8 +7,11 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
 import json
+import inspect
+import math
 from pathlib import Path
 from typing import Mapping, Protocol
+from weakref import WeakValueDictionary
 
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
@@ -98,7 +101,9 @@ class NullPrivateWorldCandidateAnalyzer:
 
 
 class PrivateWorldCandidateAnalysisError(RuntimeError):
-    pass
+    def __init__(self, code: str, *, retryable: bool = False) -> None:
+        self.retryable = retryable
+        super().__init__(code)
 
 
 def _load_validator() -> Draft202012Validator:
@@ -210,15 +215,25 @@ class GatewayPrivateWorldCandidateAnalyzer:
                 confidence=confidence,
                 summary=str(payload["summary"]),
             )
+        except (asyncio.TimeoutError, GatewayError) as exc:
+            raise PrivateWorldCandidateAnalysisError(
+                "PRIVATE_WORLD_CANDIDATE_ANALYSIS_UNAVAILABLE",
+                retryable=isinstance(exc, asyncio.TimeoutError) or exc.retryable,
+            ) from exc
         except (
-            asyncio.TimeoutError,
-            GatewayError,
             json.JSONDecodeError,
             TypeError,
             ValueError,
         ) as exc:
             raise PrivateWorldCandidateAnalysisError(
-                "PRIVATE_WORLD_CANDIDATE_ANALYSIS_UNAVAILABLE"
+                "PRIVATE_WORLD_CANDIDATE_ANALYSIS_UNAVAILABLE",
+                # The JEV port reports transport failures as ValueError codes.
+                # Only these known transient codes may spend another attempt.
+                retryable=str(exc) in {
+                    'JEV_UNAVAILABLE', 'JEV_TIMEOUT',
+                    *(f'JEV_HTTP_{status}' for status in (429, 500, 502, 503, 504, 529)),
+                    *(f'JEV_PROVIDER_HTTP_{status}' for status in (429, 500, 502, 503, 504, 529)),
+                },
             ) from exc
 
 
@@ -347,15 +362,113 @@ class CandidateDeliveryStatus(StrEnum):
     UNAVAILABLE = "UNAVAILABLE"
 
 
+_ANALYSIS_ATTEMPTS = 3
+_analysis_locks = WeakValueDictionary()
+
+
+async def _persist_candidate(persist):
+    if persist is not None:
+        result = persist()
+        if inspect.isawaitable(result):
+            await result
+
+
+async def _candidate_proposal(analyzer, request, checkpoint, persist):
+    if checkpoint is None:
+        return await analyzer.analyze(request)
+    identity = f'private-world-candidate:{request.source_letter_id}:{request.source_reply_revision}'
+    previous = checkpoint.get('candidate_analysis_operation_id')
+    if previous is not None and previous != identity:
+        for key in tuple(checkpoint):
+            if key.startswith('candidate_analysis_'):
+                checkpoint.pop(key)
+    checkpoint['candidate_analysis_operation_id'] = identity
+    if 'candidate_analysis_result' in checkpoint:
+        saved = checkpoint['candidate_analysis_result']
+        if saved is None:
+            return None
+        try:
+            confidence = saved['confidence']
+            summary = saved['summary']
+            if (not isinstance(confidence, (int, float)) or isinstance(confidence, bool)
+                    or not math.isfinite(confidence) or not 0 <= confidence <= 1
+                    or not isinstance(summary, str) or not 1 <= len(summary) <= _EXCERPT_LIMIT):
+                raise ValueError('invalid cached proposal')
+            return PrivateWorldCandidateProposal(CandidateType(saved['candidate_type']), confidence, summary)
+        except (KeyError, TypeError, ValueError):
+            checkpoint.update(candidate_analysis_status='FAILED', candidate_analysis_retry_status='TERMINAL_REJECTION',
+                              candidate_analysis_failure_reason='PRIVATE_WORLD_CANDIDATE_CACHE_INVALID')
+            checkpoint.pop('candidate_analysis_retry_at', None)
+            await _persist_candidate(persist)
+            raise PrivateWorldCandidateAnalysisError('PRIVATE_WORLD_CANDIDATE_CACHE_INVALID') from None
+    attempts = checkpoint.get('candidate_analysis_attempts', 0)
+    if attempts >= _ANALYSIS_ATTEMPTS:
+        checkpoint['candidate_analysis_retry_status'] = 'EXHAUSTED'
+    if checkpoint.get('candidate_analysis_retry_status') in {'TERMINAL_REJECTION', 'EXHAUSTED'}:
+        checkpoint.pop('candidate_analysis_retry_at', None)
+        await _persist_candidate(persist)
+        raise PrivateWorldCandidateAnalysisError('PRIVATE_WORLD_CANDIDATE_ANALYSIS_UNAVAILABLE')
+    now = datetime.now().timestamp()
+    if now < checkpoint.get('candidate_analysis_retry_at', 0):
+        raise PrivateWorldCandidateAnalysisError('PRIVATE_WORLD_CANDIDATE_ANALYSIS_UNAVAILABLE')
+    checkpoint['candidate_analysis_attempts'] = attempts + 1
+    try:
+        await _persist_candidate(persist)
+    except Exception:
+        checkpoint['candidate_analysis_attempts'] = attempts
+        raise
+    try:
+        proposal = await analyzer.analyze(request)
+        if proposal is not None and not isinstance(proposal, PrivateWorldCandidateProposal):
+            raise PrivateWorldCandidateAnalysisError('PRIVATE_WORLD_CANDIDATE_ANALYSIS_UNAVAILABLE')
+    except asyncio.CancelledError:
+        raise
+    except (RuntimeError, OSError, TypeError, ValueError) as exc:
+        checkpoint['candidate_analysis_failure_reason'] = 'PRIVATE_WORLD_CANDIDATE_ANALYSIS_UNAVAILABLE'
+        if not getattr(exc, 'retryable', not isinstance(exc, (TypeError, ValueError))):
+            checkpoint['candidate_analysis_retry_status'] = 'TERMINAL_REJECTION'
+            checkpoint.pop('candidate_analysis_retry_at', None)
+        elif checkpoint['candidate_analysis_attempts'] >= _ANALYSIS_ATTEMPTS:
+            checkpoint['candidate_analysis_retry_status'] = 'EXHAUSTED'
+            checkpoint.pop('candidate_analysis_retry_at', None)
+        else:
+            checkpoint['candidate_analysis_retry_at'] = now + 30 * 2 ** attempts
+        await _persist_candidate(persist)
+        raise
+    checkpoint['candidate_analysis_result'] = (None if proposal is None else {
+        'candidate_type': proposal.candidate_type.value, 'confidence': proposal.confidence,
+        'summary': proposal.summary,
+    })
+    checkpoint['candidate_analysis_status'] = 'COMPLETED'
+    checkpoint.pop('candidate_analysis_retry_at', None)
+    checkpoint.pop('candidate_analysis_retry_status', None)
+    checkpoint.pop('candidate_analysis_failure_reason', None)
+    # Save the model result before local SQLite delivery. A local write failure
+    # must replay this proposal rather than pay to analyze the exchange again.
+    await _persist_candidate(persist)
+    return proposal
+
+
 async def deliver_private_world_candidate(
     analyzer: PrivateWorldCandidateAnalyzer,
     store: SQLitePrivateWorldCandidateStore,
     request: PrivateWorldCandidateRequest,
+    *,
+    checkpoint: dict | None = None,
+    persist=None,
 ) -> CandidateDeliveryStatus:
-    """Analyze once and persist only a bounded pending proposal."""
+    """Share a durable extraction across replay; only local delivery retries."""
+    if checkpoint is None:
+        return await _deliver_candidate(analyzer, store, request, checkpoint, persist)
+    lock = _analysis_locks.setdefault(id(checkpoint), asyncio.Lock())
+    async with lock:
+        return await _deliver_candidate(analyzer, store, request, checkpoint, persist)
+
+
+async def _deliver_candidate(analyzer, store, request, checkpoint, persist):
 
     try:
-        proposal = await analyzer.analyze(request)
+        proposal = await _candidate_proposal(analyzer, request, checkpoint, persist)
         if proposal is None:
             return CandidateDeliveryStatus.SKIPPED
         if not isinstance(proposal, PrivateWorldCandidateProposal):

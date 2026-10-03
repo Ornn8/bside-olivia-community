@@ -275,6 +275,21 @@ def project_reply_quality(value: Mapping[str, object]) -> dict[str, object]:
 
 def project_chat_task(value: Mapping[str, object]) -> dict[str, object]:
     result = {}
+    for field, allowed in {
+        'candidate_analysis_status': {'COMPLETED', 'FAILED'},
+        'candidate_analysis_retry_status': {'TERMINAL_REJECTION', 'EXHAUSTED'},
+    }.items():
+        status = value.get(field)
+        if isinstance(status, str) and status in allowed:
+            result[field] = status
+    attempts = value.get('candidate_analysis_attempts')
+    if type(attempts) is int and 0 <= attempts <= 100_000:
+        result['candidate_analysis_attempts'] = attempts
+    reason = value.get('candidate_analysis_failure_reason')
+    if isinstance(reason, str) and reason in {
+        'PRIVATE_WORLD_CANDIDATE_ANALYSIS_UNAVAILABLE', 'PRIVATE_WORLD_CANDIDATE_CACHE_INVALID',
+    }:
+        result['candidate_analysis_failure_reason'] = reason
     result.update(project_reply_quality(value))
     if value.get('channel') in ('qq', 'wechat'):
         result['channel'] = value['channel']

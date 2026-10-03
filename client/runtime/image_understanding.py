@@ -14,6 +14,12 @@ from weakref import WeakValueDictionary
 import aiohttp
 
 _commit_locks = WeakValueDictionary()
+_DESCRIPTION_ATTEMPTS = 3
+_DESCRIPTION_TERMINAL = {
+    'IMAGE_VISION_INVALID', 'IMAGE_VISION_INCOMPLETE', 'IMAGE_VISION_DUPLICATE',
+    'IMAGE_VISION_NOT_CONFIGURED', 'IMAGE_VISION_AUTH_FAILED', 'IMAGE_VISION_QUOTA_EXHAUSTED',
+    'IMAGE_VISION_REJECTED', 'IMAGE_SOURCE_INVALID', 'IMAGE_INPUT_INVALID', 'IMAGE_INPUT_TOO_LARGE',
+}
 
 IMAGE_BOUNDARY = ('图片观察只说明画面里可见的内容，识别可能有误。用户图片不证明用户本人、实际所在地或经历；'
                   'source=user只表示用户发送，不表示用户拍摄；图中人物不能仅凭长相认定是林离。'
@@ -67,7 +73,7 @@ def _vision_connection(server):
     return url, key
 
 
-async def describe_image(server, path, source='generated'):
+async def describe_image(server, path, source='generated', *, operation_id=None):
     if source not in {'generated', 'user'}:
         raise ValueError('IMAGE_SOURCE_INVALID')
     digest, width, height, uri = await asyncio.to_thread(_pixels, path)
@@ -81,12 +87,22 @@ async def describe_image(server, path, source='generated'):
     from original_client_relay_api import RELAY_BASE
     from runtime.remote_generation import gpu_tls_context
     tls = {'ssl': gpu_tls_context()} if url == RELAY_BASE else {}
+    identity = f'image-observation-v1:{operation_id or digest}:{source}:{digest}'
+    request_id = 'image-observation:' + hashlib.sha256(identity.encode()).hexdigest()
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60)) as session:
         async with session.post(url + '/chat/completions', json=payload, allow_redirects=False,
                                 **tls,
                                 headers={'Authorization': 'Bearer ' + key,
+                                         'Idempotency-Key': request_id,
                                          'X-Request-ID': 'image-observation-' + digest[:32]}) as response:
             if response.status != 200:
+                code = ({409: 'IMAGE_VISION_DUPLICATE', 401: 'IMAGE_VISION_AUTH_FAILED',
+                         403: 'IMAGE_VISION_AUTH_FAILED', 402: 'IMAGE_VISION_QUOTA_EXHAUSTED'}
+                        .get(response.status))
+                if code is not None:
+                    raise RuntimeError(code)
+                if response.status in {400, 404, 413, 422}:
+                    raise RuntimeError('IMAGE_VISION_REJECTED')
                 raise RuntimeError('IMAGE_VISION_UNAVAILABLE')
             raw = bytearray()
             async for chunk in response.content.iter_chunked(16384):
@@ -191,17 +207,44 @@ async def _commit_image_memory(server, row):
         if not row.get('image_description') and row.get('prepared_image'):
             row['image_world_status'] = 'PENDING'
             now = datetime.now(timezone.utc).timestamp()
-            if now >= row.get('image_description_retry_at', 0):
+            attempts = row.get('image_description_attempts', row.get('image_description_failures', 0))
+            if row.get('image_description_retry_status') in {'TERMINAL_REJECTION', 'EXHAUSTED'}:
+                row.pop('image_description_retry_at', None)
+            elif attempts >= _DESCRIPTION_ATTEMPTS:
+                row['image_description_retry_status'] = 'EXHAUSTED'
+                row.setdefault('image_description_failure_reason', 'IMAGE_VISION_UNAVAILABLE')
+                row.pop('image_description_retry_at', None)
+            elif now >= row.get('image_description_retry_at', 0):
+                # Reserve durably before dispatch. Cancellation or a restart must
+                # not restore the budget for an uncertain, potentially paid call.
+                row['image_description_attempts'] = attempts + 1
                 try:
-                    row['image_description'] = await describe_image(server, row['prepared_image'], source='generated')
+                    server._persist_store_state()
+                except Exception:
+                    row['image_description_attempts'] = attempts
+                    raise
+                try:
+                    row['image_description'] = await describe_image(server, row['prepared_image'],
+                        source='generated', operation_id=str(row['letter_id']))
                     row['image_description_status'] = 'COMPLETED'
                     row.pop('image_description_retry_at', None)
+                    row.pop('image_description_retry_status', None)
+                    row.pop('image_description_failure_reason', None)
                 except asyncio.CancelledError:
                     raise
-                except Exception:
+                except Exception as exc:
                     count = row.get('image_description_failures', 0) + 1
+                    reason = str(exc) if str(exc) in _DESCRIPTION_TERMINAL else 'IMAGE_VISION_UNAVAILABLE'
                     row.update(image_description_status='PENDING', image_description_failures=count,
-                               image_description_retry_at=now + min(3600, 60 * 2 ** min(count - 1, 6)))
+                               image_description_failure_reason=reason)
+                    if reason in _DESCRIPTION_TERMINAL:
+                        row['image_description_retry_status'] = 'TERMINAL_REJECTION'
+                        row.pop('image_description_retry_at', None)
+                    elif row['image_description_attempts'] >= _DESCRIPTION_ATTEMPTS:
+                        row['image_description_retry_status'] = 'EXHAUSTED'
+                        row.pop('image_description_retry_at', None)
+                    else:
+                        row['image_description_retry_at'] = now + min(3600, 60 * 2 ** min(count - 1, 6))
             server._persist_store_state()
     evidence = image_evidence(row)
     if not evidence:
@@ -265,7 +308,8 @@ async def understand_incoming(server, event, row):
         try:
             if not path.exists():
                 await _download_qq_image(url, path)
-            item = await describe_image(server, path, source='user')
+            item = await describe_image(server, path, source='user',
+                operation_id=str(row['letter_id']) + ':' + identity)
             item['input_id'] = identity
             observations.append(item)
             server._persist_store_state()

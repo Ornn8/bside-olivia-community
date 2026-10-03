@@ -657,6 +657,18 @@ async def _commit_candidates(server, row):
     if row.get("private_world_status") != "COMMITTED":
         return  # Candidate evidence requires the canonical world delivery first.
     if row.get("candidate_delivery_status") not in {"CREATED", "DUPLICATE", "SKIPPED", "DISABLED"}:
+        if ('candidate_analysis_attempts' not in row
+                and row.get('consumer_error_code') == 'PERSONAL_CHAT_CANDIDATE_UNAVAILABLE'):
+            # Existing failed queues already spent this budget before the fix.
+            row['candidate_analysis_attempts'] = row.get('consumer_failures', 0)
+        if 'candidate_analysis_result' not in row or row.get('candidate_analysis_status') == 'FAILED':
+            if row.get('candidate_analysis_attempts', 0) >= 3:
+                row['candidate_analysis_retry_status'] = 'EXHAUSTED'
+                row.setdefault('candidate_analysis_failure_reason', 'PRIVATE_WORLD_CANDIDATE_ANALYSIS_UNAVAILABLE')
+            if row.get('candidate_analysis_retry_status') in {'TERMINAL_REJECTION', 'EXHAUSTED'}:
+                row.pop('candidate_analysis_retry_at', None)
+                await persist_chat(server)
+                return
         if row.get('origin') == 'proactive':
             row['candidate_delivery_status'] = 'SKIPPED'
         elif server.private_world_candidate_store is None:
@@ -665,6 +677,8 @@ async def _commit_candidates(server, row):
             result = await server._deliver_private_world_candidate(row, row["content"], row["reply_text"])
             status = getattr(result, "value", None)
             if status not in {"CREATED", "DUPLICATE", "SKIPPED"}:
+                if row.get('candidate_analysis_retry_status') in {'TERMINAL_REJECTION', 'EXHAUSTED'}:
+                    return
                 raise RuntimeError("PERSONAL_CHAT_CANDIDATE_UNAVAILABLE")
             row["candidate_delivery_status"] = status
         await persist_chat(server)

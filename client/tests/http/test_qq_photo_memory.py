@@ -185,7 +185,7 @@ def test_incoming_retry_uses_saved_pixel_observation_and_world_failure_keeps_rep
     async def scenario():
         calls = []
         async def download(url, path): path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(b'synthetic')
-        async def describe(server, path, source): calls.append(source); return observation(source)
+        async def describe(server, path, source, **kwargs): calls.append(source); return observation(source)
         def unavailable(event): raise OSError('synthetic')
         monkeypatch.setattr(vision, '_download_qq_image', download)
         monkeypatch.setattr(vision, 'describe_image', describe)

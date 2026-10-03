@@ -5898,6 +5898,8 @@ async def _deliver_private_world_candidate(
         private_world_candidate_analyzer,
         store,
         request,
+        checkpoint=letter,
+        persist=_persist_store_state,
     )
 
 

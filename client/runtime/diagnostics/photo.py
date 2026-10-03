@@ -11,12 +11,15 @@ def project_photo(row):
         'image_cloud_status': {'queued', 'running', 'succeeded', 'failed', 'cancelled'},
         'image_delivery_status': {'pending', 'sending', 'delivered', 'unknown'},
         'image_world_status': {'pending', 'completed', 'committed', 'failed'},
+        'image_description_status': {'pending', 'completed'},
+        'image_description_retry_status': {'terminal_rejection', 'exhausted'},
     }
     for field, allowed in fields.items():
         value = row.get(field)
         if isinstance(value, str) and value.lower() in allowed:
             result[field] = value.lower()
     for field, pattern in (('image_error_code', r'[A-Z][A-Z0-9_]{0,95}'),
+                           ('image_description_failure_reason', r'IMAGE_[A-Z0-9_]{1,80}'),
                            ('image_cloud_task_id', r'[a-f0-9]{32}')):
         value = row.get(field)
         if isinstance(value, str) and re.fullmatch(pattern, value):
@@ -27,6 +30,10 @@ def project_photo(row):
     count = row.get('image_generation_failures')
     if type(count) is int and 0 <= count <= 100:
         result['image_generation_failures'] = count
+    for field in ('image_description_attempts', 'image_description_failures'):
+        count = row.get(field)
+        if type(count) is int and 0 <= count <= 100_000:
+            result[field] = count
     settings = row.get('image_reply_settings')
     resolution = row.get('image_resolution') or (settings.get('resolution') if isinstance(settings, Mapping) else None)
     if isinstance(resolution, str) and resolution in {'1K', '2K', '4K'}:
