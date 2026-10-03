@@ -82,6 +82,107 @@ def test_missing_invalid_or_unsupported_decision_cannot_be_sent(raw):
         decode(raw, user='明天找我', now=datetime(2026,9,13,12,tzinfo=LOCAL).timestamp())
 
 
+@pytest.mark.parametrize('kind,user', [
+    ('wait_user', '我还没说完，先等我说完'),
+    ('no_reply', '这一条不用回复我'),
+])
+def test_explicit_user_silence_requires_current_quote_and_exposes_finite_kind(kind, user):
+    decision = decode(envelope(text='', skip=True, silence=dict(kind=kind, evidence=user)),
+                      user=user, now=1, allow_user_silence=True)
+    assert decision['skip'] and decision['text'] == ''
+    assert decision['silence_kind'] == kind
+    assert decision['silence'] == dict(kind=kind, evidence=user)
+    assert decision['initiative'] == 'keep' and not decision['followup_cancel']
+
+
+def test_user_silence_still_requires_explicit_decoder_opt_in():
+    user = '先等我说完'
+    with pytest.raises(ValueError, match='DECISION_INVALID'):
+        decode(envelope(text='', skip=True, silence=dict(kind='wait_user', evidence=user)),
+               user=user, now=1)
+
+
+@pytest.mark.parametrize('silence', [
+    None, [], 'no_reply', {},
+    dict(kind='defer', evidence='先等我说完'),
+    dict(kind=True, evidence='先等我说完'),
+    dict(kind='no_reply', evidence=''),
+    dict(kind='no_reply', evidence='  \n'),
+    dict(kind='no_reply', evidence=1),
+    dict(kind='no_reply', evidence='上一轮说不用回复'),
+    dict(kind='no_reply', evidence='先等我说完', due_at='2026-10-04T12:00:00+08:00'),
+    dict(kind='wait_user'),
+    dict(evidence='先等我说完'),
+])
+def test_malformed_or_unbound_user_silence_cannot_terminate_turn(silence):
+    with pytest.raises(ValueError, match='DECISION_INVALID') as error:
+        decode(envelope(text='', skip=True, silence=silence),
+               user='先等我说完', now=1, allow_user_silence=True)
+    assert error.value.reason == 'SILENCE_INVALID'
+
+
+def test_skip_without_silence_remains_invalid_even_when_decoder_opts_in():
+    with pytest.raises(ValueError, match='DECISION_INVALID'):
+        decode(envelope(text='', skip=True), user='今天累得有点难受', now=1,
+               allow_user_silence=True)
+
+
+@pytest.mark.parametrize('skip,text', [(False, '好，我等你'), (True, '好，我等你')])
+def test_silence_cannot_accompany_reply_text_or_non_skip(skip, text):
+    user = '先等我说完'
+    with pytest.raises(ValueError, match='DECISION_INVALID'):
+        decode(envelope(text=text, skip=skip, silence=dict(kind='wait_user', evidence=user)),
+               user=user, now=1, allow_user_silence=True)
+
+
+def test_non_skip_cannot_carry_null_silence():
+    with pytest.raises(ValueError, match='DECISION_INVALID'):
+        decode(envelope(silence=None), user='今天怎么样', now=1, allow_user_silence=True)
+
+
+def test_normal_reply_has_no_silence_disposition():
+    assert decode(envelope(), user='你好', now=1, allow_user_silence=True)['silence_kind'] is None
+
+
+def test_proactive_skip_keeps_existing_contract_and_cannot_authorize_user_controls():
+    user = '不用回复，也别主动找我'
+    decision = decode(envelope(text='', skip=True, initiative='pause', evidence=user),
+                      user=user, now=1, proactive=True, allow_user_silence=True)
+    assert decision['skip'] and decision['silence_kind'] is None
+    assert decision['initiative'] == 'keep'
+    assert decision['dropped_controls'] == 'UNSUPPORTED_PREFERENCE_CHANGE'
+    with pytest.raises(ValueError, match='DECISION_INVALID'):
+        decode(envelope(text='', skip=True, initiative='pause', evidence=user,
+                        silence=dict(kind='no_reply', evidence=user)),
+               user=user, now=1, proactive=True, allow_user_silence=True)
+
+
+def test_valid_user_silence_preserves_separately_validated_pause_and_cancellation():
+    user = '这一条不用回复我，也别主动找我，之前的约定取消'
+    decision = decode(envelope(text='', skip=True, initiative='pause', followup_at='cancel',
+                        evidence='别主动找我，之前的约定取消',
+                        silence=dict(kind='no_reply', evidence='这一条不用回复我')),
+                      user=user, now=1, allow_user_silence=True)
+    assert decision['silence_kind'] == 'no_reply'
+    assert decision['initiative'] == 'pause' and decision['pause_until'] is None
+    assert decision['followup_cancel'] and decision['followup_at'] is None
+
+
+@pytest.mark.parametrize('controls,reason', [
+    (dict(initiative='pause', evidence='伪造原话'), 'UNSUPPORTED_PREFERENCE_CHANGE'),
+    (dict(followup_at='2030-01-01T12:00:00+09:00', evidence='不用回复我'), 'TIME_RANGE'),
+])
+def test_user_silence_does_not_bypass_control_evidence_or_time_limits(controls, reason):
+    user = '不用回复我'
+    decision = decode(envelope(text='', skip=True, silence=dict(kind='no_reply', evidence=user), **controls),
+                      user=user, now=datetime(2026,10,3,12,tzinfo=LOCAL).timestamp(),
+                      allow_user_silence=True)
+    assert decision['silence_kind'] == 'no_reply'
+    assert decision['dropped_controls'] == reason
+    assert decision['initiative'] == 'keep' and decision['followup_at'] is None
+    assert not decision['followup_cancel']
+
+
 @pytest.mark.parametrize('raw,reason', [
     ('```json\n' + envelope(initiative='open', evidence='可以主动找我') + '\n```', 'UNSUPPORTED_PREFERENCE_CHANGE'),
     (envelope(initiative='pause', evidence='伪造原话'), 'UNSUPPORTED_PREFERENCE_CHANGE'),

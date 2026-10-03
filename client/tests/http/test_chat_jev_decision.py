@@ -248,12 +248,44 @@ def test_optional_default_voice_render_failure_still_delivers_reply_text(monkeyp
 
 
 @pytest.mark.parametrize('timing', ['wait_user', 'defer', 'no_reply'])
-def test_backend_silent_decision_does_not_decode_empty_writer_or_render(monkeypatch, tmp_path, timing):
+def test_backend_bare_silent_proposal_is_not_authority(monkeypatch, tmp_path, timing):
     server, row, _, saved, audio = server_fixture(monkeypatch, tmp_path, pipeline_result(timing=timing, text=''))
-    assert asyncio.run(backend.generate(server, PersonalMessage('qq', 'b', 'u', '1', 'Hello'), row)) is None
+    with pytest.raises(ValueError, match='PERSONAL_CHAT_DECISION_INVALID'):
+        asyncio.run(backend.generate(server, PersonalMessage('qq', 'b', 'u', '1', 'Hello'), row))
     assert row['companion_timing'] == timing and row['companion_decision'] == RECORD
     assert 'requested_format' not in row and audio == []
-    assert saved[-1]['companion_timing'] == timing
+
+
+@pytest.mark.parametrize('kind', ['wait_user', 'no_reply'])
+@pytest.mark.parametrize('control', ['pause', 'cancel_followup', 'none'])
+def test_backend_authorized_quiet_applies_user_controls_without_fake_delivery(monkeypatch, tmp_path, kind, control):
+    user = 'Wait for me; pause contact; cancel the reminder.'
+    body = json.loads(envelope(text='', skip=True, evidence=user,
+        initiative='pause' if control == 'pause' else 'keep',
+        followup_at='cancel' if control == 'cancel_followup' else None))
+    body['silence'] = dict(kind=kind, evidence=user)
+    result = pipeline_result(timing=kind, delivery=None, text=json.dumps(body))
+    result.silence_authorized = True  # Unit boundary: the pipeline's independent gate passed.
+    server, row, _, saved, audio = server_fixture(monkeypatch, tmp_path, result)
+    assert asyncio.run(backend.generate(server, PersonalMessage('qq', 'b', 'u', '1', user), row)) is None
+    assert row['silence_reason'] == ('USER_REQUESTED_WAIT' if kind == 'wait_user' else 'USER_REQUESTED_NO_REPLY')
+    assert row.get('user_controls_applied', False) is (control != 'none')
+    if control == 'pause':
+        assert row['initiative_preference'] == 'pause' and row['followup_at'] is None
+    elif control == 'cancel_followup':
+        assert row['followup_at'] is None
+    assert not audio and row.get('delivery_status') != 'DELIVERED'
+    assert saved[-1]['silence_reason'] == row['silence_reason']
+
+
+def test_backend_writer_quote_without_independent_permission_is_rejected(monkeypatch, tmp_path):
+    body = json.loads(envelope(text='', skip=True))
+    body['silence'] = dict(kind='wait_user', evidence='Explain')
+    server, row, _, _, audio = server_fixture(monkeypatch, tmp_path,
+        pipeline_result(timing='wait_user', text=json.dumps(body)))
+    with pytest.raises(ValueError, match='PERSONAL_CHAT_DECISION_INVALID'):
+        asyncio.run(backend.generate(server, PersonalMessage('qq', 'b', 'u', '1', 'Explain this.'), row))
+    assert 'silence_reason' not in row and not audio
 
 
 @pytest.mark.parametrize('supersession', ['revision', 'new_receipt'])
@@ -385,13 +417,14 @@ def test_single_jev_plan_does_not_append_mailbox_notice_or_sticker(monkeypatch, 
         assert row['mailbox_notice_letter_id'] == 'unread' and row['sticker_id'] == 'linli-01'
 
 
-@pytest.mark.parametrize('timing', ['wait_user', 'defer', 'no_reply'])
-def test_service_silent_decision_is_durable_without_delivery_or_consumers(timing):
+@pytest.mark.parametrize('timing,reason', [('wait_user', 'USER_REQUESTED_WAIT'),
+                                        ('no_reply', 'USER_REQUESTED_NO_REPLY')])
+def test_service_silent_decision_is_durable_without_delivery_or_consumers(timing, reason):
     async def scenario():
         rows, generated = [], []
         async def generate(event, row):
             generated.append(event.text)
-            row.update(companion_decision=deepcopy(RECORD), companion_timing=timing)
+            row.update(companion_decision=deepcopy(RECORD), companion_timing=timing, silence_reason=reason)
             return None
         async def forbidden(*a): raise AssertionError('silent turn must not send or commit')
         service = PersonalChatService(rows, lambda: None, generate, forbidden,
@@ -399,6 +432,7 @@ def test_service_silent_decision_is_durable_without_delivery_or_consumers(timing
         event = PersonalMessage('qq', 'b', 'u', '1', 'Hello')
         await service.handle(event, forbidden)
         assert rows[0]['delivery_status'] == rows[0]['letter_status'] == 'SKIPPED'
+        assert rows[0]['skip_reason'] == reason
         assert not service.photo_tasks and not service.consumer_tasks
         restarted = PersonalChatService(json.loads(json.dumps(rows)), lambda: None, generate,
             forbidden, service.bindings, photo=forbidden)

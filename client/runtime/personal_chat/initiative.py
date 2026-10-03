@@ -11,6 +11,12 @@ def delivered(row):
     return row.get('delivery_status') == 'DELIVERED'
 
 
+def controls_available(row):
+    """Current user authority is independent of an outgoing send receipt."""
+    return (row.get('origin') != 'proactive' and not row.get('superseded_by')
+            and (delivered(row) or row.get('user_controls_applied') is True))
+
+
 def letter_invitation_allowed(chats, letters, now):
     # Both transports share these records. Failed delivery does not count as an invitation.
     recent = [r for r in chats if delivered(r)]
@@ -18,7 +24,8 @@ def letter_invitation_allowed(chats, letters, now):
                        if r.get('letter_invitation')), default=0)
     last_letter = max((float(r.get('created_at', 0)) for r in letters
                        if r.get('content') and r.get('origin') != 'proactive'), default=0)
-    preference = next((r for r in reversed(recent) if r.get('letter_preference')), {})
+    preference = next((r for r in reversed(chats)
+                       if controls_available(r) and r.get('letter_preference')), {})
     paused = preference.get('letter_preference') == 'pause' and (
         preference.get('letter_until') is None or now < preference['letter_until'])
     return not paused and now - max(last_invite, last_letter) >= 7 * 86400
@@ -79,7 +86,7 @@ class Initiative:
         self.due = self.clock() + self._next_interval()
 
     def pending_followup(self):
-        latest = next((r for r in reversed(self.rows) if delivered(r) and 'followup_at' in r
+        latest = next((r for r in reversed(self.rows) if controls_available(r) and 'followup_at' in r
                        and r.get('origin') != 'proactive'), None)
         if not latest or not latest['followup_at']:
             return None
@@ -92,11 +99,14 @@ class Initiative:
 
     def ready(self):
         now = self.clock()
-        latest_user = next((r for r in reversed(self.rows) if r.get('origin') != 'proactive' and not r.get('superseded_by')), None)
-        if latest_user and latest_user.get('delivery_status') in {'RECEIVED','FAILED','GENERATING','GENERATED','MEDIA_PENDING','SENDING','DELIVERY_UNCONFIRMED'}:
-            return False  # Do not initiate over an unresolved user request (possibly a cancellation).
         followup = self.pending_followup()
         scheduled = followup is not None and now >= followup['followup_at']
+        latest_user = next((r for r in reversed(self.rows) if r.get('origin') != 'proactive' and not r.get('superseded_by')), None)
+        if (latest_user and latest_user.get('companion_timing') == 'wait_user'
+                and latest_user.get('silence_reason') == 'USER_REQUESTED_WAIT' and not scheduled):
+            return False  # Ordinary initiative waits; a validated due appointment remains eligible.
+        if latest_user and latest_user.get('delivery_status') in {'RECEIVED','FAILED','GENERATING','GENERATED','MEDIA_PENDING','SENDING','DELIVERY_UNCONFIRMED'}:
+            return False  # Do not initiate over an unresolved user request (possibly a cancellation).
         if not self.target:
             return False
         profile = self.profile()
@@ -119,7 +129,8 @@ class Initiative:
         history = [r for r in self.rows if delivered(r)]
         if any(r.get('delivery_status') in {'SENDING', 'DELIVERY_UNCONFIRMED'} for r in self.rows):
             return False
-        preference = next((r for r in reversed(history) if r.get('initiative_preference')), {})
+        preference = next((r for r in reversed(self.rows)
+                           if controls_available(r) and r.get('initiative_preference')), {})
         if not scheduled and preference.get('initiative_preference') == 'pause' and (
                 preference.get('pause_until') is None or now < preference['pause_until']):
             return False

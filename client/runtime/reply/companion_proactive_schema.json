@@ -176,6 +176,7 @@
                 "cooldown",
                 "unanswered_limit",
                 "pending_reply",
+                "user_waiting",
                 "channel_unavailable",
                 "permission_missing"
               ]

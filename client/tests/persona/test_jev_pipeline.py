@@ -78,11 +78,19 @@ def test_jev_is_consumed_once_by_writer_and_replaces_old_interpretation(mode):
 
 
 @pytest.mark.parametrize('timing', ['no_reply', 'wait_user', 'defer'])
-def test_silent_turn_does_not_call_writer_or_fake_delivery(timing):
+def test_ordinary_silent_proposal_is_reconsidered_by_writer(timing):
     result, engine = run(Port(plan(timing=timing)), mode=ReplyMode.FUTURE_IM)
+    assert result.state is ReplyState.COMPLETED and result.text
+    assert result.companion_timing == 'now' and len(engine.requests) == 1
+    assert result.companion_delivery == 'text'
+    assert result.companion_decision['plan']['proposal']['timing'] == timing
+
+
+@pytest.mark.parametrize('timing', ['no_reply', 'wait_user', 'defer'])
+def test_letter_silence_contract_is_unchanged(timing):
+    result, engine = run(Port(plan(timing=timing)), mode=ReplyMode.TEXT_LETTER)
     assert result.state is ReplyState.COMPLETED and result.text == ''
     assert result.companion_timing == timing and not engine.requests
-    assert result.companion_delivery is None
 
 
 def test_jev_failure_is_explicit_and_does_not_use_old_interpreter():

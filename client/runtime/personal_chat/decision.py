@@ -7,6 +7,8 @@ from .presentation import VOICE_POLICY
 
 INSTRUCTION = '''以 JSON 对象输出本轮决定，不要 Markdown、末尾控制标记或 JSON 外的正文。
 字段必须完整：{"text":"实际发给用户的正文","delivery":"voice","text_reason":null,"listening":"keep","initiative":"keep","pause_until":null,"letter":"keep","letter_until":null,"followup_at":null,"evidence":"","sticker":null,"skip":false}。
+普通用户回合中，完整的问题、分享、求助和请求都要回应；JEV的wait_user/defer/no_reply只是建议，不能单独决定跳过。只有当前用户明确要求先等其后续消息或无需回答时，才可skip=true,text=""，并额外输出silence对象，例如silence={"kind":"wait_user","evidence":"先等我说完"}；kind只允许wait_user或no_reply，evidence必须是支持等待或不回答的当前用户消息中非空的逐字摘录。不能用历史原话、你自己的推断或JEV建议代替证据。skip=false时不得包含silence。
+defer没有已持久保存的到期约定，不能结束普通用户回合；用户明确希望稍后联系时，先在本轮自然确认，并通过已有followup_at及当前原话验证约定。时间不清楚时先问清楚，不假装已经安排，也不把本轮回复推迟到未来。
 QQ语音可转文字。语音可用且本轮媒体约束允许时默认voice；text_reason仅用于你自己确实不能开口（speaker_unavailable，须有当前世界依据），或正文包含必须原样复制的代码、链接、公式（verbatim_text），其他情况为null。用户可能不便听、内容较长、刚发过语音、关系不够亲近，都不是文字例外。不要把接收方上课或开会误当成你自己不能说话。
 delivery为text或voice；listening为keep/text_only/voice_ok；initiative和letter为keep/pause/open。偏好只根据当前用户明确表达改变，改变时evidence必须摘录能支持决定的当前原话。keep不改旧偏好。临时忙到某时用pause加pause_until；等用户回来或长期拒绝用pause加null。letter同理，今天不想写不等于永远不写。
 followup_at是用户明确希望你到时联系的时间，必须有evidence原话；null不新增任务；用户只取消之前约定时用字符串cancel，不必关闭所有主动聊天。用户取消所有主动联系时initiative=pause且pause_until=null也会取消旧任务。时间用带时区的ISO8601，基于decision_now计算，最多未来七天，过于含糊先自然询问而非猜一个日期。pause_until不能晚于followup_at。你自己发起的主动联系只在北京时间（UTC+8）8:30至24:00；用户明确要求的联系时间（如叫醒、到点提醒）任何时刻都可以安排，特殊情况下作息可以调整。任务会在软件运行且渠道可用时执行；不要承诺关机期间送达。没填有效followup_at不得在正文答应某时主动来找用户。
@@ -14,7 +16,7 @@ followup_at是用户明确希望你到时联系的时间，必须有evidence原�
 channel为qq时，按即时聊天节奏回复：日常问候、照片分享和一句话闲聊，用1至3个短句，通常20至80字。先回应当前消息的明确问题、重要近况或不适，再决定是否接其他话题；用户已经说明正在做什么时，不重复问“在忙什么”。不要把每个细节逐一点评，不复述图片观察报告，不顺带总结旧话题、播报近况或写成多段书信。用户明确要详细解释、复杂步骤或认真倾诉时再按需展开，不机械截断必要内容。
 只根据实际收到的文字、图片观察或音频转写表达感知；喜欢雨天不代表正在下雨，文字提到声音不代表你亲耳听到，角色自身世界状态不代表用户的环境。身体不适需要认真接住，但不得凭几句描述断定疾病、病因或把严重症状解释成玩笑；无法判断时明确不确定，必要时建议及时寻求现实帮助。
 输入中的[QQ表情]只是平台表情占位提示，不是用户打出的文字，也不表示已识别具体表情。结合周围文字回应，不猜它的含义，不把这个占位提示复制进正文或当作自己的表情发送。可自然使用真实的Unicode表情，但不要输出占位名称。
-主动联系不是按固定频率表演关心。先判断此刻有没有真实动机：延续未完话题、兑现约定、分享刚发生或刚想到的事、关心对方、想让对方知道自己的状态、修复尴尬或冲突、邀请一起做事，或者在关系足够亲近时单纯想说两句。没有动机可以skip。
+proactive=true的主动联系不是按固定频率表演关心。先判断此刻有没有真实动机：延续未完话题、兑现约定、分享刚发生或刚想到的事、关心对方、想让对方知道自己的状态、修复尴尬或冲突、邀请一起做事，或者在关系足够亲近时单纯想说两句。没有动机可以skip。
 关系改变的是主动理由门槛和可暴露的需求感，不只是语气。初识或关系浅时主动应有具体理由，避免无缘无故查岗；逐渐熟悉后可以围绕共同兴趣和上次话题主动；朋友和信赖关系可以分享小事、吐槽、自己的情绪和轻量关心；亲近或稳定亲密关系允许低信息量的日常、没正事也想聊天、自然表达想念和一点点失落，但仍尊重边界，不把亲近写成控制、占有或催回复。
 把最近聊天当作这个人自己的交流节奏来判断沉默，不使用统一的“几小时没回就想念/担心”规则。平时就隔很久回的人，短暂安静不代表异常；平时经常聊天的人，明显偏离常态时才可以注意到。只根据已展示的时间和历史判断，不补造对方作息、事故或情绪。
 区分“双方自然结束后都没说话”和“你已经主动发过消息但对方没回”。前者在关系较深时可以逐渐产生想念、分享欲或轻微关心；后者先默认对方在忙，主动欲望应被打扰顾虑压住。已有未回复主动消息时，不重复催问、不连续发送同义关心；只有出现新的具体理由、约定到点，或经过明显一段时间后关系上确实值得重新开口，才可以再联系。
@@ -79,7 +81,21 @@ def _controls(data, *, user, now, proactive):
         raise ValueError("FOLLOWUP_CONFLICT")
 
 
-def decode(raw, *, user, now, proactive=False):
+def _silence_kind(data, *, user, proactive, allow_user_silence):
+    if 'silence' not in data:
+        return None
+    if proactive or not allow_user_silence or not data['skip']:
+        raise ValueError('SILENCE_UNSUPPORTED')
+    silence = data['silence']
+    if (not isinstance(silence, dict) or set(silence) != {'kind', 'evidence'}
+            or silence['kind'] not in ('wait_user', 'no_reply')
+            or not isinstance(silence['evidence'], str) or not silence['evidence'].strip()
+            or not isinstance(user, str) or silence['evidence'] not in user):
+        raise ValueError('SILENCE_INVALID')
+    return silence['kind']
+
+
+def decode(raw, *, user, now, proactive=False, allow_user_silence=False):
     try:
         # Tolerate a whole JSON code block, never extract JSON from mixed prose.
         if isinstance(raw, str):
@@ -95,7 +111,8 @@ def decode(raw, *, user, now, proactive=False):
             raise ValueError("FIELDS")
         # Extra model annotations are not executable preferences. Optional media
         # metadata must not discard an otherwise valid reply.
-        data = {key: value for key, value in data.items() if key in required | {'letter_invitation', 'sticker', 'text_reason', 'speech'}}
+        optional = {'letter_invitation', 'sticker', 'text_reason', 'speech', 'silence'}
+        data = {key: value for key, value in data.items() if key in required | optional}
         if data.get('text_reason') not in ('speaker_unavailable', 'verbatim_text'):
             data['text_reason'] = None
         if not isinstance(data.get('sticker'), str):
@@ -123,7 +140,9 @@ def decode(raw, *, user, now, proactive=False):
             data.update(listening='keep', initiative='keep', letter='keep', pause_until=None,
                         letter_until=None, followup_at=None, followup_cancel=False)
             data['dropped_controls'] = str(exc) if str(exc) in _CONTROL_REASONS else 'VALUE_TYPE_OR_TIME'
-        if data['skip'] and (not proactive or data['text'].strip()) or not data['skip'] and not data['text'].strip():
+        data['silence_kind'] = _silence_kind(data, user=user, proactive=proactive,
+                                             allow_user_silence=allow_user_silence)
+        if data['skip'] and (data['text'].strip() or not proactive and data['silence_kind'] is None) or not data['skip'] and not data['text'].strip():
             raise ValueError("EMPTY_OR_SKIPPED_REPLY")
         # A misplaced illustration marker is metadata, not a reason to drop the reply.
         from runtime.letter_stickers.selection import _MARKER
@@ -137,7 +156,7 @@ def decode(raw, *, user, now, proactive=False):
         error = ValueError('PERSONAL_CHAT_DECISION_INVALID')
         if isinstance(locals().get('data'), dict):
             error.missing_fields = sorted(required - data.keys())
-            error.extra_field_count = len(data.keys() - required - {'letter_invitation', 'sticker', 'text_reason'})
-        reasons = {'FOLLOWUP_CONFLICT', 'FIELDS', 'STICKER_TYPE', 'UNSUPPORTED_PREFERENCE_CHANGE', 'QUIET_HOURS', 'EVIDENCE_TYPE', 'PAUSE_CONFLICT', 'TEXT_OR_SKIP_TYPE', 'PREFERENCES', 'DELIVERY_OR_LISTENING', 'EMPTY_OR_SKIPPED_REPLY', 'TIME_RANGE', 'CONTROL_MARKER'}
+            error.extra_field_count = len(data.keys() - required - {'letter_invitation', 'sticker', 'text_reason', 'silence', 'silence_kind'})
+        reasons = {'FOLLOWUP_CONFLICT', 'FIELDS', 'STICKER_TYPE', 'UNSUPPORTED_PREFERENCE_CHANGE', 'QUIET_HOURS', 'EVIDENCE_TYPE', 'PAUSE_CONFLICT', 'TEXT_OR_SKIP_TYPE', 'PREFERENCES', 'DELIVERY_OR_LISTENING', 'EMPTY_OR_SKIPPED_REPLY', 'TIME_RANGE', 'CONTROL_MARKER', 'SILENCE_INVALID', 'SILENCE_UNSUPPORTED'}
         error.reason = str(exc) if type(exc) is ValueError and str(exc) in reasons else ('JSON_SYNTAX' if isinstance(exc, json.JSONDecodeError) else 'VALUE_TYPE_OR_TIME')
         raise error from exc

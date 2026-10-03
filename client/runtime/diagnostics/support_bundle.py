@@ -297,7 +297,8 @@ def project_chat_task(value: Mapping[str, object]) -> dict[str, object]:
     timing = value.get('stage_timing_seconds')
     if isinstance(timing, Mapping):
         safe = {name: round(float(timing[name]), 4)
-                for name in ('world', 'emotion', 'interpretation', 'history', 'decision', 'writer', 'quality', 'total')
+                for name in ('world', 'emotion', 'interpretation', 'history', 'decision', 'writer',
+                             'silence_authorization', 'quality', 'total')
                 if type(timing.get(name)) in (int, float) and 0 <= timing[name] <= 86400}
         if safe:
             result['stage_timing_seconds'] = safe
@@ -316,6 +317,23 @@ def project_chat_task(value: Mapping[str, object]) -> dict[str, object]:
             result[field] = round(float(seconds), 4)
     if value.get('channel') in ('qq', 'wechat'):
         result['channel'] = value['channel']
+        timings = {'now', 'close_turn', 'wait_user', 'defer', 'no_reply'}
+        if isinstance(value.get('companion_timing'), str) and value['companion_timing'] in timings:
+            result['companion_timing'] = value['companion_timing']
+        proposed = value.get('companion_proposed_timing')
+        record = value.get('companion_decision')
+        if proposed is None and isinstance(record, Mapping):
+            plan = record.get('plan')
+            proposal = plan.get('proposal') if isinstance(plan, Mapping) else None
+            proposed = proposal.get('timing') if isinstance(proposal, Mapping) else None
+        if isinstance(proposed, str) and proposed in timings:
+            result['companion_proposed_timing'] = proposed
+        if isinstance(value.get('skip_reason'), str) and value['skip_reason'] in {'USER_REQUESTED_WAIT', 'USER_REQUESTED_NO_REPLY',
+                'MERGED_RECEIPT', 'STALE_REPLY', 'USER_PRIORITY', 'DUPLICATE_CONTENT',
+                'CONTACT_SUPERSEDED', 'PROACTIVE_NO_REPLY'}:
+            result['skip_reason'] = value['skip_reason']
+        if type(value.get('user_controls_applied')) is bool:
+            result['user_controls_applied'] = value['user_controls_applied']
     if value.get('delivery_status') in ('RECEIVED', 'GENERATING', 'GENERATED', 'MEDIA_PENDING', 'SENDING', 'DELIVERY_UNCONFIRMED', 'DELIVERED', 'FAILED', 'SKIPPED'):
         result['delivery_status'] = value['delivery_status']
     code = value.get('consumer_error_code')
@@ -325,7 +343,8 @@ def project_chat_task(value: Mapping[str, object]) -> dict[str, object]:
         if value.get('decision_rejection_reason') in {
                 'FIELDS', 'JSON_SYNTAX', 'VALUE_TYPE_OR_TIME', 'TEXT_OR_SKIP_TYPE',
                 'DELIVERY_OR_LISTENING', 'PREFERENCES', 'EVIDENCE_TYPE',
-                'EMPTY_OR_SKIPPED_REPLY', 'CONTROL_MARKER', 'REPEATED_REPLY'}:
+                'EMPTY_OR_SKIPPED_REPLY', 'CONTROL_MARKER', 'REPEATED_REPLY',
+                'SILENCE_INVALID', 'SILENCE_UNSUPPORTED', 'SILENCE_NOT_AUTHORIZED', 'MEDIA_WITHOUT_PLAN'}:
             result['decision_rejection_reason'] = value['decision_rejection_reason']
         if type(value.get('voice_ready')) is bool:
             result['voice_ready'] = value['voice_ready']

@@ -118,6 +118,7 @@ class PipelineResult:
     companion_decision: dict | None = field(default=None, repr=False)
     companion_timing: str | None = None
     companion_delivery: str | None = None
+    silence_authorized: bool = False
     proactive_decision: dict | None = field(default=None, repr=False)
     decision_rejection_reason: str | None = None
     stage_timing_seconds: dict[str, float] = field(default_factory=dict, compare=False)
@@ -149,9 +150,11 @@ class ReplyPipeline:
         discover_runtime_ports: bool = True,
         current_turn_interpreter: CurrentTurnInterpreterPort | None = None,
         companion_decision_port: object | None = None,
+        silence_authorization_port: object | None = None,
     ) -> None:
         self.orchestrator = orchestrator
         self.companion_decision_port = companion_decision_port
+        self.silence_authorization_port = silence_authorization_port
         self.discover_runtime_ports = discover_runtime_ports
         self.current_turn_interpreter = current_turn_interpreter or (
             _runtime_current_turn_interpreter(orchestrator)
@@ -268,6 +271,9 @@ class ReplyPipeline:
                 if CURRENT.get().get('structured'):
                     from runtime.personal_chat.decision import INSTRUCTION as DECISION_INSTRUCTION
                     generation_note = DECISION_INSTRUCTION
+                    if CURRENT.get().get('last_decision_rejection_reason') == 'SILENCE_NOT_AUTHORIZED':
+                        generation_note += ('\n上一候选静默已被独立语义检查拒绝：当前没有有效的等待或免回复授权。'
+                                            '请回应当前用户内容，skip=false，不要再次沿用静默提议。')
                 else:
                     generation_note = INSTRUCTION
         original_budget = request.max_input_chars if isinstance(request, ReplyRequest) else 0
@@ -299,8 +305,13 @@ class ReplyPipeline:
                                       error_code='JEV_CONFIG_INVALID')
         use_companion = interpret_turn and companion_port is not None
         parallel_preparation = context.mode is ReplyMode.FUTURE_IM and not (chat_metadata or {}).get('proactive')
+        ordinary_chat = (context.mode is ReplyMode.FUTURE_IM
+                         and (chat_metadata or {}).get('structured')
+                         and not (chat_metadata or {}).get('proactive'))
         companion_decision = companion_timing = companion_delivery = None
         proactive_decision = None
+        silence_authorized = False
+        reconsidered_silence = False
         adapter = getattr(getattr(self.orchestrator, 'gateway', None), 'adapter', None)
         appraise = getattr(adapter, 'prepare_character_emotion', None)
 
@@ -445,8 +456,16 @@ class ReplyPipeline:
                         raise CompanionRuntimeError('JEV_DECISION_NOT_SAVED') from None
                 companion_timing, companion_delivery = delivery_for(decision, kinds=kinds)
                 if companion_timing in {'wait_user', 'defer', 'no_reply'}:
-                    return PipelineResult(getattr(request, 'request_id', ''), ReplyState.COMPLETED,
-                        companion_decision=companion_decision, companion_timing=companion_timing)
+                    if not ordinary_chat:
+                        return PipelineResult(getattr(request, 'request_id', ''), ReplyState.COMPLETED,
+                            companion_decision=companion_decision, companion_timing=companion_timing)
+                    # The proposal has no executable silence authorization or
+                    # durable defer deadline. Keep its original plan, but let
+                    # the normal author answer or validate an explicit user wait.
+                    # This is a text response/clarification, not fulfillment of
+                    # a pending media requirement or a new media permission.
+                    companion_timing, companion_delivery = 'now', 'text'
+                    reconsidered_silence = True
                 prepared = replace(prepared, messages=project_decision(_generation_messages(prepared), decision,
                     max_input_chars=original_budget-len(generation_note)-2,
                     delivery=('letter_image' if context.mode is ReplyMode.TEXT_LETTER
@@ -499,7 +518,7 @@ class ReplyPipeline:
                 return PipelineResult(prepared.request_id, ReplyState.FAILED,
                                       error_code='INPUT_TOO_LONG', retryable=False)
             prepared = replace(prepared, messages=messages, max_input_chars=original_budget)
-        speech_request = (companion_decision or {}).get('speech_request')
+        speech_request = None if reconsidered_silence else (companion_decision or {}).get('speech_request')
         if speech_request and (chat_metadata or {}).get('channel') == 'qq':
             note = '<speech_request>' + json.dumps(speech_request, ensure_ascii=False) + '</speech_request>'
             if speech_request['continuation']:
@@ -547,26 +566,45 @@ class ReplyPipeline:
             return PipelineResult(candidate.request_id, ReplyState.FAILED, error_code="PROVIDER_PROTOCOL")
         quality = None
         reviewed_content = None
-        if not isinstance(self.reviewer, NullReviewer):
-            envelope = None
-            review_text = clean_text
-            if chat_metadata is not None and chat_metadata.get('structured'):
-                try:
-                    from runtime.personal_chat.decision import decode
-                    now = datetime.fromisoformat(chat_metadata['decision_now']).timestamp()
-                    options = dict(user=user_text, now=now, proactive=bool(chat_metadata.get('proactive')))
-                    decision = decode(clean_text, **options)
-                    fenced = re.fullmatch(r'\s*```(?:json)?\s*\n(.*?)\n```\s*', clean_text, re.DOTALL | re.IGNORECASE)
-                    envelope = json.loads(fenced.group(1) if fenced else clean_text)
-                    if isinstance(envelope, list):
-                        # decode already validated the supported single-object wrapper.
-                        envelope = envelope[0]
-                    review_text = decision['text']
-                except (ValueError, TypeError, KeyError) as exc:
+        envelope = None
+        review_text = clean_text
+        if chat_metadata is not None and chat_metadata.get('structured'):
+            try:
+                from runtime.personal_chat.decision import decode
+                now = datetime.fromisoformat(chat_metadata['decision_now']).timestamp()
+                options = dict(user=user_text, now=now, proactive=bool(chat_metadata.get('proactive')),
+                               allow_user_silence=bool(ordinary_chat))
+                decision = decode(clean_text, **options)
+                if reconsidered_silence and decision.get('speech'):
                     return PipelineResult(candidate.request_id, ReplyState.FAILED,
-                        error_code='PERSONAL_CHAT_DECISION_INVALID',
-                        decision_rejection_reason=getattr(exc, 'reason', 'VALUE_TYPE_OR_TIME'))
-            # A validated proactive skip has no outgoing text to review.
+                        error_code='PERSONAL_CHAT_DECISION_INVALID', decision_rejection_reason='MEDIA_WITHOUT_PLAN')
+                fenced = re.fullmatch(r'\s*```(?:json)?\s*\n(.*?)\n```\s*', clean_text, re.DOTALL | re.IGNORECASE)
+                envelope = json.loads(fenced.group(1) if fenced else clean_text)
+                if isinstance(envelope, list):
+                    envelope = envelope[0]
+                review_text = decision['text']
+            except (ValueError, TypeError, KeyError) as exc:
+                return PipelineResult(candidate.request_id, ReplyState.FAILED,
+                    error_code='PERSONAL_CHAT_DECISION_INVALID',
+                    decision_rejection_reason=getattr(exc, 'reason', 'VALUE_TYPE_OR_TIME'))
+            if ordinary_chat and decision['skip']:
+                if callable(chat_metadata.get('turn_is_current')) and not chat_metadata['turn_is_current']():
+                    return PipelineResult(candidate.request_id, ReplyState.FAILED, error_code='JEV_INPUT_SUPERSEDED')
+                # A literal quote proves provenance, not that the user wants
+                # silence. Independently check that permission before skipping.
+                from .companion_runtime import authorize_user_silence, CompanionRuntimeError
+                try:
+                    authorized = await measure('silence_authorization', authorize_user_silence(
+                        user_text, envelope['silence'], port=self.silence_authorization_port))
+                except CompanionRuntimeError as exc:
+                    return PipelineResult(candidate.request_id, ReplyState.FAILED, error_code=str(exc))
+                if not authorized:
+                    return PipelineResult(candidate.request_id, ReplyState.FAILED,
+                        error_code='PERSONAL_CHAT_DECISION_INVALID', decision_rejection_reason='SILENCE_NOT_AUTHORIZED')
+                silence_authorized = True
+                companion_timing, companion_delivery = decision['silence_kind'], None
+        if not isinstance(self.reviewer, NullReviewer):
+            # Validated user silence and proactive skips have no outgoing prose.
             if envelope is None or not decision['skip']:
                 # Delivery JSON / sticker instructions are not prose rewrite instructions.
                 review_messages = tuple(m for m in _generation_messages(prepared)
@@ -691,6 +729,7 @@ class ReplyPipeline:
             companion_decision=companion_decision,
             companion_timing=companion_timing,
             companion_delivery=companion_delivery,
+            silence_authorized=silence_authorized,
             proactive_decision=proactive_decision,
         )
 

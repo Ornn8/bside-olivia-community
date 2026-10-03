@@ -7,6 +7,7 @@ import json
 import os
 
 from runtime.personal_chat.initiative_profile import profile_from_snapshot, unanswered_wait
+from runtime.personal_chat.initiative import controls_available
 from runtime.reply.companion_runtime import CompanionRuntimeError
 
 
@@ -92,13 +93,14 @@ def _input_stamp(row):
     return float(row.get('created_at', 0) or 0)
 
 
-def contact_gates(rows, *, now, profile, channel, exclude_id=None):
+def contact_gates(rows, *, now, profile, channel, exclude_id=None, appointment_due=False):
     rows = [r for r in rows if exclude_id is None or r.get('letter_id') != exclude_id]
     stamp = now.timestamp()
     ordered = sorted(rows, key=_input_stamp)
     # A newer received pause may still be awaiting extraction: unresolved input
     # blocks separately. Never let a self-authored proactive row clear a pause.
-    user_rows = [r for r in ordered if r.get('origin') != 'proactive' and _delivered(r)]
+    canonical_users = [r for r in ordered if r.get('origin') != 'proactive' and not r.get('superseded_by')]
+    user_rows = [r for r in canonical_users if _delivered(r) or controls_available(r)]
     preference = next((r for r in reversed(user_rows) if r.get('initiative_preference')), {})
     paused = preference.get('initiative_preference') == 'pause' and (
         preference.get('pause_until') is None or stamp < preference['pause_until'])
@@ -107,6 +109,10 @@ def contact_gates(rows, *, now, profile, channel, exclude_id=None):
         paused = paused or (letter.get('letter_preference') == 'pause' and (
             letter.get('letter_until') is None or stamp < letter['letter_until']))
     reasons = []
+    latest_user = canonical_users[-1] if canonical_users else None
+    if (not appointment_due and latest_user and latest_user.get('companion_timing') == 'wait_user'
+            and latest_user.get('silence_reason') == 'USER_REQUESTED_WAIT'):
+        reasons.append('user_waiting')
     if any(not r.get('superseded_by') and (r.get('delivery_status') in {
             'RECEIVED', 'GENERATING', 'GENERATED', 'SENDING', 'DELIVERY_UNCONFIRMED'}
             or r.get('delivery_status') == 'FAILED' and r.get('origin') != 'proactive'
@@ -128,7 +134,7 @@ def live_state(server, *, channel, now, exclude_id=None, appointment_due=False):
         snapshot = server.daily_life_runtime.store.snapshot(now)
         rows = deepcopy([r for r in [*server.store.letters, *server.store.personal_chats]
                          if exclude_id is None or r.get('letter_id') != exclude_id])
-        gates = contact_gates(rows, now=now, profile=profile, channel=channel)
+        gates = contact_gates(rows, now=now, profile=profile, channel=channel, appointment_due=appointment_due)
         # A contact time the user asked for is kept even if she was asleep, in
         # class or busy: people change plans for it. Contact rules still apply.
         world = [] if appointment_due else world_gates(snapshot)

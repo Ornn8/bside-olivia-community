@@ -34,7 +34,8 @@ def _clear_draft(row):
                 'speech_script', 'speech_intent', 'speech_status', 'speech_delivery_status', 'content_review',
                 'proactive_decision', 'proactive_basis', 'proactive_opportunity', 'generation_failure_notice',
                 'generation_context_at', 'stage_timing_seconds', 'stage_actual_calls', 'stage_cache_hits',
-                'voice_prepare_seconds', 'voice_prepare_status', 'voice_prepare_timeout_seconds'):
+                'voice_prepare_seconds', 'voice_prepare_status', 'voice_prepare_timeout_seconds',
+                'silence_reason', 'skip_reason', 'user_controls_applied'):
         row.pop(key, None)
 
 
@@ -178,7 +179,8 @@ class PersonalChatService:
                          read_boundary_sequence=latest.get('read_boundary_sequence', latest['received_sequence']),
                          read_boundary_sent_at=sent_at.isoformat() if sent_at else None)
         for row in rows[1:]:
-            row.update(delivery_status='SKIPPED', letter_status='SKIPPED', superseded_by=canonical['letter_id'])
+            row.update(delivery_status='SKIPPED', letter_status='SKIPPED',
+                       superseded_by=canonical['letter_id'], skip_reason='MERGED_RECEIPT')
         return merged
 
     def _new_inputs(self, row):
@@ -323,7 +325,7 @@ class PersonalChatService:
                     # Replays include failed or interrupted generation, not just
                     # unsent drafts. Never answer an old turn after a newer reply.
                     row.update(delivery_status='SKIPPED', letter_status='SKIPPED',
-                               error_code='PERSONAL_CHAT_STALE_REPLY')
+                               error_code='PERSONAL_CHAT_STALE_REPLY', skip_reason='STALE_REPLY')
                     await persist_state(self.persist)
                     return
                 if row.get("delivery_status") not in {"RECEIVED", "GENERATED", "FAILED", "GENERATING"}:
@@ -359,20 +361,24 @@ class PersonalChatService:
                         continue
                     if before is not None and after is not None and after > before:
                         row.update(delivery_status='SKIPPED', letter_status='SKIPPED',
-                                   error_code='PERSONAL_CHAT_STALE_REPLY')
+                                   error_code='PERSONAL_CHAT_STALE_REPLY', skip_reason='STALE_REPLY')
                         await persist_state(self.persist)
                         return
             if row.get("delivery_status") != "GENERATED":
                 if row.get("generation_attempts", 0) >= 2:
                     raise RuntimeError("PERSONAL_CHAT_GENERATION_RETRY_EXHAUSTED")
+                validated_controls = row.get('user_controls_applied') is True
                 for key in ('prepared_audio', 'reply_audio_duration', 'voice_fallback', 'sticker_id',
                             'letter_invitation', 'initiative_preference', 'pause_until', 'letter_preference',
                             'letter_until', 'followup_at', 'listening_preference', 'requested_format', 'presentation_status',
                             'delivery_basis', 'voice_ready',
                             'expression_context', 'companion_timing', 'companion_delivery',
                             'voice_prepare_seconds', 'voice_prepare_status', 'voice_prepare_timeout_seconds'):
+                    if validated_controls and key in ('initiative_preference', 'pause_until', 'letter_preference',
+                                                     'letter_until', 'followup_at', 'listening_preference'):
+                        continue  # Same input revision retains independently validated user authority.
                     row.pop(key, None)
-                if not proactive:
+                if not proactive and not validated_controls:
                     row.pop('followup_quote', None)
                 row["generation_attempts"] = row.get("generation_attempts", 0) + 1
                 row.update(delivery_status="GENERATING", letter_status="PROCESSING")
@@ -383,7 +389,7 @@ class PersonalChatService:
                     if proactive:
                         if proactive_revision != self.user_revision:
                             row.update(delivery_status='SKIPPED', letter_status='SKIPPED',
-                                       error_code='PERSONAL_CHAT_USER_PRIORITY')
+                                       error_code='PERSONAL_CHAT_USER_PRIORITY', skip_reason='USER_PRIORITY')
                             await persist_state(self.persist)
                             return
                         task = asyncio.create_task(self._generate(event, row, send))
@@ -394,7 +400,7 @@ class PersonalChatService:
                             if asyncio.current_task().cancelling():
                                 raise
                             row.update(delivery_status='SKIPPED', letter_status='SKIPPED',
-                                       error_code='PERSONAL_CHAT_USER_PRIORITY')
+                                       error_code='PERSONAL_CHAT_USER_PRIORITY', skip_reason='USER_PRIORITY')
                             await persist_state(self.persist)
                             return
                         finally:
@@ -407,12 +413,16 @@ class PersonalChatService:
                             updated = await self._refresh_draft(row, event)
                             if updated is not None:
                                 return updated
-                            if text is None and row.get('companion_timing') in {'wait_user', 'defer', 'no_reply'}:
-                                row.update(delivery_status='SKIPPED', letter_status='SKIPPED')
+                            reason = row.get('silence_reason')
+                            authorized_quiet = (
+                                row.get('companion_timing') == 'wait_user' and reason == 'USER_REQUESTED_WAIT'
+                                or row.get('companion_timing') == 'no_reply' and reason == 'USER_REQUESTED_NO_REPLY')
+                            if text is None and authorized_quiet:
+                                row.update(delivery_status='SKIPPED', letter_status='SKIPPED', skip_reason=reason)
                                 await persist_state(self.persist)
                                 return
                     if proactive and text.strip() == '[[skip]]':
-                        row.update(delivery_status='SKIPPED', letter_status='SKIPPED')
+                        row.update(delivery_status='SKIPPED', letter_status='SKIPPED', skip_reason='PROACTIVE_NO_REPLY')
                         await persist_state(self.persist)
                         return
                     if not isinstance(text, str) or not text.strip() or len(text) > 10000:
@@ -452,7 +462,7 @@ class PersonalChatService:
             if proactive:
                 if proactive_revision != self.user_revision:
                     row.update(delivery_status='SKIPPED', letter_status='SKIPPED',
-                               error_code='PERSONAL_CHAT_USER_PRIORITY')
+                               error_code='PERSONAL_CHAT_USER_PRIORITY', skip_reason='USER_PRIORITY')
                     await persist_state(self.persist)
                     return
                 normalized = lambda value: re.sub(r'[\s。.]', '', value)
@@ -462,7 +472,7 @@ class PersonalChatService:
                        and normalized(old.get('reply_text', '')) == normalized(text)
                        for old in self.rows):
                     row.update(delivery_status='SKIPPED', letter_status='SKIPPED',
-                               error_code='PERSONAL_CHAT_DUPLICATE_CONTENT')
+                               error_code='PERSONAL_CHAT_DUPLICATE_CONTENT', skip_reason='DUPLICATE_CONTENT')
                     await persist_state(self.persist)
                     return
             audio = row.get('prepared_audio')
@@ -496,12 +506,12 @@ class PersonalChatService:
                         return updated
                 elif proactive_revision != self.user_revision:
                     row.update(delivery_status='SKIPPED', letter_status='SKIPPED',
-                               error_code='PERSONAL_CHAT_USER_PRIORITY')
+                               error_code='PERSONAL_CHAT_USER_PRIORITY', skip_reason='USER_PRIORITY')
                     await persist_state(self.persist)
                     return
                 if proactive and callable(proactive_eligible) and not proactive_eligible():
                     row.update(delivery_status='SKIPPED', letter_status='SKIPPED',
-                               error_code='PERSONAL_CHAT_CONTACT_SUPERSEDED')
+                               error_code='PERSONAL_CHAT_CONTACT_SUPERSEDED', skip_reason='CONTACT_SUPERSEDED')
                     await persist_state(self.persist)
                     return
                 row["delivery_status"] = "SENDING"
@@ -510,7 +520,8 @@ class PersonalChatService:
                               or callable(proactive_eligible) and not proactive_eligible()):
                 row.update(delivery_status='SKIPPED', letter_status='SKIPPED',
                            error_code=('PERSONAL_CHAT_USER_PRIORITY' if proactive_revision != self.user_revision
-                                       else 'PERSONAL_CHAT_CONTACT_SUPERSEDED'))
+                                       else 'PERSONAL_CHAT_CONTACT_SUPERSEDED'),
+                           skip_reason=('USER_PRIORITY' if proactive_revision != self.user_revision else 'CONTACT_SUPERSEDED'))
                 await persist_state(self.persist)
                 return
             receipt = None
