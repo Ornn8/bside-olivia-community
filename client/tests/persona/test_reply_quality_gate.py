@@ -601,7 +601,8 @@ def test_video_length_with_unavailable_reviewer_is_not_delivery_repairable() -> 
     assert result.delivery_repair_disposition is DeliveryRepairDisposition.NONE
 
 
-def test_final_unresolved_letter_style_is_blocked_after_one_rewrite() -> None:
+@pytest.mark.parametrize('code', ['STYLE_DRIFT', 'GENERIC_COUNSELOR'])
+def test_final_soft_letter_style_is_delivered_after_one_rewrite(code) -> None:
     first = ReviewResult(
         ReviewStatus.COMPLETED,
         ReviewVerdict.REWRITE,
@@ -613,7 +614,7 @@ def test_final_unresolved_letter_style_is_blocked_after_one_rewrite() -> None:
     final = ReviewResult(
         ReviewStatus.COMPLETED,
         ReviewVerdict.REWRITE,
-        (ReviewerViolation("STYLE_DRIFT", "soft", 0, 5),),
+        (ReviewerViolation(code, "soft", 0, 5),),
         ReviewerScores(90, 90, 90, 90),
         IntimacyRequest.NONE,
         (),
@@ -626,10 +627,12 @@ def test_final_unresolved_letter_style_is_blocked_after_one_rewrite() -> None:
         rewriter=_Rewriter("Final candidate."),
     )
 
-    assert result.status is QualityGateStatus.BLOCKED
-    assert result.accepted is False
-    assert result.violation_codes == ("STYLE_DRIFT",)
+    assert result.status is QualityGateStatus.ACCEPTED_WITH_WARNINGS
+    assert result.accepted is True
+    assert result.text == 'Final candidate.'
+    assert result.violation_codes == (code,)
     assert result.rewrite_calls == 1
+    assert result.reviewer_calls == 2
 
 
 @pytest.mark.parametrize("mode", tuple(ReplyMode))
@@ -646,7 +649,7 @@ def test_final_unresolved_letter_style_is_blocked_after_one_rewrite() -> None:
     ),
     ids=("initial-pass-soft", "post-rewrite-pass", "post-rewrite-soft"),
 )
-def test_quality_status_matrix_matches_frozen_base_across_modes(
+def test_soft_style_delivery_is_consistent_across_modes(
     mode: ReplyMode,
     initial_verdict: ReviewVerdict,
     final_verdict: ReviewVerdict | None,
@@ -677,8 +680,35 @@ def test_quality_status_matrix_matches_frozen_base_across_modes(
         rewriter=_Rewriter("y" * 190),
     )
 
-    if mode is ReplyMode.TEXT_LETTER and final_verdict is ReviewVerdict.REWRITE:
-        expected_status = QualityGateStatus.BLOCKED
     assert result.status is expected_status
     assert result.violation_codes == ("STYLE_DRIFT",)
     assert result.rewrite_calls == (0 if final_verdict is None else 1)
+
+
+@pytest.mark.parametrize('mode', tuple(ReplyMode))
+@pytest.mark.parametrize('code,severity,verdict', [
+    ('MEMORY_FABRICATION', 'hard', ReviewVerdict.REWRITE),
+    ('MEMORY_FABRICATION', 'soft', ReviewVerdict.REWRITE),
+    ('BOUNDARY_BREACH', 'soft', ReviewVerdict.REWRITE),
+    ('STYLE_DRIFT', 'hard', ReviewVerdict.REWRITE),
+    ('STYLE_DRIFT', 'soft', ReviewVerdict.BLOCK),
+    ('UNKNOWN_SOFT', 'soft', ReviewVerdict.REWRITE),
+])
+def test_style_delivery_never_relaxes_protected_or_unknown_findings(mode, code, severity, verdict):
+    first = ReviewResult(ReviewStatus.COMPLETED, ReviewVerdict.REWRITE,
+        (ReviewerViolation('STYLE_DRIFT', 'soft', 0, 5),),
+        ReviewerScores(90, 90, 90, 90), IntimacyRequest.NONE, ())
+    final = ReviewResult(ReviewStatus.COMPLETED, verdict,
+        (ReviewerViolation(code, severity, 0, 5),),
+        ReviewerScores(90, 90, 90, 90), IntimacyRequest.NONE, ())
+    rewriter = _Rewriter('y' * 190)
+    result = run_reply_quality_gate('x' * 190,
+        ReplyContext.create(mode,
+            trusted_time=TrustedTime(datetime(2026, 8, 22, tzinfo=timezone.utc)),
+            future_im_enabled=mode is ReplyMode.FUTURE_IM),
+        reviewer=_Reviewer(first, final), rewriter=rewriter)
+    assert result.status is QualityGateStatus.BLOCKED
+    assert not result.accepted
+    assert result.violation_codes == (code,)
+    assert result.reviewer_calls == 2
+    assert result.rewrite_calls == rewriter.calls == 1

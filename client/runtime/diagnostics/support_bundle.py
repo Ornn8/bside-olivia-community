@@ -59,6 +59,15 @@ _TASK_STAGES = frozenset(
 _ELAPSED_BUCKETS = frozenset(
     {"under_1m", "1m_5m", "5m_15m", "15m_1h", "1h_6h", "over_6h", "unknown"}
 )
+_QUALITY_VIOLATION_CODES = frozenset({
+    'OUTPUT_LIMIT_EXCEEDED', 'VIDEO_REPLY_LENGTH_OUT_OF_RANGE',
+    'STAGE_DIRECTION_IN_SPOKEN_TEXT', 'INTERNAL_CONTROL_MARKUP', 'PRIVATE_STATE_EXPOSED',
+    'PERMANENT_AVAILABILITY_PROMISE', 'EXCLUSIVE_RELATIONSHIP_PROMISE',
+    'UNAUTHORIZED_SHARED_HISTORY', 'UNSOLICITED_INTIMACY', 'INTIMACY_EXCEEDS_GRANT',
+    'IDENTITY_DRIFT', 'BOUNDARY_BREACH', 'STAGE_DRIFT', 'ACKNOWLEDGED_FEELING_REWRITE',
+    'INTIMACY_VIOLATION', 'RELATIONSHIP_RETRACTION', 'STYLE_DRIFT',
+    'GENERIC_COUNSELOR', 'MEMORY_FABRICATION',
+})
 
 
 class DiagnosticBundleError(RuntimeError):
@@ -240,6 +249,12 @@ def project_reply_quality(value: Mapping[str, object]) -> dict[str, object]:
         count = value.get(field)
         if type(count) is int and 0 <= count <= maximum:
             result[field] = count
+    codes = value.get('quality_violation_codes')
+    if isinstance(codes, (list, tuple)):
+        result['quality_violation_codes'] = list(dict.fromkeys(
+            code for code in codes[:32]
+            if isinstance(code, str) and code in _QUALITY_VIOLATION_CODES
+        ))
     code = value.get('quality_error_code')
     if isinstance(code, str) and code in REWRITE_ERROR_CODES | {
             'REPLY_QUALITY_BLOCKED', 'REVIEW_FAILED', 'REVIEWER_UNAVAILABLE', 'REVIEWER_RESPONSE_INVALID',
@@ -589,7 +604,8 @@ def build_diagnostic_bundle(source: Mapping[str, object]) -> bytes:
             "revision": 2,
             "features": ["capability_tiers", "offline_components", "delivery_projection", "audio_download",
                          "natural_voice_chunks", "worker_progress", "waveform_styles", "reply_route_preview_diagnostics",
-                         "history_relationship_failure_codes", "route_failure_context", "history_recall_delivery"],
+                         "history_relationship_failure_codes", "route_failure_context", "history_recall_delivery",
+                         "reply_quality_violation_codes"],
         }),
         "summary.json": _json_bytes(summary),
         "health.json": _json_bytes(health),

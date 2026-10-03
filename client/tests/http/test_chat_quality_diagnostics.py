@@ -43,7 +43,7 @@ def test_pipeline_quality_persists_before_failure_and_survives_bundle(monkeypatc
         error_code='REPLY_QUALITY_BLOCKED' if failed is True else None, text='private candidate',
         quality_status='blocked' if failed is True else 'accepted', reviewer_calls=2, rewrite_calls=1,
         decision_rejection_reason='FIELDS' if failed is True else None,
-        violation_codes=('private violation text',))
+        violation_codes=('MEMORY_FABRICATION', 'private violation text'))
     async def run(*a): return result
     server = SimpleNamespace(letters_adapter=SimpleNamespace(config=SimpleNamespace(persona_v2_enabled=True,
         max_input_chars=50000), persona_v2_path='synthetic', build_reply_context=lambda *a, **k: SimpleNamespace(private_behavior=None)),
@@ -94,6 +94,7 @@ def test_pipeline_quality_persists_before_failure_and_survives_bundle(monkeypatc
         item = json.loads(archive.read('tasks.json'))['items'][0]
     assert item['quality_status'] == result.quality_status
     assert item['reviewer_calls'] == 2 and item['rewrite_calls'] == 1
+    assert item['quality_violation_codes'] == ['MEMORY_FABRICATION']
     if failed is True:
         assert item['decision_rejection_reason'] == 'FIELDS'
     else:
@@ -112,7 +113,8 @@ def test_letter_quality_diagnostics_survive_bundle_without_body_or_chat_channel(
     row = {'quality_status': 'blocked', 'reviewer_calls': 1, 'rewrite_calls': 1,
            'quality_error_code': 'REWRITE_INPUT_TOO_LARGE',
            'quality_failure_stage': 'rewrite', 'reply_text': 'private draft',
-           'exception_text': 'private exception'}
+           'exception_text': 'private exception',
+           'quality_violation_codes': ['MEMORY_FABRICATION', 'INTERNAL_CONTROL_MARKUP']}
     assert project_chat_task(row) == {key: value for key, value in row.items()
                                      if key not in {'reply_text', 'exception_text'}}
     source = _source()
@@ -123,11 +125,20 @@ def test_letter_quality_diagnostics_survive_bundle_without_body_or_chat_channel(
     with zipfile.ZipFile(io.BytesIO(build_diagnostic_bundle(source))) as archive:
         item = json.loads(archive.read('tasks.json'))['items'][0]
         event = json.loads(archive.read('runtime-tail.jsonl').splitlines()[0])
+        manifest = json.loads(archive.read('manifest.json'))
+    from pathlib import Path
+    from jsonschema import Draft202012Validator
+    schema = json.loads((Path(__file__).resolve().parents[2] /
+                         'contracts/diagnostic_bundle_manifest.schema.json').read_text(encoding='utf-8'))
+    Draft202012Validator(schema).validate(manifest)
+    assert 'reply_quality_violation_codes' in manifest['features']
     assert item['quality_error_code'] == 'REWRITE_INPUT_TOO_LARGE'
     assert item['rewrite_calls'] == 1
+    assert item['quality_violation_codes'] == row['quality_violation_codes']
     assert 'private' not in json.dumps(item)
     assert event['cause_code'] == 'REWRITE_INPUT_TOO_LARGE'
     assert event['quality_failure_stage'] == 'rewrite'
+    assert event['quality_violation_codes'] == row['quality_violation_codes']
     assert 'private' not in json.dumps(event)
     assert project_chat_task({'quality_error_code': 'REWRITE_PRIVATE_TEXT',
                               'quality_failure_stage': 'private text'}) == {}
@@ -136,3 +147,20 @@ def test_letter_quality_diagnostics_survive_bundle_without_body_or_chat_channel(
 @pytest.mark.parametrize('counts', [(-1, -1), (3, 2), (1.0, False), ('2', '1')])
 def test_quality_counts_are_strict_bounded_integers(counts):
     assert project_chat_task({'channel': 'qq', 'reviewer_calls': counts[0], 'rewrite_calls': counts[1]}) == {'channel': 'qq'}
+
+
+def test_quality_violation_projection_allowlists_codes_and_is_idempotent():
+    raw = {'quality_status': 'blocked', 'quality_violation_codes': [
+        'MEMORY_FABRICATION', 'STYLE_DRIFT', 'MEMORY_FABRICATION',
+        'USER_SECRET_MARKER', 'private user text', {'code': 'BOUNDARY_BREACH'},
+        None, True, ['STYLE_DRIFT'], 'INTERNAL_CONTROL_MARKUP'],
+        'candidate': 'private reply', 'review_text': 'private reason'}
+    result = project_chat_task(raw)
+    assert result == {'quality_status': 'blocked', 'quality_failure_stage': 'review',
+                      'quality_violation_codes': ['MEMORY_FABRICATION', 'STYLE_DRIFT', 'INTERNAL_CONTROL_MARKUP']}
+    assert project_chat_task(result) == result
+
+
+@pytest.mark.parametrize('invalid', ['MEMORY_FABRICATION', {'code': 'STYLE_DRIFT'}, None, True])
+def test_quality_violation_projection_ignores_malformed_containers(invalid):
+    assert project_chat_task({'quality_violation_codes': invalid}) == {}

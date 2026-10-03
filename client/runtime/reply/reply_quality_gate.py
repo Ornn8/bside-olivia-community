@@ -18,6 +18,9 @@ from runtime.reply.reply_reviewer import TrustedReviewEvidence
 from runtime.diagnostics.failure_context import REWRITE_ERROR_CODES
 
 
+_SOFT_STYLE_CODES = frozenset({'STYLE_DRIFT', 'GENERIC_COUNSELOR'})
+
+
 class QualityGateStatus(StrEnum):
     ACCEPTED = "accepted"
     ACCEPTED_DEGRADED = "accepted_degraded"
@@ -322,13 +325,15 @@ def run_reply_quality_gate(
             else QualityGateStatus.BLOCKED
         )
     elif final_review.verdict is ReviewVerdict.REWRITE:
-        has_hard_review = any(
-            item.severity == "hard" for item in final_review.violations
+        # A style preference can survive the one rewrite. Semantic findings,
+        # unknown codes and hard STYLE_DRIFT (for example broken text) cannot.
+        only_soft_style = bool(final_review.violations) and all(
+            item.severity == 'soft' and item.code in _SOFT_STYLE_CODES
+            for item in final_review.violations
         )
         status = (
-            QualityGateStatus.BLOCKED
-            if has_hard_review or context.mode is ReplyMode.TEXT_LETTER
-            else QualityGateStatus.ACCEPTED_WITH_WARNINGS
+            QualityGateStatus.ACCEPTED_WITH_WARNINGS
+            if only_soft_style else QualityGateStatus.BLOCKED
         )
     else:
         status = QualityGateStatus.ACCEPTED

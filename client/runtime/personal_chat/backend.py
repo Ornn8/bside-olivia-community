@@ -438,10 +438,11 @@ async def _generate_billed(server, event, row):
             _start_semantic_shadow_recorder(server, row, shadow)
         from runtime.diagnostics.support_bundle import project_chat_task
         quality_fields = ('quality_status', 'reviewer_calls', 'rewrite_calls', 'decision_rejection_reason',
-                          'quality_error_code', 'quality_failure_stage')
+                          'quality_error_code', 'quality_failure_stage', 'quality_violation_codes')
         quality = project_chat_task({'channel': event.channel, **{
             field: getattr(result, field, None) for field in quality_fields},
-            'quality_error_code': getattr(result, 'error_code', None)})
+            'quality_error_code': getattr(result, 'error_code', None),
+            'quality_violation_codes': getattr(result, 'violation_codes', None)})
         for field in quality_fields:
             row.pop(field, None)
             if field in quality:

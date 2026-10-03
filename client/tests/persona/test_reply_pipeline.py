@@ -118,6 +118,23 @@ def test_pipeline_accepts_clean_candidate_with_disabled_reviewer() -> None:
     assert result.rewrite_calls == 0
 
 
+@pytest.mark.parametrize('mode', [ReplyMode.TEXT_LETTER, ReplyMode.VOICE_REPLY])
+def test_pipeline_delivers_the_rewritten_text_with_only_soft_style_warnings(mode):
+    review = ReviewResult(ReviewStatus.COMPLETED, ReviewVerdict.REWRITE,
+        (ReviewerViolation('STYLE_DRIFT', 'soft', 0, 5),),
+        ReviewerScores(90, 90, 90, 90), IntimacyRequest.NONE, ())
+    rewriter = FixedRewriter('Final canonical reply.')
+    pipeline = ReplyPipeline(CompletedOrchestrator('Initial candidate.'),
+        reviewer=SequencedReviewer(review, review), rewriter=rewriter)
+    result = asyncio.run(pipeline.run(object(), _context(mode)))
+    assert result.state is ReplyState.COMPLETED
+    assert result.text == 'Final canonical reply.'
+    assert result.quality_status == 'accepted_with_warnings'
+    assert result.violation_codes == ('STYLE_DRIFT',)
+    assert result.reviewer_calls == 2
+    assert result.rewrite_calls == rewriter.calls == 1
+
+
 @pytest.mark.parametrize("mode", [ReplyMode.TEXT_LETTER, ReplyMode.SPOKEN_VIDEO, ReplyMode.MUSICAL_VIDEO])
 @pytest.mark.parametrize("candidate", ["太短。", "initial candidate"])
 def test_pipeline_default_disabled_publishes_without_review_or_rewrite(mode, candidate):
@@ -747,8 +764,10 @@ class FakePipeline:
         return self.result
 
 
+@pytest.mark.parametrize('quality_status', ['accepted', 'accepted_with_warnings'])
 def test_generate_reply_persists_and_renders_only_canonical_text(
     monkeypatch: pytest.MonkeyPatch,
+    quality_status,
 ) -> None:
     import local_server
 
@@ -782,7 +801,7 @@ def test_generate_reply_persists_and_renders_only_canonical_text(
                 "letter-1",
                 ReplyState.COMPLETED,
                 text=canonical_text,
-                quality_status="accepted",
+                quality_status=quality_status,
                 violation_codes=("SYNTHETIC_FIXED",),
                 reviewer_calls=2,
                 rewrite_calls=1,
@@ -798,7 +817,7 @@ def test_generate_reply_persists_and_renders_only_canonical_text(
     )
     assert letter["reply_text"] == canonical_text
     assert letter["letter_status"] == "COMPLETED"
-    assert letter["quality_status"] == "accepted"
+    assert letter["quality_status"] == quality_status
     assert letter['reviewer_calls'] == 2 and letter['rewrite_calls'] == 1
     assert letter["quality_violation_codes"] == ["SYNTHETIC_FIXED"]
     assert scheduled[0][2] == canonical_text
@@ -859,6 +878,8 @@ def test_blocked_candidate_never_reaches_storage_or_media(
     assert letter['quality_failure_stage'] == stage
     assert letter['reviewer_calls'] == 1 and letter['rewrite_calls'] == 1
     assert letter["quality_status"] == "blocked"
+    from runtime.diagnostics.support_bundle import project_chat_task
+    assert project_chat_task(letter)['quality_violation_codes'] == ['INTERNAL_CONTROL_MARKUP']
     assert letter["media_status"] == "NOT_REQUESTED"
     assert letter.get("media_error_code") is None
     assert scheduled == []

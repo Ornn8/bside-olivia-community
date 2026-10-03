@@ -43,7 +43,8 @@
           "reply_route_preview_diagnostics",
           "history_relationship_failure_codes",
           "route_failure_context",
-          "history_recall_delivery"
+          "history_recall_delivery",
+          "reply_quality_violation_codes"
         ]
       }
     }

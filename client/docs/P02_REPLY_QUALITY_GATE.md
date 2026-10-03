@@ -21,10 +21,20 @@ rewrite between the initial and final five-layer reviews.
 
 After the rewrite budget is consumed, a deterministic hard violation or
 reviewer `block` fails closed. A final reviewer `rewrite` containing only soft
-violations is accepted with warnings. Reviewer unavailability may degrade-pass
-only when deterministic checks are clean. Rewrite failure is blocked with the
-sanitized code `REWRITE_FAILED`.
+`STYLE_DRIFT` or `GENERIC_COUNSELOR` findings is accepted with warnings in every
+communication mode, including text letters. Hard style findings (such as broken
+text), factual or relationship findings, unknown codes, and an unexplained
+`rewrite` verdict remain blocked. An enabled reviewer becoming unavailable is
+blocked; a deliberately disabled reviewer may degrade-pass clean deterministic
+checks. Rewrite failure is blocked with a sanitized rewrite error code.
 
 The result exposes deterministic, reviewer, and rewrite call counts so the
 one-rewrite bound is testable. No candidate or reviewer material is persisted;
 only the canonical text, quality status, and violation codes reach storage.
+
+Diagnostic bundles and failure logs expose `quality_violation_codes` through a
+finite allowlist of policy and reviewer codes, deduplicated and bounded to the
+first 32 input entries. They do not export candidate text, review explanations,
+arbitrary code-shaped strings, or private evidence. The optional manifest
+feature `reply_quality_violation_codes` identifies support for this metadata;
+older records without it remain readable without inventing a violation reason.
