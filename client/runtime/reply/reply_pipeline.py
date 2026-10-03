@@ -568,7 +568,22 @@ class ReplyPipeline:
         reviewed_content = None
         envelope = None
         review_text = clean_text
-        if chat_metadata is not None and chat_metadata.get('structured'):
+        structured_chat = chat_metadata is not None and chat_metadata.get('structured')
+        envelope_contract = structured_chat and (
+            'received_source_id' in chat_metadata or reconsidered_silence
+            or not isinstance(self.reviewer, NullReviewer))
+        if structured_chat and not envelope_contract:
+            # Legacy callers use structured presentation with raw replies. An
+            # authored skip still requires the runtime decoder and permission.
+            try:
+                fenced = re.fullmatch(r'\s*```(?:json)?\s*\n(.*?)\n```\s*', clean_text, re.DOTALL | re.IGNORECASE)
+                proposed = json.loads(fenced.group(1) if fenced else clean_text)
+                if isinstance(proposed, list) and len(proposed) == 1:
+                    proposed = proposed[0]
+                envelope_contract = isinstance(proposed, dict) and (proposed.get('skip') is True or 'silence' in proposed)
+            except (ValueError, TypeError):
+                pass
+        if envelope_contract:
             try:
                 from runtime.personal_chat.decision import decode
                 now = datetime.fromisoformat(chat_metadata['decision_now']).timestamp()

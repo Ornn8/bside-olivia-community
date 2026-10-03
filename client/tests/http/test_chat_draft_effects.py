@@ -25,7 +25,8 @@ def test_new_input_revision_has_distinct_request_id_and_stale_text_skips_tts(mon
     seen, speech = [], []
     async def run(request, context):
         seen.append(request.idempotency_key)
-        return SimpleNamespace(state=ReplyState.COMPLETED, text=envelope(text='现在醒着就继续聊', delivery='voice'))
+        return SimpleNamespace(state=ReplyState.COMPLETED, text=envelope(text='现在醒着就继续聊', delivery='voice'),
+                               quality_status='accepted')
     async def audio(server, text, path, **kwargs):
         speech.append(text)
         return {'duration_seconds': 4}
@@ -46,7 +47,12 @@ def test_new_input_revision_has_distinct_request_id_and_stale_text_skips_tts(mon
             for revision in (0, 1):
                 row = dict(channel='qq', life_received_at=datetime.now(timezone.utc).isoformat(),
                            input_revision=revision, generation_attempts=1, voice_available=True)
-                assert await backend.generate(server, PersonalMessage('qq', '100', '200', '1', '继续聊'), row)
+                reply = await backend.generate(server, PersonalMessage('qq', '100', '200', '1', '继续聊'), row)
+                if stale:
+                    assert reply is None
+                    assert 'quality_status' not in row
+                else:
+                    assert reply and row['quality_status'] == 'accepted'
                 assert bool(row.get('prepared_audio')) is (not stale)
         finally:
             TURN_IS_CURRENT.reset(token)
@@ -69,4 +75,30 @@ def test_shadow_result_of_discarded_revision_cannot_overwrite_new_revision(monke
         result.set_result({'status': 'old-result'})
         await asyncio.gather(*tuple(server._semantic_shadow_tasks))
         assert not saved and 'semantic_shadow' not in row
+    asyncio.run(scenario())
+
+
+def test_stale_pipeline_shadow_is_cancelled_without_persisting_observation(monkeypatch, tmp_path):
+    from tests.http.test_chat_jev_decision import pipeline_result, server_fixture
+
+    async def scenario():
+        result = pipeline_result(record=False)
+
+        async def observe():
+            await asyncio.Future()
+
+        result.semantic_shadow_task = asyncio.create_task(observe())
+        server, row, _, _, _ = server_fixture(monkeypatch, tmp_path, result)
+        token = TURN_IS_CURRENT.set(lambda: False)
+        try:
+            reply = await backend.generate(server, PersonalMessage('qq', 'b', 'u', '1', 'Hello'), row)
+            assert reply is None
+            assert result.semantic_shadow_task.cancelled()
+            assert 'semantic_shadow' not in row and 'quality_status' not in row
+            assert not getattr(server, '_semantic_shadow_tasks', set())
+        finally:
+            TURN_IS_CURRENT.reset(token)
+            result.semantic_shadow_task.cancel()
+            await asyncio.gather(result.semantic_shadow_task, return_exceptions=True)
+
     asyncio.run(scenario())

@@ -483,8 +483,11 @@ async def _generate_billed(server, event, row):
             raise RuntimeError('PERSONAL_CHAT_GENERATION_TIMEOUT') from None
         companion = getattr(result, 'companion_decision', None)
         contact = getattr(result, 'proactive_decision', None)
-        if not turn_is_current() and (companion is not None or row.get('companion_decision') is not None
-                                      or getattr(result, 'error_code', None) in JEV_ERROR_CODES):
+        if not turn_is_current():
+            shadow = getattr(result, 'semantic_shadow_task', None)
+            if shadow is not None:
+                shadow.cancel()
+                await asyncio.gather(shadow, return_exceptions=True)
             return None  # The service refreshes intake before using this result.
         if companion is not None:
             await save_companion_decision(companion)

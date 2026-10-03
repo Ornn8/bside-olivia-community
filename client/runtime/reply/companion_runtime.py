@@ -219,7 +219,7 @@ def media_locked(plan):
 
 def project_decision(messages, decision, *, max_input_chars, delivery):
     payload = decision.writer_projection()
-    ordinary_silent_fallback = payload['timing'] in {'wait_user', 'defer', 'no_reply'} and delivery in {'text', 'voice_default'}
+    ordinary_silent_fallback = payload.get('timing') in {'wait_user', 'defer', 'no_reply'} and delivery in {'text', 'voice_default'}
     if ordinary_silent_fallback:
         payload['pending_requirements'] = [dict(fulfillment='pending', kinds=sorted({
             kind for alternative in item['alternatives'] for kind in alternative['kinds']}))

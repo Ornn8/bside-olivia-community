@@ -31,17 +31,18 @@ def test_pipeline_quality_persists_before_failure_and_survives_bundle(monkeypatc
     import runtime.image_reply
     import runtime.image_understanding
     import runtime.personal_chat.stickers
-    import runtime.personal_chat.decision
+    from tests.http.test_personal_chat_decision import envelope
     monkeypatch.setattr(persona_loader, 'load_persona', lambda _: SimpleNamespace(snapshot=SimpleNamespace(status='READY')))
     monkeypatch.setattr(runtime.image_reply, 'photo_reply_context', lambda ctx, *a, **k: ctx)
     monkeypatch.setattr(runtime.personal_chat.stickers, 'choices', lambda *a, **k: {})
-    monkeypatch.setattr(runtime.personal_chat.decision, 'decode', lambda *a, **k: {'skip': True})
     async def understand(*a): pass
     monkeypatch.setattr(runtime.image_understanding, 'understand_incoming', understand)
     row = {'channel': 'qq', 'life_received_at': datetime.now(timezone.utc).isoformat()}
     saved = []
     result = SimpleNamespace(state=ReplyState.FAILED if failed is True else ReplyState.COMPLETED,
-        error_code='REPLY_QUALITY_BLOCKED' if failed is True else None, text='private candidate',
+        error_code='REPLY_QUALITY_BLOCKED' if failed is True else None,
+        text=envelope(text='', skip=True, silence={'kind': 'no_reply', 'evidence': 'private incoming'}),
+        silence_authorized=True,
         quality_status='blocked' if failed is True else 'accepted', reviewer_calls=2, rewrite_calls=1,
         decision_rejection_reason='FIELDS' if failed is True else None,
         violation_codes=('MEMORY_FABRICATION', 'private violation text'))
@@ -83,7 +84,7 @@ def test_pipeline_quality_persists_before_failure_and_survives_bundle(monkeypatc
             with pytest.raises(RuntimeError, match='PERSONAL_CHAT_REPLY_QUALITY_BLOCKED'):
                 await backend.generate(server, PersonalMessage('qq', 'a', 'u', '1', 'private incoming'), row)
         else:
-            assert await backend.generate(server, PersonalMessage('qq', 'a', 'u', '1', 'private incoming'), row) == '[[skip]]'
+            assert await backend.generate(server, PersonalMessage('qq', 'a', 'u', '1', 'private incoming'), row) is None
     asyncio.run(scenario())
     if failed == 'persist_failure':
         return

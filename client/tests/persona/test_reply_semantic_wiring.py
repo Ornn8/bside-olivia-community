@@ -143,6 +143,89 @@ def test_default_disabled_keeps_existing_behavior():
     assert result.reviewer_calls == result.rewrite_calls == 0
 
 
+@pytest.mark.parametrize('runtime_source', [False, True])
+@pytest.mark.parametrize('with_clock', [False, True])
+def test_null_reviewer_cannot_authorize_writer_silence_through_legacy_metadata(runtime_source, with_clock):
+    class Authority:
+        calls = 0
+
+        async def ask(self, state, questions, *, purpose):
+            self.calls += 1
+            return {'user_silence': 'reply_required'}
+
+    user = 'Please explain this result.'
+    body = envelope()
+    body.update(text='', skip=True, silence=dict(kind='wait_user', evidence=user))
+    engine, authority = Engine(json.dumps(body)), Authority()
+    pipeline = ReplyPipeline(engine, reviewer=NullReviewer(), rewriter=UnavailableRewriter(),
+        discover_runtime_ports=False, silence_authorization_port=authority)
+    metadata = dict(structured=True, raw_user_text=user, proactive=False)
+    if runtime_source:
+        metadata['received_source_id'] = 'synthetic-runtime:user'
+    if with_clock:
+        metadata['decision_now'] = '2026-09-26T14:38:00+08:00'
+    token = CURRENT.set(metadata)
+    try:
+        result = asyncio.run(pipeline.run(ReplyRequest(content=user), ReplyContext.create(
+            ReplyMode.FUTURE_IM, future_im_enabled=True,
+            trusted_time=TrustedTime(datetime(2026, 9, 26, tzinfo=timezone.utc)))))
+    finally:
+        CURRENT.reset(token)
+    assert result.state is ReplyState.FAILED and result.error_code == 'PERSONAL_CHAT_DECISION_INVALID'
+    assert not result.silence_authorized and not result.text
+    assert len(engine.requests) == 1 and authority.calls == int(with_clock)
+    if with_clock:
+        assert result.decision_rejection_reason == 'SILENCE_NOT_AUTHORIZED'
+
+
+def test_null_reviewer_runtime_contract_does_not_accept_legacy_plaintext():
+    user, engine = 'Please explain this result.', Engine('legacy plaintext')
+    pipeline = ReplyPipeline(engine, reviewer=NullReviewer(), rewriter=UnavailableRewriter(),
+                            discover_runtime_ports=False)
+    token = CURRENT.set(dict(structured=True, raw_user_text=user, proactive=False,
+                            received_source_id='synthetic-runtime:user',
+                            decision_now='2026-09-26T14:38:00+08:00'))
+    try:
+        result = asyncio.run(pipeline.run(ReplyRequest(content=user), ReplyContext.create(
+            ReplyMode.FUTURE_IM, future_im_enabled=True,
+            trusted_time=TrustedTime(datetime(2026, 9, 26, tzinfo=timezone.utc)))))
+    finally:
+        CURRENT.reset(token)
+    assert result.state is ReplyState.FAILED and result.error_code == 'PERSONAL_CHAT_DECISION_INVALID'
+    assert not result.text and not result.silence_authorized
+
+
+@pytest.mark.parametrize('timing', ['wait_user', 'defer', 'no_reply'])
+@pytest.mark.parametrize('candidate_kind', ['plaintext', 'unplanned_speech'])
+def test_reconsidered_silence_requires_envelope_with_partial_runtime_metadata(timing, candidate_kind):
+    from tests.persona.test_jev_pipeline import Port, plan
+
+    user = 'Please explain this result.'
+    body = 'legacy plaintext'
+    if candidate_kind == 'unplanned_speech':
+        value = envelope()
+        value['speech'] = dict(title='Synthetic speech',
+            spoken_text='Synthetic speech without a media plan. ' * 3,
+            continuation_summary='Synthetic summary')
+        body = json.dumps(value)
+    engine, port = Engine(body), Port(plan(timing=timing))
+    pipeline = ReplyPipeline(engine, reviewer=NullReviewer(), rewriter=UnavailableRewriter(),
+                            discover_runtime_ports=False, companion_decision_port=port)
+    token = CURRENT.set(dict(structured=True, raw_user_text=user, proactive=False,
+                            decision_now='2026-09-26T14:38:00+08:00'))
+    try:
+        result = asyncio.run(pipeline.run(ReplyRequest(content=user, request_id='partial-runtime'),
+            ReplyContext.create(ReplyMode.FUTURE_IM, future_im_enabled=True,
+                trusted_time=TrustedTime(datetime(2026, 9, 26, tzinfo=timezone.utc)))))
+    finally:
+        CURRENT.reset(token)
+    assert len(port.turns) == len(engine.requests) == 1
+    assert result.state is ReplyState.FAILED and result.error_code == 'PERSONAL_CHAT_DECISION_INVALID'
+    assert not result.text and not result.silence_authorized
+    assert result.decision_rejection_reason == (
+        'JSON_SYNTAX' if candidate_kind == 'plaintext' else 'MEDIA_WITHOUT_PLAN')
+
+
 def test_qq_rewrite_control_markup_rejected():
     result, _ = execute(json.dumps(envelope()), mode=ReplyMode.FUTURE_IM,
         reviewer=Reviewer(ReviewVerdict.REWRITE, ReviewVerdict.PASS), rewriter=Rewriter('[[chat:voice]]'))

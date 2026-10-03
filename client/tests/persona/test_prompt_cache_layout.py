@@ -155,6 +155,7 @@ def test_plain_qq_chat_uses_speech_default_with_concrete_text_exceptions():
     messages = ({'role': 'system', 'content': 'p'}, {'role': 'user', 'content': '晚安'})
     note = project_decision(messages, decision, max_input_chars=10000, delivery='voice_default')[1]['content']
     assert 'QQ本轮默认语音' in note and 'text_reason' in note and '必须是 text' not in note
+    assert 'pending_requirements' not in note and '本轮仍需回应' not in note
     assert not media_locked(plan) and media_locked({'understanding': {'requirements': [{'id': 'r1'}]}})
     assert media_locked(None)
 
@@ -169,6 +170,7 @@ def test_oversized_plan_drops_oldest_dialogue_instead_of_failing():
     budget = sum(len(m['content']) for m in messages) + 300
     result = project_decision(messages, decision, max_input_chars=budget, delivery='text')
     assert sum(len(m['content']) for m in result) <= budget
+    assert all('pending_requirements' not in m['content'] and '本轮仍需回应' not in m['content'] for m in result)
     assert result[-1] == messages[-1] and result[0] == messages[0]
     kept = [m['content'] for m in result if m['content'].startswith('[历史消息 ')]
     assert kept and kept[-1] == dialogue[-1]['content'] and len(kept) < len(dialogue)
