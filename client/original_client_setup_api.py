@@ -172,8 +172,8 @@ def _dpapi_unprotect(value: str) -> str:
 
 
 def _is_relay(config: ManagedLLMConfig) -> bool:
-    from original_client_relay_api import RELAY_BASE, RELAY_MODEL
-    return config.base_url.rstrip("/") == RELAY_BASE and config.model == RELAY_MODEL
+    from original_client_relay_api import RELAY_BASE, RELAY_MODELS
+    return config.base_url.rstrip("/") == RELAY_BASE and config.model in RELAY_MODELS
 
 
 def _relay_config(base_url: object, model: object) -> ManagedLLMConfig:
@@ -356,7 +356,7 @@ class LLMSetupService:
         candidate = _api_key(supplied, allow_empty=True)
         if candidate:
             return candidate
-        if not _managed_config(base_url, model).is_preset:
+        if not _is_relay(_managed_config(base_url, model)):
             return ""
         configured = self._config()
         if (

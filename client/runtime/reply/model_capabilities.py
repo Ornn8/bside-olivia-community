@@ -36,6 +36,12 @@ def model_capabilities(base_url: str, model: str, options: Mapping | None = None
         defaults = ModelCapabilities("qwen", "high", stream_usage=True)
     elif re.fullmatch(r"qwen3\.[567]-(?:flash|plus|max)(?:-.*)?", name) or name in {"qwen-flash", "qwen-plus"}:
         defaults = ModelCapabilities("qwen", stream_usage=True)
+    elif name in {'claude-opus-5-5', 'claude-sonnet-5-5'}:
+        # These models support tools, but reject forced tool_choice. The reply
+        # adapter still validates that the returned tool matches its contract.
+        defaults = ModelCapabilities(tool_choice=False, stream_usage=True)
+    elif name in {'claude-opus-4-6', 'gemini-3.8-flash'}:
+        defaults = ModelCapabilities(stream_usage=True)
     else:
         defaults = ModelCapabilities()
     overrides = (options or {}).get("capabilities", {})

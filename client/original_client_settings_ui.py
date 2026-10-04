@@ -6,7 +6,7 @@ import base64
 from pathlib import Path
 
 
-SETTINGS_UI_VERSION = "p03.original-settings-manage.v55"
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v56"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
@@ -1969,6 +1969,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     account.setAttribute("role", "status");
     const controls = actions(); controls.style.cssText = "display:flex;flex-wrap:wrap;gap:12px";
     const billing = document.createElement("section");
+    const models = document.createElement("section");
     const identity = document.createElement("section");
     identity.className = "olivia-account-key";
     const key = setupInput("我的 Olivia Key", "password");
@@ -1987,7 +1988,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       key.input.value = result.key_prefix ? result.key_prefix + "…" : "";
       copy.hidden = !result.configured;
       billing.replaceChildren();
-      if (result.configured) mountRelayBalance(billing);
+      models.replaceChildren();
+      if (result.configured) { mountRelayModels(models); mountRelayBalance(billing); }
     };
     const run = async (action, payload = {}) => {
       if (busy) return;
@@ -2011,8 +2013,68 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     claim.hidden=reveal.hidden=copy.hidden=true;
     controls.append(claim,reveal,copy);
     identity.append(key.wrapper,controls,account);
-    panel.append(identity,billing);
+    panel.append(identity,models,billing);
     void refresh().catch(()=>{account.textContent="账户读取失败，请关闭后重试。";});
+  };
+
+  const mountRelayModels = (panel) => {
+    const box = document.createElement("section");
+    box.setAttribute("data-olivia-relay-models", "");
+    box.style.cssText = "display:grid;gap:12px;margin:24px 0;min-width:0";
+    const title = text("h3", "回信模型", "text-text-title text-title-m");
+    const description = text("p", "以现有 Flash 为 1 倍（当前接入 Qwen3.7 Flash）。输入和输出分别计费，实际消费取决于用量；短请求可能受最低计费规则影响。", "text-text-secondary text-body-m");
+    const list = document.createElement("fieldset");
+    list.style.cssText = "margin:0;padding:0;border:0;min-width:0";
+    const legend = text("legend", "选择回信模型");
+    legend.style.cssText = "position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)";
+    const status = text("p", "正在读取可用模型…", "text-text-secondary text-body-m");
+    status.setAttribute("role", "status");
+    const controls = actions();
+    let active = "", selected = "", busy = false;
+    const radios = [];
+    const apply = button("使用所选模型", async () => {
+      if (busy || !selected || selected === active) return;
+      busy = true; apply.disabled = true; radios.forEach(input => { input.disabled = true; });
+      status.textContent = "正在切换模型…";
+      try {
+        const result = await requestSetup("/toy/relay/action", {action:"select_model", model:selected});
+        active = result.selected_model;
+        status.textContent = "已保存，下一次发送使用所选模型。";
+      } catch (_) {
+        status.textContent = "切换失败，仍使用原来的模型。请稍后重试。";
+      } finally {
+        busy = false; apply.disabled = selected === active;
+        radios.forEach(input => { input.disabled = false; });
+      }
+    });
+    apply.disabled = true;
+    controls.append(apply);
+    box.append(title, description, list, controls, status);
+    list.append(legend); panel.append(box);
+    void requestSetup("/toy/relay/action", {action:"models"}).then(data => {
+      if (!box.isConnected) return;
+      active = selected = data.selected_model;
+      const rows = Array.isArray(data.models) ? data.models : [];
+      for (const item of rows) {
+        const row = document.createElement("label");
+        row.className = "olivia-model-row";
+        row.style.cssText = "display:grid;grid-template-columns:20px minmax(0,1fr) auto;align-items:center;gap:12px;padding:14px 0;border-bottom:1px solid #383b42;cursor:pointer";
+        const radio = document.createElement("input");
+        radio.type = "radio"; radio.name = "olivia-reply-model"; radio.value = item.id;
+        radio.checked = item.id === active;
+        radio.style.cssText = "margin:0;accent-color:#ded3bd;width:16px;height:16px";
+        radio.addEventListener("change", () => { selected = radio.value; apply.disabled = busy || selected === active; });
+        radios.push(radio);
+        const name = text("span", item.display_name, "text-text-title text-body-m");
+        name.style.cssText = "overflow-wrap:anywhere;line-height:1.5";
+        const ratio = value => Number(value).toLocaleString("zh-CN", {maximumFractionDigits:2});
+        const ratios = text("span", `输入 ${ratio(item.input_multiplier)}× · 输出 ${ratio(item.output_multiplier)}×`, "text-text-secondary text-body-m");
+        ratios.className += " olivia-model-multipliers";
+        ratios.style.cssText = "font-variant-numeric:tabular-nums;font-size:13px;line-height:1.5";
+        row.append(radio, name, ratios); list.append(row);
+      }
+      status.textContent = rows.length ? "选择后点击「使用所选模型」，下一次发送生效。" : "暂无可用模型，请稍后重新打开账户页面。";
+    }).catch(() => { status.textContent = "模型列表读取失败，请稍后重新打开账户页面。"; });
   };
 
   const mountRelayBalance = (panel) => {
@@ -2975,6 +3037,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] [aria-pressed] { background:transparent !important;border:0 !important;border-radius:0 !important;border-bottom:2px solid transparent !important;padding:10px 4px !important; }
           [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] [aria-pressed="true"] { border-bottom-color:#ded3bd !important;color:#f1ece2 !important; }
           @media(max-width:700px) {
+            [data-olivia-relay-models] .olivia-model-row { grid-template-columns:20px minmax(0,1fr) !important;gap:4px 12px !important; }
+            [data-olivia-relay-models] .olivia-model-multipliers { grid-column:2; }
             [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] .olivia-account-key { grid-template-columns:minmax(0,1fr); }
             [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] .olivia-account-metrics { grid-template-columns:repeat(2,minmax(0,1fr));gap:16px; }
           }

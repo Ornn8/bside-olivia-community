@@ -1,6 +1,7 @@
 """Session-protected recharge controls for the saved Olivia relay connection."""
 from urllib.parse import urlsplit
 import asyncio
+import re
 import secrets
 from aiohttp import ClientSession, ClientTimeout, ClientError, ClientSSLError, ClientConnectionError, web
 from original_client_setup_api import LLMSetupError, _authorize, _body, _headers, SESSION_HEADER
@@ -8,6 +9,8 @@ from runtime.remote_generation import gpu_tls_context
 
 RELAY_BASE = 'https://175.24.191.6/v1'
 RELAY_MODEL = 'qwen3.7-flash'
+RELAY_MODELS = frozenset({RELAY_MODEL, 'gemini-3.8-flash', 'claude-opus-5-5',
+    'claude-sonnet-5-5', 'claude-opus-4-6', 'qwen3.8-max'})
 
 
 async def relay_request(base, key, method, path, payload=None):
@@ -74,8 +77,11 @@ def mount_relay_api(app, setup):
         if refresh is not None:
             refresh()  # Cloud generation uses the same account key.
 
-    async def connect(key):
-        payload = {'base_url':RELAY_BASE, 'model':RELAY_MODEL, 'api_key':key}
+    async def connect(key, model=None):
+        if model is None:
+            config = setup._config()
+            model = config.model if config.base_url.rstrip('/') == RELAY_BASE and config.model in RELAY_MODELS else RELAY_MODEL
+        payload = {'base_url':RELAY_BASE, 'model':model, 'api_key':key}
         await setup.test(payload)
         setup.save(payload)
 
@@ -83,6 +89,35 @@ def mount_relay_api(app, setup):
         origin = _authorize(request, confirm=True)
         setup.require_session(request.headers.get(SESSION_HEADER, ''))
         data = await _body(request)
+        if data.get('action') in {'models', 'select_model'}:
+            operation = data['action']
+            if set(data) != ({'action'} if operation == 'models' else {'action', 'model'}):
+                raise LLMSetupError('LLM_SETUP_FIELDS_INVALID', status=400)
+            async with lock:
+                key = stored_key()
+                if not key:
+                    raise LLMSetupError('RELAY_NOT_CONFIGURED', status=400)
+                if operation == 'select_model':
+                    model = data['model']
+                    if not isinstance(model, str) or model not in RELAY_MODELS:
+                        raise LLMSetupError('LLM_SETUP_FIELDS_INVALID', status=400)
+                    await connect(key, model)
+                    return web.json_response({'selected_model': model, 'connected': True}, headers=_headers(origin))
+                result = await relay_request(RELAY_BASE, key, 'GET', '/models')
+                rows = []
+                for item in result.get('data', []):
+                    if not isinstance(item, dict) or item.get('id') not in RELAY_MODELS:
+                        continue
+                    name = item.get('display_name', item['id'])
+                    ratios = [item.get(field, '1') for field in ('input_multiplier', 'output_multiplier')]
+                    if (not isinstance(name, str) or len(name) > 80 or any(
+                            not isinstance(ratio, str) or len(ratio) > 20 or not re.fullmatch(r'[0-9]+(?:\.[0-9]+)?', ratio)
+                            for ratio in ratios)):
+                        raise LLMSetupError('RELAY_RESPONSE_INVALID', status=503)
+                    rows.append({'id': item['id'], 'display_name': name,
+                        'input_multiplier': ratios[0], 'output_multiplier': ratios[1]})
+                return web.json_response({'models': rows, 'selected_model': setup._config().model,
+                    'baseline_model': RELAY_MODEL}, headers=_headers(origin))
         if data.get('action') in {'claim', 'connect', 'import_key', 'account', 'export_key'}:
             operation = data['action']
             if set(data) != ({'action','key'} if operation == 'import_key' else {'action'}):
@@ -94,7 +129,7 @@ def mount_relay_api(app, setup):
                     active = setup._active_key_path()
                     active_key = setup._unprotect(active.read_text(encoding='utf-8').strip()) if active else None
                     return web.json_response({'configured':bool(key) and not pending_path.exists(), 'registration_pending':bool(key) and pending_path.exists(), 'key_prefix':key[:15] if key and not pending_path.exists() else '',
-                        'connected':bool(key) and key == active_key and config.base_url.rstrip('/') == RELAY_BASE and config.model == RELAY_MODEL}, headers=_headers(origin))
+                        'connected':bool(key) and key == active_key and config.base_url.rstrip('/') == RELAY_BASE and config.model in RELAY_MODELS}, headers=_headers(origin))
                 if operation == 'claim':
                     if not key:
                         key = 'olivia-'+secrets.token_urlsafe(32)
