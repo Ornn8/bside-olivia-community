@@ -35,6 +35,7 @@ def _clear_draft(row):
                 'proactive_decision', 'proactive_basis', 'proactive_opportunity', 'generation_failure_notice',
                 'generation_context_at', 'stage_timing_seconds', 'stage_actual_calls', 'stage_cache_hits',
                 'voice_prepare_seconds', 'voice_prepare_status', 'voice_prepare_timeout_seconds',
+                'generation_retryable', 'generation_failure_context', 'generation_failures',
                 'silence_reason', 'skip_reason', 'user_controls_applied'):
         row.pop(key, None)
 
@@ -239,12 +240,18 @@ class PersonalChatService:
         for row in reversed(self.rows):
             if (row.get('binding_id') != event.binding_id or row.get('origin') == 'proactive'
                     or row.get('superseded_by') or row.get('delivery_status') != 'FAILED'
-                    or row.get('generation_attempts', 0) < 2
+                    or (row.get('generation_attempts', 0) < 2 and row.get('generation_retryable') is not False)
                     or not sources & row.get('source_messages', {}).keys()):
                 continue
             correlated = send.for_exchange(event) if callable(getattr(send, 'for_exchange', None)) else send
-            await delivery_notice(row, correlated, self.persist, 'generation_failure_notice',
-                '【系统提示】这条消息的回复生成失败，暂时没能回复。可以稍后重新发一下。')
+            code = row.get('error_code')
+            if code in {'PERSONAL_CHAT_PROVIDER_USAGE_PENDING', 'PERSONAL_CHAT_PROVIDER_REQUEST_DUPLICATE'}:
+                text = '【系统提示】这条消息的生成用量还在核对，暂时没能回复。请先不要重复发送，等待服务处理。'
+            elif code == 'PERSONAL_CHAT_PROVIDER_BUSY':
+                text = '【系统提示】服务暂时无法受理这条回复，请稍后再试。'
+            else:
+                text = '【系统提示】这条消息的回复生成失败，暂时没能回复。可以稍后重新发一下。'
+            await delivery_notice(row, correlated, self.persist, 'generation_failure_notice', text)
             return
 
     async def _handle_batch(self, event, send):
@@ -266,7 +273,8 @@ class PersonalChatService:
                 next(iter(sources)), row['content'], tuple(sources.items()), row.get('input_kind','text'), row.get('user_sent_at'),
                 tuple(tuple(item) for item in row.get('incoming_images', [])))
             terminal = row.get('delivery_status') in {'SENDING', 'DELIVERY_UNCONFIRMED'} or (
-                row.get('delivery_status') == 'FAILED' and row.get('generation_attempts', 0) >= 2)
+                row.get('delivery_status') == 'FAILED' and (row.get('generation_attempts', 0) >= 2
+                                                          or row.get('generation_retryable') is False))
             if not terminal or remaining.keys() == overlap:
                 updated = await self._handle_one(stored, send.for_exchange(stored) if callable(getattr(send, 'for_exchange', None)) else send)
                 if updated is not None:
@@ -365,6 +373,8 @@ class PersonalChatService:
                         await persist_state(self.persist)
                         return
             if row.get("delivery_status") != "GENERATED":
+                if row.get('generation_retryable') is False:
+                    raise RuntimeError(row.get('error_code') or 'PERSONAL_CHAT_GENERATION_RETRY_EXHAUSTED')
                 if row.get("generation_attempts", 0) >= 2:
                     raise RuntimeError("PERSONAL_CHAT_GENERATION_RETRY_EXHAUSTED")
                 validated_controls = row.get('user_controls_applied') is True
@@ -381,6 +391,8 @@ class PersonalChatService:
                 if not proactive and not validated_controls:
                     row.pop('followup_quote', None)
                 row["generation_attempts"] = row.get("generation_attempts", 0) + 1
+                row.pop('generation_retryable', None)
+                row.pop('generation_failure_context', None)
                 row.update(delivery_status="GENERATING", letter_status="PROCESSING")
                 await persist_state(self.persist)
                 try:
@@ -435,6 +447,17 @@ class PersonalChatService:
                     if code not in JEV_ERROR_CODES and not re.fullmatch(r'(?:PERSONAL_CHAT|IMAGE|LLM)_[A-Z0-9_]{1,80}', code):
                         code = 'PERSONAL_CHAT_GENERATION_FAILED'
                     row.update(delivery_status="FAILED", letter_status="FAILED", error_code=code)
+                    retryable = getattr(exc, 'retryable', None)
+                    if type(retryable) is bool:
+                        row['generation_retryable'] = retryable
+                    from runtime.diagnostics.failure_context import provider_failure_context
+                    context = provider_failure_context(getattr(exc, 'failure_context', {}))
+                    if context:
+                        row['generation_failure_context'] = context
+                        receipt = {**context, 'generation_attempt': row['generation_attempts']}
+                        if type(retryable) is bool:
+                            receipt['retryable'] = retryable
+                        row['generation_failures'] = [*row.get('generation_failures', []), receipt][-2:]
                     await persist_state(self.persist)
                     raise
             if callable(getattr(send, 'is_available', None)) and not send.is_available():

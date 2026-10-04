@@ -114,8 +114,10 @@ async def _check_provider_quota(response) -> None:
     code = None
     if response.status == 402 or identifiers & {'insufficient_quota', 'insufficient_balance', 'quota_exceeded', 'credit_balance_too_low'}:
         code = 'PROVIDER_QUOTA_EXHAUSTED'
-    elif identifiers & {'upstream_unavailable_usage_pending', 'usage_unavailable'}:
+    elif identifiers & {'upstream_unavailable_usage_pending', 'usage_unavailable', 'usage_reconciliation_required'}:
         code = 'PROVIDER_USAGE_PENDING'
+    elif identifiers & {'pending_requests_limit'}:
+        code = 'PROVIDER_BUSY'
     elif identifiers & {'request_already_submitted'}:
         code = 'PROVIDER_REQUEST_DUPLICATE'
     elif identifiers & {'invalid_api_key'}:
@@ -124,6 +126,7 @@ async def _check_provider_quota(response) -> None:
         code = 'PROVIDER_REJECTED'
     if code:
         exc = GatewayError(code, retryable=False, status=response.status)
+        exc.diagnostic_stage = 'http_response'
         _record_provider_failure(exc, response)
         raise exc
 

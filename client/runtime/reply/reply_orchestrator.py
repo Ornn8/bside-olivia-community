@@ -88,6 +88,7 @@ class ReplyResult:
     text: str = ""
     error_code: str | None = None
     retryable: bool = False
+    failure_context: dict[str, object] = field(default_factory=dict)
 
     @property
     def completed(self) -> bool:
@@ -290,6 +291,7 @@ class ReplyOrchestrator:
                 ),
             )
         except GatewayError as exc:
+            from runtime.diagnostics.failure_context import exception_context
             event = (
                 ReplyEventType.RETRYABLE_ERROR
                 if exc.retryable
@@ -309,6 +311,7 @@ class ReplyOrchestrator:
                     ReplyState.FAILED,
                     error_code=exc.code,
                     retryable=exc.retryable,
+                    failure_context=exception_context(exc),
                 ),
             )
         except Exception:

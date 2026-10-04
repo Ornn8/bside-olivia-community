@@ -517,7 +517,14 @@ async def _generate_billed(server, event, row):
             raise RuntimeError('JEV_DECISION_NOT_SAVED')
         await persist_chat(server)
         if result.state is not ReplyState.COMPLETED:
-            raise RuntimeError(_generation_failure_code(result.error_code))
+            from runtime.diagnostics.failure_context import CODES, provider_failure_context
+            exc = RuntimeError(_generation_failure_code(result.error_code))
+            # Keep provider submission semantics across the result/exception
+            # boundary. Review and format repair retain their bounded retry.
+            if result.error_code in CODES | {'INPUT_TOO_LONG', 'IDEMPOTENCY_CONFLICT'}:
+                exc.retryable = result.retryable
+            exc.failure_context = provider_failure_context(getattr(result, 'failure_context', {}))
+            raise exc
         if contact is not None and contact['decision']['action'] == 'defer':
             return '[[skip]]'
         from .decision import decode
@@ -1064,6 +1071,7 @@ def install_personal_chat(app, server):
                             break
                         except Exception:
                             retryable = any(r.get('delivery_status') == 'FAILED' and r.get('generation_attempts', 0) < 2
+                                and r.get('generation_retryable') is not False
                                 and r.get('binding_id') == event.binding_id
                                 and set(r.get('source_messages', {})) & dict(event.sources).keys()
                                 for r in server.store.personal_chats)

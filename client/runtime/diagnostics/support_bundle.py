@@ -356,6 +356,30 @@ def project_chat_task(value: Mapping[str, object]) -> dict[str, object]:
             result[field] = round(float(seconds), 4)
     if value.get('channel') in ('qq', 'wechat'):
         result['channel'] = value['channel']
+        if type(value.get('generation_retryable')) is bool:
+            result['generation_retryable'] = value['generation_retryable']
+        context = value.get('generation_failure_context')
+        if isinstance(context, Mapping):
+            from .failure_context import provider_failure_context
+            safe_context = provider_failure_context(context)
+            if safe_context:
+                result['generation_failure_context'] = safe_context
+        failures = value.get('generation_failures')
+        if isinstance(failures, list):
+            from .failure_context import provider_failure_context
+            safe_failures = []
+            for receipt in failures[:2]:
+                if not isinstance(receipt, Mapping) or type(receipt.get('generation_attempt')) is not int or receipt['generation_attempt'] not in (1, 2):
+                    continue
+                safe = provider_failure_context(receipt)
+                if not safe:
+                    continue
+                safe['generation_attempt'] = receipt['generation_attempt']
+                if type(receipt.get('retryable')) is bool:
+                    safe['retryable'] = receipt['retryable']
+                safe_failures.append(safe)
+            if safe_failures:
+                result['generation_failures'] = safe_failures
         timings = {'now', 'close_turn', 'wait_user', 'defer', 'no_reply'}
         if isinstance(value.get('companion_timing'), str) and value['companion_timing'] in timings:
             result['companion_timing'] = value['companion_timing']

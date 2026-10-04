@@ -1,5 +1,6 @@
 """Finite failure metadata; never retain exception text or request content."""
 from collections import deque
+from collections.abc import Mapping
 import uuid
 
 _RECENT_FAILURES = deque(maxlen=40)
@@ -7,7 +8,7 @@ _RECENT_FAILURES = deque(maxlen=40)
 STAGES = {"configuration", "request", "http_response", "response_json", "tool_parse", "route_validation", "internal",
           "structured_completion", "structured_validation", "tool_completion"}
 CODES = {"PROVIDER_QUOTA_EXHAUSTED", "PROVIDER_TIMEOUT", "PROVIDER_PROTOCOL", "PROVIDER_UNAVAILABLE", "PROVIDER_RETRYABLE", "PROVIDER_REJECTED", "GATEWAY_OTHER"}
-CODES |= {'PROVIDER_USAGE_PENDING', 'PROVIDER_REQUEST_DUPLICATE', 'PROVIDER_AUTH_FAILED'}
+CODES |= {'PROVIDER_USAGE_PENDING', 'PROVIDER_REQUEST_DUPLICATE', 'PROVIDER_AUTH_FAILED', 'PROVIDER_BUSY'}
 KINDS = {"TimeoutError", "TypeError", "ValueError", "AttributeError", "RuntimeError", "ClientConnectorError", "ClientConnectorCertificateError", "ClientConnectorSSLError", "ServerDisconnectedError", "ClientPayloadError", "OTHER"}
 DETAILS = {"invalid_json", "invalid_response_shape", "missing_tools", "invalid_tool_entry", "invalid_tool_name", "invalid_tool_arguments"}
 KINDS.add('ClientConnectorDNSError')
@@ -109,6 +110,15 @@ def exception_context(exc, stage="request"):
         "exception_type": kind if kind in KINDS else "OTHER",
         "provider_request_id": getattr(exc, 'provider_request_id', None),
     })
+
+
+def provider_failure_context(source):
+    """Only provider metadata belongs to a durable chat failure receipt."""
+    if not isinstance(source, Mapping):
+        return {}
+    return project_failure_context({key: source[key] for key in (
+        'failure_stage', 'failure_detail', 'provider_code', 'exception_type',
+        'http_status', 'provider_request_id') if key in source})
 
 
 def record_failure(exc):

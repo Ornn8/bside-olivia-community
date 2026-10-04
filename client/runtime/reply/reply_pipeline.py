@@ -124,6 +124,7 @@ class PipelineResult:
     stage_timing_seconds: dict[str, float] = field(default_factory=dict, compare=False)
     stage_cache_hits: dict[str, int] = field(default_factory=dict)
     stage_actual_calls: dict[str, int] = field(default_factory=dict)
+    failure_context: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -559,6 +560,7 @@ class ReplyPipeline:
                 candidate.state,
                 error_code=candidate.error_code,
                 retryable=candidate.retryable,
+                failure_context=candidate.failure_context,
             )
         clean_text, sticker_id = split_selection(candidate.text, sticker_choices) if sticker_note else (candidate.text, None)
         clean_text, signature = split_signature(clean_text) if sticker_note else (clean_text, None)
