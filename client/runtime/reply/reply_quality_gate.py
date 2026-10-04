@@ -16,37 +16,43 @@ from runtime.reply.reply_reviewer import (
 )
 from runtime.reply.reply_reviewer import TrustedReviewEvidence
 from runtime.diagnostics.failure_context import REWRITE_ERROR_CODES
+from runtime.reply.reply_review_policy import SOFT_STYLE_CODES, fact_sentence_spans, preserves_quote_balance
 
 
-_SOFT_STYLE_CODES = frozenset({'STYLE_DRIFT', 'GENERIC_COUNSELOR'})
 # Modes without a delivery length contract, where whole sentences may be dropped.
 _TRIMMABLE_MODES = frozenset({ReplyMode.TEXT_LETTER, ReplyMode.VOICE_REPLY, ReplyMode.FUTURE_IM})
 
 
-def _without_unsupported_facts(text, violations, mode):
-    """Drop exactly the sentences the final review still marks as unsupported facts.
-
-    Since the per-sentence fact review (2.1.0) about a quarter of replies were flagged,
-    and a letter whose one rewrite still cited an unsupported past detail failed as a
-    whole (9 of one user's 11 letters). Removing those sentences delivers nothing the
-    review rejected; a reply that would lose most of its text still fails."""
+def _without_unsupported_facts(text, violations, mode, intimacy_claims=()):
+    """Remove confirmed fact sentences and preserve claims on unchanged text."""
     if mode not in _TRIMMABLE_MODES or not violations or any(
             item.code != 'MEMORY_FABRICATION' or not 0 <= item.start < item.end <= len(text)
             for item in violations):
         return None
+    spans = fact_sentence_spans(text, ((item.start, item.end) for item in violations))
     keep, cursor = [], 0
-    for start, end in sorted({(item.start, item.end) for item in violations}):
-        if start < cursor:
-            return None  # overlapping spans: do not guess what remains
+    for start, end in spans:
         keep.append(text[cursor:start])
         cursor = end
     keep.append(text[cursor:])
     trimmed = ''.join(keep)
-    compact = lambda value: ''.join(value.split())
-    if len(compact(trimmed)) < max(20, len(compact(text)) // 2):
+    if not any(char.isalnum() for char in trimmed) or not preserves_quote_balance(text, trimmed):
         return None
-    lines = [' '.join(line.split()) for line in trimmed.splitlines()]
-    return '\n'.join(line for line in lines if line).strip() or None
+    leading = len(trimmed) - len(trimmed.lstrip())
+    repaired = trimmed.strip()
+    mapped = []
+    for claim in intimacy_claims:
+        if any(start <= claim.start and claim.end <= end for start, end in spans):
+            continue
+        if any(start < claim.end and claim.start < end for start, end in spans):
+            return None  # A partial claim cannot be rebound safely.
+        shift = sum(end - start for start, end in spans if end <= claim.start) + leading
+        # A valid original span may include the whitespace removed by strip.
+        start, end = max(0, claim.start - shift), min(len(repaired), claim.end - shift)
+        if end <= start:
+            return None
+        mapped.append(replace(claim, start=start, end=end))
+    return repaired, tuple(mapped)
 
 
 class QualityGateStatus(StrEnum):
@@ -202,19 +208,16 @@ def run_reply_quality_gate(
             error_code=review.error_code,
         )
     if (
-        context.mode is ReplyMode.FUTURE_IM
-        and review.status is ReviewStatus.COMPLETED
-        and review.verdict is ReviewVerdict.REWRITE
+        review.status is ReviewStatus.COMPLETED
+        and review.verdict in (ReviewVerdict.REWRITE, ReviewVerdict.BLOCK)
         and deterministic.passed
         and review.violations
         and all(
-            item.severity == 'soft' and item.code in _SOFT_STYLE_CODES
+            item.severity == 'soft' and item.code in SOFT_STYLE_CODES
             for item in review.violations
         )
     ):
-        # Ordinary chat should not depend on a second paid generation merely
-        # for style preferences. Facts, boundaries and unknown findings still
-        # require the existing repair and fresh review below.
+        # A style preference is not a requirement for another generation.
         return QualityGateResult(
             QualityGateStatus.ACCEPTED_WITH_WARNINGS,
             candidate,
@@ -240,10 +243,6 @@ def run_reply_quality_gate(
             reviewer_calls=1,
             rewrite_calls=0,
         )
-    if not allow_rewrite:
-        return QualityGateResult(QualityGateStatus.BLOCKED, candidate, initial_codes,
-            deterministic_checks=1, reviewer_calls=1, rewrite_calls=0,
-            error_code='REWRITE_BUDGET_EXHAUSTED')
     try:
         confirmed_evidence = _confirmed_rewrite_evidence(
             reviewer,
@@ -262,6 +261,24 @@ def run_reply_quality_gate(
             rewrite_calls=0,
             error_code="REWRITE_EVIDENCE_INVALID",
         )
+    hard_findings = tuple(item for item in review.violations if item.severity == 'hard')
+    local_repair = (
+        _without_unsupported_facts(candidate, confirmed_evidence, reviewed_context.mode,
+                                   effective_intimacy_claims)
+        if deterministic.passed and hard_findings
+        and set(hard_findings) == set(confirmed_evidence)
+        and all(item.severity == 'hard' or item.code in SOFT_STYLE_CODES for item in review.violations)
+        else None
+    )
+    if local_repair is not None:
+        repaired, claims = local_repair
+        if scan_reply(repaired, reviewed_context, intimacy_claims=claims).passed:
+            return QualityGateResult(QualityGateStatus.ACCEPTED_WITH_WARNINGS, repaired, initial_codes,
+                                     deterministic_checks=2, reviewer_calls=1, rewrite_calls=0)
+    if not allow_rewrite:
+        return QualityGateResult(QualityGateStatus.BLOCKED, candidate, initial_codes,
+            deterministic_checks=1, reviewer_calls=1, rewrite_calls=0,
+            error_code='REWRITE_BUDGET_EXHAUSTED')
     try:
         rewritten = _rewrite_candidate(
             rewriter,
@@ -363,15 +380,33 @@ def run_reply_quality_gate(
         ),
         tuple(item.code for item in final_review.violations),
     )
+    final_hard = tuple(item for item in final_review.violations if item.severity == 'hard')
+    try:
+        final_evidence = _confirmed_rewrite_evidence(
+            reviewer, rewritten, reviewed_context, final_review, final_codes,
+        ) if final_review.status is ReviewStatus.COMPLETED and final_hard else ()
+    except Exception:
+        return QualityGateResult(QualityGateStatus.BLOCKED, rewritten, final_codes,
+                                 deterministic_checks=2, reviewer_calls=2, rewrite_calls=1,
+                                 error_code='REWRITE_EVIDENCE_INVALID')
     trimmed = (
-        _without_unsupported_facts(rewritten, final_review.violations, reviewed_context.mode)
+        _without_unsupported_facts(rewritten, final_evidence, reviewed_context.mode,
+                                   final_review.intimacy_claims or ())
         if final_deterministic.passed
+        and final_hard and set(final_hard) == set(final_evidence)
+        and all(item.severity == 'hard' or item.code in SOFT_STYLE_CODES for item in final_review.violations)
         and final_review.status is ReviewStatus.COMPLETED
         and final_review.verdict in (ReviewVerdict.BLOCK, ReviewVerdict.REWRITE)
         else None
     )
+    if trimmed is not None and not scan_reply(trimmed[0], reviewed_context, intimacy_claims=trimmed[1]).passed:
+        trimmed = None
     if trimmed is not None:
-        rewritten, status = trimmed, QualityGateStatus.ACCEPTED_WITH_WARNINGS
+        rewritten, status = trimmed[0], QualityGateStatus.ACCEPTED_WITH_WARNINGS
+    elif final_deterministic.passed and final_review.status is ReviewStatus.COMPLETED and final_review.violations and all(
+        item.severity == 'soft' and item.code in SOFT_STYLE_CODES for item in final_review.violations
+    ):
+        status = QualityGateStatus.ACCEPTED_WITH_WARNINGS
     elif (
         not final_deterministic.passed
         or final_review.verdict is ReviewVerdict.BLOCK
@@ -384,23 +419,14 @@ def run_reply_quality_gate(
             else QualityGateStatus.BLOCKED
         )
     elif final_review.verdict is ReviewVerdict.REWRITE:
-        # A style preference can survive the one rewrite. Semantic findings,
-        # unknown codes and hard STYLE_DRIFT (for example broken text) cannot.
-        only_soft_style = bool(final_review.violations) and all(
-            item.severity == 'soft' and item.code in _SOFT_STYLE_CODES
-            for item in final_review.violations
-        )
-        status = (
-            QualityGateStatus.ACCEPTED_WITH_WARNINGS
-            if only_soft_style else QualityGateStatus.BLOCKED
-        )
+        status = QualityGateStatus.BLOCKED
     else:
         status = QualityGateStatus.ACCEPTED
     return QualityGateResult(
         status,
         rewritten,
         final_codes,
-        deterministic_checks=2,
+        deterministic_checks=3 if trimmed is not None else 2,
         reviewer_calls=2,
         rewrite_calls=1,
         error_code=final_review.error_code,

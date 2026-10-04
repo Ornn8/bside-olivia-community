@@ -290,7 +290,7 @@ def serialize_letter_summary(
         code = letter.get('error_code')
         if isinstance(code, str) and code in REWRITE_ERROR_CODES | {'REPLY_REWRITE_FAILED'}:
             payload['replyErrorCode'] = 'REPLY_REWRITE_FAILED'
-        elif code == 'REPLY_QUALITY_BLOCKED':
+        elif code in {'REPLY_QUALITY_BLOCKED', 'LLM_TIMEOUT', 'LLM_UNAVAILABLE'}:
             payload['replyErrorCode'] = code
     if silent:
         payload['replyDisposition'] = 'no_reply'

@@ -51,6 +51,7 @@ from runtime.reply.reply_context import (
     WORLD_STATE_UNAVAILABLE,
 )
 from runtime.reply.reply_policy import IntimacyClaim
+from runtime.reply.reply_review_policy import evidence_severity, fact_sentence_spans
 from runtime.reply.reply_reviewer import (
     JsonReviewerAdapter,
     ReviewReference,
@@ -173,7 +174,11 @@ _LAYER_SPECS = {
             "relationship history may be memory fabrication. Current-input "
             "paraphrase and conditional language are not. Ordinary inference "
             "is allowed only when it does not claim an unsupported past or "
-            "current fact. An invented current location, current action, or "
+            "specific current fact. Ordinary care, affection, teasing, refusal, "
+            "and the character's own feelings or wishes do not assert user events. "
+            "Do not infer a user event solely from everyday stop/continue/again "
+            "advice without a specific event, location or count. An invented "
+            "specific current location, current action, or "
             "recurring habit is memory fabrication. "
             "An emotional acknowledgment, stylistic reaction, or present-tense "
             "support that does not assert a past or current event is not memory "
@@ -688,7 +693,11 @@ class GatewayReviewTransport:
             self._confirmed_rewrite_evidence.set(
                 _ConfirmedRewriteEvidence(
                     _candidate_digest(str(request.get("candidate", ""))),
-                    adjudication.confirmed_evidence,
+                    tuple(item for item in adjudication.confirmed_evidence if any(
+                        raw['code'] == item.code and raw['severity'] == 'hard'
+                        and raw['evidence'] == {'start': item.start, 'end': item.end}
+                        for raw in aggregate['violations']
+                    )),
                 )
             )
         return aggregate
@@ -1048,21 +1057,7 @@ def _fact_repair_sentences(
     candidate: str, evidence: Sequence[Mapping[str, Any]],
 ) -> list[tuple[int, int]]:
     """Bound factual repair to whole sentences, retaining conditional clauses."""
-    spans = []
-    for item in evidence:
-        start, end = item["start"], item["end"]
-        while start > 0 and candidate[start - 1] not in "。！？\r\n":
-            start -= 1
-        while end < len(candidate) and candidate[end - 1] not in "。！？\r\n":
-            end += 1
-        spans.append((start, end))
-    merged: list[tuple[int, int]] = []
-    for start, end in sorted(set(spans)):
-        if merged and start < merged[-1][1]:
-            merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
-        else:
-            merged.append((start, end))
-    return merged
+    return fact_sentence_spans(candidate, ((item['start'], item['end']) for item in evidence))
 
 
 def _apply_fact_sentence_edits(
@@ -2311,17 +2306,10 @@ def _aggregate_layer_results(
     if identity.intimacy_request is None:
         raise RuntimeError("LAYER_REVIEW_INCOMPLETE")
 
-    warning_only = (
-        by_name["voice_style"].score == 1
-        and not by_name["voice_style"].hard_violations
-        and not by_name["voice_style"].drift_detected
-        and not by_name["voice_style"].rejected_evidence
-    )
     failed = tuple(
         name
         for name in expected
         if not by_name[name].passed
-        and not (name == "voice_style" and warning_only)
     )
     violations: list[dict[str, object]] = []
     seen: set[object] = set()
@@ -2330,7 +2318,7 @@ def _aggregate_layer_results(
         entries: list[tuple[str, str, _HardReviewEvidence | None]] = []
         if evidence_bound and name in _EVIDENCE_BOUND_LAYERS:
             entries.extend(
-                (evidence.code, "hard", evidence)
+                (evidence.code, evidence_severity(evidence.code, evidence.claim_kind), evidence)
                 for evidence in item.hard_evidence
             )
             if item.independent_soft_issue:
@@ -2341,7 +2329,10 @@ def _aggregate_layer_results(
             codes = item.hard_violations or (
                 str(_LAYER_SPECS[name]["codes"][0]),
             )
-            severity = "hard" if item.hard_violations or item.score == 0 else "soft"
+            # Focus and autonomy are expression preferences. Explicit identity,
+            # fact, permission and text-integrity evidence belongs to its own layer.
+            severity = ('soft' if name in {'focus_response', 'autonomy_life'}
+                        else 'hard' if item.hard_violations or item.score == 0 else 'soft')
             entries.extend((code, severity, None) for code in codes)
         for code, severity, evidence in entries:
             start = evidence.start if evidence is not None else 0
@@ -2362,22 +2353,13 @@ def _aggregate_layer_results(
                     },
                 }
             )
-    if warning_only:
-        violations.append(
-            {
-                "code": "STYLE_DRIFT",
-                "severity": "soft",
-                "evidence": {"start": 0, "end": len(candidate)},
-            }
-        )
-
     def score(name: str) -> int:
         return {0: 30, 1: 65, 2: 95}[by_name[name].score]
 
     return {
         "schema_version": "p02.reply-review.v2",
         "status": "completed",
-        "verdict": "rewrite" if failed else "pass",
+        "verdict": "rewrite" if any(item['severity'] == 'hard' for item in violations) else "pass",
         "violations": violations,
         "intimacy_request": identity.intimacy_request.value,
         "intimacy_claims": [

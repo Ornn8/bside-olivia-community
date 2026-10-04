@@ -680,9 +680,7 @@ def test_soft_style_delivery_is_consistent_across_modes(
         rewriter=_Rewriter("y" * 190),
     )
 
-    immediate_style = (
-        mode is ReplyMode.FUTURE_IM and initial_verdict is ReviewVerdict.REWRITE
-    )
+    immediate_style = initial_verdict is ReviewVerdict.REWRITE
     assert result.status is (
         QualityGateStatus.ACCEPTED_WITH_WARNINGS if immediate_style else expected_status
     )
@@ -715,11 +713,11 @@ def test_style_delivery_never_relaxes_protected_or_unknown_findings(mode, code, 
             trusted_time=TrustedTime(datetime(2026, 8, 22, tzinfo=timezone.utc)),
             future_im_enabled=mode is ReplyMode.FUTURE_IM),
         reviewer=_Reviewer(first, final), rewriter=rewriter)
-    if code == 'MEMORY_FABRICATION' and mode in (ReplyMode.TEXT_LETTER, ReplyMode.VOICE_REPLY, ReplyMode.FUTURE_IM):
-        # Never relaxed: the unsupported span is removed, not delivered.
+    if code == 'STYLE_DRIFT' and severity == 'soft':
         assert result.status is QualityGateStatus.ACCEPTED_WITH_WARNINGS
-        assert result.text == 'y' * 185
+        assert result.text == 'y' * 190
     else:
+        # A bare semantic label is not trusted evidence for deleting text.
         assert result.status is QualityGateStatus.BLOCKED
         assert not result.accepted
     assert result.violation_codes == (code,)
@@ -768,7 +766,6 @@ def test_im_soft_style_delivers_reviewed_original_without_risking_rewrite_failur
     (('MEMORY_FABRICATION',), ('soft',), ReviewVerdict.REWRITE, '原始回复。'),
     (('UNKNOWN_SOFT',), ('soft',), ReviewVerdict.REWRITE, '原始回复。'),
     (('STYLE_DRIFT', 'MEMORY_FABRICATION'), ('soft', 'hard'), ReviewVerdict.REWRITE, '原始回复。'),
-    (('STYLE_DRIFT',), ('soft',), ReviewVerdict.BLOCK, '原始回复。'),
     ((), (), ReviewVerdict.REWRITE, '原始回复。'),
     (('STYLE_DRIFT',), ('soft',), ReviewVerdict.REWRITE, '<CONTROL>原始回复。'),
 ])
@@ -812,22 +809,28 @@ def _fabrication_review(*spans):
                         ReviewerScores(80, 80, 80, 80), IntimacyRequest.NONE, ())
 
 
+class _BoundEvidenceReviewer(_Reviewer):
+    def confirmed_rewrite_evidence(self, candidate, context, review):
+        return tuple(item for item in review.violations if item.severity == 'hard')
+
+
 def test_final_unsupported_memory_sentence_is_dropped_instead_of_failing_the_letter() -> None:
     final_text = '今天的雨下得很大。你上次说的那家咖啡馆我也去了。睡前喝点热牛奶，早点休息。'
     span = final_text.index('你上次'), final_text.index('睡前')
     result = run_reply_quality_gate(
         '初稿。', _context(),
-        reviewer=_Reviewer(_fabrication_review((0, 3)), _fabrication_review(span)),
+        reviewer=_BoundEvidenceReviewer(_fabrication_review((0, 3)), _fabrication_review(span)),
         rewriter=_Rewriter(final_text))
     assert result.status is QualityGateStatus.ACCEPTED_WITH_WARNINGS
     assert result.text == '今天的雨下得很大。睡前喝点热牛奶，早点休息。'
     assert result.violation_codes == ('MEMORY_FABRICATION',)
 
 
-def test_reply_that_would_lose_most_of_its_text_still_fails() -> None:
+def test_confirmed_fact_removal_can_keep_a_complete_short_reply() -> None:
     final_text = '你上次说的那家咖啡馆我也去了，还点了你推荐的那款。好。'
     result = run_reply_quality_gate(
         '初稿。', _context(),
-        reviewer=_Reviewer(_fabrication_review((0, 3)), _fabrication_review((0, final_text.index('好')))),
+        reviewer=_BoundEvidenceReviewer(_fabrication_review((0, 3)), _fabrication_review((0, final_text.index('好')))),
         rewriter=_Rewriter(final_text))
-    assert result.status is QualityGateStatus.BLOCKED
+    assert result.status is QualityGateStatus.ACCEPTED_WITH_WARNINGS
+    assert result.text == '好。'

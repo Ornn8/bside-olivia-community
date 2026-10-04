@@ -119,7 +119,7 @@ def test_pipeline_accepts_clean_candidate_with_disabled_reviewer() -> None:
 
 
 @pytest.mark.parametrize('mode', [ReplyMode.TEXT_LETTER, ReplyMode.VOICE_REPLY])
-def test_pipeline_delivers_the_rewritten_text_with_only_soft_style_warnings(mode):
+def test_pipeline_delivers_the_reviewed_original_with_only_soft_style_warnings(mode):
     review = ReviewResult(ReviewStatus.COMPLETED, ReviewVerdict.REWRITE,
         (ReviewerViolation('STYLE_DRIFT', 'soft', 0, 5),),
         ReviewerScores(90, 90, 90, 90), IntimacyRequest.NONE, ())
@@ -128,11 +128,11 @@ def test_pipeline_delivers_the_rewritten_text_with_only_soft_style_warnings(mode
         reviewer=SequencedReviewer(review, review), rewriter=rewriter)
     result = asyncio.run(pipeline.run(object(), _context(mode)))
     assert result.state is ReplyState.COMPLETED
-    assert result.text == 'Final canonical reply.'
+    assert result.text == 'Initial candidate.'
     assert result.quality_status == 'accepted_with_warnings'
     assert result.violation_codes == ('STYLE_DRIFT',)
-    assert result.reviewer_calls == 2
-    assert result.rewrite_calls == rewriter.calls == 1
+    assert result.reviewer_calls == 1
+    assert result.rewrite_calls == rewriter.calls == 0
 
 
 @pytest.mark.parametrize("mode", [ReplyMode.TEXT_LETTER, ReplyMode.SPOKEN_VIDEO, ReplyMode.MUSICAL_VIDEO])

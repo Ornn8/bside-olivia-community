@@ -6,7 +6,7 @@ import base64
 from pathlib import Path
 
 
-SETTINGS_UI_VERSION = "p03.original-settings-manage.v54"
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v55"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
@@ -14,10 +14,14 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   window.__oliviaReplyFailureMessage = (code, part = "title") => {
     const titles = {
       REPLY_REWRITE_FAILED: "这封回信在修改时遇到了问题，暂时没能寄回。你的信仍保留在信箱里。",
-      REPLY_QUALITY_BLOCKED: "这封回信检查后仍有问题，暂时没能寄回。你的信仍保留在信箱里。"
+      REPLY_QUALITY_BLOCKED: "这封回信检查后仍有问题，暂时没能寄回。你的信仍保留在信箱里。",
+      LLM_TIMEOUT: "这封回信的服务请求超时，暂时没能完成。你的信仍保留在信箱里。",
+      LLM_UNAVAILABLE: "回信服务暂时不可用，这封回信还未完成。你的信仍保留在信箱里。"
     };
     if (!Object.hasOwn(titles, code)) return null;
-    return part === "hint" ? "请导出诊断包并反馈，修复后可重新寄信。" : titles[code];
+    const transient = code === "LLM_TIMEOUT" || code === "LLM_UNAVAILABLE";
+    if (part === "category") return transient ? "transient_reply" : "quality";
+    return part === "hint" ? (transient ? "请保留诊断包并稍后查看信件状态，避免重复寄信。" : "请导出诊断包并反馈，修复后可重新寄信。") : titles[code];
   };
 
   window.__oliviaExplainRelayFailure = payload => {
@@ -30,7 +34,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       LLM_USAGE_PENDING: "这次模型请求中断，用量正在等待核对。请保留诊断包，暂勿反复寄信。",
       LLM_REQUEST_DUPLICATE: "这次请求已经提交，请先查看原信件状态，避免重复寄出。",
       REPLY_REWRITE_FAILED: window.__oliviaReplyFailureMessage("REPLY_REWRITE_FAILED"),
-      REPLY_QUALITY_BLOCKED: window.__oliviaReplyFailureMessage("REPLY_QUALITY_BLOCKED")
+      REPLY_QUALITY_BLOCKED: window.__oliviaReplyFailureMessage("REPLY_QUALITY_BLOCKED"),
+      LLM_TIMEOUT: window.__oliviaReplyFailureMessage("LLM_TIMEOUT"),
+      LLM_UNAVAILABLE: window.__oliviaReplyFailureMessage("LLM_UNAVAILABLE")
     };
     const message = messages[data?.error_code] || messages[payload?.message];
     if (!message || document.getElementById("olivia-relay-error")) return;

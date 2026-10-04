@@ -758,6 +758,15 @@ def _repair_native_reply_failure(source: str) -> str:
     for name in ('modelValue', 'model-value'):
         source = source.replace(f'["{name}","videoUrl","timestamp","type"',
                                 f'["errorCode","{name}","videoUrl","timestamp","type"')
+    # A missing public code is unknown reply state, not evidence that the
+    # incoming letter failed to arrive. Also refresh previously patched assets.
+    source = source.replace(
+        'window.__oliviaReplyFailureMessage?.(A.errorCode,"title")||o(i)("mailbox_reply_error_title")',
+        'window.__oliviaReplyFailureMessage?.(A.errorCode,"title")||"这封回信暂时没能完成。你的信仍保留在信箱里。"',
+    ).replace(
+        'window.__oliviaReplyFailureMessage?.(A.errorCode,"hint")||o(i)("mailbox_reply_error_hint")',
+        'window.__oliviaReplyFailureMessage?.(A.errorCode,"hint")||"请保留诊断包，查看信件状态后再决定是否重寄。"',
+    )
     return source
 
 

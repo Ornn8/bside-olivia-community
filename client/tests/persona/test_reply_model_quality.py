@@ -412,7 +412,8 @@ def test_voice_adjudication_receives_previous_reply_and_life_as_data() -> None:
         {"role": "user", "content": "A new topic."},
     )
     result = reviewer.review_with_messages(candidate, _context(), messages)
-    assert result.verdict is ReviewVerdict.REWRITE
+    assert result.verdict is ReviewVerdict.PASS
+    assert result.violations[0].severity == 'soft'
     support = gateway.adjudication_requests[0]["contexts"]["voice_style"]
     data = support["memory_evidence"]["assembled_memory"]
     assert "Synthetic repeated closing." in data
@@ -1981,7 +1982,7 @@ def test_rejected_style_claim_preserves_same_layer_independent_soft_issue() -> N
         1,
     ).review(candidate, _context())
 
-    assert result.verdict is ReviewVerdict.REWRITE
+    assert result.verdict is ReviewVerdict.PASS
     assert [(item.code, item.severity, item.start, item.end) for item in result.violations] == [
         ("STYLE_DRIFT", "soft", 0, len(candidate)),
     ]
@@ -2366,7 +2367,7 @@ def test_adjudication_disclosure_ignores_untrusted_claim_routing_metadata(
         ),
     )
 
-    assert result.verdict is ReviewVerdict.REWRITE
+    assert result.verdict is (ReviewVerdict.PASS if layer == 'voice_style' else ReviewVerdict.REWRITE)
     request = gateway.adjudication_requests[0]
     assert set(request) == {"candidate_reply", "contexts", "claims"}
     assert set(request["contexts"]) == {context_id}
@@ -2805,7 +2806,7 @@ def test_sixteen_cross_context_claims_preserve_full_bounded_adjudication() -> No
 
 
 
-def test_rejected_hard_evidence_does_not_hide_an_independent_hard_issue() -> None:
+def test_rejected_fact_evidence_does_not_hide_an_independent_style_warning() -> None:
     candidate = "Synthetic candidate with another hard issue."
     evidence = _hard_evidence_payload(candidate, "MEMORY_FABRICATION")
     reviews = _passing_layer_payloads()
@@ -2834,9 +2835,9 @@ def test_rejected_hard_evidence_does_not_hide_an_independent_hard_issue() -> Non
         1,
     ).review(candidate, _context())
 
-    assert result.verdict is ReviewVerdict.REWRITE
+    assert result.verdict is ReviewVerdict.PASS
     assert {(item.code, item.severity) for item in result.violations} == {
-        ("GENERIC_COUNSELOR", "hard"),
+        ("GENERIC_COUNSELOR", "soft"),
     }
 
 
