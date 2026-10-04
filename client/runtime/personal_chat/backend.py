@@ -503,6 +503,7 @@ async def _generate_billed(server, event, row):
             _start_semantic_shadow_recorder(server, row, shadow)
         from runtime.diagnostics.support_bundle import project_chat_task
         quality_fields = ('quality_status', 'reviewer_calls', 'rewrite_calls', 'decision_rejection_reason',
+                          'decision_dropped_media',
                           'quality_error_code', 'quality_failure_stage', 'quality_violation_codes',
                           'stage_timing_seconds', 'stage_cache_hits', 'stage_actual_calls')
         quality = project_chat_task({'channel': event.channel, **{
@@ -550,10 +551,11 @@ async def _generate_billed(server, event, row):
             row['decision_defaulted_fields'] = decision['defaulted_fields']
             server._safe_log('personal_chat_decision_normalized', channel=event.channel,
                              decision_defaulted_fields=decision['defaulted_fields'])
-        if decision.get('dropped_media'):
-            row['decision_dropped_media'] = decision['dropped_media']
+        dropped_media = decision.get('dropped_media') or row.get('decision_dropped_media')
+        if dropped_media == 'UNREQUESTED_SPEECH':
+            row['decision_dropped_media'] = dropped_media
             server._safe_log('personal_chat_decision_normalized', channel=event.channel,
-                             decision_dropped_media=decision['dropped_media'])
+                             decision_dropped_media=dropped_media)
         if contact is not None and decision['skip']:
             raise RuntimeError('JEV_PLAN_UNSUPPORTED')
         if not turn_is_current():

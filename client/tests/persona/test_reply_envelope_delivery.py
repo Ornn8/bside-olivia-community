@@ -45,3 +45,6 @@ def test_normalized_envelope_reviews_preserved_body_once(channel, variant):
     assert len(engine.requests) == result.reviewer_calls == 1
     assert result.rewrite_calls == 0
     assert result.reviewed_content == {'text': hashlib.sha256(text.encode()).hexdigest()}
+    if variant == 'unrequested_speech':
+        assert 'speech' not in json.loads(result.text)
+        assert result.decision_dropped_media == 'UNREQUESTED_SPEECH'
