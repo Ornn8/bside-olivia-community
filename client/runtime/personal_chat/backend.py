@@ -531,7 +531,9 @@ async def _generate_billed(server, event, row):
         try:
             decision = decode(result.text, user=event.text, now=datetime.now().timestamp(),
                               proactive=row.get('origin') == 'proactive',
-                              allow_user_silence=getattr(result, 'silence_authorized', False) is True)
+                              allow_user_silence=getattr(result, 'silence_authorized', False) is True,
+                              allow_speech=bool(event.channel == 'qq'
+                                  and (row.get('companion_decision') or {}).get('speech_request')))
         except ValueError as exc:
             # Diagnostic categories only; never persist rejected model text.
             reason = getattr(exc, 'reason', 'UNKNOWN')
@@ -542,7 +544,16 @@ async def _generate_billed(server, event, row):
             raise
         if decision.get('dropped_controls'):
             row['decision_dropped_controls'] = decision['dropped_controls']
-            server._safe_log('personal_chat_controls_dropped', reason=decision['dropped_controls'])
+            server._safe_log('personal_chat_decision_normalized', channel=event.channel,
+                             decision_dropped_controls=decision['dropped_controls'])
+        if decision.get('defaulted_fields'):
+            row['decision_defaulted_fields'] = decision['defaulted_fields']
+            server._safe_log('personal_chat_decision_normalized', channel=event.channel,
+                             decision_defaulted_fields=decision['defaulted_fields'])
+        if decision.get('dropped_media'):
+            row['decision_dropped_media'] = decision['dropped_media']
+            server._safe_log('personal_chat_decision_normalized', channel=event.channel,
+                             decision_dropped_media=decision['dropped_media'])
         if contact is not None and decision['skip']:
             raise RuntimeError('JEV_PLAN_UNSUPPORTED')
         if not turn_is_current():
@@ -577,12 +588,20 @@ async def _generate_billed(server, event, row):
         from .decision import repeats_recent
         if repeats_recent(text, [r for r in server.store.personal_chats if r is not row],
                           channel=event.channel, binding_id=event.binding_id):
-            # Saying her last message again is a copying slip, not an answer; regenerate.
-            row['decision_rejection_reason'] = 'REPEATED_REPLY'
-            server._safe_log('personal_chat_decision_rejected', reason='REPEATED_REPLY', missing_fields=[], extra_field_count=0)
-            error = ValueError('PERSONAL_CHAT_DECISION_INVALID')
-            error.reason = 'REPEATED_REPLY'
-            raise error
+            if row.get('origin') != 'proactive':
+                # A new user message can warrant the same greeting or answer.
+                # Repetition is a style warning after content validation, not
+                # a reason to discard a reply or buy another generation.
+                row['decision_warning_codes'] = ['REPEATED_REPLY']
+                server._safe_log('personal_chat_decision_warning', channel=event.channel,
+                                 decision_warning_codes=['REPEATED_REPLY'])
+            else:
+                # Repeated unsolicited proactive contact retains its existing guard.
+                row['decision_rejection_reason'] = 'REPEATED_REPLY'
+                server._safe_log('personal_chat_decision_rejected', reason='REPEATED_REPLY', missing_fields=[], extra_field_count=0)
+                error = ValueError('PERSONAL_CHAT_DECISION_INVALID')
+                error.reason = 'REPEATED_REPLY'
+                raise error
         basis = 'WRITER_SELECTION'
         if companion is not None:
             delivery = row['companion_delivery']
@@ -978,7 +997,9 @@ def install_personal_chat(app, server):
                     raise ValueError("PERSONAL_CHAT_QQ_TOKEN_REQUIRED")
                 bindings["qq"] = (str(qq["account"]), str(qq["owner"]))
                 jobs.append(("qq", lambda handler, on_state: run_qq(
-                    qq["url"], token, *bindings["qq"], handler, stop_event, state_callback=on_state)))
+                    qq["url"], token, *bindings["qq"], handler, stop_event, state_callback=on_state,
+                    diagnostic_callback=lambda **fields: server._safe_log('personal_chat_transport_closed',
+                        channel='qq', recorded_at_ms=int(datetime.now(LOCAL).timestamp() * 1000), **fields))))
             def sticker_allowed(key):
                 from reply_context import ReplyMode
                 from runtime.letter_stickers.selection import allowed_stickers
@@ -1079,6 +1100,8 @@ def install_personal_chat(app, server):
                                 raise
                             await asyncio.sleep(.5)
                 except asyncio.CancelledError:
+                    server._safe_log('personal_chat_exchange_cancelled', channel=event.channel,
+                                     recorded_at_ms=int(datetime.now(LOCAL).timestamp() * 1000))
                     raise
                 except Exception as exc:
                     # A durable failed/uncertain exchange must not kill reception.
@@ -1120,14 +1143,20 @@ def install_personal_chat(app, server):
                 def on_state(state):
                     if state not in {"CONNECTING", "CONNECTED", "RECONNECTING", "AUTH_REQUIRED"}:
                         return
+                    previous = runtime['status'].get(name)
                     runtime['status'][name] = state
                     if state == "CONNECTED":
                         runtime['last_seen_at'][name] = datetime.now(LOCAL).isoformat()
                         if runtime['errors'].get(name) in {
-                            "QQ_TRANSPORT_DISCONNECTED", "WECHAT_POLL_UNAVAILABLE",
+                            "QQ_TRANSPORT_DISCONNECTED", "QQ_CONNECTION_LOST_DURING_EXCHANGE", "WECHAT_POLL_UNAVAILABLE",
                             "PERSONAL_CHAT_UNAVAILABLE",
                         }:
                             runtime['errors'].pop(name, None)
+                    if state != previous:
+                        error = runtime['errors'].get(name)
+                        server._safe_log('personal_chat_transport_state', channel=name, status=state.lower(),
+                                         recorded_at_ms=int(datetime.now(LOCAL).timestamp() * 1000),
+                                         **({'error_code': _failure_code(RuntimeError(error))} if error else {}))
                     _publish_status(server, runtime)
 
                 while not stop_event.is_set():

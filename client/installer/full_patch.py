@@ -19,6 +19,7 @@ from patch_companion_settings import (
 )
 from patch_feapp import patch_feapp
 from patch_webplayer import WebPlayerPatchError, patch_webplayer
+from installer.patch_local_login import LocalLoginPatchError, apply as apply_local_login
 from installer.patch_native_navigation import (
     COMPATIBILITY_MANIFEST_NAME,
     NativeNavigationPatchError,
@@ -127,6 +128,7 @@ PAYLOAD_REQUIRED_ROOT_FILES = {
     "video_capability_install.py",
 }
 PAYLOAD_REQUIRED_RELATIVE_FILES = {
+    "installer/patch_local_login.py",
     "runtime/model_policy.py",
     "runtime/model_policy_aliases.json",
     "runtime/chinese_calendar.py",
@@ -817,6 +819,12 @@ def install_full_patch(
         base_http = f"http://127.0.0.1:{port}"
         operation = "patch_resources"
         try:
+            if version != "0.0.9.627":
+                raise LocalLoginPatchError("LOCAL_LOGIN_UNSUPPORTED_CLIENT")
+            local_login_patch = apply_local_login(staging)
+        except LocalLoginPatchError as exc:
+            raise PatchInstallError(str(exc)) from exc
+        try:
             navigation_manifest = (
                 staging / "local_backend" / "installer" / COMPATIBILITY_MANIFEST_NAME
             )
@@ -868,6 +876,7 @@ def install_full_patch(
             "backup_webplayer_sha256": player_patch["backup_sha256"],
             "webplayer_patch_status": player_patch["status"],
             "original_client_only": True,
+            "local_login_patch_status": local_login_patch,
             "companion_settings_embedded": True,
             "webplayer_local_media": True,
             "port": port,

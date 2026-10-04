@@ -53,7 +53,12 @@ def repeats_recent(text, rows, *, channel, binding_id, limit=6):
     return any(normalized(value) == target for value in recent)
 
 
-_CONTROL_REASONS = {'UNSUPPORTED_PREFERENCE_CHANGE', 'TIME_RANGE', 'PAUSE_CONFLICT', 'FOLLOWUP_CONFLICT'}
+_CONTROL_REASONS = {'UNSUPPORTED_PREFERENCE_CHANGE', 'TIME_RANGE', 'PAUSE_CONFLICT', 'FOLLOWUP_CONFLICT',
+                    'INCOMPLETE_CONTROLS', 'CONTROL_SHAPE_INVALID'}
+_RESERVED_CONTROL = re.compile(r'\[\[\s*(?:(?:chat|delivery|initiative|letter|control)\s*[:：]|skip\b)',
+                               re.IGNORECASE)
+NEUTRAL_METADATA = dict(delivery='text', listening='keep', initiative='keep', pause_until=None,
+                        letter='keep', letter_until=None, followup_at=None, evidence='', skip=False)
 
 
 def _controls(data, *, user, now, proactive):
@@ -95,7 +100,7 @@ def _silence_kind(data, *, user, proactive, allow_user_silence):
     return silence['kind']
 
 
-def decode(raw, *, user, now, proactive=False, allow_user_silence=False):
+def decode(raw, *, user, now, proactive=False, allow_user_silence=False, allow_speech=True):
     try:
         # Tolerate a whole JSON code block, never extract JSON from mixed prose.
         if isinstance(raw, str):
@@ -105,14 +110,19 @@ def decode(raw, *, user, now, proactive=False, allow_user_silence=False):
         data = json.loads(raw)
         if isinstance(data, list) and len(data) == 1 and isinstance(data[0], dict):
             data = data[0]  # The model sometimes wraps its one decision in an array.
-        required = {'text','delivery','listening','initiative','pause_until','letter','letter_until',
-                    'followup_at','evidence','skip'}
+        required = {'text'}
+        optional = {'letter_invitation', 'sticker', 'text_reason', 'speech', 'silence'}
+        extra_field_count = (len(data.keys() - required - NEUTRAL_METADATA.keys() - optional)
+                             if isinstance(data, dict) else 0)
         if not isinstance(data, dict) or not required <= data.keys():
             raise ValueError("FIELDS")
         # Extra model annotations are not executable preferences. Optional media
         # metadata must not discard an otherwise valid reply.
-        optional = {'letter_invitation', 'sticker', 'text_reason', 'speech', 'silence'}
-        data = {key: value for key, value in data.items() if key in required | optional}
+        defaulted = sorted(NEUTRAL_METADATA.keys() - data.keys())
+        # Missing metadata must neither discard a usable body nor invent a
+        # preference, scheduled action, silent turn, or media requirement.
+        data = {**NEUTRAL_METADATA, **{key: value for key, value in data.items()
+                                     if key in required | NEUTRAL_METADATA.keys() | optional}}
         if data.get('text_reason') not in ('speaker_unavailable', 'verbatim_text'):
             data['text_reason'] = None
         if not isinstance(data.get('sticker'), str):
@@ -125,20 +135,28 @@ def decode(raw, *, user, now, proactive=False, allow_user_silence=False):
         # Incoming platform placeholders must not reach either QQ text or TTS.
         for marker in ('[QQ表情]', '(QQ表情)', '（QQ表情）', '【QQ表情】'):
             data['text'] = data['text'].replace(marker, '')
-        if data['delivery'] not in {'text','voice'} or data['listening'] not in {'keep','text_only','voice_ok'}:
+        if data['delivery'] not in {'text','voice'}:
             raise ValueError("DELIVERY_OR_LISTENING")
-        if data['initiative'] not in {'keep','pause','open'} or data['letter'] not in {'keep','pause','open'}:
-            raise ValueError("PREFERENCES")
-        if type(data.get('letter_invitation', False)) is not bool or not isinstance(data['evidence'], str):
-            raise ValueError("EVIDENCE_TYPE")
         try:
+            if (any(not isinstance(data[key], str) or data[key] not in allowed for key, allowed in (
+                    ('listening', {'keep','text_only','voice_ok'}),
+                    ('initiative', {'keep','pause','open'}), ('letter', {'keep','pause','open'})))
+                    or type(data.get('letter_invitation', False)) is not bool
+                    or not isinstance(data['evidence'], str)):
+                raise ValueError('CONTROL_SHAPE_INVALID')
+            control_keys = {'listening', 'initiative', 'pause_until', 'letter', 'letter_until',
+                            'followup_at', 'evidence'}
+            if (control_keys.intersection(defaulted)
+                    and (any(data[key] != 'keep' for key in ('listening', 'initiative', 'letter'))
+                         or data['followup_at'] is not None)):
+                raise ValueError('INCOMPLETE_CONTROLS')
             _controls(data, user=user, now=now, proactive=proactive)
         except (ValueError, TypeError, OverflowError) as exc:
             # Follow-ups and preference changes are optional side effects of a
             # reply. An invalid one (night-time follow-up, change without the
             # user's words, bad time) is dropped; the reply itself is still sent.
             data.update(listening='keep', initiative='keep', letter='keep', pause_until=None,
-                        letter_until=None, followup_at=None, followup_cancel=False)
+                        letter_until=None, followup_at=None, followup_cancel=False, letter_invitation=False)
             data['dropped_controls'] = str(exc) if str(exc) in _CONTROL_REASONS else 'VALUE_TYPE_OR_TIME'
         data['silence_kind'] = _silence_kind(data, user=user, proactive=proactive,
                                              allow_user_silence=allow_user_silence)
@@ -147,16 +165,24 @@ def decode(raw, *, user, now, proactive=False, allow_user_silence=False):
         # A misplaced illustration marker is metadata, not a reason to drop the reply.
         from runtime.letter_stickers.selection import _MARKER
         data['text'] = _MARKER.sub('', data['text']).strip()
-        if '[[' in data['text'] or ']]' in data['text']:
+        if not data['skip'] and not data['text']:
+            raise ValueError('EMPTY_OR_SKIPPED_REPLY')
+        if _RESERVED_CONTROL.search(data['text']):
             raise ValueError("CONTROL_MARKER")
         from .speech import validate_script
-        data['speech'] = validate_script(data.get('speech'))
+        if not allow_speech and data.get('speech') is not None:
+            data['speech'] = None
+            data['dropped_media'] = 'UNREQUESTED_SPEECH'
+        else:
+            data['speech'] = validate_script(data.get('speech'))
+        if defaulted:
+            data['defaulted_fields'] = defaulted
         return data
     except (ValueError, TypeError, KeyError, OverflowError) as exc:
         error = ValueError('PERSONAL_CHAT_DECISION_INVALID')
         if isinstance(locals().get('data'), dict):
             error.missing_fields = sorted(required - data.keys())
-            error.extra_field_count = len(data.keys() - required - {'letter_invitation', 'sticker', 'text_reason', 'silence', 'silence_kind'})
+            error.extra_field_count = extra_field_count
         reasons = {'FOLLOWUP_CONFLICT', 'FIELDS', 'STICKER_TYPE', 'UNSUPPORTED_PREFERENCE_CHANGE', 'QUIET_HOURS', 'EVIDENCE_TYPE', 'PAUSE_CONFLICT', 'TEXT_OR_SKIP_TYPE', 'PREFERENCES', 'DELIVERY_OR_LISTENING', 'EMPTY_OR_SKIPPED_REPLY', 'TIME_RANGE', 'CONTROL_MARKER', 'SILENCE_INVALID', 'SILENCE_UNSUPPORTED'}
         error.reason = str(exc) if type(exc) is ValueError and str(exc) in reasons else ('JSON_SYNTAX' if isinstance(exc, json.JSONDecodeError) else 'VALUE_TYPE_OR_TIME')
         raise error from exc

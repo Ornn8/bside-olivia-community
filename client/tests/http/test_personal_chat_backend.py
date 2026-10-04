@@ -59,12 +59,21 @@ def test_native_store_roundtrip_keeps_chat_outside_inbox(tmp_path, monkeypatch):
     assert [row["letter_id"] for row in reloaded.letters] == ["native-letter"]
 
 
-@pytest.mark.parametrize('failure_code,envelope_variant',
-    [(None, variant) for variant in ('plain', 'fenced', 'missing_sticker', 'numeric_sticker', 'extra_fields')]
-    + [(code, 'plain') for code in ('PROVIDER_TIMEOUT', 'PROVIDER_PROTOCOL', 'LLM_TIMEOUT', 'outer_timeout')])
-def test_backend_generate_uses_real_pipeline_persona_memory_and_world(monkeypatch, failure_code, envelope_variant):
+_REPLY_CASES = [('早上好', '早上好，今天慢慢开始。'), ('晚安，我先睡啦', '晚安，祝你今晚睡个好觉。'),
+                ('我又来啦，陪我说会话', '当然可以，我在听你说。'),
+                ('给我讲个虚构的小故事', '小狐狸找到了森林里的风铃。这是一个虚构的小故事。')]
+_BASE_CASE = ('qq', '今天钢琴练得怎么样？', '那你明天再跟我说嘛。')
+
+
+@pytest.mark.parametrize('failure_code,envelope_variant,sample',
+    [(None, variant, _BASE_CASE) for variant in ('plain', 'fenced', 'missing_sticker', 'numeric_sticker', 'extra_fields')]
+    + [(code, 'plain', _BASE_CASE) for code in ('PROVIDER_TIMEOUT', 'PROVIDER_PROTOCOL', 'LLM_TIMEOUT', 'outer_timeout')]
+    + [(None, variant, (channel, user, reply)) for channel in ('qq', 'wechat') for user, reply in _REPLY_CASES
+       for variant in ('missing_control', 'text_only', 'repeated_reply', 'unrequested_speech', 'invalid_unrequested_speech')])
+def test_backend_generate_uses_real_pipeline_persona_memory_and_world(monkeypatch, failure_code, envelope_variant, sample):
     import local_server
-    calls = []
+    calls, logs = [], []
+    channel, user, reply_text = sample
     class Provider:
         stream_enabled = False
         async def complete(self, messages, *, request_id=None):
@@ -76,13 +85,22 @@ def test_backend_generate_uses_real_pipeline_persona_memory_and_world(monkeypatc
             from runtime.personal_chat.presentation import CURRENT
             candidates = CURRENT.get()['sticker_choices']
             assert candidates
-            body = json.loads(envelope(text="那你明天再跟我说嘛。", sticker=next(iter(candidates))))
+            body = json.loads(envelope(text=reply_text, sticker=next(iter(candidates))))
             if envelope_variant == 'missing_sticker':
                 body.pop('sticker')
             elif envelope_variant == 'numeric_sticker':
                 body['sticker'] = 1
             elif envelope_variant == 'extra_fields':
                 body['reason'] = '普通聊天'
+            elif envelope_variant == 'missing_control':
+                body.pop('initiative')
+            elif envelope_variant == 'text_only':
+                body = {'text': reply_text}
+            elif envelope_variant == 'unrequested_speech':
+                body['speech'] = dict(title='虚构小故事', spoken_text='这是未请求的虚构故事。'*10,
+                                      continuation_summary='虚构摘要')
+            elif envelope_variant == 'invalid_unrequested_speech':
+                body['speech'] = {'unexpected': 'invalid optional metadata'}
             raw = json.dumps(body)
             if envelope_variant == 'fenced':
                 raw = '```json\n' + raw + '\n```'
@@ -105,10 +123,14 @@ def test_backend_generate_uses_real_pipeline_persona_memory_and_world(monkeypatc
         _CURRENT_LETTER_MEMORY_SOURCE=source, _CURRENT_LETTER_RECEIPT=receipt,
         GatewayRequestScope=GatewayRequestScope, supports_scoped_reasoning=lambda config: False,
         _reply_pipeline_timeout_seconds=lambda mode: 2, store=SimpleNamespace(personal_chats=[
-            dict(channel='qq', delivery_status='DELIVERED') for _ in range(4)]),
+            dict(channel=channel, delivery_status='DELIVERED') for _ in range(4)]),
         video_reply_settings_store=SimpleNamespace(image_snapshot=lambda: {'enabled': True, 'resolution': '1K'}),
-        _persist_store_state=lambda: None)
-    event = PersonalMessage("qq", "100", "200", "1", "今天钢琴练得怎么样？")
+        _persist_store_state=lambda: None,
+        _safe_log=lambda event, **fields: logs.append(dict(event=event, **fields)))
+    event = PersonalMessage(channel, "100", "200", "1", user)
+    if envelope_variant == 'repeated_reply':
+        server.store.personal_chats.append(dict(channel=channel, binding_id=event.binding_id,
+            delivery_status='DELIVERED', reply_text=reply_text))
     original_run = pipeline.run
     def chat_timeout(mode):
         assert mode == ReplyMode.FUTURE_IM.value
@@ -123,8 +145,9 @@ def test_backend_generate_uses_real_pipeline_persona_memory_and_world(monkeypatc
         assert request.max_input_chars == 40000 + len(request.content)
         assert request.content.startswith(event.text + '\n[系统图片观察，非用户原话]')
         assert json.loads(request.content.split('\n', 2)[2])['current_turn_has_images'] is False
-        assert any(f.fact_id == 'runtime.photo_attachment' and '已开启' in f.statement
-                   for f in context.world_facts)
+        if channel == 'qq':
+            assert any(f.fact_id == 'runtime.photo_attachment' and '已开启' in f.statement
+                       for f in context.world_facts)
         return await original_run(request, context)
     monkeypatch.setattr(pipeline, 'run', bounded_run)
     if failure_code:
@@ -137,16 +160,51 @@ def test_backend_generate_uses_real_pipeline_persona_memory_and_world(monkeypatc
             assert source.get() == "previous-source" and receipt.get() is None
         asyncio.run(failure_scenario())
         return
-    async def scenario():
-        row = {"life_received_at": datetime.now(timezone.utc).isoformat()}
+    async def scenario(row=None):
+        row = row if row is not None else {"life_received_at": datetime.now(timezone.utc).isoformat()}
         result = await backend.generate(server, event, row)
-        if envelope_variant in ('missing_sticker', 'numeric_sticker'):
+        if envelope_variant in ('missing_sticker', 'numeric_sticker', 'text_only'):
             assert 'sticker_id' not in row
         else:
             assert row['sticker_id'].startswith('linli-')
         assert source.get() == "previous-source" and receipt.get() is None
+        if envelope_variant in ('missing_control', 'text_only'):
+            assert row['decision_defaulted_fields']
+            assert 'user_controls_applied' not in row
+        if envelope_variant == 'repeated_reply':
+            assert row['decision_warning_codes'] == ['REPEATED_REPLY']
+            assert 'decision_rejection_reason' not in row
+        if envelope_variant in ('unrequested_speech', 'invalid_unrequested_speech'):
+            assert row['decision_dropped_media'] == 'UNREQUESTED_SPEECH'
+            assert 'speech_script' not in row and 'speech_delivery_status' not in row
         return result
-    assert asyncio.run(scenario()) == "那你明天再跟我说嘛。"
+    if sample == _BASE_CASE:
+        assert asyncio.run(scenario()) == reply_text
+    else:
+        async def delivered_scenario():
+            sent, generated = [], []
+            async def generate(current, row):
+                assert current.sources == event.sources and current.binding_id == event.binding_id
+                assert current.text == event.text
+                result = await scenario(row)
+                generated.append(result)
+                return result
+            async def send(text):
+                sent.append(text)
+                return 'synthetic-ack-1'
+            send.delivery_confirmation = lambda receipt: 'CONFIRMED' if receipt == 'synthetic-ack-1' else 'UNCONFIRMED'
+            async def commit(row):
+                pass
+            service = PersonalChatService(server.store.personal_chats, server._persist_store_state,
+                generate, commit, {channel: (event.account_id, event.owner_id)})
+            await service.handle(event, send)
+            row = service.rows[-1]
+            assert row['delivery_status'] == 'DELIVERED' and row['transport_confirmation'] == 'CONFIRMED'
+            assert row['generation_attempts'] == 1 and generated == [reply_text]
+            assert sent == [row['reply_text']]
+            if service.consumer_tasks:
+                await asyncio.gather(*service.consumer_tasks.values())
+        asyncio.run(delivered_scenario())
     assert len(calls) == 1
     system = calls[0][0]["content"]
     assert "constitution" in system and "future_im" in system

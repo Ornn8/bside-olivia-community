@@ -590,7 +590,8 @@ class ReplyPipeline:
                 from runtime.personal_chat.decision import decode
                 now = datetime.fromisoformat(chat_metadata['decision_now']).timestamp()
                 options = dict(user=user_text, now=now, proactive=bool(chat_metadata.get('proactive')),
-                               allow_user_silence=bool(ordinary_chat))
+                               allow_user_silence=bool(ordinary_chat),
+                               allow_speech=bool(speech_request and chat_metadata.get('channel') == 'qq'))
                 decision = decode(clean_text, **options)
                 if reconsidered_silence and decision.get('speech'):
                     return PipelineResult(candidate.request_id, ReplyState.FAILED,

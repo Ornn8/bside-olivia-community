@@ -155,6 +155,7 @@ RELEASE_ROOT_FILES = {
     "video_capability_install.py",
 }
 RELEASE_INSTALLER_FILES = {
+    "installer/patch_local_login.py",
     "installer/patch_letter_stickers.py",
     "installer/__init__.py",
     "installer/__main__.py",
@@ -214,6 +215,7 @@ RELEASE_TOOL_FILES = {
     "tools/tts_cli.py",
 }
 REQUIRED_PAYLOAD_FILES = {
+    "installer/patch_local_login.py",
     "installer/Install.ps1",
     "installer/runtime-requirements.txt",
 }

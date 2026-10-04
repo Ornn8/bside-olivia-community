@@ -391,8 +391,13 @@ class PersonalChatService:
                 if not proactive and not validated_controls:
                     row.pop('followup_quote', None)
                 row["generation_attempts"] = row.get("generation_attempts", 0) + 1
+                row.pop('generation_interrupted', None)
                 row.pop('generation_retryable', None)
                 row.pop('generation_failure_context', None)
+                row.pop('decision_defaulted_fields', None)
+                row.pop('decision_warning_codes', None)
+                row.pop('decision_dropped_media', None)
+                row.pop('decision_dropped_controls', None)
                 row.update(delivery_status="GENERATING", letter_status="PROCESSING")
                 await persist_state(self.persist)
                 try:
@@ -443,7 +448,11 @@ class PersonalChatService:
                     rebind_expression_context(row)
                     await persist_state(self.persist)
                 except BaseException as exc:
-                    code = str(exc)
+                    if isinstance(exc, asyncio.CancelledError):
+                        code = 'PERSONAL_CHAT_GENERATION_INTERRUPTED'
+                        row['generation_interrupted'] = True
+                    else:
+                        code = str(exc)
                     if code not in JEV_ERROR_CODES and not re.fullmatch(r'(?:PERSONAL_CHAT|IMAGE|LLM)_[A-Z0-9_]{1,80}', code):
                         code = 'PERSONAL_CHAT_GENERATION_FAILED'
                     row.update(delivery_status="FAILED", letter_status="FAILED", error_code=code)

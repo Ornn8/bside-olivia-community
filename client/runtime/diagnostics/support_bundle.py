@@ -83,7 +83,7 @@ _QUALITY_VIOLATION_CODES = frozenset({
     'UNAUTHORIZED_SHARED_HISTORY', 'UNSOLICITED_INTIMACY', 'INTIMACY_EXCEEDS_GRANT',
     'IDENTITY_DRIFT', 'BOUNDARY_BREACH', 'STAGE_DRIFT', 'ACKNOWLEDGED_FEELING_REWRITE',
     'INTIMACY_VIOLATION', 'RELATIONSHIP_RETRACTION', 'STYLE_DRIFT',
-    'GENERIC_COUNSELOR', 'MEMORY_FABRICATION',
+    'GENERIC_COUNSELOR', 'MEMORY_FABRICATION', 'FOCUS_REVIEW_UNAVAILABLE', 'AUTONOMY_REVIEW_UNAVAILABLE',
 })
 
 
@@ -284,6 +284,18 @@ def project_reply_quality(value: Mapping[str, object]) -> dict[str, object]:
     result = {}
     if value.get('quality_status') in ('not_checked', 'accepted', 'accepted_degraded', 'accepted_with_warnings', 'blocked'):
         result['quality_status'] = value['quality_status']
+    from runtime.personal_chat.decision import NEUTRAL_METADATA, _CONTROL_REASONS
+    if value.get('decision_dropped_media') == 'UNREQUESTED_SPEECH':
+        result['decision_dropped_media'] = 'UNREQUESTED_SPEECH'
+    dropped_controls = value.get('decision_dropped_controls')
+    if isinstance(dropped_controls, str) and dropped_controls in _CONTROL_REASONS | {'VALUE_TYPE_OR_TIME'}:
+        result['decision_dropped_controls'] = dropped_controls
+    for key, allowed in (('decision_defaulted_fields', set(NEUTRAL_METADATA)),
+                         ('decision_warning_codes', {'REPEATED_REPLY'})):
+        values = value.get(key)
+        if isinstance(values, (list, tuple)):
+            result[key] = list(dict.fromkeys(item for item in values[:16]
+                                            if isinstance(item, str) and item in allowed))
     for field, maximum in (('reviewer_calls', 2), ('rewrite_calls', 1)):
         count = value.get(field)
         if type(count) is int and 0 <= count <= maximum:
@@ -356,6 +368,8 @@ def project_chat_task(value: Mapping[str, object]) -> dict[str, object]:
             result[field] = round(float(seconds), 4)
     if value.get('channel') in ('qq', 'wechat'):
         result['channel'] = value['channel']
+        if value.get('generation_interrupted') is True:
+            result['generation_interrupted'] = True
         if type(value.get('generation_retryable')) is bool:
             result['generation_retryable'] = value['generation_retryable']
         context = value.get('generation_failure_context')
@@ -574,6 +588,20 @@ def _project_tail_record(value: object, *, runtime: bool) -> dict[str, object]:
         if type(value) in (int, float) and 0 <= value <= 3600:
             record[name] = round(float(value), 3)
     if runtime:
+        if event in {'personal_chat_transport_closed', 'personal_chat_transport_state', 'personal_chat_exchange_cancelled',
+                     'personal_chat_decision_normalized', 'personal_chat_decision_warning'}:
+            if source.get('channel') in {'qq', 'wechat'}:
+                record['channel'] = source['channel']
+        if event == 'personal_chat_transport_closed':
+            if type(source.get('processing')) is bool:
+                record['processing'] = source['processing']
+            for key in ('pending_actions', 'response_queue', 'intake_queue', 'control_queue'):
+                if type(source.get(key)) is int and 0 <= source[key] <= 64:
+                    record[key] = source[key]
+            if type(source.get('close_code')) is int and 1000 <= source['close_code'] <= 4999:
+                record['close_code'] = source['close_code']
+            if source.get('transport_error') in {'NONE', 'TIMEOUT', 'CONNECTION', 'CLIENT', 'OTHER'}:
+                record['transport_error'] = source['transport_error']
         from runtime.diagnostics.failure_context import project_failure_context
         record.update(project_failure_context(source))
         record.update(project_reply_quality(source))

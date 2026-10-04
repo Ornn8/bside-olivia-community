@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from installer import full_patch
+from installer import patch_local_login
 from installer.full_patch import (
     PAYLOAD_REQUIRED_RELATIVE_FILES,
     PAYLOAD_REQUIRED_ROOT_FILES,
@@ -31,6 +32,50 @@ from installer.version_launcher import resolve_active_backend
 
 
 CURRENT_TEST_CLIENT_VERSION = "0.0.9.627"
+LOCAL_LOGIN_ORIGINAL = b"synthetic-native-prefix" + bytes.fromhex("74 5b") + b"suffix"
+LOCAL_LOGIN_PATCHED = LOCAL_LOGIN_ORIGINAL.replace(bytes.fromhex("74 5b"), bytes.fromhex("eb 5b"))
+
+
+@pytest.fixture(autouse=True)
+def synthetic_local_login_profile(monkeypatch):
+    monkeypatch.setattr(patch_local_login, "_SIZE_BYTES", len(LOCAL_LOGIN_ORIGINAL))
+    monkeypatch.setattr(patch_local_login, "_OFFSET", LOCAL_LOGIN_ORIGINAL.index(bytes.fromhex("74 5b")))
+    monkeypatch.setattr(patch_local_login, "_ORIGINAL_SHA256", hashlib.sha256(LOCAL_LOGIN_ORIGINAL).hexdigest())
+    monkeypatch.setattr(patch_local_login, "_PATCHED_SHA256", hashlib.sha256(LOCAL_LOGIN_PATCHED).hexdigest())
+
+
+def test_local_login_adapter_is_required_for_payload_refresh():
+    assert "installer/patch_local_login.py" in PAYLOAD_REQUIRED_RELATIVE_FILES
+
+
+def test_fresh_install_selects_nonsteam_branch_only_in_managed_copy(tmp_path):
+    official, feapp_sha, webplayer_sha = _make_official(tmp_path / "official")
+    manifest = _write_manifest(tmp_path / "manifest.json", feapp_sha, webplayer_sha)
+    payload = _make_payload(Path(__file__).parents[2], tmp_path / "payload")
+    target = tmp_path / "install"
+    result = install_full_patch(official, target, payload, manifest)
+    copied = target / patch_local_login._RELATIVE
+    assert result["status"] == "INSTALLED"
+    assert copied.read_bytes() == LOCAL_LOGIN_PATCHED
+    assert copied.with_name(copied.name + ".local-login.orig").read_bytes() == LOCAL_LOGIN_ORIGINAL
+    assert (official / CURRENT_TEST_CLIENT_VERSION / "plugins/Login/NutLoginPlugin.dll").read_bytes() == LOCAL_LOGIN_ORIGINAL
+
+
+def test_unknown_native_login_rolls_back_without_touching_official_or_personal_state(tmp_path):
+    official, feapp_sha, webplayer_sha = _make_official(tmp_path / "official")
+    original = official / CURRENT_TEST_CLIENT_VERSION / "plugins/Login/NutLoginPlugin.dll"
+    original.write_bytes(b"unknown native plugin")
+    manifest = _write_manifest(tmp_path / "manifest.json", feapp_sha, webplayer_sha)
+    payload = _make_payload(Path(__file__).parents[2], tmp_path / "payload")
+    target = tmp_path / "install"
+    (target / "data").mkdir(parents=True)
+    personal = target / "data/personal.txt"
+    personal.write_bytes(b"synthetic personal state")
+    with pytest.raises(PatchInstallError, match="^LOCAL_LOGIN_UNSUPPORTED_PLUGIN$"):
+        install_full_patch(official, target, payload, manifest)
+    assert original.read_bytes() == b"unknown native plugin"
+    assert personal.read_bytes() == b"synthetic personal state"
+    assert not (target / "app").exists()
 
 
 def test_disk_failure_snapshot_is_taken_before_rollback(tmp_path, monkeypatch):
@@ -1438,6 +1483,9 @@ def _make_official(root: Path) -> tuple[Path, str, str]:
         encoding="utf-8",
     )
     (version_root / "Olivia.exe").write_bytes(b"official client fixture")
+    native_login = version_root / "plugins/Login/NutLoginPlugin.dll"
+    native_login.parent.mkdir(parents=True)
+    native_login.write_bytes(LOCAL_LOGIN_ORIGINAL)
 
     javascript = (
         "prefix "
@@ -1597,9 +1645,12 @@ def test_copy_payload_excludes_non_runtime_project_files(
 
 def test_copy_payload_includes_runtime_packages_used_by_product_imports(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
     repo_root = Path(__file__).parents[2]
     destination = tmp_path / "installed" / "local_backend"
+    tracked = full_patch._git_tracked_payload_files(repo_root)
+    monkeypatch.setattr(full_patch, "_git_tracked_payload_files", lambda _root: tracked | {"installer/patch_local_login.py"})
 
     copy_project_payload(repo_root, destination)
 
@@ -1623,8 +1674,10 @@ def test_copy_payload_includes_runtime_packages_used_by_product_imports(
         assert (destination / relative).is_file(), relative
 
 
-def test_packaged_backend_reply_startup_includes_photo_modules(tmp_path):
+def test_packaged_backend_reply_startup_includes_photo_modules(tmp_path, monkeypatch):
     destination = tmp_path / 'local_backend'
+    tracked = full_patch._git_tracked_payload_files(Path(__file__).parents[2])
+    monkeypatch.setattr(full_patch, "_git_tracked_payload_files", lambda _root: tracked | {"installer/patch_local_login.py"})
     copy_project_payload(Path(__file__).parents[2], destination)
     environment = dict(os.environ, OLIVIA_LOCAL_DATA_ROOT=str(tmp_path / 'data'))
     environment.pop('PYTHONPATH', None)

@@ -159,6 +159,8 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
       }
       const code = error?.code || error?.message || String(error || "连接失败");
       target.textContent = ({
+        QQ_SETUP_INVALID: "请填写有效的个人 QQ 号；已有保存的 QQ 号时，也可以留空并使用已保存QQ连接。",
+        PERSONAL_CHAT_GENERATION_INTERRUPTED: "这次回复生成被中断。连接恢复后，可以重新发送这条消息。",
         QQ_BOT_AND_OWNER_MUST_DIFFER: "这里请填写你用来和机器人聊天的个人 QQ 号，不能填写刚扫码登录的机器人 QQ 号。",
         JEV_BILLING_ACCOUNT_UNAVAILABLE: "还没有连接 Olivia 账户 Key，或 Key 无法读取。请在设置的“回信服务 → Olivia 账户”获取或导入 Key，点“连接并保存”后再聊天。",
         OLIVIA_KEY_REQUIRED: "还没有连接 Olivia 账户 Key，请在设置的“回信服务 → Olivia 账户”获取或导入 Key，点“连接并保存”后再聊天。",
@@ -379,21 +381,33 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
         owner.style.marginTop = "10px";
         managed.append(owner);
         const controls = node("div", null, "olivia-chat-actions");
-        controls.append(action("连接并保存", async (button) => {
+        const canReuse = status.qq?.can_reuse_owner === true;
+        const connectLabel = () => canReuse && !owner.value.trim() ? "使用已保存QQ连接" : "连接并保存";
+        if (canReuse) managed.append(node("div", "保留输入框为空，可直接使用已保存的聊天 QQ；填写新号码则替换。", "olivia-chat-copy"));
+        const connectButton = action(connectLabel(), async (button) => {
           qqSaving = true;
           owner.disabled = true;
           button.textContent = "正在验证并保存…";
           try {
-            await request(QQ_CONFIGURE, {method: "POST", body: {managed: true, owner: owner.value.trim()}});
+            const body = canReuse && !owner.value.trim()
+              ? {managed: true, reuse_saved_owner: true} : {managed: true, owner: owner.value.trim()};
+            await request(QQ_CONFIGURE, {method: "POST", body});
             qqSaving = false;
             await refresh(false);
           } catch (error) { renderError(managed, error); }
           finally {
             qqSaving = false;
             owner.disabled = false;
-            button.textContent = "连接并保存";
+            button.textContent = connectLabel();
+            button.disabled = !owner.value.trim() && !canReuse;
           }
-        }));
+        });
+        connectButton.disabled = !owner.value.trim() && !canReuse;
+        owner.addEventListener("input", () => {
+          connectButton.textContent = connectLabel();
+          connectButton.disabled = qqSaving || !owner.value.trim() && !canReuse;
+        });
+        controls.append(connectButton);
         managed.append(controls);
         box.append(managed);
       }

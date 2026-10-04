@@ -836,7 +836,14 @@ def test_reviewer_classifies_layer_failure(
         )
     result, reviewer = _run_diagnostic_review(gateway, candidate)
 
-    assert result.error_code == "REVIEWER_UNAVAILABLE"
+    if layer in {'focus_response', 'autonomy_life'}:
+        assert result.verdict is ReviewVerdict.PASS
+        assert result.error_code is None
+        expected_warning = ('FOCUS_REVIEW_UNAVAILABLE' if layer == 'focus_response'
+                            else 'AUTONOMY_REVIEW_UNAVAILABLE')
+        assert [(item.code, item.severity) for item in result.violations] == [(expected_warning, 'soft')]
+    else:
+        assert result.error_code == "REVIEWER_UNAVAILABLE"
     assert reviewer.last_failure_diagnostics == (
         ReviewFailureDiagnostic(ReviewFailureStage.LAYER, reason, layer),
     )

@@ -215,6 +215,14 @@ _LAYER_SPECS = {
     },
 }
 
+# These layers only contribute expression preferences, never fact/identity,
+# permission, intimacy or text-integrity evidence. Their own unavailability
+# must not discard the independently completed required checks.
+_OPTIONAL_LAYER_WARNINGS = {
+    'focus_response': 'FOCUS_REVIEW_UNAVAILABLE',
+    'autonomy_life': 'AUTONOMY_REVIEW_UNAVAILABLE',
+}
+
 
 @dataclass(frozen=True)
 class ResolvedModelQualityConfig:
@@ -482,6 +490,8 @@ class _LayerResult:
     # Internal only: validated decisions from the same JEV evaluation, never
     # accepted from a model-authored layer result or used as factual evidence.
     preadjudicated: tuple[_AdjudicationDecision, ...] | None = None
+    # Host-authored receipt only; never parsed from model output.
+    optional_failure: ReviewFailureDiagnostic | None = None
 
     @property
     def passed(self) -> bool:
@@ -548,7 +558,7 @@ class GatewayReviewTransport:
     ) -> object:
         self._confirmed_rewrite_evidence.set(None)
         try:
-            result = self._review_json(request, timeout_seconds=timeout_seconds)
+            result, optional_failures = self._review_json(request, timeout_seconds=timeout_seconds)
         except _ReviewDiagnosticsError as exc:
             self._confirmed_rewrite_evidence.set(None)
             self._publish_failure_diagnostics(exc.diagnostics)
@@ -561,7 +571,7 @@ class GatewayReviewTransport:
             )
             self._publish_failure_diagnostics(failure.diagnostics)
             raise RuntimeError("quality model unavailable") from None
-        self._publish_failure_diagnostics(())
+        self._publish_failure_diagnostics(optional_failures)
         return result
 
     def consume_confirmed_rewrite_evidence(
@@ -585,7 +595,7 @@ class GatewayReviewTransport:
         request: dict[str, object],
         *,
         timeout_seconds: float,
-    ) -> object:
+    ) -> tuple[dict[str, object], tuple[ReviewFailureDiagnostic, ...]]:
         mode = str(request.get("mode", ""))
         evidence_bound = mode in {item.value for item in ReplyMode}
         reasoning_scope = (
@@ -700,7 +710,8 @@ class GatewayReviewTransport:
                     )),
                 )
             )
-        return aggregate
+        return aggregate, tuple(item.optional_failure for item in results
+                                if item.optional_failure is not None)
 
 
 class GatewayPersonaReviewer:
@@ -1747,6 +1758,9 @@ def _complete_layer_reviews(
     selected_persona_facts: str = "",
     output_constraints: Mapping[str, object] | None = None,
 ) -> tuple[_LayerResult, ...]:
+    def optional_result(layer, diagnostic):
+        return _LayerResult(layer.name, 1, (), False, optional_failure=diagnostic)
+
     async def invoke(
         requests: Sequence[
             tuple[_LayerAuthority, tuple[dict[str, str], dict[str, str]]]
@@ -1789,11 +1803,21 @@ def _complete_layer_reviews(
                     break
             if reviewed is None:
                 raise ValueError('JEV_INPUT_TOO_LARGE')
-            return tuple(replace(
-                _parse_layer_result(layer, text, candidate=candidate, evidence_bound=evidence_bound),
-                preadjudicated=tuple(_AdjudicationDecision(**item) for item in decisions[layer.name]))
-                for group, texts, decisions in reviewed
-                for (layer, _), text in zip(group, texts, strict=True))
+            completed = []
+            for group, texts, decisions in reviewed:
+                for (layer, _), text in zip(group, texts, strict=True):
+                    try:
+                        result = _parse_layer_result(layer, text, candidate=candidate,
+                                                     evidence_bound=evidence_bound)
+                    except _ReviewContractFailure as exc:
+                        if layer.name not in _OPTIONAL_LAYER_WARNINGS:
+                            raise _diagnostic_error(ReviewFailureStage.LAYER, exc.reason,
+                                                    layer.name) from exc
+                        result = optional_result(layer, ReviewFailureDiagnostic(
+                            ReviewFailureStage.LAYER, exc.reason, layer.name))
+                    completed.append(replace(result, preadjudicated=tuple(
+                        _AdjudicationDecision(**item) for item in decisions[layer.name])))
+            return tuple(completed)
         max_parallel = (
             2
             if (gateway_scope is GatewayRequestScope.JSON_MAX_REASONING
@@ -1877,22 +1901,28 @@ def _complete_layer_reviews(
         )
         diagnostics: list[ReviewFailureDiagnostic] = []
         completed: list[_LayerResult] = []
+        required_failure = False
         for (layer, _), outcome in zip(requests, outcomes, strict=True):
             if isinstance(outcome, _ReviewDiagnosticsError):
                 diagnostics.extend(outcome.diagnostics)
+                if layer.name in _OPTIONAL_LAYER_WARNINGS:
+                    completed.append(optional_result(layer, outcome.diagnostics[0]))
+                else:
+                    required_failure = True
             elif isinstance(outcome, Exception):
-                diagnostics.append(
-                    ReviewFailureDiagnostic(
-                        ReviewFailureStage.LAYER,
-                        ReviewFailureReason.INTERNAL,
-                        layer.name,
-                    )
+                diagnostic = ReviewFailureDiagnostic(
+                    ReviewFailureStage.LAYER, ReviewFailureReason.INTERNAL, layer.name,
                 )
+                diagnostics.append(diagnostic)
+                if layer.name in _OPTIONAL_LAYER_WARNINGS:
+                    completed.append(optional_result(layer, diagnostic))
+                else:
+                    required_failure = True
             elif isinstance(outcome, BaseException):
                 raise outcome
             else:
                 completed.append(outcome)
-        if diagnostics:
+        if required_failure:
             raise _ReviewDiagnosticsError(tuple(diagnostics))
         return tuple(completed)
 
@@ -2316,7 +2346,11 @@ def _aggregate_layer_results(
     for name in failed:
         item = by_name[name]
         entries: list[tuple[str, str, _HardReviewEvidence | None]] = []
-        if evidence_bound and name in _EVIDENCE_BOUND_LAYERS:
+        if item.optional_failure is not None:
+            if name not in _OPTIONAL_LAYER_WARNINGS:
+                raise RuntimeError('LAYER_REVIEW_INCOMPLETE')
+            entries.append((_OPTIONAL_LAYER_WARNINGS[name], 'soft', None))
+        elif evidence_bound and name in _EVIDENCE_BOUND_LAYERS:
             entries.extend(
                 (evidence.code, evidence_severity(evidence.code, evidence.claim_kind), evidence)
                 for evidence in item.hard_evidence

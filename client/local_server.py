@@ -406,6 +406,10 @@ def _runtime_diagnostic_record(event: object, fields: Mapping[str, object]) -> d
 
     if not isinstance(event, str) or not _RUNTIME_DIAGNOSTIC_EVENT_RE.fullmatch(event):
         return None
+    if event in {'personal_chat_transport_closed', 'personal_chat_transport_state', 'personal_chat_exchange_cancelled',
+                 'personal_chat_decision_normalized', 'personal_chat_decision_warning'}:
+        from runtime.diagnostics.support_bundle import _project_tail_record
+        return _project_tail_record({'event': event, **fields}, runtime=True)
     if event == 'history_relationship_failed':
         from runtime.diagnostics.support_bundle import project_history_relationship_failure
         return project_history_relationship_failure({**fields, 'status': 'FAILED'})
@@ -2288,6 +2292,21 @@ def _asr_health() -> tuple[dict, dict]:
         }
 
 
+def _startup_health_result() -> dict:
+    """Core readiness without optional filesystem, database, or provider probes."""
+    required = contract.PROFILES[contract.HEALTH_PROFILE_CORE]["required_capabilities"]
+    states = {name: contract.CAPABILITIES.get(name, {}).get("status", "unavailable") for name in required}
+    identity = _os.environ.get("OLIVIA_BACKEND_ID", "legacy")
+    return ok({
+        "schema_version": contract.HTTP_ENVELOPE_SCHEMA_VERSION,
+        "contract_version": contract.HTTP_ENVELOPE_CONTRACT_VERSION,
+        "backend_id": identity if _re.fullmatch(r"[0-9A-Za-z.+-]{1,160}", identity) else "invalid",
+        "profile": contract.HEALTH_PROFILE_CORE,
+        "status": "HEALTHY" if all(state == "available" for state in states.values()) else "FAILED",
+        "required_checks": states,
+    })
+
+
 def _health_result(profile: str = contract.HEALTH_PROFILE_CORE) -> dict:
     profile_spec = contract.PROFILES.get(profile)
     if profile_spec is None:
@@ -3681,6 +3700,8 @@ async def route(
     ):
         _require_store_state_available()
     if p == "/health":
+        if query.get("probe") == "startup" and query.get("profile", contract.HEALTH_PROFILE_CORE) == contract.HEALTH_PROFILE_CORE:
+            return _startup_health_result()
         return _health_result(query.get("profile", contract.HEALTH_PROFILE_CORE))
     if p == "/toy/proactive/status":
         return ok(_proactive_status())

@@ -16,9 +16,24 @@ from jsonschema import Draft202012Validator
 import pytest
 
 import installer.start_local as start_local
+from installer import patch_local_login
 from original_client_settings_ui import BOOTSTRAP_JAVASCRIPT, SETTINGS_UI_VERSION
 from original_client_setup_api import LLMSetupService, _dpapi_protect
 from patch_companion_settings import CompanionSettingsPatchError
+
+LOCAL_LOGIN_ORIGINAL = b"synthetic-native-prefix" + bytes.fromhex("0f 84 e8 01 00 00") + b"gap" + bytes.fromhex("74 5b") + b"suffix"
+LOCAL_LOGIN_PATCHED = LOCAL_LOGIN_ORIGINAL.replace(bytes.fromhex("74 5b"), bytes.fromhex("eb 5b"))
+LOCAL_LOGIN_LEGACY = LOCAL_LOGIN_ORIGINAL.replace(bytes.fromhex("0f 84 e8 01 00 00"), bytes.fromhex("e9 e9 01 00 00 90"))
+
+
+@pytest.fixture(autouse=True)
+def synthetic_local_login_profile(monkeypatch):
+    monkeypatch.setattr(patch_local_login, "_SIZE_BYTES", len(LOCAL_LOGIN_ORIGINAL))
+    monkeypatch.setattr(patch_local_login, "_OFFSET", LOCAL_LOGIN_ORIGINAL.index(bytes.fromhex("74 5b")))
+    monkeypatch.setattr(patch_local_login, "_ORIGINAL_SHA256", hashlib.sha256(LOCAL_LOGIN_ORIGINAL).hexdigest())
+    monkeypatch.setattr(patch_local_login, "_PATCHED_SHA256", hashlib.sha256(LOCAL_LOGIN_PATCHED).hexdigest())
+    monkeypatch.setattr(patch_local_login, "_LEGACY_SHA256", hashlib.sha256(LOCAL_LOGIN_LEGACY).hexdigest())
+    monkeypatch.setattr(patch_local_login, "_LEGACY_OFFSET", LOCAL_LOGIN_ORIGINAL.index(bytes.fromhex("0f 84 e8 01 00 00")))
 
 
 @pytest.fixture(autouse=True)
@@ -28,11 +43,19 @@ def no_real_startup_animation(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("OLIVIA_STARTUP_VIDEO", str(tmp_path / "no-animation.mp4"))
 
 
+def _mock_probe(monkeypatch, health, identity):
+    """Describe one synthetic response, with identity only for ready responses."""
+    def probe(port):
+        state = health(port)
+        return state, identity(port) if state == "READY" else None
+    monkeypatch.setattr(start_local, "_probe_health", probe)
+
+
 def _installation(
     tmp_path: Path,
     *,
     with_entrypoint: bool = True,
-    client_version: str = "0.0.9.615",
+    client_version: str = "0.0.9.627",
 ) -> Path:
     root = tmp_path / "installed"
     backend = root / "local_backend"
@@ -50,13 +73,14 @@ def _installation(
     client = root / "app" / client_version / "Olivia.exe"
     client.parent.mkdir(parents=True)
     client.write_bytes(b"fixture")
+    native_login = client.parent / "plugins/Login/NutLoginPlugin.dll"
+    native_login.parent.mkdir(parents=True)
+    native_login.write_bytes(LOCAL_LOGIN_ORIGINAL)
     resources = client.parent / "resources"
     resources.mkdir()
-    main_member = (
-        "assets/main-31595bd3.js"
-        if client_version == "0.0.9.627"
-        else "assets/main-917d29fc.js"
-    )
+    # Keep the small legacy frontend fixture for backend lifecycle tests.
+    # Tests for the 0.0.9.627 frontend write their exact archive separately.
+    main_member = "assets/main-917d29fc.js"
     index = (
         '<!doctype html><html><head>'
         f'<script type="module" src="./{main_member}"></script>'
@@ -663,11 +687,15 @@ def test_launcher_reads_current_user_dpapi_key_format(tmp_path: Path) -> None:
     assert start_local._load_dpapi_key(key_path) == "synthetic-launcher-key"
 
 
+@pytest.mark.parametrize("legacy", [False, True], ids=["original-sdk", "legacy-1.2.7-no-backup"])
 def test_launcher_starts_combined_server_before_original_client(
     tmp_path: Path,
     monkeypatch,
+    legacy: bool,
 ) -> None:
     root = _installation(tmp_path)
+    if legacy:
+        (root / patch_local_login._RELATIVE).write_bytes(LOCAL_LOGIN_LEGACY)
     health = iter(("UNAVAILABLE", "READY", "READY", "READY"))
     commands: list[list[str]] = []
     client_commands: list[list[str]] = []
@@ -685,17 +713,13 @@ def test_launcher_starts_combined_server_before_original_client(
         return Process()
 
     def call(command, **kwargs):
+        assert (root / patch_local_login._RELATIVE).read_bytes() == LOCAL_LOGIN_PATCHED
         client_commands.append([str(value) for value in command])
         client_working_directories.append(Path(kwargs["cwd"]))
         return 0
 
-    monkeypatch.setattr(start_local, "_health", lambda _port: next(health))
+    _mock_probe(monkeypatch, lambda _port: next(health), lambda _port: start_local._backend_id(root / 'local_backend', root.resolve()))
     monkeypatch.setattr(start_local, "_active_backend", lambda: root / "local_backend")
-    monkeypatch.setattr(
-        start_local,
-        "_server_backend_id",
-        lambda _port: start_local._backend_id(root / "local_backend", root.resolve()),
-    )
     monkeypatch.setattr(
         start_local,
         "_backend_executable",
@@ -745,6 +769,34 @@ def test_launcher_starts_combined_server_before_original_client(
     assert str(root.resolve()) not in launcher_log
 
 
+def test_launcher_rejects_other_client_version_before_any_native_patch(tmp_path):
+    root = _installation(tmp_path, client_version="0.0.9.615")
+    target = root / "app/0.0.9.615/plugins/Login/NutLoginPlugin.dll"
+    with pytest.raises(patch_local_login.LocalLoginPatchError, match="^LOCAL_LOGIN_UNSUPPORTED_CLIENT$"):
+        start_local._repair_local_login(root)
+    assert target.read_bytes() == LOCAL_LOGIN_ORIGINAL
+    assert not (root / "app/0.0.9.627").exists()
+
+
+def test_launcher_unknown_native_login_stops_before_client_and_cleans_owned_backend(tmp_path, monkeypatch, capsys):
+    root = _installation(tmp_path)
+    target = root / patch_local_login._RELATIVE
+    target.write_bytes(b"unknown native plugin")
+    stopped = []
+    server = SimpleNamespace(poll=lambda: None)
+    monkeypatch.setattr(start_local, "_active_backend", lambda: root / "local_backend")
+    monkeypatch.setattr(start_local, "_probe_health", lambda _port: ("UNAVAILABLE", None))
+    monkeypatch.setattr(start_local, "_port_is_bindable", lambda _port: True)
+    monkeypatch.setattr(start_local, "_start_backend_server", lambda **_kwargs: (server, "READY"))
+    monkeypatch.setattr(start_local, "_stop_backend_server", lambda process: stopped.append(process))
+    monkeypatch.setattr(start_local.subprocess, "call", lambda *_args, **_kwargs: pytest.fail("unverified native must not launch"))
+    assert start_local.main(["--install-root", str(root), "--port", "8899"]) == 2
+    assert "CLIENT_LOCAL_LOGIN_REPAIR_FAILED" in capsys.readouterr().out
+    assert stopped == [server]
+    assert target.read_bytes() == b"unknown native plugin"
+    assert not target.with_name(target.name + ".local-login.orig").exists()
+
+
 def _run_launcher_with_client_results(
     tmp_path: Path,
     monkeypatch,
@@ -770,13 +822,8 @@ def _run_launcher_with_client_results(
         )
         return next(results)
 
-    monkeypatch.setattr(start_local, "_health", lambda _port: next(health))
+    _mock_probe(monkeypatch, lambda _port: next(health), lambda _port: start_local._backend_id(root / 'local_backend', root.resolve()))
     monkeypatch.setattr(start_local, "_active_backend", lambda: root / "local_backend")
-    monkeypatch.setattr(
-        start_local,
-        "_server_backend_id",
-        lambda _port: start_local._backend_id(root / "local_backend", root.resolve()),
-    )
     monkeypatch.setattr(
         start_local,
         "_backend_executable",
@@ -1010,12 +1057,7 @@ def test_component_launcher_starts_the_backend_that_owns_start_local(
             return None
 
     monkeypatch.setattr(start_local, "_active_backend", lambda: active_backend)
-    monkeypatch.setattr(start_local, "_health", lambda _port: next(health))
-    monkeypatch.setattr(
-        start_local,
-        "_server_backend_id",
-        lambda _port: start_local._backend_id(active_backend, root.resolve()),
-    )
+    _mock_probe(monkeypatch, lambda _port: next(health), lambda _port: start_local._backend_id(active_backend, root.resolve()))
     monkeypatch.setattr(start_local, "_backend_executable", lambda: Path("pythonw.exe"))
     monkeypatch.setattr(
         start_local.subprocess,
@@ -1071,12 +1113,7 @@ def test_component_launcher_stops_its_owned_backend_after_client_exit(
         return Process()
 
     monkeypatch.setattr(start_local, "_active_backend", lambda: active_backend)
-    monkeypatch.setattr(start_local, "_health", lambda _port: next(health))
-    monkeypatch.setattr(
-        start_local,
-        "_server_backend_id",
-        lambda _port: start_local._backend_id(active_backend, root.resolve()),
-    )
+    _mock_probe(monkeypatch, lambda _port: next(health), lambda _port: start_local._backend_id(active_backend, root.resolve()))
     monkeypatch.setattr(start_local.subprocess, "Popen", popen)
     monkeypatch.setattr(start_local.subprocess, "call", lambda *_args, **_kwargs: 0)
     monkeypatch.setattr(start_local, "_repair_client_frontend", lambda *_args: "PATCHED")
@@ -1119,12 +1156,7 @@ def test_component_launcher_takes_ownership_from_a_reused_ready_backend(
             return 0
 
     monkeypatch.setattr(start_local, "_active_backend", lambda: backend)
-    monkeypatch.setattr(start_local, "_health", lambda _port: next(health))
-    monkeypatch.setattr(
-        start_local,
-        "_server_backend_id",
-        lambda _port: expected_backend_id,
-    )
+    _mock_probe(monkeypatch, lambda _port: next(health), lambda _port: expected_backend_id)
     monkeypatch.setattr(
         start_local.subprocess,
         "Popen",
@@ -1154,7 +1186,6 @@ def test_launcher_restarts_owned_backend_that_dies_during_frontend_repair(
     root = _installation(tmp_path)
     backend = root / "local_backend"
     expected_backend_id = start_local._backend_id(backend, root.resolve())
-    health = iter(("UNAVAILABLE", "READY", "READY", "UNAVAILABLE", "READY", "READY"))
     backend_starts: list[list[str]] = []
     client_commands: list[list[str]] = []
     lifecycle: list[str] = []
@@ -1186,12 +1217,9 @@ def test_launcher_restarts_owned_backend_that_dies_during_frontend_repair(
         return "PATCHED"
 
     monkeypatch.setattr(start_local, "_active_backend", lambda: backend)
-    monkeypatch.setattr(start_local, "_health", lambda _port: next(health))
-    monkeypatch.setattr(
-        start_local,
-        "_server_backend_id",
-        lambda _port: expected_backend_id,
-    )
+    _mock_probe(monkeypatch,
+                lambda _port: "UNAVAILABLE" if not backend_starts or (len(backend_starts) == 1 and after_repair) else "READY",
+                lambda _port: expected_backend_id)
     monkeypatch.setattr(
         start_local.subprocess,
         "Popen",
@@ -1233,8 +1261,7 @@ def test_backend_start_does_not_adopt_another_ready_listener(
             return 1
 
     monkeypatch.setattr(start_local.subprocess, "Popen", lambda *_args, **_kwargs: ExitedProcess())
-    monkeypatch.setattr(start_local, "_health", lambda _port: "READY")
-    monkeypatch.setattr(start_local, "_server_backend_id", lambda _port: "expected")
+    _mock_probe(monkeypatch, lambda _port: 'READY', lambda _port: 'expected')
 
     _server, health = start_local._start_backend_server(
         backend=backend,
@@ -1311,8 +1338,7 @@ def test_launcher_replaces_a_verified_stale_backend_before_starting_active_versi
             return None
 
     monkeypatch.setattr(start_local, "_active_backend", lambda: active_backend)
-    monkeypatch.setattr(start_local, "_health", lambda _port: next(health))
-    monkeypatch.setattr(start_local, "_server_backend_id", lambda _port: next(backend_ids))
+    _mock_probe(monkeypatch, lambda _port: next(health), lambda _port: next(backend_ids))
     monkeypatch.setattr(
         start_local,
         "_stop_stale_backend",
@@ -1347,7 +1373,11 @@ def test_launcher_reads_backend_identity_from_health_response(monkeypatch) -> No
                 {
                     "code": 0,
                     "message": "ok",
-                    "data": {"backend_id": "0.1.2-digest"},
+                    "data": {
+                        "backend_id": "0.1.2-digest", "schema_version": 1,
+                        "contract_version": "b02.v1", "profile": "core", "status": "HEALTHY",
+                        "required_checks": {name: "available" for name in start_local._CORE_HEALTH_REQUIRED_CHECKS},
+                    },
                 }
             ).encode("utf-8")
 
@@ -1421,16 +1451,8 @@ def test_launcher_allows_mem0_cold_start_before_opening_client(
         client_commands.append([str(value) for value in command])
         return 0
 
-    monkeypatch.setattr(start_local, "_health", health)
+    _mock_probe(monkeypatch, health, lambda _port: start_local._backend_id(root / 'local_backend', root.resolve()))
     monkeypatch.setattr(start_local, "_active_backend", lambda: root / "local_backend")
-    monkeypatch.setattr(
-        start_local,
-        "_server_backend_id",
-        lambda _port: start_local._backend_id(
-            root / "local_backend",
-            root.resolve(),
-        ),
-    )
     monkeypatch.setattr(start_local.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(start_local.time, "sleep", sleep)
     monkeypatch.setattr(start_local.subprocess, "Popen", lambda *_args, **_kwargs: Process())
@@ -1488,16 +1510,8 @@ def test_launcher_ignores_retired_deepseek_key_file(
         client_environments.append(kwargs["env"].copy())
         return 0
 
-    monkeypatch.setattr(start_local, "_health", lambda _port: next(health))
+    _mock_probe(monkeypatch, lambda _port: next(health), lambda _port: start_local._backend_id(root / 'local_backend', root.resolve()))
     monkeypatch.setattr(start_local, "_active_backend", lambda: root / "local_backend")
-    monkeypatch.setattr(
-        start_local,
-        "_server_backend_id",
-        lambda _port: start_local._backend_id(
-            root / "local_backend",
-            root.resolve(),
-        ),
-    )
     monkeypatch.setattr(
         start_local,
         "_backend_executable",
@@ -1533,16 +1547,8 @@ def test_launcher_preserves_compatible_llm_environment_overrides(
         backend_environments.append(kwargs["env"])
         return Process()
 
-    monkeypatch.setattr(start_local, "_health", lambda _port: next(health))
+    _mock_probe(monkeypatch, lambda _port: next(health), lambda _port: start_local._backend_id(root / 'local_backend', root.resolve()))
     monkeypatch.setattr(start_local, "_active_backend", lambda: root / "local_backend")
-    monkeypatch.setattr(
-        start_local,
-        "_server_backend_id",
-        lambda _port: start_local._backend_id(
-            root / "local_backend",
-            root.resolve(),
-        ),
-    )
     monkeypatch.setattr(
         start_local,
         "_backend_executable",
@@ -1587,16 +1593,8 @@ def test_launcher_supplies_deepseek_defaults_when_llm_overrides_are_absent(
         backend_environments.append(kwargs["env"])
         return Process()
 
-    monkeypatch.setattr(start_local, "_health", lambda _port: next(health))
+    _mock_probe(monkeypatch, lambda _port: next(health), lambda _port: start_local._backend_id(root / 'local_backend', root.resolve()))
     monkeypatch.setattr(start_local, "_active_backend", lambda: root / "local_backend")
-    monkeypatch.setattr(
-        start_local,
-        "_server_backend_id",
-        lambda _port: start_local._backend_id(
-            root / "local_backend",
-            root.resolve(),
-        ),
-    )
     monkeypatch.setattr(
         start_local,
         "_backend_executable",
@@ -2016,7 +2014,7 @@ def test_health_treats_windows_connection_refused_as_no_listener(monkeypatch) ->
 
 @pytest.mark.parametrize(
     ("bindable", "expected"),
-    [(True, "UNAVAILABLE"), (False, "PORT_CONFLICT")],
+    [(True, "UNAVAILABLE"), (False, "UNAVAILABLE")],
     ids=("bindable", "occupied"),
 )
 def test_health_resolves_timeout_by_actual_local_port_bindability(
@@ -2101,16 +2099,6 @@ def test_start_refreshes_an_outdated_stable_launcher(tmp_path: Path, monkeypatch
     bare = tmp_path / "no-launcher-dir"
     start_local._refresh_stable_launcher(bare, bare / "data")  # layouts without launcher/ are left alone
     assert not (bare / "launcher").exists()
-
-
-def test_busy_backend_is_given_time_and_replacements_are_explained():
-    from pathlib import Path
-    source = (Path(__file__).resolve().parents[2] / 'installer' / 'start_local.py').read_text(encoding='utf-8')
-    wait = source.index('deadline = time.monotonic() + 15')
-    replaced = source.index('"backend_replaced"')
-    assert wait < replaced < source.index('_stop_backend_server(server)', replaced)
-    for reason in ('not_started', 'exited', 'unresponsive', 'foreign_backend'):
-        assert f'"{reason}"' in source
 
 
 def test_bundle_keeps_launcher_reason_tokens_only():

@@ -46,7 +46,7 @@ def _ack(raw):
     return raw["data"]
 
 
-async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_timeout, merge_seconds=2, state_callback=None, media_ack_timeout=120):
+async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_timeout, merge_seconds=2, state_callback=None, media_ack_timeout=120, diagnostic_callback=None):
     queue = asyncio.Queue(maxsize=32)
     intake_queue = asyncio.Queue(maxsize=32)
     control_queue = asyncio.Queue(maxsize=32)
@@ -305,6 +305,20 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
         if worker_task.done():
             worker_task.result()
         if reader_task.done():
+            if not stop_event.is_set() and callable(diagnostic_callback):
+                exc = ws.exception()
+                kind = ('NONE' if exc is None else 'TIMEOUT' if isinstance(exc, TimeoutError)
+                        else 'CONNECTION' if isinstance(exc, ConnectionError)
+                        else 'CLIENT' if isinstance(exc, aiohttp.ClientError) else 'OTHER')
+                fields = dict(processing=processing, pending_actions=len(pending),
+                              response_queue=queue.qsize(), intake_queue=intake_queue.qsize(),
+                              control_queue=control_queue.qsize(), transport_error=kind)
+                if type(ws.close_code) is int and 1000 <= ws.close_code <= 4999:
+                    fields['close_code'] = ws.close_code
+                try:
+                    diagnostic_callback(**fields)
+                except Exception:
+                    log.warning('QQ_DIAGNOSTIC_RECORD_FAILED')
             reader_task.result()
             if not stop_event.is_set() and (processing or not queue.empty() or not intake_queue.empty() or not control_queue.empty()):
                 raise RuntimeError("QQ_CONNECTION_LOST_DURING_EXCHANGE")
@@ -315,7 +329,7 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
 
 
 async def run_qq(url, token, account_id, owner_id, handle_message, stop_event,
-                 *, ack_timeout=30, reconnect_delay=1, merge_seconds=2, state_callback=None, media_ack_timeout=120):
+                 *, ack_timeout=30, reconnect_delay=1, merge_seconds=2, state_callback=None, media_ack_timeout=120, diagnostic_callback=None):
     """Run until stopped. send(text) returns a confirmed platform message ID.
 
     The handler must persist a sending reservation before calling send: a timeout
@@ -344,7 +358,8 @@ async def run_qq(url, token, account_id, owner_id, handle_message, stop_event,
                 publish("CONNECTING" if failures == 0 else "RECONNECTING")
                 async with session.ws_connect(url, headers={"Authorization": "Bearer " + token}, heartbeat=20) as ws:
                     await _connection(ws, account_id, owner_id, handle_message, stop_event, ack_timeout, merge_seconds,
-                                      state_callback=publish, media_ack_timeout=media_ack_timeout)
+                                      state_callback=publish, media_ack_timeout=media_ack_timeout,
+                                      diagnostic_callback=diagnostic_callback)
             except (aiohttp.ClientError, ConnectionError, TimeoutError):
                 log.warning("QQ_TRANSPORT_DISCONNECTED")
             if stop_event.is_set():

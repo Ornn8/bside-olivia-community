@@ -36,7 +36,6 @@ def test_harmless_envelope_variations_preserve_reply_without_changing_preference
 @pytest.mark.parametrize('raw', [
     '说明\n```json\n' + envelope() + '\n```',
     '```json\n' + envelope() + '\n```\n其他文字',
-    envelope().replace('"initiative": "keep", ', ''),
 ])
 def test_envelope_tolerance_does_not_guess_controls_or_extract_partial_json(raw):
     with pytest.raises(ValueError, match='PERSONAL_CHAT_DECISION_INVALID'):
@@ -75,11 +74,101 @@ def test_explicit_followup_persists_deadline_and_temporary_pause_expires():
     assert policy.pending_followup() is None and not policy.ready()
 
 
-@pytest.mark.parametrize('raw', ['好呀', '{"text":"好呀"}', envelope(text='好呀[[chat:text|keep'),
+@pytest.mark.parametrize('raw', ['好呀', '{}', '{"text":null}', envelope(text='好呀[[chat:text|keep'),
     envelope(skip=True)])
 def test_missing_invalid_or_unsupported_decision_cannot_be_sent(raw):
     with pytest.raises(ValueError, match='DECISION_INVALID'):
         decode(raw, user='明天找我', now=datetime(2026,9,13,12,tzinfo=LOCAL).timestamp())
+
+
+@pytest.mark.parametrize('missing', ['delivery', 'listening', 'initiative', 'pause_until', 'letter',
+    'letter_until', 'followup_at', 'evidence', 'skip', 'all_metadata'])
+def test_missing_metadata_preserves_body_with_neutral_non_executing_defaults(missing):
+    body = json.loads(envelope(text='当然可以，我在听你说。'))
+    if missing == 'all_metadata':
+        body = {'text': body['text']}
+    else:
+        body.pop(missing)
+    result = decode(json.dumps(body), user='陪我说会话', now=1)
+    assert result['text'] == '当然可以，我在听你说。'
+    assert result['skip'] is False
+    assert result['listening'] == result['initiative'] == result['letter'] == 'keep'
+    assert result['pause_until'] is result['letter_until'] is result['followup_at'] is None
+    assert missing in result['defaulted_fields'] or missing == 'all_metadata'
+
+
+@pytest.mark.parametrize('body', [
+    {'text': ''}, {'text': 42}, {'text': '你好', 'skip': 'false'},
+    {'text': '', 'skip': True}, {'text': '你好', 'delivery': 'private-command'},
+])
+def test_metadata_defaults_do_not_allow_empty_reply_unproven_silence_or_invalid_media(body):
+    with pytest.raises(ValueError, match='PERSONAL_CHAT_DECISION_INVALID'):
+        decode(json.dumps(body), user='你好', now=1)
+
+
+@pytest.mark.parametrize('missing', ['pause_until', 'letter_until', 'initiative', 'evidence'])
+def test_incomplete_control_metadata_cannot_create_indefinite_pause(missing):
+    body = json.loads(envelope(text='好，今天不催你写信。', letter='pause',
+        letter_until='2026-10-05T00:00:00+08:00', evidence='今天不想写信'))
+    body.pop(missing)
+    result = decode(json.dumps(body), user='今天不想写信',
+        now=datetime(2026, 10, 4, 12, tzinfo=LOCAL).timestamp())
+    assert result['text'] == '好，今天不催你写信。'
+    assert result['letter'] == result['initiative'] == 'keep'
+    assert result['letter_until'] is result['pause_until'] is None
+    assert result['dropped_controls'] == 'INCOMPLETE_CONTROLS'
+
+
+@pytest.mark.parametrize('text', [
+    '列表可以这样写：[[1, 2], [3, 4]]。',
+    '笔记里可用 [[项目页面]] 链接到另一个页面。',
+    '括号里的内容是 [a[b]]，不是命令。',
+    '这里的两个字符 ]] 只是闭合括号。',
+])
+def test_ordinary_brackets_are_preserved(text):
+    assert decode(envelope(text=text), user='解释下这个格式', now=1)['text'] == text
+
+
+@pytest.mark.parametrize('marker', [
+    '[[chat:text|keep]]', '[[chat:text|keep', '[[delivery:voice|keep]]',
+    '[[initiative:pause]]', '[[letter:invite]]', '[[skip]]', '[[CONTROL:private]]',
+])
+def test_reserved_control_syntax_remains_rejected(marker):
+    with pytest.raises(ValueError, match='PERSONAL_CHAT_DECISION_INVALID'):
+        decode(envelope(text='这段正文'+marker), user='你好', now=1)
+
+
+@pytest.mark.parametrize('script', [
+    {'unexpected': 'optional metadata'},
+    dict(title='小故事', spoken_text='这是一个虚构的小故事。'*10, continuation_summary='虚构摘要'),
+])
+def test_unrequested_speech_is_ignored_without_losing_reply(script):
+    result = decode(envelope(text='好，我在听你说。', speech=script), user='陪我说话',
+                    now=1, allow_speech=False)
+    assert result['text'] == '好，我在听你说。' and result['speech'] is None
+    assert result['dropped_media'] == 'UNREQUESTED_SPEECH'
+
+
+def test_requested_invalid_speech_is_not_delivered_or_accepted_as_valid_script():
+    with pytest.raises(ValueError, match='PERSONAL_CHAT_DECISION_INVALID'):
+        decode(envelope(text='给你讲个小故事。', speech={'unexpected': 'invalid'}),
+               user='给我讲故事', now=1, allow_speech=True)
+
+
+@pytest.mark.parametrize('invalid', [
+    {'listening': 'unknown'}, {'initiative': 'erase'}, {'letter': []},
+    {'evidence': None}, {'evidence': 42}, {'letter_invitation': 'yes'},
+])
+def test_invalid_optional_control_shape_drops_side_effects_preserves_body(invalid):
+    body = json.loads(envelope(text='好的，先忙你的。', initiative='pause',
+                               followup_at='cancel', evidence='先忙我的'))
+    body.update(invalid)
+    result = decode(json.dumps(body), user='先忙我的', now=1)
+    assert result['text'] == '好的，先忙你的。'
+    assert result['listening'] == result['initiative'] == result['letter'] == 'keep'
+    assert result['followup_at'] is result['pause_until'] is result['letter_until'] is None
+    assert result['followup_cancel'] is False and result['letter_invitation'] is False
+    assert result['dropped_controls'] == 'CONTROL_SHAPE_INVALID'
 
 
 @pytest.mark.parametrize('kind,user', [
@@ -304,3 +393,21 @@ def test_misplaced_illustration_marker_is_stripped_not_fatal():
     assert decision['text'] == '快去睡觉。'
     with pytest.raises(ValueError, match='DECISION_INVALID'):
         decode(envelope(text='好呀[[chat:text|keep]]'), user='晚安', now=1)
+
+
+@pytest.mark.parametrize('text', ['[[image:linli-40]]', '[[sticker:linli-01]]', '[picture:linli-02]'])
+def test_presentation_marker_alone_is_not_an_empty_success(text):
+    with pytest.raises(ValueError, match='PERSONAL_CHAT_DECISION_INVALID') as caught:
+        decode(envelope(text=text), user='你好', now=1)
+    assert caught.value.reason == 'EMPTY_OR_SKIPPED_REPLY'
+
+
+@pytest.mark.parametrize('extra', [False, True])
+def test_rejection_diagnostic_counts_only_original_unknown_annotations(extra):
+    body = json.loads(envelope(text='好呀', skip='false'))
+    if extra:
+        body['annotation'] = 'private explanation'
+    with pytest.raises(ValueError, match='PERSONAL_CHAT_DECISION_INVALID') as caught:
+        decode(json.dumps(body), user='你好', now=1)
+    assert caught.value.extra_field_count == int(extra)
+    assert 'private' not in str(caught.value) and not caught.value.missing_fields
