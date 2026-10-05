@@ -82,7 +82,7 @@ def _now_value(now: float | None) -> float:
 
 
 def _published(letter: Mapping[str, object], *, now: float | None) -> bool:
-    if _letter_status(letter.get("letter_status", letter.get("letterStatus")), published=True) == OriginalClientLetterStatus.NO_REPLY:
+    if _letter_status(letter.get("letter_status", letter.get("letterStatus")), published=True) != OriginalClientLetterStatus.REPLIED:
         return False
     if _video_pending(letter) or _audio_pending(letter) or _photo_pending(letter):
         return False
@@ -95,8 +95,11 @@ def _published(letter: Mapping[str, object], *, now: float | None) -> bool:
 
 
 def _photo_pending(letter: Mapping[str, object]) -> bool:
+    # An optional attachment must not hide already-completed text or speech.
+    # Keep a requested image's internal scene draft private until its own delivery is ready.
     settings = letter.get('image_reply_settings')
     return (isinstance(settings, Mapping) and settings.get('enabled') is True
+            and letter.get('companion_delivery') == 'image'
             and letter.get('reply_mode') in ('text', 'text_letter', 'voice_reply', 'spoken_video')
             and letter.get('image_status') not in ('COMPLETED', 'SKIPPED', 'FAILED')
             and str(letter.get('letter_status', '')).upper() == 'COMPLETED')
@@ -367,8 +370,13 @@ def serialize_letter_detail(
     )
     sticker_id = letter.get("reply_sticker_id")
     if published:
-        payload['imageStatus'] = letter.get('image_status', 'NOT_REQUESTED')
-        if letter.get('image_reply_settings', {}).get('enabled'):
+        image_settings = letter.get('image_reply_settings')
+        image_enabled = isinstance(image_settings, Mapping) and image_settings.get('enabled') is True
+        # A ready letter may be read before its scheduled photo worker gets its first tick.
+        # Keep the existing attachment poller alive until that worker chooses a terminal state.
+        photo_scheduled = image_enabled and letter.get('reply_mode') in ('text', 'text_letter', 'voice_reply', 'spoken_video')
+        payload['imageStatus'] = letter.get('image_status') or ('PLANNING' if photo_scheduled else 'NOT_REQUESTED')
+        if image_enabled:
             payload['imageRequestId'] = str(letter.get('letter_id', ''))
         if letter.get('image_status') == 'COMPLETED':
             payload['replyImageUrl'] = _safe_local_media_url(letter.get('reply_image_url'))

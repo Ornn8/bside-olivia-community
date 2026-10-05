@@ -61,6 +61,56 @@ NEUTRAL_METADATA = dict(delivery='text', listening='keep', initiative='keep', pa
                         letter='keep', letter_until=None, followup_at=None, evidence='', skip=False)
 
 
+def _control_body(text):
+    """Recognize only a whole internal envelope, never JSON embedded in prose/code."""
+    candidate = text.strip()
+    signature = {'delivery', 'listening', 'initiative', 'letter', 'skip'}
+
+    def looks_internal(value):
+        keys = set(re.findall(r'\\*"(\w+)\\*"\s*:', value))
+        return value.lstrip(' \t\r\n"\\').startswith(('{', '[')) and signature <= keys
+
+    for _ in range(3):
+        try:
+            value = json.loads(candidate)
+        except (ValueError, RecursionError):
+            # An escaped whole object sometimes lost its enclosing string quotes.
+            if not looks_internal(candidate):
+                return None
+            try:
+                value = json.loads('"' + candidate + '"')
+            except (ValueError, RecursionError):
+                raise ValueError('CONTROL_BODY_INVALID') from None
+        if isinstance(value, str):
+            candidate = value.strip()
+            continue
+        if isinstance(value, list) and len(value) == 1:
+            value = value[0]
+        if isinstance(value, dict) and signature <= value.keys():
+            if not (NEUTRAL_METADATA.keys() | {'text'}) <= value.keys():
+                raise ValueError('CONTROL_BODY_INVALID')
+            return value
+        return None
+    if looks_internal(candidate):
+        raise ValueError('CONTROL_BODY_DEPTH')
+    return None
+
+
+def _reply_body(text):
+    # Only text is recovered; inner preferences, silence, schedules and media
+    # are never authoritative. The outer envelope retains its existing validation.
+    for _ in range(3):
+        inner = _control_body(text)
+        if inner is None:
+            return text
+        text = inner['text']
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError('CONTROL_BODY_INVALID')
+    if _control_body(text) is not None:
+        raise ValueError('CONTROL_BODY_DEPTH')
+    return text
+
+
 def _controls(data, *, user, now, proactive):
     changes = any(data[k] != 'keep' for k in ('listening','initiative','letter')) or data['followup_at'] is not None
     if changes and (proactive or not data['evidence'].strip() or data['evidence'] not in user):
@@ -129,6 +179,7 @@ def decode(raw, *, user, now, proactive=False, allow_user_silence=False, allow_s
             data['sticker'] = None
         if not isinstance(data['text'], str) or type(data['skip']) is not bool:
             raise ValueError("TEXT_OR_SKIP_TYPE")
+        data['text'] = _reply_body(data['text'])
         # The model sometimes copies the provenance header of an earlier message.
         # It is metadata, never something she says; an echo with nothing else is no reply.
         data['text'] = HISTORY_HEADER.sub('', data['text']) if isinstance(data['text'], str) else data['text']
@@ -183,6 +234,6 @@ def decode(raw, *, user, now, proactive=False, allow_user_silence=False, allow_s
         if isinstance(locals().get('data'), dict):
             error.missing_fields = sorted(required - data.keys())
             error.extra_field_count = extra_field_count
-        reasons = {'FOLLOWUP_CONFLICT', 'FIELDS', 'STICKER_TYPE', 'UNSUPPORTED_PREFERENCE_CHANGE', 'QUIET_HOURS', 'EVIDENCE_TYPE', 'PAUSE_CONFLICT', 'TEXT_OR_SKIP_TYPE', 'PREFERENCES', 'DELIVERY_OR_LISTENING', 'EMPTY_OR_SKIPPED_REPLY', 'TIME_RANGE', 'CONTROL_MARKER', 'SILENCE_INVALID', 'SILENCE_UNSUPPORTED'}
+        reasons = {'FOLLOWUP_CONFLICT', 'FIELDS', 'STICKER_TYPE', 'UNSUPPORTED_PREFERENCE_CHANGE', 'QUIET_HOURS', 'EVIDENCE_TYPE', 'PAUSE_CONFLICT', 'TEXT_OR_SKIP_TYPE', 'PREFERENCES', 'DELIVERY_OR_LISTENING', 'EMPTY_OR_SKIPPED_REPLY', 'TIME_RANGE', 'CONTROL_MARKER', 'CONTROL_BODY_INVALID', 'CONTROL_BODY_DEPTH', 'SILENCE_INVALID', 'SILENCE_UNSUPPORTED'}
         error.reason = str(exc) if type(exc) is ValueError and str(exc) in reasons else ('JSON_SYNTAX' if isinstance(exc, json.JSONDecodeError) else 'VALUE_TYPE_OR_TIME')
         raise error from exc

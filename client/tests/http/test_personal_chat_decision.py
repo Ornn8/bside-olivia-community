@@ -13,6 +13,55 @@ def envelope(**values):
     return json.dumps(body | values, ensure_ascii=False)
 
 
+@pytest.mark.parametrize('encoding', ['object', 'escaped', 'double_encoded'])
+def test_nested_control_object_recovers_body_without_applying_inner_controls(encoding):
+    inner = envelope(text='在呢，今天过得怎么样？', delivery='voice', listening='text_only',
+                     initiative='open', letter='pause', skip=True,
+                     followup_at='2099-01-01T08:00:00+08:00', sticker='inner-sticker')
+    if encoding == 'escaped':
+        inner = json.dumps(inner, ensure_ascii=False)[1:-1]
+    elif encoding == 'double_encoded':
+        inner = json.dumps(inner, ensure_ascii=False)
+    result = decode(envelope(text=inner, delivery='text', initiative='pause',
+                             evidence='先别主动联系'), user='先别主动联系', now=1)
+    assert result['text'] == '在呢，今天过得怎么样？'
+    assert result['delivery'] == 'text' and result['initiative'] == 'pause'
+    assert result['listening'] == result['letter'] == 'keep'
+    assert result['skip'] is False and result['followup_at'] is None
+    assert result['sticker'] is None
+
+
+@pytest.mark.parametrize('text', [
+    '{"text":"示例","delivery":"text"}',
+    '{"name":"示例","listening":"keep","value":3}',
+    '这个 JSON 的 delivery 字段表示方式：' + envelope(text='例子'),
+    '```json\n' + envelope(text='例子') + '\n```',
+    json.dumps('{"text":"示例"}', ensure_ascii=False),
+    json.dumps({'example': json.loads(envelope(text='例子'))}, ensure_ascii=False),
+])
+def test_json_discussion_is_not_treated_as_internal_controls(text):
+    result = decode(envelope(text=text, text_reason='verbatim_text'), user='解释这个 JSON', now=1)
+    assert result['text'] == text
+    assert result['initiative'] == result['letter'] == 'keep'
+
+
+@pytest.mark.parametrize('broken', ['invalid_json', 'non_string_text', 'empty_text', 'excessive_nesting'])
+def test_unrecoverable_nested_control_object_fails_without_sending_protocol(broken):
+    inner = envelope(text='恢复正文')
+    if broken == 'invalid_json':
+        inner = inner[:-1]
+    elif broken == 'non_string_text':
+        inner = envelope(text=23)
+    elif broken == 'empty_text':
+        inner = envelope(text='')
+    else:
+        for _ in range(4):
+            inner = envelope(text=inner)
+    with pytest.raises(ValueError, match='PERSONAL_CHAT_DECISION_INVALID') as caught:
+        decode(envelope(text=inner), user='你好', now=1)
+    assert caught.value.reason in {'CONTROL_BODY_INVALID', 'CONTROL_BODY_DEPTH'}
+
+
 @pytest.mark.parametrize('variant', ['fenced', 'missing_sticker', 'numeric_sticker', 'extra_fields'])
 def test_harmless_envelope_variations_preserve_reply_without_changing_preferences(variant):
     body = json.loads(envelope(text='今天练得挺顺，休息一下。'))
