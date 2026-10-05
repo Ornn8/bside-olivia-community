@@ -41,7 +41,9 @@ from mem0_memory import Mem0Config
 from music_reply import video_reply_dependency_status
 from runtime.media.background_video_readiness import BackgroundVideoReadiness
 from runtime.diagnostics.support_bundle import BREEZE_INSTALL_DIAGNOSTIC_CODES, project_history_import
-from original_client_companion_api import mount_original_companion_read_api
+from original_client_companion_api import (
+    daily_life_diagnostic_snapshot, mount_original_companion_read_api,
+)
 from original_client_companion_backend import (
     OriginalClientCompanionServiceBackend,
 )
@@ -483,12 +485,14 @@ def _diagnostic_source(
     history_import_provider: Callable[[], Mapping[str, object]] | None = None,
     video_capability_installer: VideoCapabilityInstaller | None = None,
     capability_installer: Mem0CapabilityInstaller | None = None,
+    daily_life: DailyLifeRuntime | None = None,
+    daily_life_tail_provider: Callable[[], Sequence[Mapping[str, object]]] | None = None,
 ) -> Callable[[], Mapping[str, object]]:
     """Bind only safe, aggregate collectors for a diagnostic export request."""
 
     from runtime.memory.bounded_daemon_call import BoundedDaemonCall
     probes = {name: BoundedDaemonCall(thread_name=f"olivia-diagnostic-{name}")
-              for name in ("companion", *_DIAGNOSTIC_PROFILES)}
+              for name in ("companion", 'daily_life', *_DIAGNOSTIC_PROFILES)}
 
     def probe(name: str, operation: Callable[[], object]) -> tuple[object, str | None]:
         worker = probes[name]
@@ -644,6 +648,10 @@ def _diagnostic_source(
         if not isinstance(capabilities, Mapping):
             raise RuntimeError("DIAGNOSTIC_HEALTH_UNAVAILABLE")
         checks: dict[str, object] = {}
+        from original_client_companion_api import daily_life_health
+        life_health, life_probe_error = probe('daily_life', lambda: daily_life_health(daily_life))
+        checks['daily_life'] = life_health if life_probe_error is None else {
+            'state': 'unavailable', 'error_code': life_probe_error, 'failure_stage': 'read'}
         if capability_installer is not None:
             from runtime.diagnostics.support_bundle import project_memory_install
             if not capability_installer._lock.acquire(blocking=False):
@@ -813,8 +821,9 @@ def _diagnostic_source(
             "launcher_tail": list(launcher_tail_provider() if launcher_tail_provider else ()),
             "media_provider_tail": list(media_provider_tail_provider() if media_provider_tail_provider else ()),
             "runtime_tail": (
-                list(runtime_tail_provider() if runtime_tail_provider else ())[-110:]
+                list(runtime_tail_provider() if runtime_tail_provider else ())[-90:]
                 + list(backend.diagnostic_status_history())
+                + list(daily_life_tail_provider() if daily_life_tail_provider else ())[-20:]
             ),
         }
 
@@ -936,6 +945,8 @@ def create_original_client_server_runtime(
             history_import_provider=history_import_provider,
             video_capability_installer=video_capability_installer,
             capability_installer=capability_installer,
+            daily_life=daily_life,
+            daily_life_tail_provider=lambda: daily_life_diagnostic_snapshot(app),
         ),
         trusted_origins=origins,
     )

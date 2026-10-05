@@ -283,15 +283,18 @@ class DailyLifeRuntime:
                 (source_id,),
             )
 
-    def snapshot(self, now: datetime) -> dict:
+    def snapshot(self, now: datetime, *, read_only: bool = False) -> dict:
         if self.relationship is not None:
             relation = self.relationship()
             affinity = (min(relation.trust, relation.comfort) + relation.closeness) / 200
-            self.store.adapt_routine(now, affinity=affinity)
+            if not read_only:
+                self.store.adapt_routine(now, affinity=affinity)
         value = self.store.snapshot(now)
         value.update(refreshing=self._lock.locked() or (self._task is not None and not self._task.done()),
                      error_code=self.error_code, last_failure_code=getattr(self, '_last_failure_code', None))
-        emotion = self.emotion
+        # Support health probes read the life projection without adapting the
+        # routine or lazily creating optional emotion/affect stores.
+        emotion = None if read_only else self.emotion
         view = emotion.view(now) if emotion is not None else {}
         value['emotion'] = dict(
             status='available' if emotion is not None and not emotion.error_code else 'unavailable',

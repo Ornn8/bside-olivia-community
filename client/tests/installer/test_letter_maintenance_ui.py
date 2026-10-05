@@ -72,6 +72,7 @@ def test_real_mutation_helper_accepts_maintenance_envelopes_and_errors():
 const assert=require('node:assert/strict');
 const apiBase='http://127.0.0.1:12345';
 const VIDEO_REPLY_SETTINGS_PATH='/video',LOCAL_LETTER_IMPORT_PATH='/import',MEMORY_RETRY_PATH='/memory',MEMORY_CLEAR_PATH='/memory/clear';
+const DAILY_LIFE_PATH='/toy/companion/private-world/life';
 const CONFIRM_HEADER='X-Olivia-Companion-Action',CONFIRM_VALUE='confirmed';
 let timeoutMs=0,fail=false;
 const window={setTimeout(callback,ms){timeoutMs=ms;return 1},clearTimeout(){}};
@@ -85,7 +86,7 @@ const fetch=async(url,options)=>{
  const data=await requestMutation('/toy/letter/maintenance/preview',{});
  assert.equal(data.status,'READY');assert.equal(timeoutMs,300000);
  fail=true;
- await assert.rejects(requestMutation('/toy/letter/maintenance/apply',{}),error=>error.code==='LETTER_MAINTENANCE_STALE');
+ await assert.rejects(requestMutation('/toy/letter/maintenance/apply',{}),error=>error.code==='LETTER_MAINTENANCE_STALE'&&error.dailyLifeStage===undefined);
 })().catch(error=>{console.error(error);process.exitCode=1});
 '''
     result = subprocess.run([node, '-e', harness], capture_output=True, timeout=20)

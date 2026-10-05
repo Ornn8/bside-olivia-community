@@ -65,6 +65,11 @@ B01 的私有 manifest/state matrix 只允许存在于 ignored `.evidence/`。�
 | 本地历史信件恢复 | `/toy/letter/legacy/local-import` | available/degraded | 设置页只读取安装时选定的原版游戏目录中的 `letter_pairs.json`；用户确认后把成对文字记录作为只读历史原子写入本地信箱。官方服务器已关闭，本入口不读取登录日志、不访问官方接口，也不调用 LLM、Mem0、PrivateWorld 或媒体 |
 | 长期记忆重试 | `/toy/companion/memory/retry` | available/degraded | 仅接受带确认头的 `POST`；返回 `INITIALIZING`、`AVAILABLE`、`DEGRADED`、`UNAVAILABLE` 或 `DISABLED`，其中显式禁用的 `DISABLED` 不可重试；重试真实 Mem0 factory，并在 delegate 已就绪时重新启动 durable outbox，不要求退出重进 |
 | 诊断包导出 | `/toy/diagnostics/export` | available | 设置页显式触发，只在本机生成并下载严格白名单 ZIP；不上传，不包含密钥、正文、记忆、真实 ID、绝对路径、完整 URL 或原始日志 |
+| 世界页错误记录 | `/toy/companion/private-world/life/diagnostic` | available | POST，仅 loopback / 可信 Origin 且确认头为 `confirmed`；最多 512 字节，按 `contracts/daily_life_diagnostic.schema.json` 接收固定端点标识、阶段、异常类型及 HTTP 状态，不接收异常消息、堆栈、正文或 URL |
+
+诊断包 `health.json` 的 `daily_life` 独立检查初始化及生活快照读取，与关系存储的 `private_world` 状态分开。检查不调用模型、不调整作息、不启动刷新任务；生成服务失败不意味着本地已保存记录不可读取。读取超时沿用有界后台探测器，不能阻塞或累积导出线程。
+
+`daily_life_failed` / `daily_life_frontend_failed` 记录保留服务端时间、固定端点标识和 `initialization / read / request / response / render` 阶段；SQLite 错误仅保留标准代码和类型。前端报告写入本机后端日志及最多 20 条的诊断缓冲，不发送到云端；连续相同错误在一分钟内去重。诊断包 manifest 的 `daily_life_failure_stages` 标识这些可选字段。页面加载失败后继续保留此前成功显示的内容；这些诊断记录本身不代表原始故障已经修复。
 
 CORS 仅允许 loopback Origin，或精确命中原生客户端固定信任源
 `https://olivia.local`、`https://toy-cnbeta01.olivia.miyoushe.com`。匹配是完整字符串匹配；

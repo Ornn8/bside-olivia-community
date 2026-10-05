@@ -152,6 +152,9 @@ def _project_health(value: object) -> dict[str, object]:
             projected[name] = project_history_import(check)
             continue
         entry: dict[str, object] = {"state": _status(check.get("state"))}
+        if name == 'daily_life':
+            from runtime.diagnostics.failure_context import project_daily_life_failure
+            entry.update(project_daily_life_failure(check))
         if "error_code" in check:
             entry["error_code"] = _code(check["error_code"])
         if name == "video_offline_action":
@@ -550,6 +553,9 @@ def _project_tail_record(value: object, *, runtime: bool) -> dict[str, object]:
     event = source.get("event")
     if not isinstance(event, str) or not _EVENT_RE.fullmatch(event):
         raise _invalid()
+    if runtime and event in {'daily_life_failed', 'daily_life_frontend_failed'}:
+        from runtime.diagnostics.failure_context import project_daily_life_failure
+        return {'event': event, **project_daily_life_failure(source)}
     if runtime and event == 'history_relationship_failed':
         record = project_history_relationship_failure({**source, 'status': 'FAILED'})
         record['status'] = 'failed'
@@ -757,7 +763,7 @@ def build_diagnostic_bundle(source: Mapping[str, object]) -> bytes:
             "features": ["capability_tiers", "offline_components", "delivery_projection", "audio_download",
                          "natural_voice_chunks", "worker_progress", "waveform_styles", "reply_route_preview_diagnostics",
                          "history_relationship_failure_codes", "route_failure_context", "history_recall_delivery",
-                         "reply_quality_violation_codes"],
+                         "reply_quality_violation_codes", "daily_life_failure_stages"],
         }),
         "summary.json": _json_bytes(summary),
         "health.json": _json_bytes(health),

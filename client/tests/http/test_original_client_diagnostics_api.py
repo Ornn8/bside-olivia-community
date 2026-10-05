@@ -210,8 +210,11 @@ def test_original_server_mounts_diagnostics_before_legacy_catch_all() -> None:
     asyncio.run(scenario())
 
 
-def test_safe_log_runtime_ring_is_bounded_and_drops_unknown_fields() -> None:
+def test_safe_log_runtime_ring_is_bounded_and_drops_unknown_fields(monkeypatch) -> None:
+    from collections import deque
     import local_server
+    monkeypatch.setattr(local_server, '_RUNTIME_DIAGNOSTIC_EVENTS', deque(maxlen=160))
+    monkeypatch.setattr(local_server, '_RUNTIME_REQUEST_EVENTS', deque(maxlen=40))
 
     for index in range(205):
         local_server._safe_log(
@@ -224,7 +227,7 @@ def test_safe_log_runtime_ring_is_bounded_and_drops_unknown_fields() -> None:
         )
 
     records = local_server.runtime_diagnostic_event_snapshot()
-    assert len(records) == 200
+    assert len(records) == 160
     assert records[-1] == {
         "event": "diagnostic_test",
         "method": "GET",
@@ -234,6 +237,9 @@ def test_safe_log_runtime_ring_is_bounded_and_drops_unknown_fields() -> None:
         "body" not in record and "real_id" not in record and "path" not in record
         for record in records
     )
+    for _ in range(50):
+        local_server._safe_log('request', method='GET')
+    assert len(local_server.runtime_diagnostic_event_snapshot()) == 200
 
 
 @pytest.mark.parametrize("diagnostic", ["BREEZE_PIP_DISK_FULL", "PRIVATE_KEY_SHOULD_NOT_LEAK"])
@@ -394,6 +400,8 @@ def test_diagnostic_source_projects_profiles_setup_and_recent_task_states(route)
     assert "backend_id" not in source["summary"]  # type: ignore[operator]
     assert source["summary"]["contract_version"] == "2.0"  # type: ignore[index]
     assert source["health"]["checks"] == {  # type: ignore[index]
+        'daily_life': {'state':'unavailable', 'error_code':'DAILY_LIFE_UNAVAILABLE',
+                       'failure_stage':'initialization', 'endpoint':'daily_life'},
         "candidates": {"state": "available"},
         "memory": {"state": "available"},
         "memory_worker": {"state": "degraded", "worker_running": True,
@@ -515,7 +523,7 @@ def test_diagnostics_export_fails_closed_when_collection_raises() -> None:
     asyncio.run(scenario())
 
 
-def test_slow_health_probes_export_partial_bundle_without_spawning_more_workers(monkeypatch):
+def test_slow_health_probes_export_partial_bundle_without_spawning_more_workers(monkeypatch, tmp_path):
     import io
     import threading
     import zipfile
@@ -537,9 +545,14 @@ def test_slow_health_probes_export_partial_bundle_without_spawning_more_workers(
         release.wait(5)
         raise RuntimeError('PRIVATE_PROVIDER_CONTENT')
 
+    from runtime.private_world.daily_life import DailyLifeStore
+    from runtime.private_world.daily_life_runtime import DailyLifeRuntime
+    life = DailyLifeRuntime(DailyLifeStore(tmp_path / 'life.sqlite3'), lambda: None, lambda: '[]')
+    monkeypatch.setattr(life, 'snapshot', lambda *args, **kwargs: slow_health('daily_life'))
+
     source = _diagnostic_source(Backend(), setup_service=None, launcher_tail_provider=None,
         runtime_tail_provider=lambda: [{'event':'reply_failed','error_code':'LLM_TIMEOUT'}],
-        health_profile_provider=slow_health)
+        health_profile_provider=slow_health, daily_life=life)
 
     async def scenario():
         app = web.Application()
@@ -554,9 +567,10 @@ def test_slow_health_probes_export_partial_bundle_without_spawning_more_workers(
                     checks = json.loads(bundle.read('health.json'))['checks']
                     assert checks['memory']['error_code'] == 'DIAGNOSTIC_PROBE_TIMEOUT'
                     assert checks['profile_core']['error_code'] == 'DIAGNOSTIC_PROBE_TIMEOUT'
+                    assert checks['daily_life']['error_code'] == 'DIAGNOSTIC_PROBE_TIMEOUT'
                     assert b'LLM_TIMEOUT' in bundle.read('runtime-tail.jsonl')
                     assert all(b'PRIVATE_PROVIDER_CONTENT' not in bundle.read(name) for name in bundle.namelist())
-            assert sorted(calls) == ['asr', 'core', 'llm', 'memory', 'status']
+            assert sorted(calls) == ['asr', 'core', 'daily_life', 'llm', 'memory', 'status']
         finally:
             release.set()
             await client.close()

@@ -396,6 +396,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       : path === MEMORY_PATH ? 45000
       : path === STATUS_PATH || path === PROACTIVE_STATUS_PATH ? 15000 : 5000;
     const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+    let failureStage = 'request', httpStatus;
     try {
       const response = await fetch(endpoint, {
         method: "GET",
@@ -404,6 +405,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         headers: { "Accept": "application/json" },
         signal: controller.signal,
       });
+      httpStatus = response.status; failureStage = 'response';
       const responseBody = await response.json();
       const payload = (path === VIDEO_REPLY_SETTINGS_PATH
           || path === LOCAL_LETTER_IMPORT_PATH
@@ -436,12 +438,18 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         : payload && ["READY", "PAUSED", "UNAVAILABLE"].includes(payload.status);
       if (!response.ok || !valid) {
         const error = new Error("unavailable");
+        failureStage = response.ok ? 'response' : 'request';
         error.code = payload && typeof payload.error_code === "string"
           ? payload.error_code
           : "COMPANION_READ_UNAVAILABLE";
         throw error;
       }
       return payload;
+    } catch (error) {
+      if (path === DAILY_LIFE_PATH || path === STATUS_PATH) {
+        error.dailyLifeStage = failureStage; error.httpStatus = httpStatus;
+      }
+      throw error;
     } finally {
       window.clearTimeout(timeout);
     }
@@ -558,6 +566,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       ? 300000
       : 8000;
     const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+    let failureStage = 'request', httpStatus;
     try {
       const response = await fetch(endpoint, {
         method: "POST",
@@ -571,10 +580,15 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         body: JSON.stringify(body),
         signal: controller.signal,
       });
+      httpStatus = response.status;
       let responseBody = null;
       try {
         responseBody = await response.json();
       } catch (_error) {
+        if (path === DAILY_LIFE_PATH) {
+          failureStage = 'response';
+          throw _error;
+        }
         responseBody = null;
       }
       const payload = (path === VIDEO_REPLY_SETTINGS_PATH
@@ -586,6 +600,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         : responseBody;
       if (!response.ok || !payload || typeof payload.status !== "string") {
         const error = new Error("mutation-unavailable");
+        failureStage = response.ok ? 'response' : 'request';
         error.code = payload && typeof payload.error_code === "string"
           ? payload.error_code
           : "COMPANION_MUTATION_UNAVAILABLE";
@@ -595,9 +610,24 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         throw error;
       }
       return payload;
+    } catch (error) {
+      if (path === DAILY_LIFE_PATH) {
+        error.dailyLifeStage = failureStage; error.httpStatus = httpStatus;
+      }
+      throw error;
     } finally {
       window.clearTimeout(timeout);
     }
+  };
+
+  const reportDailyLifeFailure = (error, stage, endpoint = 'daily_life', method = 'GET') => {
+    const kinds = ['Error','TypeError','SyntaxError','RangeError','ReferenceError','AbortError'];
+    const body = {endpoint, method, failure_stage: error?.dailyLifeStage || stage,
+      exception_type: kinds.includes(error?.name) ? error.name : 'OTHER'};
+    if (Number.isInteger(error?.httpStatus) && error.httpStatus >= 100 && error.httpStatus <= 599) body.http_status = error.httpStatus;
+    // Only finite metadata reaches the loopback backend; diagnostics never
+    // replace the original error or include its message, stack, URL or payload.
+    void requestMutation(DAILY_LIFE_PATH + '/diagnostic', body).catch(() => {});
   };
 
   const requestSetup = async (path, body = null) => {
@@ -1517,12 +1547,15 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       const show = async (index) => {
         if (pending || !alive() || !archive.isConnected) return;
         pending = true;
+        let failureStage = 'request';
         feedback.textContent = "读取历史片段…";
         try {
           const before = cursors[index];
           const result = await requestJson(DAILY_LIFE_PATH, {history: 1, before});
           if (!alive() || !archive.isConnected) return;
+          failureStage = 'response';
           if (result.schema_version !== "olivia.daily-life.history.v1" || !Array.isArray(result.moments)) throw new Error("DAILY_LIFE_INVALID");
+          failureStage = 'render';
           const navigation = document.createElement("div");
           navigation.style.cssText = "display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:12px";
           const previous = button("上一页", () => show(page - 1));
@@ -1536,6 +1569,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           feedback.textContent = result.moments.length ? "每页最多 8 条，按时间从新到旧。" : "还没有历史片段。";
           loaded = true;
         } catch (_error) {
+          reportDailyLifeFailure(_error, failureStage, 'daily_life_history');
           feedback.replaceChildren(text("span", "历史暂时没能读取，已显示的内容仍然保留。 ", "text-text-secondary text-caption-m"), button("重试读取历史", () => show(index)));
         } finally { pending = false; }
       };
@@ -1903,19 +1937,26 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       if (busy || !alive()) return;
       busy = true;
       let refreshing = false;
+      let failureStage = 'request', method = refresh ? 'POST' : 'GET';
       if (refresh && relationship.open) relationship.refresh();
       try {
         let payload = await (refresh ? requestMutation(DAILY_LIFE_PATH, {}) : requestJson(DAILY_LIFE_PATH));
         if (!alive()) return;
+        failureStage = 'render';
         draw(payload);
         if (!attempted && payload.stale && !payload.refreshing && !payload.error_code) {
           attempted = true;
+          failureStage = 'request'; method = 'POST';
           payload = await requestMutation(DAILY_LIFE_PATH, {});
           if (!alive()) return;
+          failureStage = 'render';
           draw(payload);
         }
         refreshing = payload.refreshing;
       } catch (_error) {
+        const stage = _error.message === 'DAILY_LIFE_INVALID' ? 'response' : failureStage;
+        if (failureStage === 'render') _error.httpStatus = 200;
+        reportDailyLifeFailure(_error, stage, 'daily_life', method);
         if (alive()) {
           status.textContent = "近况暂时无法读取，请稍后重试。";
           if (panel.children.length <= 2) panel.replaceChildren(heading, status, button("重试", () => load()));
@@ -2852,7 +2893,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const panel=document.createElement('section');panel.dataset.worldMain='';
     page.replaceChildren(style,header,panel);
     panel.append(text('p','正在读取林离的生活……'));
-    void requestJson(STATUS_PATH).then(payload=>{if(page.isConnected)return renderPrivateWorldPanel(panel,payload.capabilities?.private_world)}).catch(()=>{
+    void requestJson(STATUS_PATH).then(payload=>{if(page.isConnected)return renderPrivateWorldPanel(panel,payload.capabilities?.private_world)}).catch(error=>{
+      reportDailyLifeFailure(error, 'request', 'companion_status');
       if(page.isConnected)panel.replaceChildren(text('p','近况暂时无法读取。'),button('重试',()=>mountWorldPage(page)));
     });
   };

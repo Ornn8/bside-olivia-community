@@ -406,6 +406,9 @@ def _runtime_diagnostic_record(event: object, fields: Mapping[str, object]) -> d
 
     if not isinstance(event, str) or not _RUNTIME_DIAGNOSTIC_EVENT_RE.fullmatch(event):
         return None
+    if event == 'daily_life_failed':
+        from runtime.diagnostics.failure_context import project_daily_life_failure
+        return {'event': event, **project_daily_life_failure(fields)}
     if event in {'personal_chat_transport_closed', 'personal_chat_transport_state', 'personal_chat_exchange_cancelled',
                  'personal_chat_decision_normalized', 'personal_chat_decision_warning'}:
         from runtime.diagnostics.support_bundle import _project_tail_record
@@ -1623,10 +1626,13 @@ letters_adapter = LetterAdapter(
 
 
 def _create_daily_life_runtime() -> DailyLifeRuntime | None:
-    from runtime.private_world.student_world import shanghai_weather
     try:
+        from runtime.private_world.student_world import shanghai_weather
         path, _reason, enabled = resolve_private_world_database(user_id=_memory_config.user_id)
         if not enabled or path is None:
+            _safe_log('daily_life_failed', failure_stage='initialization', endpoint='daily_life',
+                      error_code='DAILY_LIFE_DISABLED' if not enabled else 'DAILY_LIFE_UNAVAILABLE',
+                      recorded_at_ms=int(time.time() * 1000))
             return None
         return DailyLifeRuntime(
             DailyLifeStore(path.with_name("daily_life.sqlite3")),
@@ -1637,7 +1643,10 @@ def _create_daily_life_runtime() -> DailyLifeRuntime | None:
             weather_provider=shanghai_weather,
             dialogue_rows=lambda: [*store.letters, *store.personal_chats],
         )
-    except (OSError, RuntimeError, ValueError, sqlite3.Error):
+    except (OSError, RuntimeError, ValueError, TypeError, ImportError, sqlite3.Error) as exc:
+        from runtime.diagnostics.failure_context import daily_life_failure
+        _safe_log('daily_life_failed', recorded_at_ms=int(time.time() * 1000),
+                  **daily_life_failure(exc, 'initialization'))
         return None
 
 
