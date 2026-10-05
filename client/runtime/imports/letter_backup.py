@@ -76,7 +76,7 @@ def identity(record):
 
 
 def personal_chat_letters(chats):
-    """Snapshot chat text for Archive, without queue state or unsent drafts."""
+    """Copy chat text for Archive, without queue state or unsent drafts."""
     snapshots = [dict(row) for row in chats]
     parents = {row.get('letter_id'): row for row in snapshots
                if row.get('channel') in ('qq', 'wechat')}
