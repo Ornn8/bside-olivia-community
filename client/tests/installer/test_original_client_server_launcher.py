@@ -236,7 +236,7 @@ def test_launcher_silently_ignores_retired_custom_provider(
 
     assert unprotected == []
     assert environment["OLIVIA_LLM_BASE_URL"] == "https://175.24.191.6/v1"
-    assert environment["OLIVIA_LLM_MODEL"] == "qwen3.7-flash"
+    assert environment["OLIVIA_LLM_MODEL"] == "gemini-3.8-flash"
     assert environment["OLIVIA_LLM_API_KEY_ENV"] == "OLIVIA_LLM_API_KEY"
     assert "OLIVIA_LLM_API_KEY" not in environment
     assert "DEEPSEEK_API_KEY" not in environment
@@ -273,7 +273,7 @@ def test_launcher_adopts_saved_account_key_over_retired_provider(
     assert environment["OLIVIA_LLM_API_KEY"] == "account-key"
     assert retired_name not in unprotected
     saved = json.loads((config_root / "llm.json").read_text(encoding="utf-8"))
-    assert saved["base_url"] == "https://175.24.191.6/v1" and saved["model"] == "qwen3.7-flash"
+    assert saved["base_url"] == "https://175.24.191.6/v1" and saved["model"] == "gemini-3.8-flash"
     assert json.loads((config_root / "llm.retired.json").read_text(encoding="utf-8")) == retired
     # The setup API sees the same binding, so the account shows as connected.
     setup = LLMSetupService(data_root, protect=lambda value: value, unprotect=lambda value: value)
@@ -673,7 +673,7 @@ def test_launcher_ignores_invalid_user_managed_llm_config(tmp_path: Path) -> Non
     )
 
     assert environment["OLIVIA_LLM_BASE_URL"] == "https://175.24.191.6/v1"
-    assert environment["OLIVIA_LLM_MODEL"] == "qwen3.7-flash"
+    assert environment["OLIVIA_LLM_MODEL"] == "gemini-3.8-flash"
     assert environment["OLIVIA_LLM_PROVIDER"] == "none"
     assert "DEEPSEEK_API_KEY" not in environment
     assert "OPENAI_API_KEY" not in environment
@@ -1576,7 +1576,7 @@ def test_launcher_preserves_compatible_llm_environment_overrides(
     } == overrides
 
 
-def test_launcher_supplies_deepseek_defaults_when_llm_overrides_are_absent(
+def test_launcher_supplies_gemini_defaults_when_llm_overrides_are_absent(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -1605,7 +1605,7 @@ def test_launcher_supplies_deepseek_defaults_when_llm_overrides_are_absent(
     defaults = {
         "OLIVIA_LLM_PROVIDER": "openai_compatible",
         "OLIVIA_LLM_BASE_URL": "https://175.24.191.6/v1",
-        "OLIVIA_LLM_MODEL": "qwen3.7-flash",
+        "OLIVIA_LLM_MODEL": "gemini-3.8-flash",
         "OLIVIA_LLM_API_KEY_ENV": "OLIVIA_LLM_API_KEY",
         "OLIVIA_LLM_API_STYLE": "chat_completions",
         "OLIVIA_LLM_STREAM": "true",
