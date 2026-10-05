@@ -2022,7 +2022,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     box.setAttribute("data-olivia-relay-models", "");
     box.style.cssText = "display:grid;gap:12px;margin:24px 0;min-width:0";
     const title = text("h3", "回信模型", "text-text-title text-title-m");
-    const description = text("p", "以 Qwen3.8 Flash 为 1 倍。输入和输出分别计费，实际消费取决于用量；短请求可能受最低计费规则影响。", "text-text-secondary text-body-m");
+    const description = text("p", "以 Gemini 3.8 Flash 为 1 倍。输入和输出分别计费，实际消费取决于用量；短请求可能受最低计费规则影响。", "text-text-secondary text-body-m");
     const list = document.createElement("fieldset");
     list.style.cssText = "margin:0;padding:0;border:0;min-width:0";
     const legend = text("legend", "选择回信模型");

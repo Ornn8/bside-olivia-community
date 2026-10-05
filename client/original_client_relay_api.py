@@ -1,5 +1,6 @@
 """Session-protected recharge controls for the saved Olivia relay connection."""
 from urllib.parse import urlsplit
+from decimal import Decimal
 import asyncio
 import re
 import secrets
@@ -9,6 +10,7 @@ from runtime.remote_generation import gpu_tls_context
 
 RELAY_BASE = 'https://175.24.191.6/v1'
 RELAY_MODEL = 'qwen3.7-flash'
+RELAY_MULTIPLIER_BASELINE = 'gemini-3.8-flash'
 RELAY_MODELS = frozenset({RELAY_MODEL, 'gemini-3.8-flash', 'claude-opus-5-5',
     'claude-sonnet-5-5', 'claude-opus-4-6', 'qwen3.8-max'})
 
@@ -116,8 +118,16 @@ def mount_relay_api(app, setup):
                         raise LLMSetupError('RELAY_RESPONSE_INVALID', status=503)
                     rows.append({'id': item['id'], 'display_name': name,
                         'input_multiplier': ratios[0], 'output_multiplier': ratios[1]})
+                baseline = next((row for row in rows if row['id'] == RELAY_MULTIPLIER_BASELINE), None)
+                fields = ('input_multiplier', 'output_multiplier')
+                if baseline is None or any(Decimal(baseline[field]) <= 0 for field in fields):
+                    raise LLMSetupError('RELAY_RESPONSE_INVALID', status=503)
+                divisors = {field: Decimal(baseline[field]) for field in fields}
+                for row in rows:
+                    for field in fields:
+                        row[field] = format(Decimal(row[field]) / divisors[field], '.5f')
                 return web.json_response({'models': rows, 'selected_model': setup._config().model,
-                    'baseline_model': RELAY_MODEL}, headers=_headers(origin))
+                    'baseline_model': RELAY_MULTIPLIER_BASELINE}, headers=_headers(origin))
         if data.get('action') in {'claim', 'connect', 'import_key', 'account', 'export_key'}:
             operation = data['action']
             if set(data) != ({'action','key'} if operation == 'import_key' else {'action'}):
