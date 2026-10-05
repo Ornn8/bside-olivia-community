@@ -107,7 +107,7 @@ class HistoricalRelationshipAssessment:
                 raise ValueError(f"{field_name} is invalid")
         if (
             not isinstance(self.evidence_indexes, tuple)
-            or not 1 <= len(self.evidence_indexes) <= 8
+            or len(self.evidence_indexes) > 8
             or len(set(self.evidence_indexes)) != len(self.evidence_indexes)
             or any(type(value) is not int or value < 1 for value in self.evidence_indexes)
         ):
@@ -194,7 +194,7 @@ def _assessment_failure(exc, metrics):
 def _semantic_assessment_input(messages, evidence_indexes):
     state = {'policy': messages[0]['content'], 'history': json.loads(messages[1]['content'])}
     questions = {field: {'instructions': '依照policy和有来源的双方历史判断' + field + '，0到100的绝对值；证据不明保守，不因信件数量加分。',
-                        'criteria': {str(i): i for i in range(101)}}
+                        'criteria': {str(i): str(i) for i in range(101)}}
                  for field in ('familiarity', 'trust', 'comfort', 'closeness', 'tension')}
     questions['stage'] = {'instructions': '双方原文确认的关系阶段，不凭单方表白、亲密分数或昵称推断身份或权限。',
                           'criteria': {s:s for s in ('unknown', 'acquaintance', 'familiar', 'close')}}
@@ -333,7 +333,8 @@ def _bounded_assessment_messages(
         "Return one JSON object and nothing else with exactly: relationship_stage "
         "(unknown|acquaintance|familiar|close), integer familiarity/trust/comfort/"
         "closeness/tension from 0 to 100, and evidence_indexes (1-8 unique valid "
-        "indexes present below). Prefer conservative values when evidence is ambiguous."
+        "indexes present below, or [] when none supports a relationship update). "
+        "Prefer conservative values when evidence is ambiguous."
     )
     if previous_state is not None:
         instruction += (
@@ -422,6 +423,10 @@ def apply_historical_private_world(
         ordered = tuple(sorted(ordered, key=lambda item: (item.occurred_at, item.source_record_id)))
     if not ordered or not isinstance(assessment, HistoricalRelationshipAssessment):
         raise ValueError("historical assessment input is invalid")
+    # A valid abstention completes this batch without inventing evidence or
+    # applying any unsupported scores/stage, including during restart backfill.
+    if not assessment.evidence_indexes:
+        return "no_evidence"
     evidence_refs = tuple(
         ordered[index - 1].memory_source_id for index in assessment.evidence_indexes
     )
