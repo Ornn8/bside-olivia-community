@@ -1285,6 +1285,25 @@ def _atomic_write_store_file(path: Path, serialized: str) -> None:
         )
 
 
+def _has_saved_video_order(letter) -> bool:
+    root = _local_data_root(_os.environ)
+    lid = str(letter.get('letter_id', ''))
+    if root is None or not _re.fullmatch(r'[A-Za-z0-9_-]{1,80}', lid):
+        return False
+    if letter.get('reply_video_enabled', letter.get('reply_mode') != 'voice_reply') is not True:
+        return False
+    path = root / 'media' / (lid + '-remote-order.private.json')
+    try:
+        saved = json.loads(path.read_text(encoding='utf-8'))
+        submission = saved['submission']
+        return (isinstance(saved['fingerprint'], str) and bool(_re.fullmatch('[a-f0-9]{64}', saved['fingerprint']))
+                and submission['kind'] in {'video', 'lipsync', 'cover_video', 'original_video'}
+                and isinstance(submission['request_id'], str)
+                and bool(_re.fullmatch('[A-Za-z0-9_-]{8,80}', submission['request_id'])))
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+
 def _load_store_state() -> None:
     global _store_state_error_code
     root = _state_root()
@@ -1331,7 +1350,11 @@ def _load_store_state() -> None:
                         _mark_media_not_requested(item)
                         needs_persist = True
                     if item.get("media_status") == "PROCESSING":
-                        item.update(media_status="UNAVAILABLE", media_error_code="MEDIA_JOB_INTERRUPTED", media_retryable=True)
+                        from runtime.remote_pipeline import enabled as remote_enabled
+                        if remote_enabled(_os.environ) and _has_saved_video_order(item):
+                            item.update(media_status='QUEUED', media_error_code=None, media_retryable=False)
+                        else:
+                            item.update(media_status="UNAVAILABLE", media_error_code="MEDIA_JOB_INTERRUPTED", media_retryable=True)
                         needs_persist = True
     if isinstance(loaded.get("settings"), dict):
         store.settings = loaded["settings"]
@@ -1850,6 +1873,8 @@ async def _migrate_official_history(
 _load_store_state()
 emotion_triage = LetterEmotionTriage(letters_adapter.gateway)
 media_semaphore = asyncio.Semaphore(1)
+# Remote video waits own a separate lane; GPU exclusivity stays on the server.
+video_media_semaphore = asyncio.Semaphore(1)
 media_tasks: set[asyncio.Task] = set()
 reply_tasks: set[asyncio.Task] = set()
 private_world_candidate_tasks: set[asyncio.Task] = set()
@@ -2038,6 +2063,20 @@ async def _media_handler(request: web.Request) -> web.StreamResponse:
 
 
 async def handler(request: web.Request):
+    if request.path.startswith('/toy/wardrobe/images/'):
+        if request.method not in {'GET','HEAD'}:
+            return web.Response(status=405)
+        if request.headers.get('Origin') and not origin_allowed(request.headers['Origin']):
+            return web.Response(status=403)
+        from runtime.remote_generation import RemoteGeneration
+        from runtime.cloud_service import CloudError
+        try:
+            api=RemoteGeneration(_os.environ.get('OLIVIA_GPU_API_URL',''),_os.environ.get('OLIVIA_GPU_API_KEY',''))
+            raw=await api.wardrobe_image(request.path.rsplit('/',1)[-1])
+            content_type='image/webp' if raw[:4]==b'RIFF' and raw[8:12]==b'WEBP' else 'image/png'
+            return web.Response(body=raw,content_type=content_type,headers={'Cache-Control':'private, no-store',**CORS_HEADERS(request)})
+        except CloudError:
+            return web.Response(status=503)
     if request.path.startswith("/toy/local-songs/media/"):
         if request.method not in {"GET", "HEAD"}:
             return web.Response(status=405)
@@ -3603,13 +3642,13 @@ async def _proactive_loop() -> None:
 
 
 def _active_undelivered_letter(*, now: float | None = None, exclude_letter=None) -> dict | None:
-    from original_client_letter_contract import _video_pending, _photo_pending
+    from original_client_letter_contract import _photo_pending
 
     current_time = time.time() if now is None else now
     for letter in store.letters:
         if letter is exclude_letter:
             continue
-        if _video_pending(letter) or _photo_pending(letter):
+        if _photo_pending(letter):
             return letter
         if letter.get("letter_status") in {"PENDING", "PROCESSING"}:
             return letter
@@ -4242,9 +4281,34 @@ async def route(
         await commit_image_memory(sys.modules[__name__], row)
         return ok({'status':'DELIVERED'})
 
+    if p == '/toy/world/wardrobe':
+        from runtime.remote_generation import RemoteGeneration
+        from runtime.cloud_service import CloudError
+        try:
+            api=RemoteGeneration(_os.environ.get('OLIVIA_GPU_API_URL',''),_os.environ.get('OLIVIA_GPU_API_KEY',''))
+            if method=='POST':
+                if not companion_confirmed:
+                    return err(403,'COMPANION_CONFIRMATION_REQUIRED',{})
+                if not isinstance(body,dict) or set(body)!={'request_id','style_id'}:
+                    return err(400,'WARDROBE_STYLE_INVALID',{})
+                result=await api.request('wardrobe_set',body)
+            elif method=='GET':
+                result=await api.request('wardrobe_get',{})
+            else:
+                return err(405,'METHOD_NOT_ALLOWED',{})
+            for style in result['wardrobe_styles']:
+                for look in style['looks']:
+                    look['image_url']=f"http://127.0.0.1:{PORT}/toy/wardrobe/images/{look['look_id']}"
+            return ok(result)
+        except CloudError as exc:
+            return err(exc.status,exc.code,{'error_code':exc.code})
+
     if p == "/toy/settings/reply-routes":
+        from runtime.wardrobe import catalog
         try:
             if method == "POST":
+                if set(body) == {'request_id', 'wardrobe'}:
+                    return ok(video_reply_settings_store.mutate_wardrobe(body['request_id'], body['wardrobe']))
                 if set(body) == {"request_id", "tier", "image"}:
                     return ok(video_reply_settings_store.mutate_tier(body["request_id"], body["tier"], image=body["image"]))
                 if set(body) == {'request_id', 'image'}:
@@ -4254,7 +4318,9 @@ async def route(
                 if set(body) not in ({"request_id", "routes"}, {"request_id", "routes", "videos"}):
                     return err(400, "VIDEO_REPLY_SETTING_PAYLOAD_INVALID", {})
                 return ok(video_reply_settings_store.mutate_routes(body["request_id"], body["routes"], body.get("videos")))
-            return ok({"state": "available", "image": video_reply_settings_store.image_snapshot(), "tier": video_reply_settings_store.tier_snapshot(), "tier_configured": video_reply_settings_store.saved_tier() is not None,
+            return ok({"state": "available", "image": video_reply_settings_store.image_snapshot(),
+                       "wardrobe": video_reply_settings_store.wardrobe_snapshot(), "wardrobe_styles": catalog(),
+                       "tier": video_reply_settings_store.tier_snapshot(), "tier_configured": video_reply_settings_store.saved_tier() is not None,
                        "routes": video_reply_settings_store.routes_snapshot(), "videos": video_reply_settings_store.videos_snapshot(),
                        "ready": await asyncio.to_thread(_route_readiness)})
         except VideoReplySettingsError as exc:
@@ -5190,7 +5256,12 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
     def still_current():
         return binding == (letter.get('private_world_delivery_id', ''), letter.get('reply_revision'),
                            letter.get('private_world_reply_sha256'), letter.get('reply_text'))
-    async with media_semaphore:
+    from runtime.remote_pipeline import enabled as remote_enabled
+    is_video = letter.get("reply_video_enabled", reply_mode != "voice_reply") is True
+    # Local renderers still share one physical GPU. Only cloud video dispatch
+    # and polling may overlap the audio lane.
+    lane = video_media_semaphore if is_video and remote_enabled(_os.environ) else media_semaphore
+    async with lane:
         if not still_current():
             return
         letter["media_status"] = "PROCESSING"
@@ -5360,6 +5431,11 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                 return
             if video_enabled:
                 letter["reply_video_url"] = f"http://127.0.0.1:{PORT}/toy/media/{output_path.name}"
+                # The text can already have been read. Notify once when the
+                # corresponding video becomes available, without a new letter.
+                if not letter.get('video_completed_at'):
+                    letter['video_completed_at'] = time.time()
+                    letter['is_read'] = 0
             elif reply_mode != "voice_song_video":
                 letter["reply_audio_url"] = f"http://127.0.0.1:{PORT}/toy/media/{output_path.name}"
             letter["media_status"] = "COMPLETED"

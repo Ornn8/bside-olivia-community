@@ -127,7 +127,9 @@ def _photo_reference(row, text):
     """Project only visible hints from this body's saved view, never live state."""
     from runtime.reply.character_emotion_context import checked_expression_context
     view = checked_expression_context(row) if row.get('reply_text') == text else None
-    reference = {'reply_as_of': None, 'world_current_location': None, 'expression_options': []}
+    from runtime.wardrobe import photo_reference
+    reference = {'reply_as_of': None, 'world_current_location': None, 'expression_options': [],
+                 **photo_reference(row.get('image_reply_settings', {}))}
     if view is None:
         return reference
     reference['reply_as_of'] = view['as_of']
@@ -407,6 +409,13 @@ async def _prepare_once(server, row, content, text, *, channel='letter', on_read
         photo_id = hashlib.sha256((channel+':'+identity).encode()).hexdigest()[:32]
         caps = await api.request('capabilities', {})
         if caps.get('server_media_planning') is True and ('image_plan' not in row or row.get('image_server_planned')):
+            from runtime.wardrobe import style_for, DEFAULT_STYLE
+            style = style_for(settings)
+            supported = caps.get('wardrobe_styles')
+            if style != DEFAULT_STYLE and not caps.get('wardrobe_daily') and (not isinstance(supported, list) or style not in supported):
+                raise ValueError('IMAGE_WARDROBE_UNAVAILABLE')
+            if caps.get('wardrobe_daily') and 'image_server_request' not in row:
+                row['image_wardrobe_protocol']='daily'
             await _server_photo(server, row, content, text, api, photo_id, settings, progress, channel, on_ready)
             return
         if 'image_plan' not in row:
@@ -436,6 +445,8 @@ async def _prepare_once(server, row, content, text, *, channel='letter', on_read
                 row.update(image_status='SKIPPED', image_skip_reason='SCENE_CONFLICT')
                 server._persist_store_state()
                 return
+            from runtime.wardrobe import dress_photo
+            plan = dress_photo(plan, settings)
             row['image_plan'] = plan; server._persist_store_state()
         plan = row['image_plan']
         if not plan['attach']:
@@ -517,6 +528,9 @@ async def _server_photo(server, row, content, text, api, photo_id, settings, pro
     """Submit frozen facts, download the photo, and commit only local delivery state."""
     from PIL import Image
     reference = _photo_reference(row,text)
+    if row.get('image_wardrobe_protocol')=='daily':
+        from runtime.wardrobe import DAILY_CATALOG
+        reference['wardrobe']={'mode':'daily','catalog_version':DAILY_CATALOG}
     reference['requested_image'] = is_companion_image(row)
     request = {'incoming':content,'reply':text,'reference':reference}
     row.setdefault('image_server_request', request)
@@ -555,6 +569,20 @@ async def _server_photo(server, row, content, text, api, photo_id, settings, pro
     if (not isinstance(plan,dict) or plan['photo_type'] not in PHOTO_TYPES or plan['room'] not in ROOMS
             or plan['time_of_day'] not in ('morning','noon','dusk','night')):
         raise ValueError('IMAGE_PLAN_INVALID')
+    from runtime.wardrobe import style_for, DEFAULT_STYLE
+    style = style_for(settings)
+    if row.get('image_wardrobe_protocol')=='daily':
+        from runtime.wardrobe import validate_daily_outfit
+        if 'daily_outfit' not in plan:
+            raise ValueError('IMAGE_WARDROBE_NOT_APPLIED')
+        outfit=validate_daily_outfit(plan['daily_outfit'])
+        if plan['photo_type']=='snapshot' and outfit is not None:
+            raise ValueError('IMAGE_WARDROBE_NOT_APPLIED')
+        if 'daily_outfit' in row and row['daily_outfit']!=outfit:
+            raise ValueError('IMAGE_GENERATION_BINDING_CHANGED')
+        row['daily_outfit']=outfit
+    elif style != DEFAULT_STYLE and plan['photo_type']!='snapshot' and plan.get('wardrobe_style') != style:
+        raise ValueError('IMAGE_WARDROBE_NOT_APPLIED')
     row['image_plan']={'attach':True,**plan}
     from runtime.image_understanding import describe_image
     try:

@@ -29,6 +29,9 @@ class RemoteGeneration:
         if not self.url or not self.token:
             raise CloudError('GPU_NOT_CONFIGURED', 503)
         headers = {'Authorization': 'Bearer ' + self.token, 'Accept': 'application/json'}
+        # Old installations require exactly four photo-plan fields. Negotiate
+        # wardrobe metadata on every read/replay, including existing orders.
+        headers['X-Olivia-Wardrobe-Protocol'] = 'daily-v1'
         payload = None
         if action == 'submit':
             if set(data) != {'request_id', 'kind', 'input'} or data['kind'] not in ('tts', 'cover', 'image', 'video', 'original', 'lipsync', 'separate', 'cover_video', 'original_video') or not isinstance(data['input'], dict):
@@ -41,6 +44,16 @@ class RemoteGeneration:
             path, method = '/v1/tasks', 'POST'
         elif action == 'capabilities' and data == {}:
             path, method = '/v1/capabilities', 'GET'
+        elif action == 'wardrobe_get' and data == {}:
+            path, method = '/v1/wardrobe', 'GET'
+        elif action == 'wardrobe_set':
+            from runtime.wardrobe import DAILY_STYLES
+            if (not isinstance(data,dict) or set(data)!={'request_id','style_id'}
+                    or not isinstance(data['request_id'],str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,255}',data['request_id'])
+                    or data['style_id'] not in DAILY_STYLES):
+                raise CloudError('GPU_REQUEST_INVALID',400)
+            payload=data
+            path, method = '/v1/wardrobe', 'POST'
         elif action in ('billing_prices', 'billing_account', 'billing_statement') and data == {}:
             path, method = '/v1/billing/' + action.removeprefix('billing_'), 'GET'
         elif action in ('status', 'cancel', 'ack'):
@@ -74,6 +87,9 @@ class RemoteGeneration:
                         raw.extend(chunk)
                         if len(raw) > 262144: raise CloudError('GPU_RESPONSE_INVALID', 502)
                     result = json.loads(raw)
+            if action in ('wardrobe_get','wardrobe_set'):
+                from runtime.wardrobe import validate_cloud_state
+                return validate_cloud_state(result)
             if action in ('billing_prices', 'billing_account'):
                 if not isinstance(result, dict): raise ValueError()
                 def money(value):
@@ -133,9 +149,16 @@ class RemoteGeneration:
                 if (url.scheme != 'https' and not loopback_result) or not url.hostname or url.username or url.password: raise ValueError()
                 cleaned.append({'url': item['url']})
             plan=result.get('media_plan')
-            if plan is not None and (not isinstance(plan,dict) or set(plan)!={'prompt','photo_type','room','time_of_day'}
-                    or any(not isinstance(value,str) or len(value)>4000 for value in plan.values())):
-                raise ValueError()
+            if plan is not None:
+                required={'prompt','photo_type','room','time_of_day'}
+                if (not isinstance(plan,dict) or not required<=set(plan) or set(plan)-required-{'daily_outfit'}
+                        or any(not isinstance(plan[k],str) or len(plan[k])>4000 for k in required)):
+                    raise ValueError()
+                if 'daily_outfit' in plan:
+                    from runtime.wardrobe import validate_daily_outfit
+                    validate_daily_outfit(plan['daily_outfit'])
+                    if plan['photo_type']=='snapshot' and plan['daily_outfit'] is not None:
+                        raise ValueError()
             speech=result.get('speech')
             if speech is not None:
                 if (not isinstance(speech,dict) or speech.get('format')!='mp3' or speech.get('channels')!=2
@@ -147,8 +170,31 @@ class RemoteGeneration:
                     **({'speech':speech} if speech is not None else {})}
         except (ClientError, TimeoutError) as exc:
             raise connection_error(exc) from None
-        except (ValueError, TypeError, UnicodeError):
+        except (ValueError, TypeError, KeyError, AttributeError, UnicodeError):
             raise CloudError('GPU_RESPONSE_INVALID', 502) from None
+
+    async def wardrobe_image(self, look_id):
+        from runtime.wardrobe import DAILY_STYLES
+        if not isinstance(look_id,str) or not any(re.fullmatch(re.escape(s)+r'-\d{2}',look_id) for s in DAILY_STYLES[1:]):
+            raise CloudError('WARDROBE_IMAGE_INVALID',400)
+        if not self.url or not self.token:
+            raise CloudError('GPU_NOT_CONFIGURED',503)
+        try:
+            async with ClientSession(timeout=ClientTimeout(total=30),trust_env=False,connector=TCPConnector(ssl=gpu_tls_context())) as session:
+                async with session.get(self.url+'/v1/wardrobe/images/'+look_id,
+                        headers={'Authorization':'Bearer '+self.token},allow_redirects=False) as response:
+                    if response.status!=200:
+                        raise CloudError('WARDROBE_IMAGE_UNAVAILABLE',502)
+                    raw=bytearray()
+                    async for chunk in response.content.iter_chunked(65536):
+                        raw.extend(chunk)
+                        if len(raw)>15*1024*1024:
+                            raise CloudError('WARDROBE_IMAGE_INVALID',502)
+                    if not (raw.startswith(b'\x89PNG\r\n\x1a\n') or raw[:4]==b'RIFF' and raw[8:12]==b'WEBP'):
+                        raise CloudError('WARDROBE_IMAGE_INVALID',502)
+                    return bytes(raw)
+        except (ClientError,TimeoutError) as exc:
+            raise connection_error(exc) from None
 
     async def upload(self, path):
         path = Path(path)
@@ -184,11 +230,31 @@ class RemoteGeneration:
                     hashes[field] = hashlib.file_digest(source, 'sha256').hexdigest()
             fingerprint = hashlib.sha256(json.dumps([self.url, hashlib.sha256(self.token.encode()).hexdigest(),
                 kind, data, hashes], sort_keys=True).encode()).hexdigest()
+            video_receipt = kind in {'video', 'lipsync', 'cover_video', 'original_video'}
             try:
                 saved = json.loads(receipt.read_text(encoding='utf-8'))
                 if not isinstance(saved, dict) or saved.get('fingerprint') != fingerprint:
+                    if video_receipt:
+                        raise CloudError('GPU_RECOVERY_REQUIRED', 409)
                     saved = {}
+                if video_receipt:
+                    submission = saved.get('submission')
+                    if (not isinstance(submission, dict)
+                            or set(submission) != {'request_id', 'kind', 'input'}
+                            or submission.get('kind') != kind
+                            or not isinstance(submission.get('input'), dict)
+                            or not isinstance(submission.get('request_id'), str)
+                            or not re.fullmatch(r'[A-Za-z0-9_-]{8,80}', submission['request_id'])
+                            or 'task_id' in saved and (not isinstance(saved['task_id'], str)
+                                or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', saved['task_id']))):
+                        raise CloudError('GPU_RECOVERY_REQUIRED', 409)
+            except FileNotFoundError:
+                pass  # No receipt yet: this is the first submission.
             except (OSError, ValueError):
+                if video_receipt:
+                    # An existing order may already be paid. Keep its evidence
+                    # and never replace it with a fresh idempotency key.
+                    raise CloudError('GPU_RECOVERY_REQUIRED', 409) from None
                 pass
         for field in ('scene_asset', 'spoken_scene_asset'):
             if field in data and data[field] not in {a['asset_id'] for a in caps['shared_assets']}:

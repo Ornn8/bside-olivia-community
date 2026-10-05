@@ -88,7 +88,33 @@ class VideoReplySettingsStore:
             if self._committed.state != 'available':
                 return {'enabled': False, 'resolution': '1K'}
             # Photos are on until the user turns them off; an explicit choice is stored and kept.
-            return dict(self._document.get('settings', {}).get('image', DEFAULT_IMAGE))
+            image = dict(self._document.get('settings', {}).get('image', DEFAULT_IMAGE))
+            style = self._document.get('settings', {}).get('wardrobe', {'style_id': 'original'})['style_id']
+            if style != 'original': image['wardrobe_style'] = style
+            return image
+    def wardrobe_snapshot(self):
+        with self._lock:
+            if self._committed.state != 'available': raise VideoReplySettingsError(_UNAVAILABLE)
+            return dict(self._document.get('settings', {}).get('wardrobe', {'style_id': 'original'}))
+    def mutate_wardrobe(self, request_id, value):
+        from runtime.wardrobe import validate
+        request = self._request(request_id)
+        try: value = validate(value)
+        except ValueError: raise VideoReplySettingsError('WARDROBE_STYLE_INVALID', status=400) from None
+        with self._lock:
+            if self._committed.state != 'available': raise VideoReplySettingsError(_UNAVAILABLE)
+            old = self._ledger(self._document).get(request)
+            if old is not None:
+                if old.get('wardrobe') != value: raise VideoReplySettingsError('VIDEO_REPLY_SETTING_REQUEST_CONFLICT', status=409)
+                return {'status': 'DUPLICATE', 'wardrobe': value}
+            candidate = deepcopy(self._document)
+            candidate['settings']['wardrobe'] = value
+            candidate.setdefault('ledger', {})[request] = {'enabled': self._committed.enabled,
+                'wardrobe': value, 'result': {'status': 'APPLIED'}}
+            try: self._writer(self.path, self._encode(candidate))
+            except (OSError, UnicodeError, TypeError, ValueError): raise VideoReplySettingsError(_UNAVAILABLE) from None
+            self._document = candidate
+            return {'status': 'APPLIED', 'wardrobe': dict(value)}
     def mutate_image(self, request_id, image):
         request = self._request(request_id)
         self._validate_image(image)
@@ -161,7 +187,7 @@ class VideoReplySettingsStore:
             ledger = self._ledger(self._document); old = ledger.get(request)
             if old is not None:
                 if not isinstance(old, Mapping) or type(old.get("enabled")) is not bool: raise VideoReplySettingsError(_UNAVAILABLE)
-                if "routes" in old: raise VideoReplySettingsError("VIDEO_REPLY_SETTING_REQUEST_CONFLICT", status=409)
+                if "routes" in old or "wardrobe" in old: raise VideoReplySettingsError("VIDEO_REPLY_SETTING_REQUEST_CONFLICT", status=409)
                 if old["enabled"] is not enabled: raise VideoReplySettingsError("VIDEO_REPLY_SETTING_REQUEST_CONFLICT", status=409)
                 result = old.get("result")
                 if not isinstance(result, Mapping): raise VideoReplySettingsError(_UNAVAILABLE)
@@ -195,6 +221,9 @@ class VideoReplySettingsStore:
         return ledger
     @classmethod
     def _validate(cls, document: Mapping[str, object]) -> None:
+        if 'wardrobe' in document.get('settings', {}):
+            from runtime.wardrobe import validate
+            validate(document['settings']['wardrobe'])
         if 'image' in document.get('settings', {}): cls._validate_image(document['settings']['image'])
         tier = document.get("settings", {}).get("tier")
         if tier is not None:

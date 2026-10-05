@@ -84,7 +84,7 @@ def _now_value(now: float | None) -> float:
 def _published(letter: Mapping[str, object], *, now: float | None) -> bool:
     if _letter_status(letter.get("letter_status", letter.get("letterStatus")), published=True) != OriginalClientLetterStatus.REPLIED:
         return False
-    if _video_pending(letter) or _audio_pending(letter) or _photo_pending(letter):
+    if _audio_pending(letter) or _photo_pending(letter):
         return False
     deadline = letter.get("reply_not_before", 0.0)
     if deadline in (None, ""):
@@ -270,7 +270,7 @@ def serialize_letter_summary(
     letter_id = _required_identifier(letter)
     status = _letter_status(letter.get("letter_status", letter.get("letterStatus")), published=published)
     video_pending = _video_pending(letter)
-    if video_pending or _audio_pending(letter) or _photo_pending(letter):
+    if _audio_pending(letter) or _photo_pending(letter):
         status = int(OriginalClientLetterStatus.LLM_PROCESSING)
     audit_status = _audit_status(letter.get("audit_status", letter.get("auditStatus")))
     raw_created_at = letter.get("created_at", letter.get("createdAt"))

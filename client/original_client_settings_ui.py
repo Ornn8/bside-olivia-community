@@ -6,7 +6,7 @@ import base64
 from pathlib import Path
 
 
-SETTINGS_UI_VERSION = "p03.original-settings-manage.v57"
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v58"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
@@ -193,7 +193,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         this.setOpen(false);
         if(['SKIPPED','NOT_REQUESTED'].includes(data?.imageStatus)){this.replaceChildren();return;}
         if(data?.imageStatus==='FAILED'){
-          const reasons={GPU_NOT_CONFIGURED:'请先连接 Olivia 账户。',GPU_AUTH_FAILED:'照片服务验证失败，请检查 Olivia 账户。',GPU_INSUFFICIENT_BALANCE:'云端余额不足，请检查云服务余额。',GPU_BILLING_CONSENT_REQUIRED:'请先在设置中确认使用云端服务。',IMAGE_DEPENDENCY_MISSING:'照片组件不完整，请更新或修复客户端。'};
+          const reasons={GPU_NOT_CONFIGURED:'请先连接 Olivia 账户。',GPU_AUTH_FAILED:'照片服务验证失败，请检查 Olivia 账户。',GPU_INSUFFICIENT_BALANCE:'云端余额不足，请检查云服务余额。',GPU_BILLING_CONSENT_REQUIRED:'请先在设置中确认使用云端服务。',IMAGE_DEPENDENCY_MISSING:'照片组件不完整，请更新或修复客户端。',IMAGE_WARDROBE_UNAVAILABLE:'照片服务暂不支持所选穿衣风格。请在衣橱选回原版日常后重试。',IMAGE_WARDROBE_NOT_APPLIED:'照片服务未确认这次换装，请稍后重试。'};
           const code=/^[A-Z][A-Z0-9_]{0,95}$/.test(data.imageErrorCode||'')?data.imageErrorCode:'';
           this.textContent='照片这次没能附上。'+(reasons[code]||'');this.title=code;return;
         }
@@ -2794,6 +2794,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   // The lite client's mailbox is the original /collection view. Keep both
   // destinations inside the main window: desktop widgets can be off-screen.
   const WORLD_ROUTE = '#/world';
+  const WARDROBE_ROUTE = '#/world/wardrobe';
   const mountWorldPage = (page) => {
     page.dataset.oliviaWorldPage='';page.setAttribute('aria-label','世界');
     const style=document.createElement('style');style.textContent=`
@@ -2846,6 +2847,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       @media(max-width:580px){.olivia-world-columns{grid-template-columns:1fr}.olivia-world-aside{padding:20px 0 0;border-left:0;border-top:1px solid #383a3e}.olivia-world-tabs{gap:20px}.olivia-world-heading{align-items:flex-start}.olivia-world-heading .olivia-world-line{align-items:flex-start}[data-world-main]{padding:18px}.olivia-world-meta{gap:8px}}
     `;
     const header=document.createElement('header');header.className='olivia-world-header';header.append(text('h1','世界'));
+    const wardrobeEntry=button('衣橱',()=>openWardrobe());wardrobeEntry.setAttribute('data-olivia-wardrobe-entry','');
+    wardrobeEntry.setAttribute('aria-label','打开林离的衣橱');header.append(wardrobeEntry);
     const panel=document.createElement('section');panel.dataset.worldMain='';
     page.replaceChildren(style,header,panel);
     panel.append(text('p','正在读取林离的生活……'));
@@ -2868,9 +2871,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   };
   const mountMainNavigation = () => {
     const route = window.location.hash.split("?")[0];
-    const world=window.location.hash===WORLD_ROUTE;
+    const world=route===WORLD_ROUTE||route===WARDROBE_ROUTE;
     let nav = document.querySelector("[data-olivia-main-navigation]");
-    if (route !== "#/studio" && route !== "#/collection" && route !== WORLD_ROUTE) {
+    if (route !== "#/studio" && route !== "#/collection" && !world) {
       nav?.remove();
       return;
     }
@@ -3767,6 +3770,172 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     refreshVideoReplySetting=()=>container.isConnected ? hydrate() : Promise.resolve(); void hydrate();
   };
 
+  const wardrobeStyle = () => {
+    const style=document.createElement('style');style.textContent=`
+      [data-olivia-wardrobe-page]{width:100%;height:100%;min-height:0;display:flex;flex-direction:column;gap:20px;color:#e9e3d8;-webkit-app-region:no-drag}
+      .ow-breadcrumb{display:flex;gap:14px;align-items:center;min-height:40px;flex-shrink:0;font-size:14px;color:#bcb5aa}
+      .ow-breadcrumb a{display:inline-flex;gap:8px;align-items:center;color:#e9e3d8;text-decoration:none;padding:8px 0}
+      .ow-breadcrumb svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.6}
+      [data-olivia-wardrobe]{--ow-paper:#e4d8c3;--ow-muted:#b9b1a5;box-sizing:border-box;background:#1b1c1e;color:#e9e3d8;padding:28px 36px;min-height:0;overflow-y:auto;overflow-x:hidden;flex:1;border-radius:12px}
+      [data-olivia-wardrobe] *{box-sizing:border-box}
+      [data-olivia-wardrobe] h1,[data-olivia-wardrobe] h2,[data-olivia-wardrobe] p{margin:0}
+      .ow-heading{display:flex;justify-content:space-between;gap:24px;align-items:flex-start;padding-bottom:22px;border-bottom:1px solid #49443c}
+      .ow-heading h1{font-size:32px;font-weight:500;line-height:1.4;letter-spacing:.02em}
+      .ow-heading p{font-size:14px;line-height:1.8;color:var(--ow-muted);margin-top:10px;max-width:52ch}
+      .ow-current{font-size:13px;line-height:1.7;color:var(--ow-muted);text-align:right;min-width:120px;padding-top:5px}
+      .ow-current strong{display:block;font-size:16px;font-weight:500;color:var(--ow-paper);margin-top:4px}
+      .ow-interior{display:grid;grid-template-columns:220px minmax(0,1fr);gap:40px;margin-top:24px}
+      .ow-rail{display:flex;flex-direction:column;gap:0;position:relative;align-self:start}
+      [data-olivia-wardrobe] button{font:inherit;cursor:pointer;-webkit-app-region:no-drag}
+      [data-olivia-wardrobe] .ow-style{display:flex;align-items:center;gap:14px;width:100%;min-height:64px;padding:10px 12px;background:transparent;color:#c4bcae;text-align:left;border:0;border-bottom:1px solid #3c3b37;border-radius:0}
+      .ow-style svg{width:26px;height:26px;flex-shrink:0;fill:none;stroke:currentColor;stroke-width:1.35;stroke-linecap:round;stroke-linejoin:round}
+      .ow-style strong{display:block;font-size:16px;font-weight:500;line-height:1.6}
+      .ow-style small{display:block;font-size:11px;color:#a9a297;line-height:1.5;min-height:16px}
+      [data-olivia-wardrobe] .ow-style[aria-selected=true]{background:var(--ow-paper);color:#29251e}
+      .ow-style[aria-selected=true] small{color:#5c5447}
+      [data-olivia-wardrobe] .ow-style:hover:not(:disabled):not([aria-selected=true]){background:#272725;color:#eee7dc}
+      .ow-look{min-width:0;padding-top:8px}
+      .ow-look-header{display:flex;justify-content:space-between;gap:20px;align-items:center}
+      .ow-look h2{font-size:30px;line-height:1.4;font-weight:500;letter-spacing:.02em;color:var(--ow-paper)}
+      .ow-swatches{display:flex;gap:7px;flex-shrink:0}
+      .ow-swatches span{width:22px;height:22px;border-radius:50%;outline:1px solid #fff2;outline-offset:2px}
+      .ow-description{font-size:14px;color:var(--ow-muted);line-height:1.8;margin-top:14px!important;max-width:55ch;min-height:44px}
+      .ow-pieces{margin:26px 0 0;padding:0}
+      .ow-piece{display:grid;grid-template-columns:80px minmax(0,1fr);gap:18px;padding:18px 0;border-top:1px solid #3c3b37}
+      .ow-piece dt{font-size:12px;line-height:1.9;color:var(--ow-muted)}
+      .ow-piece dd{margin:0;font-size:16px;line-height:1.6;color:#e9e3d8;overflow-wrap:anywhere}
+      .ow-today{margin-top:18px!important;font-size:13px;line-height:1.8;color:var(--ow-paper)}
+      .ow-gallery{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;margin-top:22px}
+      .ow-gallery:has(.ow-garment:only-child){grid-template-columns:minmax(0,320px)}
+      .ow-garment{margin:0;min-width:0}.ow-garment img{display:block;width:100%;aspect-ratio:3/4;object-fit:contain;background:#f7f6f2;border-radius:8px}
+      .ow-garment figcaption{padding-top:9px;color:var(--ow-muted);font-size:12px;line-height:1.6;overflow-wrap:anywhere}
+      .ow-image-error{aspect-ratio:3/4;display:flex;align-items:center;justify-content:center;background:#292927;color:var(--ow-muted);font-size:13px;border-radius:8px;padding:12px}
+      @media(max-width:900px){.ow-gallery{grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}}
+      .ow-footer{margin-top:20px;padding-top:20px;border-top:1px solid #49443c;display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+      [data-olivia-wardrobe] .ow-apply{background:var(--ow-paper);color:#28241f;border:0;border-radius:8px;padding:12px 26px;min-height:46px;font-size:15px;font-weight:600}
+      [data-olivia-wardrobe] .ow-apply:hover:not(:disabled){background:#f0e4cf}
+      [data-olivia-wardrobe] .ow-apply:disabled{background:#33312c;color:#ccc2b0;cursor:default}
+      .ow-footer p{font-size:12px;line-height:1.8;color:var(--ow-muted);max-width:42ch}
+      .ow-feedback{display:flex;align-items:center;gap:18px;margin-top:20px;min-height:24px}
+      .ow-feedback p{font-size:13px;line-height:1.8;color:#d4c8b5}
+      [data-olivia-wardrobe] .ow-retry{padding:8px 12px;color:var(--ow-paper);background:transparent;border:1px solid #6d6558;border-radius:8px;flex-shrink:0}
+      [data-olivia-wardrobe] button:focus-visible,.ow-breadcrumb a:focus-visible{outline:2px solid #e4d8c3;outline-offset:4px}
+      [data-olivia-wardrobe] .ow-style:disabled{opacity:.55;cursor:wait}
+      [data-olivia-wardrobe] [hidden]{display:none!important}
+      @media(max-width:900px){[data-olivia-wardrobe]{padding:26px}.ow-interior{grid-template-columns:180px minmax(0,1fr);gap:26px}.ow-heading h1{font-size:28px}.ow-look h2{font-size:26px}}
+      @media(max-width:650px){[data-olivia-wardrobe]{padding:24px 20px}.ow-heading{gap:12px;flex-direction:column;padding-bottom:20px}.ow-current{text-align:left;padding:0;display:flex;gap:12px;align-items:center}.ow-current strong{margin:0;font-size:14px}.ow-interior{grid-template-columns:1fr;gap:24px;margin-top:20px}.ow-rail{flex-direction:row;overflow-x:auto;padding:0 0 8px;scrollbar-width:thin}.ow-rail .ow-style{width:auto;flex-shrink:0;padding:10px 14px;min-height:60px;border-bottom:0}.ow-style svg{width:20px;height:20px}.ow-style strong{font-size:14px}.ow-look{padding:0}.ow-pieces{margin-top:18px}.ow-piece{padding:18px 0;grid-template-columns:64px minmax(0,1fr);gap:12px}.ow-look h2{font-size:25px}.ow-feedback{align-items:flex-start}}
+    `;return style;
+  };
+
+  const mountWardrobeSetting = (section) => {
+    const panel=document.createElement('section');panel.setAttribute('data-olivia-wardrobe','');
+    const heading=document.createElement('header');heading.className='ow-heading';
+    const intro=document.createElement('div');intro.append(text('h1','林离的衣橱'),text('p','你指定喜欢的风格，具体搭配交给林离。'));
+    const current=document.createElement('div');current.className='ow-current';current.append(text('span','当前风格'));
+    const currentLabel=text('strong','读取中');current.append(currentLabel);heading.append(intro,current);
+    const interior=document.createElement('div');interior.className='ow-interior';
+    const rail=document.createElement('div');rail.className='ow-rail';rail.setAttribute('role','tablist');rail.setAttribute('aria-label','穿衣风格');rail.setAttribute('aria-orientation','vertical');
+    const compact=window.matchMedia('(max-width:650px)');
+    const syncOrientation=()=>rail.setAttribute('aria-orientation',compact.matches?'horizontal':'vertical');
+    compact.addEventListener('change',syncOrientation);syncOrientation();
+    panel._wardrobeCleanup=()=>compact.removeEventListener('change',syncOrientation);
+    const look=document.createElement('section');look.className='ow-look';look.id='olivia-wardrobe-look';look.setAttribute('role','tabpanel');look.setAttribute('aria-label','搭配详情');
+    const lookHeader=document.createElement('div');lookHeader.className='ow-look-header';
+    const title=text('h2','正在打开衣橱');const swatches=document.createElement('div');swatches.className='ow-swatches';swatches.setAttribute('aria-hidden','true');lookHeader.append(title,swatches);
+    const description=text('p','','ow-description');const pieces=document.createElement('dl');pieces.className='ow-pieces';
+    const today=text('p','','ow-today');const gallery=document.createElement('div');gallery.className='ow-gallery';gallery.setAttribute('aria-label','风格参考搭配');
+    const footer=document.createElement('div');footer.className='ow-footer';
+    const apply=button('正在读取',()=>{void persist();});apply.className='ow-apply';
+    footer.append(apply,text('p','选定风格后立即生效。已经提交的生成任务保留原穿搭。'));
+    look.append(lookHeader,description,today,footer,gallery,pieces);interior.append(rail,look);
+    const feedback=document.createElement('div');feedback.className='ow-feedback';
+    const status=text('p','正在读取衣橱…');status.setAttribute('role','status');
+    const retry=button('重新读取',()=>{void load();});retry.className='ow-retry';retry.hidden=true;feedback.append(status,retry);
+    let selected=null,preview=null,busy=false,styles=[],daily=null;const tabs=[];
+    const render=()=>{
+      const saved=styles.find(style=>style.style_id===selected),outfit=styles.find(style=>style.style_id===preview);
+      currentLabel.textContent=saved?.label||'尚未读取';
+      for(const tab of tabs){tab.disabled=busy;tab.setAttribute('aria-selected',String(tab.dataset.style===preview));tab.tabIndex=tab.dataset.style===preview?0:-1;tab.querySelector('small').textContent=tab.dataset.style===selected?'已选择':tab.dataset.style===preview?'正在查看':'';}
+      if(outfit){
+        look.setAttribute('aria-labelledby','ow-style-'+outfit.style_id);
+        title.textContent=outfit.label;description.textContent=outfit.description;pieces.replaceChildren();swatches.replaceChildren();
+        gallery.replaceChildren();
+        const chosen=styles.flatMap(style=>style.looks||[]).find(item=>item.look_id===daily?.look_id);
+        today.textContent=daily?'今天的穿搭：'+(chosen?.label||daily.look_id):selected==='original'?'今天沿用原版日常。':'林离会在下一张人物照片中挑选今天的搭配。';
+        for(const item of outfit.looks||[]){
+          const figure=document.createElement('figure');figure.className='ow-garment';
+          const image=document.createElement('img');image.alt=item.label;image.loading='lazy';image.src=item.image_url;
+          image.addEventListener('error',()=>{image.replaceWith(text('span','参考图暂未加载，请重新读取。','ow-image-error'));},{once:true});
+          const caption=text('figcaption',item.label+(daily?.look_id===item.look_id?' · 今日穿搭':''));figure.append(image,caption);gallery.append(figure);
+        }
+        gallery.hidden=!(outfit.looks||[]).length;
+        for(const [i,value] of (outfit.pieces||[]).entries()){const row=document.createElement('div');row.className='ow-piece';row.append(text('dt',['上装','下装','鞋履与配饰'][i]||'搭配'),text('dd',value));pieces.append(row);}
+        for(const color of outfit.colors||[]){if(!/^#[0-9a-f]{6}$/i.test(color))continue;const swatch=document.createElement('span');swatch.style.backgroundColor=color;swatches.append(swatch);}
+      }
+      apply.disabled=busy||selected===null||preview===selected;
+      apply.textContent=busy?'正在保存…':preview===selected&&selected!==null?'已指定此风格':'指定这个风格';retry.disabled=busy;
+    };
+    const browse=value=>{preview=value;render();};
+    rail.addEventListener('keydown',event=>{
+      if(!['ArrowRight','ArrowLeft','ArrowDown','ArrowUp','Home','End'].includes(event.key)||busy||!tabs.length)return;
+      event.preventDefault();const index=tabs.findIndex(tab=>tab.dataset.style===preview);
+      const next=event.key==='Home'?0:event.key==='End'?tabs.length-1:(index+(['ArrowRight','ArrowDown'].includes(event.key)?1:-1)+tabs.length)%tabs.length;
+      browse(tabs[next].dataset.style);tabs[next].focus();
+    });
+    const persist=async()=>{
+      if(busy||selected===null||preview===selected)return;
+      const value=preview;busy=true;render();status.textContent='正在保存风格…';
+      try{
+        const result=await routeRequest('/toy/world/wardrobe',{request_id:videoReplyRequestId(),style_id:value});
+        if(!styles.some(style=>style.style_id===result.wardrobe?.style_id))throw Error('invalid wardrobe');
+        selected=result.wardrobe.style_id;daily=result.daily_outfit||null;
+        status.textContent=selected===value?'风格已生效，林离会按新风格挑选搭配。':'当前风格已由其他客户端更新，请重新读取。';
+      }catch(_){status.textContent='没有保存成功，当前风格仍是'+(styles.find(style=>style.style_id===selected)?.label||'原来的风格')+'。可以重新尝试。';}
+      finally{busy=false;render();}
+    };
+    const load=async()=>{
+      if(busy)return;busy=true;render();status.textContent='正在读取衣橱…';
+      try{
+        const result=await routeRequest('/toy/world/wardrobe');
+        if(!Array.isArray(result.wardrobe_styles)||!result.wardrobe_styles.some(style=>style.style_id===result.wardrobe?.style_id))throw Error('invalid wardrobe');
+        styles=result.wardrobe_styles;selected=preview=result.wardrobe.style_id;daily=result.daily_outfit||null;tabs.length=0;rail.replaceChildren();
+        for(const style of styles){
+          const tab=button('',()=>browse(style.style_id));tab.className='ow-style';tab.dataset.style=style.style_id;tab.id='ow-style-'+style.style_id;
+          tab.setAttribute('role','tab');tab.setAttribute('aria-controls',look.id);tab.setAttribute('aria-label',style.label);
+          const icon=document.createElementNS('http://www.w3.org/2000/svg','svg');icon.setAttribute('viewBox','0 0 28 28');icon.setAttribute('aria-hidden','true');
+          const path=document.createElementNS('http://www.w3.org/2000/svg','path');path.setAttribute('d','M11 7a3 3 0 1 1 5 2l-2 2v3L3 21q-1 2 2 2h18q3 0 2-2l-11-7');icon.append(path);
+          const copy=document.createElement('span');copy.append(text('strong',style.label),text('small',''));tab.append(icon,copy);tabs.push(tab);rail.append(tab);
+        }
+        status.textContent='';retry.hidden=true;
+      }catch(_){selected=null;status.textContent='云端衣橱暂时无法读取。请确认已连接 Olivia 账户，再重新读取。';retry.hidden=false;}
+      finally{busy=false;render();}
+    };
+    panel.append(heading,interior,feedback);section.append(wardrobeStyle(),panel);render();void load();
+    return panel;
+  };
+
+  const openWardrobe = () => {
+    const router=window.__oliviaNativeView?.router;
+    if(router)void router.push('/world/wardrobe');else window.location.hash=WARDROBE_ROUTE;
+  };
+  const mountWardrobePage = page => {
+    page.setAttribute('data-olivia-wardrobe-page','');page.setAttribute('aria-label','林离的衣橱');
+    const breadcrumb=document.createElement('nav');breadcrumb.className='ow-breadcrumb';breadcrumb.setAttribute('aria-label','衣橱位置');
+    const back=text('a','返回世界');back.href=WORLD_ROUTE;
+    back.addEventListener('click',event=>{if(event.button!==0||event.ctrlKey||event.metaKey||event.shiftKey||event.altKey)return;const router=window.__oliviaNativeView?.router;if(router){event.preventDefault();void router.push('/world');}});
+    breadcrumb.append(back,text('span','/'),text('span','衣橱'));
+    page.replaceChildren(breadcrumb);mountWardrobeSetting(page);
+  };
+  const installNativeWardrobeRoute = () => {
+    const native=window.__oliviaNativeView;
+    if(!native?.router||!native.h||native.router.hasRoute('olivia-wardrobe'))return;
+    native.router.addRoute({path:'/world/wardrobe',name:'olivia-wardrobe',component:{
+      name:'OliviaWardrobeView',render(){return native.h('main',{class:'mx-full h-full'})},mounted(){mountWardrobePage(this.$el)},
+      beforeUnmount(){this.$el.querySelector('[data-olivia-wardrobe]')?._wardrobeCleanup?.()},
+    }});
+    if(window.location.hash===WARDROBE_ROUTE)void native.router.replace('/world/wardrobe');
+  };
+
   const mountMusicSettings = (section, composer=false) => {
     const panel=document.createElement("section");
     panel.setAttribute("data-olivia-music-settings","true");
@@ -4483,6 +4652,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     window.requestAnimationFrame(() => {
       scheduled = false;
       installNativeWorldRoute();
+      installNativeWardrobeRoute();
       constrainLetterInputs();
       applyProactiveSendGate();
       mountMainNavigation();
@@ -4646,6 +4816,7 @@ BOOTSTRAP_JAVASCRIPT = r'''
         const cloudErrors={GPU_TLS_FAILED:'云端证书校验失败，请更新补丁并检查电脑时间。',GPU_CONNECTION_TIMEOUT:'云端连接超时，本次生成已停止等待。',GPU_CONNECT_FAILED:'无法连接云端，本次生成未完成。',GPU_CONNECTION_FAILED:'云端连接中断，本次生成未完成。',GPU_AUTH_FAILED:'云端 Key 验证失败，请检查 Olivia 账户。',GPU_QUEUE_FULL:'云端队列已满，本次任务未进入队列。',GPU_TASK_TIMEOUT:'云端任务等待超时，已停止等待。',GPU_TASK_FAILED:'云端生成失败。',GPU_DOWNLOAD_FAILED:'生成结果下载失败。',GPU_SHARED_SCENE_MISSING:'视频素材与云端不匹配，请联系管理员。',MEDIA_JOB_INTERRUPTED:'上次生成已中断，未自动重复提交。'};
         cloudErrors.GPU_INSUFFICIENT_BALANCE='Olivia 可用余额不足，本次媒体任务未入队。请充值后重试。';
         cloudErrors.GPU_BILLING_CONSENT_REQUIRED='请更新收费版客户端，确认费用上限后再生成。';
+        cloudErrors.GPU_RECOVERY_REQUIRED='上次视频订单需要恢复核对，未重新提交或重复扣费，请导出诊断包。';
         if(['FAILED','UNAVAILABLE'].includes(data.status)) {
           const code=typeof data.error_code==='string'&&/^[A-Z][A-Z0-9_]{0,95}$/.test(data.error_code)?data.error_code:'';
           status.textContent=(cloudErrors[code]||errors[code]||'本次媒体生成未完成。')+' 文字回信已保留。'+(code?`（${code}）`:'');
