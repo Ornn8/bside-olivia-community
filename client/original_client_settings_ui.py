@@ -3883,11 +3883,11 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const refresh = async () => {
       try {
         const result = await requestJson(LOCAL_LETTER_IMPORT_PATH, {relationship:"1"});
-        const count = `${result.processed || 0} / ${result.total || 0} 封`;
-        state.textContent = result.status === "RUNNING" ? `历史关系评估中：${count}，按顺序每五封评估一次。`
+        const count = `${result.processed || 0} / ${result.total || 0} 组`;
+        state.textContent = result.status === "RUNNING" ? `历史关系评估中：${count}，按顺序每五组往返记录评估一次。`
           : result.status === "FAILED" ? `历史关系评估暂停：${count}。已保存的原文不受影响，可重试剩余批次。`
           : result.status === "PENDING" ? `历史关系等待评估：${count}。请配置可用的大模型后点击重试。`
-          : result.status === "APPLIED" ? `历史关系已评估：${count}。重复信件不重复评估。`
+          : result.status === "APPLIED" ? `历史关系已评估：${count}。重复记录不重复评估。`
           : "历史关系评估暂不可用。";
         setDiagnosticDetails(state, result.status === "FAILED" ? result.error_code : null);
         // The evaluation runs by itself; the button is only for a paused or waiting run.
@@ -3907,7 +3907,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     });
     retry.hidden = true;
     section.append(text("div", "历史关系", "text-text-body text-title-m"),
-      text("p", "原文保存后会按顺序每五封往返信件评估关系，调用已配置的大模型并消耗额度。失败后暂停，重试会接着未完成的批次。", "text-text-secondary text-body-m font-regular"), state, retry);
+      text("p", "原文保存后会按顺序每五组完整往返信件或聊天评估关系，调用已配置的大模型并消耗额度。只有单方文字的记录不评估关系；失败后暂停，重试会接着未完成的批次。", "text-text-secondary text-body-m font-regular"), state, retry);
     void refresh();
   };
 
@@ -3934,25 +3934,27 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   };
 
   const mountLetterBackup = (section) => {
-    const state = text("div", "备份包含双方文字原文、时间和信件类型，不含音视频附件。请自行保管信件内容。", "text-text-secondary text-body-m font-regular");
+    const state = text("div", "备份包含信件、QQ／微信聊天的文字和时间。QQ／微信只保存已确认发出的回复；不含图片或音视频附件。请自行保管内容。", "text-text-secondary text-body-m font-regular");
     state.setAttribute("aria-live", "polite");
     const controls = actions();
     const file = document.createElement("input");
     file.type = "file"; file.accept = ".json,.soul,application/json"; file.hidden = true;
     file.addEventListener("cancel", event => event.stopPropagation());
-    const save = button("导出信件备份", async () => {
+    const save = button("导出信件与聊天备份", async () => {
       setButtonsBusy([save, restore], true);
-      state.textContent = "正在导出信件原文……";
+      state.textContent = "正在导出信件与聊天原文……";
       try {
         const result = await requestMutation("/toy/letter/backup/export", {});
-        if (result.status !== "READY" || result.backup?.schema_version !== "olivia.letters.v1") throw Error("invalid backup");
+        if (result.status !== "READY" || result.backup?.schema_version !== "olivia.letters.v1" || !Array.isArray(result.backup.letters)) throw Error("invalid backup");
         const blob = new Blob([JSON.stringify(result.backup, null, 2)], {type:"application/json;charset=utf-8"});
         const url = URL.createObjectURL(blob), link = document.createElement("a");
         link.href = url; link.download = `Olivia-letters-${new Date().toISOString().slice(0,10)}.json`;
         document.body.append(link); link.click(); link.remove();
         window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-        state.textContent = `已导出 ${result.backup.letters.length} 封信件，请在下载位置查看。`;
-      } catch (_) { state.textContent = "信件导出失败，请重试。原信件未改变。"; }
+        const qq = result.backup.letters.filter(row => row.channel === "qq").length;
+        const wechat = result.backup.letters.filter(row => row.channel === "wechat").length;
+        state.textContent = `已导出 ${result.backup.letters.length - qq - wechat} 封信件、${qq} 条 QQ 和 ${wechat} 条微信聊天记录，请在下载位置查看。`;
+      } catch (_) { state.textContent = "备份导出失败，请重试。原记录未改变。"; }
       finally { setButtonsBusy([save, restore], false); }
     });
     const restore = button("选择文件导入", () => file.click());
@@ -3961,18 +3963,18 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       setButtonsBusy([save, restore], true);
       try {
         const backup = await readLetterBackupFile(selected);
-        if (!await confirmAction("导入所选文件中的信件？支持灵离 .soul、原版 letter_pairs.json 和 Olivia 信件备份。只导入双方文字，.soul 内的音视频不会上传或导入；重复信件跳过，已有信件不覆盖。随后按顺序每五封调用模型评估关系并消耗额度，已有进度保留。")) return;
-        state.textContent = "正在保存信件原文，无需等待大模型……";
+        if (!await confirmAction("导入所选文件中的信件与聊天记录？支持灵离 .soul、原版 letter_pairs.json 和 Olivia 文字备份；QQ／微信记录需来自 Olivia 备份。只读保存文字，不回发旧消息，不导入图片或音视频；重复记录跳过，已有记录不覆盖。随后每五组完整往返记录调用模型评估关系并消耗额度，已有进度保留。")) return;
+        state.textContent = "正在保存信件与聊天原文，无需等待大模型……";
         const result = await requestMutation("/toy/letter/backup/import", {backup});
         if (result.status !== "APPLIED") throw Error("import failed");
-        state.textContent = `已导入 ${result.inserted} 封，重复 ${result.duplicates} 封。正在刷新信箱。`;
+        state.textContent = `已导入 ${result.inserted} 条记录，重复 ${result.duplicates} 条。正在刷新历史记录。`;
         window.setTimeout(() => window.location.reload(), 800);
-      } catch (_) { state.textContent = "导入未完成。请选择完整的 .soul、letter_pairs.json 或 Olivia 信件备份（文字清单最大 16 MB）；可再次导入，重复信件会跳过。"; }
+      } catch (_) { state.textContent = "导入未完成。请选择完整的 .soul、letter_pairs.json 或 Olivia 文字备份（文字清单最大 16 MB）；可再次导入，重复记录会跳过。"; }
       finally { file.value = ""; setButtonsBusy([save, restore], false); }
     });
     controls.append(save, restore, file);
-    section.append(text("div", "导入与导出信件", "text-text-body text-title-m"),
-      text("p", "已有灵离 .soul 或 JSON 备份、换电脑恢复：点“选择文件导入”。.soul 只读取文字，不导入音视频。没有单独保存文件：可在下方从原版目录读取。", "text-text-secondary text-body-m font-regular"), state, controls);
+    section.append(text("div", "导入与导出信件及聊天", "text-text-body text-title-m"),
+      text("p", "Olivia JSON 备份可恢复信件与 QQ／微信文字聊天；.soul 和 letter_pairs.json 只恢复文件内的信件文字。换电脑请先导出备份，再点“选择文件导入”。没有单独保存文件时，可在下方从原版目录读取信件。", "text-text-secondary text-body-m font-regular"), state, controls);
   };
 
   const mountLetterMaintenance = (section) => {
@@ -4228,7 +4230,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     mountVideoReplySetting(reply);
     if (window.__oliviaNativeView) mountProactiveSetting(reply);
     const chat = settingsGroup("chat", "QQ / 微信", "绑定后可以在 QQ 或微信里和林离聊天");
-    const letters = settingsGroup("letters", "信件与记忆", "导入、导出信件，查看长期记忆");
+    const letters = settingsGroup("letters", "信件与记忆", "备份信件与聊天，查看长期记忆");
     const memoryRow = document.createElement("div");
     memoryRow.className = "olivia-group-row";
     memoryRow.append(text("span", "长期记忆：查看、搜索和更正林离记住的事", "text-text-body text-body-m"),

@@ -10,13 +10,17 @@ B01 的私有 manifest/state matrix 只允许存在于 ignored `.evidence/`。�
 
 ## 版本与 envelope
 
-### 本地信件文件导入
+### 本地信件与聊天备份
 
-`POST /toy/letter/backup/import` 继续使用已有用户确认和导入互斥门禁。`backup` 字段支持原有 JSON 字符串/信件备份对象，以及 `{ "format": "soul", "manifest": { "memory": { "exchanges": [...] } } }`（见 `contracts/soul_letter_import.schema.json`）。
+`POST /toy/letter/backup/export` 导出本机已保存的信件以及 QQ／微信文字聊天，保持 `schema_version=olivia.letters.v1`、`letters` 数组和 `Olivia-letters-*.json` 文件名兼容。聊天项增加可选 `channel`（`qq` 或 `wechat`）与 `delivery_status`（`DELIVERED` 或 `RECEIVED_ONLY`）；没有 `channel` 的旧项仍按信件解释。
+
+聊天回复仅在确认送达后导出；已收到用户文字但回复未送达时，保留用户文字并以 `RECEIVED_ONLY`、空 `reply_text` 导出，不备份未发出的回复草稿。已送达的主动聊天回复可以没有用户文字。仅备份文字、时间和允许的记录类型字段，不包含图片、音视频附件、账号凭据、内部路径或待发送任务；导出不调用模型、不消耗模型额度。
+
+`POST /toy/letter/backup/import` 继续使用已有用户确认和导入互斥门禁。`backup` 字段支持原有 JSON 字符串/信件与聊天备份对象，以及 `{ "format": "soul", "manifest": { "memory": { "exchanges": [...] } } }`（见 `contracts/soul_letter_import.schema.json`）。QQ／微信记录必须包含在 Olivia JSON 备份中；本入口不从 QQ／微信服务器拉取历史。
 
 设置页在本地读取 `.soul` 的 `SOUL0001` 文件头、8 字节小端清单长度和 JSON 清单，只提交 `incoming`、`reply`、`date`、`time`；不读取或提交尾部媒体及媒体地址。清单上限 16 MiB，服务端另限制最多 10000 封并在事务前验证全部记录。日期按北京时间解释，无法解析时保留未知时间；信箱输出时间为 epoch 秒，相同时间按源文件顺序显示。双方原文相同（忽略空白差异）的已有信件跳过，不自动覆盖或修复已有记录。
 
-返回原有 `APPLIED/inserted/duplicates` 结果，格式错误沿用 `LETTER_BACKUP_INVALID`。保存原文不调用模型；成功后沿用历史关系评估流程，每五封评估一次，界面确认文案明确提示模型用量。
+返回原有 `APPLIED/inserted/duplicates` 结果，计数包含信件与聊天记录，格式错误沿用 `LETTER_BACKUP_INVALID`。导入内容只写入只读历史 Archive，保留聊天频道与送达状态，不重新发送旧消息、不恢复待发送任务。保存原文不调用模型；成功后沿用历史关系评估流程，每五组成对往返记录评估一次，只有单方文字的记录不进入关系评估，界面确认文案明确提示模型用量。
 
 - 运行时 HTTP envelope：`contract_version=b02.v1`、`schema_version=1`，保持原客户端兼容。
 - 机器可读 contract document：`contract_version=b02.v2`、`schema_version=2`；v2 新增必填 `letter_detail_generation`，因此不冒充 v1 schema。

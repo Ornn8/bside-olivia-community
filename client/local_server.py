@@ -141,7 +141,7 @@ from runtime.memory.private_world_runtime import (
 )
 
 from runtime.imports.official_letters import collect_default_official_text_replies
-from runtime.imports.letter_backup import export_letters as export_letter_backup, import_letters as import_letter_backup, is_backup as is_letter_backup
+from runtime.imports.letter_backup import export_letters as export_letter_backup, import_letters as import_letter_backup, is_backup as is_letter_backup, personal_chat_letters
 from runtime.imports.offline_letter_pairs import (
     OFFLINE_LETTER_PAIR_PROVENANCE_KEY,
     OFFLINE_LETTER_PAIR_PUBLISH_STATUS_KEY,
@@ -3900,13 +3900,14 @@ async def route(
         if companion_confirmed is not True:
             return err(403, "COMPANION_CONFIRMATION_REQUIRED")
         try:
+            if _store_state_error_code:
+                return err(503, "LETTER_BACKUP_STORAGE_UNAVAILABLE")
             if p.endswith('/import') and body.get('relationship_retry') is True:
                 _start_history_relationships(retry=True)
                 return ok(_history_relationship_status())
             if p.endswith("/export"):
-                if _store_state_error_code:
-                    return err(503, "LETTER_BACKUP_STORAGE_UNAVAILABLE")
-                payload = await asyncio.to_thread(export_letter_backup, _letter_collection("current", strict=True))
+                rows = _letter_collection("current", strict=True) + personal_chat_letters(getattr(store, 'personal_chats', ()))
+                payload = await asyncio.to_thread(export_letter_backup, rows)
                 return ok({"status": "READY", "backup": payload})
             if not _history_memory_admin_gate.acquire(blocking=False):
                 return err(409, "MEMORY_ADMIN_BUSY")
@@ -3917,6 +3918,7 @@ async def route(
                     # Recognize both original backups and exports of repaired
                     # dates, including hidden rows, without importing duplicates.
                     existing = existing + project(existing, getattr(store, 'letter_maintenance', {}), include_hidden=True)
+                    existing += personal_chat_letters(getattr(store, 'personal_chats', ()))
                     return await asyncio.to_thread(import_letter_backup, body.get("backup"),
                         adapter=_legacy_import_adapter(), existing=existing)
                 finally:
