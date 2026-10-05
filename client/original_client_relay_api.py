@@ -9,9 +9,9 @@ from original_client_setup_api import LLMSetupError, _authorize, _body, _headers
 from runtime.remote_generation import gpu_tls_context
 
 RELAY_BASE = 'https://175.24.191.6/v1'
-RELAY_MODEL = 'qwen3.7-flash'
+RELAY_MODEL = 'gemini-3.8-flash'
 RELAY_MULTIPLIER_BASELINE = 'gemini-3.8-flash'
-RELAY_MODELS = frozenset({RELAY_MODEL, 'gemini-3.8-flash', 'claude-opus-5-5',
+RELAY_MODELS = frozenset({RELAY_MODEL, 'qwen3.7-flash', 'claude-opus-5-5',
     'claude-sonnet-5-5', 'claude-opus-4-6', 'qwen3.8-max'})
 
 
@@ -126,7 +126,9 @@ def mount_relay_api(app, setup):
                 for row in rows:
                     for field in fields:
                         row[field] = format(Decimal(row[field]) / divisors[field], '.5f')
-                return web.json_response({'models': rows, 'selected_model': setup._config().model,
+                config = setup._config()
+                selected = config.model if config.base_url.rstrip('/') == RELAY_BASE and config.model in RELAY_MODELS else RELAY_MODEL
+                return web.json_response({'models': rows, 'selected_model': selected,
                     'baseline_model': RELAY_MULTIPLIER_BASELINE}, headers=_headers(origin))
         if data.get('action') in {'claim', 'connect', 'import_key', 'account', 'export_key'}:
             operation = data['action']

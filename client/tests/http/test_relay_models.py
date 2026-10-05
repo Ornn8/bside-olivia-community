@@ -39,17 +39,25 @@ def test_select_model_keeps_encrypted_key_and_runtime_choice_across_reconnect(
             response = await client.post('/toy/relay/action', headers=headers, json={'action': 'models'})
             if expected_default is None:
                 assert response.status == 503
-                assert service._config().model == 'qwen3.7-flash'
+                assert service._config().model == 'gemini-3.8-flash'
                 return
             assert response.status == 200
             catalog = await response.json()
-            assert catalog['selected_model'] == 'qwen3.7-flash'
+            assert catalog['selected_model'] == 'gemini-3.8-flash'
             assert catalog['baseline_model'] == 'gemini-3.8-flash'
             rows = {row['id']: row for row in catalog['models']}
             assert 'actual_model' not in rows['qwen3.7-flash']
             for model, expected in [('qwen3.7-flash', expected_default),
                     ('claude-opus-5-5', expected_opus), ('gemini-3.8-flash', ('1.00000', '1.00000'))]:
                 assert (rows[model]['input_multiplier'], rows[model]['output_multiplier']) == expected
+            response = await client.post('/toy/relay/action', headers=headers, json={'action': 'connect'})
+            assert response.status == 200
+            assert service._config().model == 'gemini-3.8-flash'
+            response = await client.post('/toy/relay/action', headers=headers, json={'action': 'select_model', 'model': 'qwen3.7-flash'})
+            assert response.status == 200
+            response = await client.post('/toy/relay/action', headers=headers, json={'action': 'connect'})
+            assert response.status == 200
+            assert service._config().model == 'qwen3.7-flash'
             response = await client.post('/toy/relay/action', headers=headers, json={'action': 'select_model', 'model': 'claude-opus-5-5'})
             assert response.status == 200
             assert (await response.json())['selected_model'] == 'claude-opus-5-5'
