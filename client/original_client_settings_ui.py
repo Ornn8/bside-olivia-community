@@ -2022,7 +2022,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     box.setAttribute("data-olivia-relay-models", "");
     box.style.cssText = "display:grid;gap:12px;margin:24px 0;min-width:0";
     const title = text("h3", "回信模型", "text-text-title text-title-m");
-    const description = text("p", "以 Gemini 3.8 Flash 为 1 倍。输入和输出分别计费，实际消费取决于用量；短请求可能受最低计费规则影响。", "text-text-secondary text-body-m");
+    const description = text("p", "以 Claude Sonnet 5.5 为 1 倍。输入和输出分别计费，实际消费取决于用量；短请求可能受最低计费规则影响。", "text-text-secondary text-body-m");
     const list = document.createElement("fieldset");
     list.style.cssText = "margin:0;padding:0;border:0;min-width:0";
     const legend = text("legend", "选择回信模型");
@@ -2067,11 +2067,19 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         radios.push(radio);
         const name = text("span", item.display_name, "text-text-title text-body-m");
         name.style.cssText = "overflow-wrap:anywhere;line-height:1.5";
+        const detail = document.createElement("span");
+        detail.style.cssText = "display:grid;gap:4px;min-width:0";
+        detail.append(name);
+        if (item.description) {
+          const intro = text("span", item.description, "text-text-secondary text-body-m");
+          intro.style.cssText = "font-size:13px;line-height:1.65;overflow-wrap:anywhere";
+          detail.append(intro);
+        }
         const ratio = value => Number(value).toLocaleString("zh-CN", {maximumFractionDigits:2});
         const ratios = text("span", `输入 ${ratio(item.input_multiplier)}× · 输出 ${ratio(item.output_multiplier)}×`, "text-text-secondary text-body-m");
         ratios.className += " olivia-model-multipliers";
         ratios.style.cssText = "font-variant-numeric:tabular-nums;font-size:13px;line-height:1.5";
-        row.append(radio, name, ratios); list.append(row);
+        row.append(radio, detail, ratios); list.append(row);
       }
       status.textContent = rows.length ? "选择后点击「使用所选模型」，下一次发送生效。" : "暂无可用模型，请稍后重新打开账户页面。";
     }).catch(() => { status.textContent = "模型列表读取失败，请稍后重新打开账户页面。"; });

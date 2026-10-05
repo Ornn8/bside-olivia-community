@@ -2,6 +2,16 @@ import pytest
 from runtime.reply.model_capabilities import model_capabilities
 
 
+@pytest.mark.parametrize('model,forced', [
+    ('claude-fable-5-1', False), ('gpt-6.1-sol', True), ('gpt-6-astra', True), ('gpt-6-luna', True),
+])
+def test_new_relay_models_preserve_tools_and_usage(model, forced):
+    caps = model_capabilities('https://proxy.test/v1', model)
+    assert caps.tools and caps.stream_usage
+    assert caps.tool_choice is forced
+    assert caps.reasoning_parameters(True) == {}
+
+
 def test_unknown_model_uses_no_vendor_extensions():
     caps = model_capabilities('https://example.test/v1', 'vendor/model-new')
     assert caps.reasoning_parameters(True) == {}

@@ -9,10 +9,11 @@ from original_client_setup_api import LLMSetupError, _authorize, _body, _headers
 from runtime.remote_generation import gpu_tls_context
 
 RELAY_BASE = 'https://175.24.191.6/v1'
-RELAY_MODEL = 'gemini-3.8-flash'
-RELAY_MULTIPLIER_BASELINE = 'gemini-3.8-flash'
-RELAY_MODELS = frozenset({RELAY_MODEL, 'qwen3.7-flash', 'claude-opus-5-5',
-    'claude-sonnet-5-5', 'claude-opus-4-6', 'qwen3.8-max'})
+RELAY_MODEL = 'claude-sonnet-5-5'
+RELAY_MULTIPLIER_BASELINE = 'claude-sonnet-5-5'
+RELAY_MODELS = frozenset({RELAY_MODEL, 'gemini-3.8-flash', 'qwen3.7-flash', 'claude-opus-5-5',
+    'claude-sonnet-5-5', 'claude-opus-4-6', 'qwen3.8-max', 'claude-fable-5-1',
+    'gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-luna'})
 
 
 async def relay_request(base, key, method, path, payload=None):
@@ -111,12 +112,14 @@ def mount_relay_api(app, setup):
                     if not isinstance(item, dict) or item.get('id') not in RELAY_MODELS:
                         continue
                     name = item.get('display_name', item['id'])
+                    description = item.get('description', '')
                     ratios = [item.get(field, '1') for field in ('input_multiplier', 'output_multiplier')]
-                    if (not isinstance(name, str) or len(name) > 80 or any(
+                    if (not isinstance(name, str) or len(name) > 80 or
+                            not isinstance(description, str) or len(description) > 180 or any(
                             not isinstance(ratio, str) or len(ratio) > 20 or not re.fullmatch(r'[0-9]+(?:\.[0-9]+)?', ratio)
                             for ratio in ratios)):
                         raise LLMSetupError('RELAY_RESPONSE_INVALID', status=503)
-                    rows.append({'id': item['id'], 'display_name': name,
+                    rows.append({'id': item['id'], 'display_name': name, 'description': description,
                         'input_multiplier': ratios[0], 'output_multiplier': ratios[1]})
                 baseline = next((row for row in rows if row['id'] == RELAY_MULTIPLIER_BASELINE), None)
                 fields = ('input_multiplier', 'output_multiplier')
