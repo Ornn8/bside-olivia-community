@@ -278,6 +278,7 @@ def test_deleted_alias_during_extraction_cannot_be_resurrected(tmp_path, monkeyp
 
 
 def test_backfill_batches_originals_and_persists_skips_across_restart(tmp_path, monkeypatch):
+    import threading
     class BatchDecisions:
         calls = []
         def ask_sync(self, state, questions, *, purpose):
@@ -292,7 +293,11 @@ def test_backfill_batches_originals_and_persists_skips_across_restart(tmp_path, 
                     answers[f'r{i}_{category}'] = 'keep' if keep and category != 'affection' else 'skip'
             return answers
     decisions, adapter = BatchDecisions(), memory(tmp_path)
-    monkeypatch.setattr(jev_questions, 'configured_questions', lambda: decisions)
+    # This exercises synchronous refresh; late workers from other fixtures must
+    # not share its counting fake or contribute unrelated calls.
+    owner = threading.current_thread()
+    monkeypatch.setattr(jev_questions, 'configured_questions',
+                        lambda: decisions if threading.current_thread() is owner else None)
     for i in range(24):
         reply = PROMISE if i == 0 else WITHDRAWAL if i == 12 else '今天聊普通近况。'
         index(adapter, source=f'reply:backfill{i}:1', reply=reply, stamp=NOW + timedelta(minutes=i))
