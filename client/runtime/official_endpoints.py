@@ -1,4 +1,4 @@
-"""Official service addresses and the exact legacy-IP upgrade boundary."""
+"""Managed service addresses and the exact legacy-IP upgrade boundary."""
 import json
 import os
 from pathlib import Path
