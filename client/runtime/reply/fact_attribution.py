@@ -269,7 +269,8 @@ def prepare_dialogue_messages(messages, *, max_input_chars):
             # have an audio/video media_deliveries entry. Losing those leaves
             # only the assistant's interpretation as apparent image evidence.
             media = [{k: v for k, v in row.items() if k not in {'user_letter', 'linli_reply'}}
-                     for row in rows if row.get('media_deliveries') or row.get('image_observations')]
+                     for row in rows if row.get('media_deliveries') or row.get('image_observations')
+                     or row.get('incoming_media_observations')]
             if media:
                 payload = json.dumps({'untrusted': True, 'text': json.dumps({
                     'kind': 'delivered_media', 'letters': media}, ensure_ascii=False)}, ensure_ascii=False)

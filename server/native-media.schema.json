@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:olivia:native-media:v1",
+  "description": "POST /v1/media/observations, authenticated with the existing Olivia account. Duration, page count and decoded byte limits are additionally checked by the service.",
+  "$defs": {
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "mime_type", "data"],
+      "properties": {
+        "kind": {"enum": ["audio", "video", "pdf"]},
+        "mime_type": {"enum": ["audio/wav", "video/mp4", "application/pdf"]},
+        "data": {"type": "string", "minLength": 4, "maxLength": 5592408, "contentEncoding": "base64"}
+      },
+      "oneOf": [
+        {"properties": {"kind": {"const": "audio"}, "mime_type": {"const": "audio/wav"}}},
+        {"properties": {"kind": {"const": "video"}, "mime_type": {"const": "video/mp4"}}},
+        {"properties": {"kind": {"const": "pdf"}, "mime_type": {"const": "application/pdf"}}}
+      ]
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "summary"],
+      "properties": {
+        "kind": {"enum": ["audio", "video", "pdf"]},
+        "summary": {"type": "string", "minLength": 1, "maxLength": 6000, "pattern": "\\S"}
+      }
+    }
+  }
+}

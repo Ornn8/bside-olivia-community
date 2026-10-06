@@ -69,6 +69,11 @@ def conversation_context(rows, *, query, now, excluded_sources=(), max_chars=600
         images = image_evidence(row)
         if images:
             item['image_observations'] = images
+        from runtime.incoming_media import evidence, BOUNDARY as MEDIA_BOUNDARY
+        media = evidence(row)
+        if media:
+            item['incoming_media_observations'] = media
+            item['incoming_media_meaning'] = MEDIA_BOUNDARY
         if deliveries:
             item['media_deliveries'] = grouped_delivery_evidence(deliveries)
             item['media_outcome'] = delivery_outcome(row)
@@ -87,6 +92,7 @@ def conversation_context(rows, *, query, now, excluded_sources=(), max_chars=600
                 # Optional observations must fit the remaining budget, not a
                 # fixed quota that can displace the latest correction.
                 images = item.get('image_observations', [])
+                images = images + item.get('incoming_media_observations', [])
                 for edge in (120, 60, 24):
                     for image in images:
                         summary = image['summary']
@@ -96,7 +102,10 @@ def conversation_context(rows, *, query, now, excluded_sources=(), max_chars=600
                     if len(json.dumps(packet, ensure_ascii=False, separators=(',', ':'))) <= recent_budget:
                         break
                 while images and len(json.dumps(packet, ensure_ascii=False, separators=(',', ':'))) > recent_budget:
-                    images.pop(0)
+                    removed = images.pop(0)
+                    for field in ('image_observations', 'incoming_media_observations'):
+                        if removed in item.get(field, []):
+                            item[field].remove(removed)
                     item['image_observations_omitted'] = True
                 sources.append(item['source_id'])
             break  # Never jump over a missing exchange and call the result continuous.

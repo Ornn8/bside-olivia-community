@@ -418,11 +418,14 @@ class CanonicalMemoryOutbox:
         # The same outbox/committer owns both channels. Generated or uncertain
         # sends are never canonical memory even if their text is present.
         from runtime.image_understanding import image_memory_rows
+        from runtime.incoming_media import media_memory_rows
         image_rows = tuple(image for row in (*letters, *chats) if isinstance(row, Mapping)
                            for image in image_memory_rows(row))
+        media_rows = tuple(media for row in (*letters, *chats) if isinstance(row, Mapping)
+                           for media in media_memory_rows(row))
         return (*tuple(row for row in letters if isinstance(row, Mapping)),
                 *tuple(row for row in chats if isinstance(row, Mapping)
-                       and row.get("delivery_status") == "DELIVERED"), *image_rows)
+                       and row.get("delivery_status") == "DELIVERED"), *image_rows, *media_rows)
 
     def _terminal_sources(self) -> set[str]:
         try:

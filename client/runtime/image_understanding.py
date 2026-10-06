@@ -77,6 +77,8 @@ async def describe_image(server, path, source='generated', *, operation_id=None)
     if source not in {'generated', 'user'}:
         raise ValueError('IMAGE_SOURCE_INVALID')
     digest, width, height, uri = await asyncio.to_thread(_pixels, path)
+    from runtime.incoming_media import gif_frames
+    frames = await asyncio.to_thread(gif_frames, path) if source == 'user' else []
     url, key = _vision_connection(server)
     if not key or not url:
         raise RuntimeError('IMAGE_VISION_NOT_CONFIGURED')
@@ -84,6 +86,13 @@ async def describe_image(server, path, source='generated', *, operation_id=None)
                'messages': [{'role': 'system', 'content': _PROMPT},
                             {'role': 'user', 'content': [{'type': 'text', 'text': '请观察图片。'},
                                  {'type': 'image_url', 'image_url': {'url': uri}}]}]}
+    if frames:
+        payload['messages'][1]['content'] = [{'type': 'text', 'text':
+            '这些是同一动图按时间排列的有限采样帧，请描述可见变化；未展示的帧不能猜。'}]
+        for seconds, frame in frames:
+            payload['messages'][1]['content'].extend([
+                {'type': 'text', 'text': f'采样时间：{seconds}秒'},
+                {'type': 'image_url', 'image_url': {'url': frame}}])
     from original_client_relay_api import RELAY_BASE
     from runtime.remote_generation import gpu_tls_context
     tls = {'ssl': gpu_tls_context()} if url == RELAY_BASE else {}

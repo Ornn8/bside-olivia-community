@@ -44,7 +44,7 @@ def freeze_read_window(rows, *, channel, binding_id, current_id):
         # Preserve incoming evidence only. No unsent reply/media fields cross the boundary.
         item = {key: row[key] for key in ('letter_id', 'channel', 'binding_id', 'created_at',
                 'life_received_at', 'user_sent_at', 'content', 'source_messages',
-                'incoming_image_observations', '_receipt_order') if key in row}
+                'incoming_image_observations', 'incoming_media_observations', '_receipt_order') if key in row}
         item['_received_only'] = True
         position = next((i for i, old in enumerate(delivered) if same(old)
                          and (timestamp(old), old['_receipt_order'])

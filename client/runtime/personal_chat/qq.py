@@ -156,6 +156,24 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
     send.audio = send_audio
     send.image = send_image
     send.file = send_file
+    async def resolve_media(kind, reference):
+        if kind not in {'audio', 'video', 'file'} or not re.fullmatch(r'[A-Za-z0-9_.-]{1,256}', reference):
+            raise ValueError('QQ_MEDIA_REFERENCE_INVALID')
+        echo = uuid.uuid4().hex
+        future = asyncio.get_running_loop().create_future()
+        pending[echo] = future
+        try:
+            action = 'get_record' if kind == 'audio' else 'get_private_file_url' if kind == 'file' else 'get_file'
+            params = {'file_id': reference}
+            if kind == 'audio':
+                params['out_format'] = 'wav'
+            await ws.send_json({'action': action, 'echo': echo, 'params': params})
+            return _ack(await asyncio.wait_for(future, media_ack_timeout))
+        finally:
+            pending.pop(echo, None)
+            if not future.done():
+                future.cancel()
+    send.resolve_media = resolve_media
     send.is_available = lambda: not ws.closed
 
     def for_exchange(event):
@@ -174,6 +192,7 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
             return await send_item({'type': 'image', 'data': {'file': Path(path).resolve().as_uri()}}, reply_to)
         correlated.image = correlated_image
         correlated.file = send_file
+        correlated.resolve_media = resolve_media
         correlated.is_available = send.is_available
         return correlated
 
@@ -274,7 +293,7 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
                         break
                     if (next_event.text.strip() == '/连接测试'
                             or sum(len(e.text)+1 for e in events) + len(next_event.text) > 10000
-                            or sum(len(e.images) for e in events) + len(next_event.images) > 4
+                            or sum(len(e.images) + len(e.media) for e in events) + len(next_event.images) + len(next_event.media) > 4
                             or not mergeable_by_sent_time(events[-1], next_event, merge_seconds)):
                         carry = next_event
                         break
@@ -356,7 +375,8 @@ async def run_qq(url, token, account_id, owner_id, handle_message, stop_event,
         while not stop_event.is_set():
             try:
                 publish("CONNECTING" if failures == 0 else "RECONNECTING")
-                async with session.ws_connect(url, headers={"Authorization": "Bearer " + token}, heartbeat=20) as ws:
+                async with session.ws_connect(url, headers={"Authorization": "Bearer " + token}, heartbeat=20,
+                                              max_msg_size=8 * 1024 * 1024) as ws:
                     await _connection(ws, account_id, owner_id, handle_message, stop_event, ack_timeout, merge_seconds,
                                       state_callback=publish, media_ack_timeout=media_ack_timeout,
                                       diagnostic_callback=diagnostic_callback)

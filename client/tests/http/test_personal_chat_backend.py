@@ -66,7 +66,7 @@ _BASE_CASE = ('qq', '今天钢琴练得怎么样？', '那你明天再跟我说�
 
 
 @pytest.mark.parametrize('failure_code,envelope_variant,sample',
-    [(None, variant, _BASE_CASE) for variant in ('plain', 'fenced', 'missing_sticker', 'numeric_sticker', 'extra_fields')]
+    [(None, variant, _BASE_CASE) for variant in ('plain', 'fenced', 'missing_sticker', 'numeric_sticker', 'extra_fields', 'native_media')]
     + [(code, 'plain', _BASE_CASE) for code in ('PROVIDER_TIMEOUT', 'PROVIDER_PROTOCOL', 'LLM_TIMEOUT', 'outer_timeout')]
     + [(None, variant, (channel, user, reply)) for channel in ('qq', 'wechat') for user, reply in _REPLY_CASES
        for variant in ('missing_control', 'text_only', 'repeated_reply', 'unrequested_speech', 'invalid_unrequested_speech')])
@@ -128,6 +128,14 @@ def test_backend_generate_uses_real_pipeline_persona_memory_and_world(monkeypatc
         _persist_store_state=lambda: None,
         _safe_log=lambda event, **fields: logs.append(dict(event=event, **fields)))
     event = PersonalMessage(channel, "100", "200", "1", user)
+    if envelope_variant == 'native_media':
+        from dataclasses import replace
+        event = replace(event, input_kind='voice', media=(('1', 'audio', 'a'*32, ''),))
+        async def recognize(_server, current, row):
+            assert current.media == event.media
+            row['incoming_media_observations'] = [dict(kind='audio', summary='蓝色笔记本十七元。',
+                source='user', evidence_kind='media_observation')]
+        monkeypatch.setattr('runtime.incoming_media.understand_incoming', recognize)
     if envelope_variant == 'repeated_reply':
         server.store.personal_chats.append(dict(channel=channel, binding_id=event.binding_id,
             delivery_status='DELIVERED', reply_text=reply_text))
@@ -144,7 +152,10 @@ def test_backend_generate_uses_real_pipeline_persona_memory_and_world(monkeypatc
             raise TimeoutError()
         assert request.max_input_chars == 40000 + len(request.content)
         assert request.content.startswith(event.text + '\n[系统图片观察，非用户原话]')
-        assert json.loads(request.content.split('\n', 2)[2])['current_turn_has_images'] is False
+        assert json.loads(request.content.split('\n', 2)[2].split('\n[系统媒体观察')[0])['current_turn_has_images'] is False
+        if envelope_variant == 'native_media':
+            assert adapter.config.model == 'synthetic'  # observation never replaces the reply model
+            assert '蓝色笔记本十七元' in request.content and '不是用户直接输入' in request.content
         if channel == 'qq':
             assert any(f.fact_id == 'runtime.photo_attachment' and '已开启' in f.statement
                        for f in context.world_facts)
@@ -214,7 +225,9 @@ def test_backend_generate_uses_real_pipeline_persona_memory_and_world(monkeypatc
     assert "synthetic-memory-keeps-piano" in turn_state and "synthetic-memory-keeps-piano" not in system
     assert "synthetic-world-evening-piano" in turn_state
     assert calls[0][-1]["content"].split('\n', 1)[0] == event.text
-    assert json.loads(calls[0][-1]['content'].split('\n', 2)[2])['current_turn_has_images'] is False
+    assert json.loads(calls[0][-1]['content'].split('\n', 2)[2].split('\n[系统媒体观察')[0])['current_turn_has_images'] is False
+    if envelope_variant == 'native_media':
+        assert '蓝色笔记本十七元' in calls[0][-1]['content']
 
 
 def test_service_ack_precedes_backend_world_and_daily_life_commit():

@@ -340,6 +340,10 @@ async def _generate_billed(server, event, row):
     from runtime.image_understanding import understand_incoming, incoming_context
     await understand_incoming(server, event, row)
     observation_context = incoming_context(row)
+    from runtime import incoming_media
+    await incoming_media.understand_incoming(server, event, row)
+    if event.media:
+        observation_context += incoming_media.incoming_context(row)
     content = event.text + observation_context
     source = server._CURRENT_LETTER_MEMORY_SOURCE.set(f"reply:{event.exchange_id}:1")
     receipt = server._CURRENT_LETTER_RECEIPT.set(datetime.fromisoformat(row["life_received_at"]))
