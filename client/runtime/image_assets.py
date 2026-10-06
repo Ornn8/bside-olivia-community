@@ -1,4 +1,4 @@
-"""Fetch one pinned distribution image from R2 into durable user data."""
+"""Fetch one pinned distribution image into durable user data."""
 import asyncio
 from functools import lru_cache
 import hashlib
@@ -15,6 +15,7 @@ import zipfile
 from aiohttp import ClientSession, ClientTimeout, TCPConnector, ClientError
 from runtime.cloud_service import CloudError
 from runtime.remote_generation import gpu_tls_context
+from runtime.official_endpoints import COMPONENT_COS_HOST, COMPONENT_COS_PREFIX, canonical_api_origin
 
 R2_HOST = '3fa206f49fd071a9eff9a1c9905208dd.r2.cloudflarestorage.com'
 R2_BUCKET = 'vocal-backlog'
@@ -35,10 +36,13 @@ def _catalog():
 def _validate_download_url(url, entry):
     try:
         parsed = urlsplit(url)
-        valid = (parsed.scheme == 'https' and parsed.hostname == R2_HOST
+        source_matches = (parsed.hostname == R2_HOST
+                          and parsed.path == '/' + R2_BUCKET + '/' + quote(entry['key'], safe='/')) or (
+                          parsed.hostname == COMPONENT_COS_HOST
+                          and parsed.path == COMPONENT_COS_PREFIX + quote(entry['key'], safe='/'))
+        valid = (parsed.scheme == 'https' and source_matches
                  and not parsed.username and not parsed.password and not parsed.fragment
-                 and parsed.port in (None, 443)
-                 and parsed.path == '/' + R2_BUCKET + '/' + quote(entry['key'], safe='/'))
+                  and parsed.port in (None, 443))
     except (TypeError, ValueError):
         valid = False
     if not valid:
@@ -150,7 +154,7 @@ async def ensure_image(data_root, kind, asset_id, *, base_url=None):
                 raise CloudError('STICKER_PACK_NOT_INSTALLED', 404)
             return pack_file
         from runtime.gpu_settings import GPU_BASE
-        base = (base_url or os.environ.get('OLIVIA_GPU_API_URL') or GPU_BASE).rstrip('/')
+        base = canonical_api_origin((base_url or os.environ.get('OLIVIA_GPU_API_URL') or GPU_BASE).rstrip('/'))
         ticket_url = base + '/v1/components/images/' + kind + '/' + asset_id
         target.parent.mkdir(parents=True, exist_ok=True)
         for attempt in range(2):
@@ -169,7 +173,7 @@ async def ensure_image(data_root, kind, asset_id, *, base_url=None):
                             raise CloudError('IMAGE_ASSET_INVALID', 502)
                         url = ticket['url']
                         _validate_download_url(url, entry)
-                    # Separate R2 GET carries no account credential. Redirects are forbidden.
+                    # Separate object GET carries no account credential. Redirects are forbidden.
                     async with session.get(url, allow_redirects=False) as response:
                         if response.status != 200:
                             raise CloudError('IMAGE_ASSET_UNAVAILABLE', 503)

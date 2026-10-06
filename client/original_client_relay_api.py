@@ -1,5 +1,4 @@
 """Session-protected recharge controls for the saved Olivia relay connection."""
-from urllib.parse import urlsplit
 from decimal import Decimal
 import asyncio
 import re
@@ -7,8 +6,9 @@ import secrets
 from aiohttp import ClientSession, ClientTimeout, ClientError, ClientSSLError, ClientConnectionError, web
 from original_client_setup_api import LLMSetupError, _authorize, _body, _headers, SESSION_HEADER
 from runtime.remote_generation import gpu_tls_context
+from runtime.official_endpoints import API_BASE, canonical_api_base
 
-RELAY_BASE = 'https://175.24.191.6/v1'
+RELAY_BASE = API_BASE
 RELAY_MODEL = 'claude-sonnet-5-5'
 RELAY_MULTIPLIER_BASELINE = 'claude-sonnet-5-5'
 RELAY_MODELS = frozenset({RELAY_MODEL, 'gemini-3.8-flash', 'qwen3.7-flash', 'claude-opus-5-5',
@@ -17,7 +17,8 @@ RELAY_MODELS = frozenset({RELAY_MODEL, 'gemini-3.8-flash', 'qwen3.7-flash', 'cla
 
 
 async def relay_request(base, key, method, path, payload=None):
-    if urlsplit(base).scheme != 'https' or not key.startswith('olivia-'):
+    base = canonical_api_base(base)
+    if base.rstrip('/') != RELAY_BASE or not key.startswith('olivia-'):
         raise LLMSetupError('RELAY_NOT_CONFIGURED', status=400)
     try:
         async with ClientSession(timeout=ClientTimeout(total=20)) as session:
