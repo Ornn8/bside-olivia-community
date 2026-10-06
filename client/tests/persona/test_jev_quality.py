@@ -308,3 +308,29 @@ def test_memory_fabrication_rule_covers_misattributed_speakers():
     rule = json.dumps(_CODE_RULES['MEMORY_FABRICATION'], ensure_ascii=False)
     assert '安到错误的人身上' in rule and '你答应过' in rule
     assert 'speaker' in _SELECTED and '不得颠倒' in _SELECTED
+
+
+def test_relationship_review_and_confirmation_keep_utterances_separate_from_ledger(monkeypatch):
+    import json
+    from dataclasses import asdict
+    port = Decisions()
+    review = transport(monkeypatch, port)
+    original = {'kind': 'relationship_history', 'coverage': 'bounded', 'records': [
+        {'citation': 'reply:agreement:1:linli', 'speaker': 'linli',
+         'text': '先当我的考察期男友吧。', 'occurred_at': '2026-10-01T10:00:00+00:00',
+         'evidence_scope': 'recorded_utterance'},
+        {'citation': 'reply:withdrawal:1:linli', 'speaker': 'linli',
+         'text': '考察期的说法我先收回。', 'occurred_at': '2026-10-06T10:00:00+00:00',
+         'evidence_scope': 'recorded_utterance'}]}
+    memory = '<untrusted_history>' + json.dumps({'untrusted': True, 'text': json.dumps(original)}) + '</untrusted_history>'
+    data = request('考察期这话是我说过，后来收回了。')
+    data['references'].extend(asdict(ref) for ref in quality._reference_chunks('current.memory_evidence', memory))
+    review.review_json(data, model='jev', timeout_seconds=5)
+    detection = port.calls[0][0]
+    history_ref = detection['layers']['identity_boundary']['input_refs']['relationship_history']
+    assert detection['catalog'][history_ref] == [original]
+    confirmation, _ = confirm_call(port)
+    context = confirmation['adjudication_contexts']['relationship']
+    assert confirmation['catalog'][context['relationship_context']] == {'stage': 'acquaintance'}
+    assert confirmation['catalog'][context['relationship_history']] == [original]
+    assert 'memory_evidence' not in context and 'current_user_input' not in context

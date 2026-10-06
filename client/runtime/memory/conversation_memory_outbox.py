@@ -10,6 +10,7 @@ own SQLite journal.  No message text is copied into the journal.
 from __future__ import annotations
 
 import asyncio
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
@@ -174,6 +175,7 @@ class CanonicalMemoryOutbox:
             try:
                 letters = self._read_letters()
                 received = self._read_received_rows()
+                terminal_sources = self._terminal_sources()
             except ConversationMemoryOutboxError as exc:
                 return OutboxScanResult("unavailable", error_code=exc.code)
 
@@ -185,17 +187,25 @@ class CanonicalMemoryOutbox:
             except Exception:
                 # Canonical delivery remains independent; retry from durable state.
                 pending += 1
-            indexed = 0
+            deliveries = []
             for row in letters:
                 delivery = _delivery_from_row(row, user_id=self.user_id)
                 if delivery is None:
                     ignored += 1
                     continue
-                discovered += 1
-                index_original = getattr(self.committer, "index_original", None)
-                if index_original is not None and indexed < 20:
+                deliveries.append(delivery)
+            # Prioritize fresh originals when an old, already-completed account
+            # first builds its local index. Canonical commits retain store order.
+            index_original = getattr(self.committer, "index_original", None)
+            if callable(index_original):
+                indexed = 0
+                for delivery in sorted(deliveries, key=lambda d: d.occurred_at, reverse=True):
                     indexed += bool(await index_original(delivery))
-                if self._is_terminal(delivery.source_id):
+                    if indexed >= 20:
+                        break
+            for delivery in deliveries:
+                discovered += 1
+                if delivery.source_id in terminal_sources:
                     duplicates += 1
                     continue
                 if self._budget_exhausted(delivery.source_id):
@@ -206,6 +216,11 @@ class CanonicalMemoryOutbox:
                 if callable(drain):
                     for completed_delivery, completed_result in drain():
                         self._record(completed_delivery, completed_result)
+                        if completed_result.status in {
+                            CanonicalMemoryDeliveryStatus.WRITTEN, CanonicalMemoryDeliveryStatus.DUPLICATE,
+                            CanonicalMemoryDeliveryStatus.SKIPPED,
+                        }:
+                            terminal_sources.add(completed_delivery.source_id)
                 if result.status is CanonicalMemoryDeliveryStatus.WRITTEN:
                     delivered += 1
                     self._record(delivery, result)
@@ -218,8 +233,16 @@ class CanonicalMemoryOutbox:
                 else:
                     pending += 1
                     self._record(delivery, result)
+                if result.status in {
+                    CanonicalMemoryDeliveryStatus.WRITTEN, CanonicalMemoryDeliveryStatus.DUPLICATE,
+                    CanonicalMemoryDeliveryStatus.SKIPPED,
+                }:
+                    terminal_sources.add(delivery.source_id)
 
             await self._index_archive_originals()
+            refresh = getattr(self.committer, 'refresh_relationship_memory', None)
+            if callable(refresh):
+                await refresh(self.user_id)
             status = "degraded" if pending else "available"
             return OutboxScanResult(
                 status,
@@ -267,7 +290,7 @@ class CanonicalMemoryOutbox:
                 await register(self.user_id, [delivery.source_id for delivery in deliveries])
             except Exception:
                 pass  # Progress is optional; indexing still proceeds.
-        for delivery in deliveries:
+        for delivery in sorted(deliveries, key=lambda d: d.occurred_at or datetime.fromtimestamp(0, timezone.utc), reverse=True):
             indexed += bool(await index(delivery))
             if indexed >= 20:
                 break
@@ -401,19 +424,17 @@ class CanonicalMemoryOutbox:
                 *tuple(row for row in chats if isinstance(row, Mapping)
                        and row.get("delivery_status") == "DELIVERED"), *image_rows)
 
-    def _is_terminal(self, source_id: str) -> bool:
+    def _terminal_sources(self) -> set[str]:
         try:
-            with self._connect() as connection:
-                row = connection.execute(
-                    "SELECT status FROM canonical_memory_deliveries "
-                    "WHERE source_id = ?",
-                    (source_id,),
-                ).fetchone()
+            with closing(self._connect()) as connection:
+                rows = connection.execute(
+                    "SELECT source_id FROM canonical_memory_deliveries WHERE status IN ('written','duplicate')"
+                ).fetchall()
         except (OSError, sqlite3.Error) as exc:
             raise ConversationMemoryOutboxError(
                 "MEMORY_OUTBOX_STORAGE_UNAVAILABLE"
             ) from exc
-        return row is not None and str(row[0]) in _TERMINAL
+        return {str(row[0]) for row in rows}
 
     def _record(
         self,

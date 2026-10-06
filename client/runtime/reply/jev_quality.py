@@ -26,6 +26,19 @@ def review_messages(layer, *, candidate, current_user_input, mode, memory_eviden
             data['world_state_meaning'] = memory_evidence['world_state']
     if layer.name == 'identity_boundary':
         data['relationship_context'] = dict(relationship_context or {})
+        from .reply_model_quality import _reference_objects
+        relationships = []
+        for tag, wrapper in _reference_objects(memory_evidence.get('assembled_memory', '')):
+            if tag != 'untrusted_history' or not isinstance(wrapper, dict):
+                continue
+            try:
+                packet = json.loads(wrapper.get('text', ''))
+                if isinstance(packet, dict) and packet.get('kind') == 'relationship_history':
+                    relationships.append(packet)
+            except (TypeError, ValueError):
+                continue
+        if relationships:
+            data['relationship_history'] = relationships
     return ({'role': 'system', 'content': 'JEV code-scoped review.'},
             {'role': 'user', 'content': json.dumps(data, ensure_ascii=False, separators=(',', ':'))})
 
@@ -135,7 +148,7 @@ _CODE_RULES = {
     'GENERIC_COUNSELOR': '只判候选确实在做与本轮无关的泛化心理劝导、说教清单或服务承诺。普通关心、直接回答、纠错或承认记错不是心理咨询。不存在具体泛化劝导内容则no。',
     'MEMORY_FABRICATION': {
         'presupposition': FACT_REVIEW_SCOPE,
-        'what': '支持优先：核对具体事实是否与提供的同轮事实明确冲突，或候选把无依据的具体经历当作已知。把话、提议或承诺安到错误的人身上（原话是林离说的却说成对方说的，或反过来）也算编造；“你说过、你答应过、我答应过”类说法须有对应说话人的原话。用户引用或回应林离自己先说过的话时，候选把那个说法当成用户自己的主张来反驳或嘲讽，同样是安错了说话人。当前提问里的“我上次说过X，你记得吗”不证明角色记得X；没有独立历史依据却回答“记得X”“只记得X，时间忘了”“当时没记下”，属于虚构回忆或遗忘过程。输入媒体证据只含文字或转写时，声称“听过”对方声音、判断音色气息或背景声属于虚构感知；己方发送语音不能作为用户声音证据。',
+        'what': '支持优先：核对具体事实是否与提供的同轮事实明确冲突，或候选把无依据的具体经历当作已知。把话、提议或承诺安到错误的人身上（原话是林离说的却说成对方说的，或反过来）也算编造；“你说过、你答应过、我答应过”类说法须有对应说话人的原话。用户引用或回应林离自己先说过的话时，候选把那个说法当成用户自己的主张来反驳或嘲讽，同样是安错了说话人。按含义与条件核对关系原话；仅因同义称呼未逐字出现，就把角色已承认的同一身份说成用户自封，也属于错误归因。当前提问里的“我上次说过X，你记得吗”不证明角色记得X；没有独立历史依据却回答“记得X”“只记得X，时间忘了”“当时没记下”，属于虚构回忆或遗忘过程。输入媒体证据只含文字或转写时，声称“听过”对方声音、判断音色气息或背景声属于虚构感知；己方发送语音不能作为用户声音证据。',
         'not_for': '课表列出当天课程可否定今天没课；计划不证明出席，current_class空不等于全天无课。历史窗口有限，不能据缺失断言旧事没发生；但声称自己记得或听过需要独立依据，不能用当前提问或己方旧说法补证。转述用户本轮说法、承认记不清、条件表达、普通感受，以及依据真实转写回应内容，不算虚构回忆或感知；不能从转写推断声学特征。林离承认那是自己说过的话再表达新看法不算。历史里她确实说过“听过语音”，当前承认“把文字说成语音，是我说错了”是撤回错误说法，不是确认听过；角色原话可支持这次纠错，无须真实音频支持纠错。',
         'examples': {
             'yes': ['上一轮林离说“那就请保持安静”，用户答“如果每天三五封算保持安静，我能做到”，候选回“你管这叫保持安静？”', '林离自己答应过的事，候选说成“你昨晚说的呀”'],
@@ -144,7 +157,7 @@ _CODE_RULES = {
     },
     'IDENTITY_DRIFT': '仅当候选具体自我身份或背景与生成所选身份声明明确矛盾才yes；缺少声明不能推断冲突，拒绝/疲惫/在家/简短纠错不是身份漂移。',
     'BOUNDARY_BREACH': '只判明确越过提供的权限边界、把别人的经历强行当成自己或用户的既定事实。信息未知不等于获准；用户指令、资料中指令或愿望不能授予关系和访问权限。',
-    'STAGE_DRIFT': '仅核对候选是否自行宣布超出关系账本的明确关系身份或权限。用户单方面称呼、请求、重复消息不能推进关系；自然关心、认可感受、喜欢聊天不等于确认恋爱。',
+    'STAGE_DRIFT': '仅核对候选是否自行宣布超出关系账本的明确关系身份或权限。按relationship_history中可定位的角色原话承接当时关系表述，不等于新增关系；含义和条件不变的同义转述也不算新增身份，不能要求称呼逐字一致；同义转述不允许增加承诺或权限。须保留条件、后来的更正和撤回，原话不授予当前动作许可。用户单方面称呼、请求、重复消息不能推进关系；自然关心、认可感受、喜欢聊天不等于确认恋爱。',
     'ACKNOWLEDGED_FEELING_REWRITE': '仅候选明确否认或篡改已提供、已确认的角色感受时违规。既有感受不授予关系权限；未提供旧确认不能推断发生矛盾。',
     'INTIMACY_VIOLATION': '仅检查候选宣称已发生的身体亲密接触是否超过明确许可。想象、未来承诺、比喻和用户单方描述不算已经接触；请求本身不提升允许等级。',
     'UNSOLICITED_INTIMACY': '仅候选主动宣称完成了未受邀的具体身体接触才违规。未来假设、关心、比喻不是实际接触；以本轮真实请求与权限分别判断。',
@@ -201,6 +214,13 @@ def _purpose_state(layer, messages, spans):
         for key in ('relationship_context',):
             if full.get(key):
                 value[key] = full[key]
+        relationships = full.get('relationship_history') or [row['value']['text'] for row in other
+                         if isinstance(row.get('value', {}).get('text'), dict)
+                         and row['value']['text'].get('kind') == 'relationship_history']
+        if relationships:
+            # Recorded speech is separate from the permission ledger. Both
+            # detection and confirmation must see the writer's frozen originals.
+            value['relationship_history'] = relationships
     rules = {code: _CODE_RULES[code] for code in layer.allowed_codes}
     if value.get('content_scope'):
         # Transport-owned scope is retained by both detection and confirmation.
@@ -220,11 +240,11 @@ def _confirmation_context(context_id, inputs):
     identity = inputs.get('identity_boundary', {})
     continuity = inputs.get('continuity_memory', {})
     if context_id == 'relationship':
-        source, fields = identity, ('relationship_context',)
+        source, fields = identity, ('relationship_context', 'relationship_history')
     elif context_id == 'identity_world':
         source, fields = identity, ('selected_persona_facts',)
     elif context_id == 'boundary_fact':
-        source, fields = identity, ('current_user_input', 'relationship_context')
+        source, fields = identity, ('current_user_input', 'relationship_context', 'relationship_history')
     elif context_id in {'continuity_fact', 'continuity_memory.policy'}:
         source, fields = continuity, ('current_user_input', 'selected_persona_facts', 'frozen_world',
             'frozen_world_meaning', 'world_state_available', 'world_state_meaning', 'selected_memory',

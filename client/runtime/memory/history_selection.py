@@ -64,7 +64,7 @@ def _split(messages):
                 packet = json.loads(text)
             except ValueError:
                 packet = None
-            if isinstance(packet, dict) and packet.get('kind') in {'recent_dialogue', 'delivered_media'}:
+            if isinstance(packet, dict) and packet.get('kind') in {'recent_dialogue', 'delivered_media', 'relationship_history'}:
                 return match.group(0)
             groups = []
             if '[ORIGINAL_CORRESPONDENCE_UNTRUSTED]' in text:

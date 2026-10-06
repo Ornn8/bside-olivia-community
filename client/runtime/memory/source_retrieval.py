@@ -56,11 +56,19 @@ class SourceRetrieval:
                    'PRIMARY KEY(user,dependency_id))')
         db.execute('CREATE TABLE IF NOT EXISTS source_aliases '
                    '(user TEXT, exchange_source TEXT, receipt_source TEXT, PRIMARY KEY(user,exchange_source,receipt_source))')
+        db.execute('CREATE TABLE IF NOT EXISTS relationship_quotes '
+                   '(user TEXT, source TEXT, digest TEXT, attempts INTEGER NOT NULL DEFAULT 0, '
+                   'categories TEXT, PRIMARY KEY(user,source))')
+        db.execute('CREATE INDEX IF NOT EXISTS relationship_pending ON relationship_quotes(user,attempts) '
+                   'WHERE categories IS NULL')
+        db.execute("CREATE INDEX IF NOT EXISTS relationship_kept ON relationship_quotes(user) WHERE categories!='[]'")
         return db
 
     @staticmethod
     def _aliases(db, user, sources):
         found = set(sources)
+        if not found:
+            return found
         pairs = db.execute('SELECT exchange_source,receipt_source FROM source_aliases WHERE user=?', (user,)).fetchall()
         while True:
             expanded = found | {node for a, b in pairs if a in found or b in found for node in (a, b)}
@@ -74,6 +82,7 @@ class SourceRetrieval:
             db.execute('INSERT OR IGNORE INTO forgotten VALUES (?,?)', (user, source))
             db.execute('DELETE FROM originals WHERE user=? AND source=?', (user, source))
             db.execute('DELETE FROM chunks WHERE user=? AND source=?', (user, source))
+            db.execute('DELETE FROM relationship_quotes WHERE user=? AND source=?', (user, source))
 
     @classmethod
     def _lineage(cls, db, user, source):
@@ -332,6 +341,98 @@ class SourceRetrieval:
                 for start in range(0, len(text), 280):
                     chunk = text[start:start + 360]
                     db.execute("INSERT INTO chunks VALUES (?,?,?,?,?,?,?)", (user, source, actor, stamp, start, chunk, " ".join(terms(chunk))))
+            if reply_text.strip():
+                digest = _digest(json.dumps([user_text, reply_text, stamp], ensure_ascii=False))
+                # Re-indexing old delivered originals also queues their missing
+                # character statements. A changed original invalidates old labels.
+                db.execute('INSERT INTO relationship_quotes(user,source,digest) VALUES (?,?,?) '
+                           'ON CONFLICT(user,source) DO UPDATE SET digest=excluded.digest, attempts=0, categories=NULL '
+                           'WHERE relationship_quotes.digest != excluded.digest', (user, source, digest))
+
+    def claim_relationship_exchanges(self, user):
+        """Claim at most eight whole exchanges within one shared input budget."""
+        with closing(self.connect()) as db, db:
+            db.execute('BEGIN IMMEDIATE')
+            rows = db.execute('SELECT q.source,q.digest,u.text,l.text,l.stamp FROM relationship_quotes q '
+                "CROSS JOIN originals u ON u.user=q.user AND u.source=q.source AND u.actor='user' "
+                "CROSS JOIN originals l ON l.user=q.user AND l.source=q.source AND l.actor='linli' "
+                'WHERE q.user=? AND q.categories IS NULL AND q.attempts<3 '
+                'AND julianday(l.stamp) IS NOT NULL AND length(u.text)+length(l.text)<=12000 '
+                'AND NOT EXISTS (SELECT 1 FROM forgotten f WHERE f.user=q.user AND f.source=q.source) '
+                'ORDER BY julianday(l.stamp) DESC,q.source DESC LIMIT 8', (user,)).fetchall()
+            originals, chars = [], 0
+            for row in rows:
+                size = len(row[2]) + len(row[3])
+                if chars + size > 12000:
+                    break  # Keep whole originals in chronological priority order.
+                db.execute('UPDATE relationship_quotes SET attempts=attempts+1 WHERE user=? AND source=?', (user, row[0]))
+                originals.append(dict(zip(('source_id', 'digest', 'user_message', 'assistant_message', 'occurred_at'), row)))
+                chars += size
+            return originals
+
+    def finish_relationship_exchanges(self, user, labelled):
+        rows = []
+        for source, digest, categories in labelled:
+            if not set(categories) <= {'identity', 'affection', 'agreement'}:
+                raise ValueError('RELATIONSHIP_CATEGORIES_INVALID')
+            rows.append((json.dumps(sorted(set(categories))), user, source, digest))
+        with closing(self.connect()) as db, db:
+            # Forgotten/overwritten originals cannot be restored by a late result.
+            return bool(db.executemany('UPDATE relationship_quotes SET categories=? '
+                'WHERE user=? AND source=? AND digest=?',
+                rows).rowcount)
+
+    def relationship_context(self, user, *, as_of, exclude_source_ids=(), max_chars=4000):
+        """Read whole attributed exchanges, independent of model and search words."""
+        cutoff = _aware_time(as_of).isoformat()
+        packet = {'kind': 'relationship_history', 'evidence_scope': 'recorded_utterance',
+                  'meaning': '按speaker与时间承接角色自己说过的关系定位、感情与约定，保留条件、更正和撤回；'
+                             '用户单方面称呼不是双方共识，原话不授予当前动作许可或升级阶段。'
+                             '这是部分历史，缺失不表示没发生，换模型也不能抹去给定原话。',
+                  'coverage': 'bounded', 'records': []}
+        encode = lambda: json.dumps(packet, ensure_ascii=False, separators=(',', ':'))
+        with closing(self.connect()) as db:
+            db.execute('BEGIN')
+            excluded = self._aliases(db, user, exclude_source_ids)
+            # Start with the small pending/kept index, rather than walking every
+            # original body before filtering out ordinary conversation.
+            pending = db.execute('SELECT 1 FROM relationship_quotes q CROSS JOIN originals l '
+                "ON l.user=q.user AND l.source=q.source AND l.actor='linli' "
+                'WHERE q.user=? AND q.categories IS NULL AND julianday(l.stamp)<=julianday(?) LIMIT 1',
+                (user, cutoff)).fetchone()
+            if pending:
+                packet['coverage'] = 'extraction_incomplete'
+            candidates = {}
+            for category in ('identity', 'affection', 'agreement'):
+                rows = db.execute('SELECT q.source,l.stamp FROM relationship_quotes q CROSS JOIN originals l '
+                    "ON l.user=q.user AND l.source=q.source AND l.actor='linli' "
+                    "WHERE q.user=? AND q.categories!='[]' AND instr(q.categories,?)>0 AND julianday(l.stamp)<=julianday(?) "
+                    'ORDER BY julianday(l.stamp) DESC,q.source DESC LIMIT 2',
+                    (user, '"' + category + '"', cutoff)).fetchall()
+                for source, stamp in rows:
+                    if source not in excluded:
+                        candidates.setdefault((stamp, source), set()).add(category)
+            groups, blocked = [], set()
+            for (stamp, source), categories in sorted(candidates.items(), key=lambda item: (_aware_time(item[0][0]), item[0][1]), reverse=True):
+                if categories & blocked:
+                    continue
+                group = []
+                for actor in ('user', 'linli'):
+                    original = self._dependency_original(db, user, source, actor)
+                    if original is not None and original[0].strip():
+                        group.append({'citation': source + ':' + actor, 'speaker': actor, 'text': original[0],
+                            'provenance': {'source_record_id': source}, 'evidence_scope': 'recorded_utterance',
+                            'occurred_at': stamp if actor == 'linli' else None})
+                packet['records'] = [r for g in reversed([*groups, group]) for r in g]
+                if len(encode()) + 32 > max_chars:
+                    # Do not admit an old promise while omitting its later
+                    # withdrawal, or cut off a condition at the end of a reply.
+                    blocked.update(categories)
+                    packet['coverage'] = 'omitted_due_to_capacity'
+                else:
+                    groups.append(group)
+            packet['records'] = [r for g in reversed(groups) for r in g]
+        return encode()
 
     def retract_received(self, user, sources):
         """Drop receipts that were never delivered (failed letters), without a user "forget".

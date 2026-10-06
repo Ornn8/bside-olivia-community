@@ -923,7 +923,7 @@ class LetterAdapter:
             related = "\n".join(
                 pair.get("user_letter", "") + "\n" + pair.get("linli_reply", "")
                 for fragment in (self.recent_letter_fragments(content) if recent_fragments is None else recent_fragments)
-                if fragment.fragment_id != 'chat.historical'
+                if fragment.fragment_id == 'chat.recent'
                 for pair in json.loads(fragment.text)["letters"]
             )
             now = self._now() if now is None else now
@@ -957,13 +957,19 @@ class LetterAdapter:
         return await emotion.evaluate_received(receipts, now=now)
 
     def recent_letter_fragments(self, content: str = "", *, now=None) -> tuple[UntrustedFragment, ...]:
-        if self.recent_letters is None:
-            return ()
+        now = self._now() if now is None else now
         from runtime.reply.conversation_context import conversation_context
-        recent, historical = conversation_context(self.recent_letters(), query=content,
-            now=self._now() if now is None else now, excluded_sources=self._memory_source_exclusions())
-        return tuple(UntrustedFragment(name, text) for name, text in
+        recent, historical = conversation_context(self.recent_letters() if self.recent_letters is not None else (), query=content,
+            now=now, excluded_sources=self._memory_source_exclusions())
+        fragments = tuple(UntrustedFragment(name, text) for name, text in
                      (('chat.recent', recent), ('chat.historical', historical)) if text)
+        from runtime.memory.history_continuity import companion_view
+        builder = companion_view(getattr(self, 'memory_prompt_builder', None))
+        if builder is not None:
+            relationship = builder.relationship_context(as_of=now, exclude_source_ids=self._memory_source_exclusions())
+            if json.loads(relationship).get('records'):
+                fragments += (UntrustedFragment('chat.relationship', relationship),)
+        return fragments
 
     @staticmethod
     def _memory_source_exclusions() -> tuple[str, ...]:

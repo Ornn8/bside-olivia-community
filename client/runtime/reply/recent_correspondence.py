@@ -85,20 +85,30 @@ def recent_correspondence(rows: Iterable[Mapping], *, query: str = "", excluded_
                 words.add(part)
         return words - stop_words
     query_words = tokens(query)
+    def possible_match(text):
+        lower = text.lower()
+        return any(word in lower for word in query_words)
+    def overlaps(text):
+        # Every tokenizer output is a literal substring of the lowercase input.
+        # Rejecting an absent substring is exact, including English word bounds;
+        # possible matches still use the original tokenizer and ranking rules.
+        return len(query_words & tokens(text)) if possible_match(text) else 0
     def relevance(item):
         media_text = ' '.join(part['summary'] for group in item[2].get('media_deliveries', []) for part in group['parts'].values())
-        media_score = len(query_words & tokens(media_text))
+        media_score = overlaps(media_text)
         if media_text and re.search(r'语音|录音|翻唱|唱歌|唱过|唱了|歌曲|哪首|音乐|\b(?:audio|cover|song|sang|sing)\b', query, re.I):
             media_score += 1
         if reply_reference:
-            return media_score + len(query_words & tokens(item[2].get("user_letter", "") + " " + item[2]["linli_reply"]))
+            return media_score + overlaps(item[2].get("user_letter", "") + " " + item[2]["linli_reply"])
         # Rank by assertions, not repeated questions that merely echo the query.
         # Keep the selected original whole, including any final correction.
         source_text = item[2].get("user_letter", "") or item[2]["linli_reply"]
+        dialogue_reply = " " + item[2]["linli_reply"] if not factual else ""
+        if not possible_match(source_text + dialogue_reply):
+            return media_score
         statements = " ".join(part for part in re.findall(r"[^。！？.!?;；\n]+[。！？.!?;；\n]?", source_text)
                               if not re.search(r"[?？]\s*$|[吗么呢][。…\s]*$", part))
-        dialogue_reply = " " + item[2]["linli_reply"] if not factual else ""
-        return media_score + len(query_words & tokens(statements + dialogue_reply))
+        return media_score + overlaps(statements + dialogue_reply)
     # Two recent exchanges plus two relevant exchanges (originals for factual recall).
     # Keep this window bounded without relying on summaries to retain corrections.
     older = sorted(candidates[2:], key=lambda item: (relevance(item), item[:2]), reverse=True)
@@ -107,8 +117,8 @@ def recent_correspondence(rows: Iterable[Mapping], *, query: str = "", excluded_
         # A question can contain the only available fact (e.g. an allergy).
         # Prefer assertions when present, but do not make questions unretrievable.
         relevant = sorted(
-            (item for item in older if query_words & tokens(item[2].get("user_letter", ""))),
-            key=lambda item: (len(query_words & tokens(item[2].get("user_letter", ""))), item[:2]),
+            (item for item in older if overlaps(item[2].get("user_letter", ""))),
+            key=lambda item: (overlaps(item[2].get("user_letter", "")), item[:2]),
             reverse=True,
         )
     chosen = candidates[:2] + relevant[:2]
@@ -126,8 +136,8 @@ def recent_correspondence(rows: Iterable[Mapping], *, query: str = "", excluded_
         )
         chosen = assertions[:1]
         full_matches = sorted(
-            (item for item in candidates if query_words & tokens(item[2].get("user_letter", ""))),
-            key=lambda item: (not _source_reference(item[2].get("user_letter", "")), len(query_words & tokens(item[2].get("user_letter", ""))), item[:2]), reverse=True,
+            (item for item in candidates if overlaps(item[2].get("user_letter", ""))),
+            key=lambda item: (not _source_reference(item[2].get("user_letter", "")), overlaps(item[2].get("user_letter", "")), item[:2]), reverse=True,
         )
         chosen += [item for item in full_matches if item not in chosen][:4 - len(chosen)]
         if not chosen:

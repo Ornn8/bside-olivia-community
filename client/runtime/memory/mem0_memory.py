@@ -615,6 +615,11 @@ class DeferredConversationMemoryAdapter:
             index = getattr(delegate, "index_original_exchange", None)
             return index(**kwargs) if index is not None else False
 
+    def refresh_relationship_memory(self, **kwargs):
+        with self._using_current() as delegate:
+            refresh = getattr(delegate, 'refresh_relationship_memory', None)
+            return refresh(**kwargs) if callable(refresh) else False
+
     def index_received_user(self, **kwargs):
         with self._using_current() as delegate:
             index = getattr(delegate, 'index_received_user', None)
@@ -1127,6 +1132,36 @@ class Mem0ConversationMemoryAdapter:
         self._originals.put(self._normalized_user_id(user_id), source_id,
                             user_message, assistant_message, occurred_at)
         return True
+
+    def refresh_relationship_memory(self, *, user_id, memory_lifecycle=None):
+        if self.config.context_max_chars == 0:
+            return False
+        from runtime.reply.jev_questions import configured_questions
+        from .relationship_continuity import extract_relationships
+        port = configured_questions()
+        if port is None:
+            return False
+        user = self._normalized_user_id(user_id)
+        claim = lambda: self._originals.claim_relationship_exchanges(user)
+        originals = memory_lifecycle.run_write(claim) if memory_lifecycle is not None else claim()
+        if not originals:
+            return False
+        if memory_lifecycle is not None:
+            originals = [original for original in originals
+                         if not memory_lifecycle.blocks_delivery(_date(original['occurred_at']))]
+        if not originals:
+            return False
+        # Never hold the lifecycle lock during a network call: generation reads
+        # pause state under that lock, and must not wait for this optional job.
+        choices = extract_relationships(port, originals)
+        def save():
+            labelled = [(original['source_id'], original['digest'], categories)
+                for original, categories in zip(originals, choices)
+                if memory_lifecycle is None or not memory_lifecycle.blocks_delivery(_date(original['occurred_at']))]
+            return self._originals.finish_relationship_exchanges(user, labelled)
+        # Lifecycle uses a reentrant lock: recheck every source while holding it,
+        # then persist the bounded batch atomically, without locking during Jev.
+        return bool(memory_lifecycle.run_write(save) if memory_lifecycle is not None else save())
 
     def retract_received_user(self, *, user_id, source_ids):
         removed = self._originals.retract_received(self._normalized_user_id(user_id), source_ids)

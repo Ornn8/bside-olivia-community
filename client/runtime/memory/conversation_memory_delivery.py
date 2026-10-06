@@ -158,6 +158,7 @@ class ConversationMemoryDeliveryCommitter:
         self.timeout_seconds = validate_timeout_seconds(timeout_seconds)
         self.memory_lifecycle = memory_lifecycle
         self._provider_call = BoundedDaemonCall(thread_name="olivia-memory-delivery")
+        self._relationship_call = BoundedDaemonCall(thread_name="olivia-relationship-memory")
         self._pending_delivery: CanonicalMemoryDelivery | None = None
         self._completed_deliveries: dict[CanonicalMemoryDelivery, CanonicalMemoryDeliveryResult] = {}
         self._commit_lock = asyncio.Lock()
@@ -188,6 +189,17 @@ class ConversationMemoryDeliveryCommitter:
         register = getattr(self.memory, "register_archive_sources", None)
         if callable(register):
             await asyncio.to_thread(register, user_id=user_id, sources=sources)
+
+    async def refresh_relationship_memory(self, user_id):
+        refresh = getattr(self.memory, 'refresh_relationship_memory', None)
+        if not callable(refresh):
+            return
+        state, _ = await self._relationship_call.settle_async(timeout_seconds=0.01)
+        if state == 'missing':
+            # One bounded background batch, including already-written sources.
+            # A timeout keeps the existing worker; it never spawns another request.
+            await self._relationship_call.call_async(
+                lambda: refresh(user_id=user_id, memory_lifecycle=self.memory_lifecycle), timeout_seconds=0.01)
 
     @property
     def delivery_pending(self) -> bool:

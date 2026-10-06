@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import replace
 from collections import Counter
 from datetime import datetime, timezone
+import json
 import hashlib
 import math
 from pathlib import Path
@@ -322,6 +323,20 @@ class CompanionMemoryPromptBuilder:
             from .source_retrieval import SourceRetrieval
             return SourceRetrieval(data_root / "original-text-index.sqlite3")
         return None
+
+    def relationship_context(self, *, as_of, exclude_source_ids=(), max_chars=4000):
+        empty = json.dumps({'kind': 'relationship_history', 'coverage': 'unavailable', 'records': []}, separators=(',', ':'))
+        if (not bool(getattr(self.conversation_memory, 'enabled', False))
+                or getattr(getattr(self.conversation_memory, 'config', None), 'context_max_chars', None) == 0):
+            return empty
+        try:
+            if self.memory_lifecycle is not None and self.memory_lifecycle.is_paused():
+                return empty
+            index = self._original_index()
+            return index.relationship_context(self.user_id, as_of=as_of,
+                exclude_source_ids=exclude_source_ids, max_chars=max_chars) if index is not None else empty
+        except Exception:
+            return empty  # Optional continuity cannot prevent a reply.
 
     def _collect_archive(self, query, excluded=(), *, include_current=False):
         view = self._archive_view(excluded, include_current=include_current)
