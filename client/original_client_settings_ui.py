@@ -2639,8 +2639,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       const isAudio=song.media_type === "audio";
       const url = new URL(`/toy/local-songs/media/${song.id}.${isAudio ? "wav" : "mp4"}`, apiBase).href;
       return {
-        id: String(1000000000000000 + parseInt(song.id.slice(0, 12), 16)),
-        itemId: String(1000000000000000 + parseInt(song.id.slice(0, 12), 16)), itemType: 3, name: song.name,
+        id: String(song.native_id),
+        itemId: String(song.native_id), itemType: 3, name: song.name,
+        eventId: String(song.native_id),
         nameKey: "local_" + song.id, styleType: "Local Performance",
         styleTypeDisplayName: "本地演奏", performanceType: "Solo", source: "songlist",
         videoUrl: isAudio ? "" : url, mediaUrl: url, coverUrl: "", iconUrl: "", audioUrl: isAudio ? url : "",
@@ -2660,7 +2661,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           onFailure: () => { clearTimeout(timer); fail(new Error("LOCAL_SONG_NATIVE_FAILED")); },
         });
       });
-      const check = () => native("checkLocalSongs", {songs: imported.map((song, index) => ({...song, eventId: String(index + 1)}))});
+      const check = () => native("checkLocalSongs", {songs: imported});
       const status = await check();
       const missing = imported.filter((song) => !status.songs?.some((item) => String(item.songId) === song.id && item.exist));
       if (missing.length) {

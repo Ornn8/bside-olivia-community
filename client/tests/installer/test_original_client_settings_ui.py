@@ -1087,3 +1087,7 @@ process.stdout.write(JSON.stringify([
         [[1200], [1200]],
         [[1200], [None]],
     ]
+def test_local_song_ui_uses_bounded_native_id_instead_of_1e15() -> None:
+    assert "1000000000000000" not in BOOTSTRAP_JAVASCRIPT
+    assert "song.native_id" in BOOTSTRAP_JAVASCRIPT
+    assert 'native("checkLocalSongs", {songs: imported})' in BOOTSTRAP_JAVASCRIPT
