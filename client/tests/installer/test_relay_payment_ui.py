@@ -22,6 +22,7 @@ const make=tag=>{const e=new Element(tag);elements.push(e);return e};
 const text=(tag,value)=>{const e=make(tag);e.textContent=value;return e};
 const calls=[];
 const context={document:{createElement:make},text,actions:()=>make('div'),
+ URL,apiBase:'http://127.0.0.1:27149/',
  button:(label,fn)=>{const e=text('button',label);e.click=fn;return e},
  window:{setTimeout:(fn,delay)=>{timers.set(++sequence,{fn,delay});return sequence},clearTimeout:id=>timers.delete(id)},
  navigator:{clipboard:{writeText:async()=>{}}},
@@ -35,6 +36,7 @@ vm.runInNewContext(fs.readFileSync(0,'utf8')+';globalThis.mount=mountRelayBalanc
  await new Promise(resolve=>setImmediate(resolve));
  assert.equal(elements.find(e=>e.tag==='select').value,'1000');
  const payment=elements.find(e=>e.textContent==='请用微信支付 ¥9.99');
+ assert.equal(elements.find(e=>e.tag==='img').src,'http://127.0.0.1:27149/toy/images/ui/wechat-payment');
  await [...timers.values()].find(t=>t.delay===3000).fn();
  assert.equal(elements.filter(e=>e.textContent==='请用微信支付 ¥9.99').length,1);
  assert.ok(panel.children[0].children.some(e=>e.children.includes(payment)));
