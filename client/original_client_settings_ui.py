@@ -3890,7 +3890,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     `;return style;
   };
 
-  const STICKER_PACK_PAGE = "download.bside-moon.cn/installers/stickers.html";
+  const STICKER_PACK_PAGE = "bside-moon.cn/stickers.html";
   const mountStickerPacks = (section) => {
     const row = document.createElement("div");
     row.className = "olivia-group-row";
