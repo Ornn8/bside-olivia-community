@@ -93,7 +93,7 @@ def test_remote_photo_accepts_readonly_daily_metadata_and_legacy_tasks():
 
 
 @pytest.mark.parametrize('format',['PNG','WEBP'])
-def test_cloud_reference_preview_and_local_proxy_keep_correct_media_type(format,monkeypatch):
+def test_cloud_reference_preview_and_local_proxy_keep_correct_media_type(format,monkeypatch,tmp_path):
     from io import BytesIO
     from PIL import Image
     from aiohttp.test_utils import TestClient
@@ -108,10 +108,12 @@ def test_cloud_reference_preview_and_local_proxy_keep_correct_media_type(format,
             api=RemoteGeneration(str(server.make_url('/')),'synthetic')
             assert await api.wardrobe_image('mori-01')==raw
             with pytest.raises(CloudError):await api.wardrobe_image('../secret')
-            class API:
-                def __init__(self,*args):pass
-                async def wardrobe_image(self,look_id):return await api.wardrobe_image(look_id)
-            monkeypatch.setattr('runtime.remote_generation.RemoteGeneration',API)
+            cached=tmp_path/('mori-01.'+format.lower());cached.write_bytes(raw)
+            async def ensure(root,kind,look_id):
+                assert kind=='wardrobe' and look_id=='mori-01'
+                return cached
+            monkeypatch.setattr('runtime.image_assets.ensure_image',ensure)
+            monkeypatch.setattr('runtime.image_assets._catalog',lambda:{'wardrobe':{'mori-01':{'content_type':'image/'+format.lower()}}})
             proxy=web.Application();proxy.router.add_get('/toy/wardrobe/images/mori-01',local_server.handler)
             async with TestClient(TestServer(proxy)) as client:
                 response=await client.get('/toy/wardrobe/images/mori-01')

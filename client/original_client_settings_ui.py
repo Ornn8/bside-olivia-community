@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 from pathlib import Path
 
 
@@ -2192,7 +2191,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       const countdown = text("p", "", "text-text-secondary text-body-m");
       countdown.setAttribute("aria-live", "off");
       const qr = document.createElement("img");
-      qr.src = "__OLIVIA_WECHAT_PAYMENT_QR__";
+      qr.src = new URL('/toy/images/ui/wechat-payment', apiBase).href;
       qr.alt = "微信收款码，收款人 Ornn，请按订单显示金额付款";
       qr.style.cssText = "display:block;width:280px;max-width:100%;height:auto;margin:12px auto;border-radius:12px";
       const paid = text("p", `请用微信扫描下方收款码，准确支付 ${amount}（含小数），请勿取整。到账余额 ¥${credit}。`, "text-text-secondary text-body-m");
@@ -4946,12 +4945,5 @@ BOOTSTRAP_JAVASCRIPT = r'''
   customElements.define('olivia-letter-audio',LetterAudio);
 })();
 ''' + BOOTSTRAP_JAVASCRIPT
-
-BOOTSTRAP_JAVASCRIPT = BOOTSTRAP_JAVASCRIPT.replace(
-    "__OLIVIA_WECHAT_PAYMENT_QR__",
-    "data:image/jpeg;base64," + base64.b64encode(
-        (Path(__file__).parent / "installer/assets/wechat-payment.jpeg").read_bytes()
-    ).decode("ascii"),
-)
 
 __all__ = ["BOOTSTRAP_JAVASCRIPT", "SETTINGS_UI_VERSION"]

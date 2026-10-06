@@ -154,23 +154,26 @@ def _patch_with_failure_prop(source: str) -> str:
 
 def patch_letter_stickers(path: Path | str) -> str:
     path=Path(path)
-    assets={f'assets/letter-stickers/{p.name}':p.read_bytes() for p in ASSETS.iterdir() if p.suffix in {'.png','.gif','.json','.js'}}
-    expected={f'assets/letter-stickers/linli-{i:02d}.png' for i in range(1,253)}
-    expected.update(f'assets/letter-stickers/linli-{i:02d}.gif' for i in range(253,273))
-    if {n for n in assets if n.endswith(('.png','.gif'))} != expected:
-        raise ValueError('STICKER_ASSETS_INCOMPLETE')
+    from installer.full_patch import DEFAULT_STICKER_FILES
+    assets={f'assets/letter-stickers/{p.name}':p.read_bytes() for p in ASSETS.iterdir()
+            if p.suffix in {'.json','.js'} or p.name in DEFAULT_STICKER_FILES}
+    expected={f'assets/letter-stickers/{name}' for name in DEFAULT_STICKER_FILES}
     with zipfile.ZipFile(path) as archive:
         if MAIN not in archive.namelist():
             return 'UNSUPPORTED_CLIENT'
         source=archive.read(MAIN).decode('utf-8')
+        if not expected <= (assets.keys() | set(archive.namelist())):
+            raise ValueError('STICKER_ASSETS_INCOMPLETE')
+        obsolete={name for name in archive.namelist() if name.startswith('assets/letter-stickers/')
+                  and name.endswith(('.png','.gif')) and name not in expected}
         changed=_patch_with_failure_prop(source).encode('utf-8')
-        if changed==source.encode('utf-8') and all(n in archive.namelist() and archive.read(n)==data for n,data in assets.items()):
+        if not obsolete and changed==source.encode('utf-8') and all(n in archive.namelist() and archive.read(n)==data for n,data in assets.items()):
             return 'ALREADY_PATCHED'
         with tempfile.TemporaryDirectory(prefix='.letter-stickers-',dir=path.parent) as folder:
             staged=Path(folder)/'feapp.dat'
             with zipfile.ZipFile(staged,'w',zipfile.ZIP_DEFLATED) as target:
                 for info in archive.infolist():
-                    if info.filename not in assets:
+                    if info.filename not in assets and info.filename not in obsolete:
                         target.writestr(info,changed if info.filename==MAIN else archive.read(info))
                 for name,data in assets.items(): target.writestr(name,data)
             with zipfile.ZipFile(staged) as verify:

@@ -69,11 +69,12 @@ async def delivery_notice(row, send, persist, key, text):
 
 
 class PersonalChatService:
-    def __init__(self, rows, persist, generate, commit, bindings, *, sticker_allowed=lambda key: True, photo=None, prepare_photo=None, speech=None):
+    def __init__(self, rows, persist, generate, commit, bindings, *, sticker_allowed=lambda key: True, sticker_asset=None, photo=None, prepare_photo=None, speech=None):
         self.rows, self.persist = rows, persist
         self.generate, self.commit = generate, commit
         self.bindings = dict(bindings)
         self.sticker_allowed = sticker_allowed
+        self.sticker_asset = sticker_asset
         self.photo = photo
         self.prepare_photo = prepare_photo
         self.photo_tasks = {}
@@ -599,15 +600,18 @@ class PersonalChatService:
                         or not self.sticker_allowed(row['sticker_id'])):
                     row['sticker_delivery_status'] = 'LOCKED'
                 else:
-                    row['sticker_delivery_status'] = 'SENDING'
+                    row['sticker_delivery_status'] = 'DOWNLOADING'
                     await persist_state(self.persist)
                     try:
                         from runtime.letter_stickers.selection import asset_filename
-                        await send.image(Path(__file__).resolve().parents[1] / 'letter_stickers' /
-                                         asset_filename(row['sticker_id']))
+                        path = (await self.sticker_asset(row['sticker_id']) if self.sticker_asset else
+                                Path(__file__).resolve().parents[1] / 'letter_stickers' / asset_filename(row['sticker_id']))
+                        row['sticker_delivery_status'] = 'SENDING'
+                        await persist_state(self.persist)
+                        await send.image(path)
                         row['sticker_delivery_status'] = 'DELIVERED'
                     except Exception:
-                        row['sticker_delivery_status'] = 'UNKNOWN'
+                        row['sticker_delivery_status'] = ('FAILED' if row['sticker_delivery_status']=='DOWNLOADING' else 'UNKNOWN')
                 await persist_state(self.persist)
             self._schedule_photo(row, send)
             from runtime.image_reply import is_companion_image

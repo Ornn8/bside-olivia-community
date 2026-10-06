@@ -110,6 +110,7 @@ include = [
 ]
 
 [tool.setuptools.package-data]
+runtime = ["image_assets.json"]
 "runtime.letter_stickers" = ["*.png", "*.gif", "*.json", "*.js"]
 "runtime.reply" = ["companion_decision_schema.json", "companion_duties_schema.json", "companion_proactive_schema.json"]
 contracts = ["*.json"]

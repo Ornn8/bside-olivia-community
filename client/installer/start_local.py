@@ -543,11 +543,11 @@ def _frontend_patcher_digest() -> str:
     files = [source / name for name in (
         "installer/start_local.py", "patch_feapp.py", "patch_webplayer.py",
         "patch_companion_settings.py", "original_client_settings_ui.py",
-        "installer/patch_letter_stickers.py", "installer/assets/wechat-payment.jpeg",
+        "installer/patch_letter_stickers.py",
     )]
     files.extend((source / "runtime/personal_chat").glob("*.py"))
     files.extend(path for path in (source / "runtime/letter_stickers").iterdir()
-                 if path.suffix in {".png", ".gif", ".json", ".js"})
+                 if path.suffix in {".json", ".js"})
     digest = hashlib.sha256()
     for path in sorted(files):
         digest.update(path.relative_to(source).as_posix().encode("utf-8") + b"\0")

@@ -2072,20 +2072,26 @@ async def _media_handler(request: web.Request) -> web.StreamResponse:
 
 
 async def handler(request: web.Request):
-    if request.path.startswith('/toy/wardrobe/images/'):
+    if request.path.startswith(('/toy/wardrobe/images/', '/toy/images/')):
         if request.method not in {'GET','HEAD'}:
             return web.Response(status=405)
         if request.headers.get('Origin') and not origin_allowed(request.headers['Origin']):
             return web.Response(status=403)
-        from runtime.remote_generation import RemoteGeneration
+        from runtime.image_assets import ensure_image, _catalog
         from runtime.cloud_service import CloudError
         try:
-            api=RemoteGeneration(_os.environ.get('OLIVIA_GPU_API_URL',''),_os.environ.get('OLIVIA_GPU_API_KEY',''))
-            raw=await api.wardrobe_image(request.path.rsplit('/',1)[-1])
-            content_type='image/webp' if raw[:4]==b'RIFF' and raw[8:12]==b'WEBP' else 'image/png'
-            return web.Response(body=raw,content_type=content_type,headers={'Cache-Control':'private, no-store',**CORS_HEADERS(request)})
-        except CloudError:
-            return web.Response(status=503)
+            parts=request.path.split('/')
+            if request.path.startswith('/toy/wardrobe/images/') and len(parts)==5:
+                kind, asset_id='wardrobe',parts[-1]
+            elif request.path.startswith('/toy/images/') and len(parts)==5:
+                kind, asset_id=parts[-2:]
+            else:
+                return web.Response(status=404)
+            target=await ensure_image(_local_data_root(),kind,asset_id)
+            return web.FileResponse(target,headers={'Content-Type':_catalog()[kind][asset_id]['content_type'],
+                'Cache-Control':'private, no-cache',**CORS_HEADERS(request)})
+        except CloudError as exc:
+            return web.Response(status=404 if exc.code=='IMAGE_ASSET_NOT_FOUND' else 503)
     if request.path.startswith("/toy/local-songs/media/"):
         if request.method not in {"GET", "HEAD"}:
             return web.Response(status=405)

@@ -1011,9 +1011,12 @@ def install_personal_chat(app, server):
                     return key in allowed_stickers(context.private_behavior, channel='qq')
                 except Exception:
                     return False
+            from runtime.image_assets import ensure_image
             service = PersonalChatService(server.store.personal_chats, lambda: persist_chat(server),
                 lambda event, row: generate(server, event, row), lambda row: recoverable_commit(server, row), bindings,
-                sticker_allowed=sticker_allowed, photo=lambda row, send: deliver_photo(server, row, send),
+                sticker_allowed=sticker_allowed,
+                sticker_asset=lambda key: ensure_image(server._local_data_root(), 'stickers', key),
+                photo=lambda row, send: deliver_photo(server, row, send),
                 prepare_photo=lambda row, send: prepare_chat_photo(server, row, send),
                 speech=lambda row, send: deliver_speech(server,row,send))
             from .probe import ProbeJournal
