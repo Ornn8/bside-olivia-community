@@ -23,6 +23,11 @@ class QQFileRejected(RuntimeError):
     pass
 
 
+class QQVideoDeferred(RuntimeError):
+    """Validation finished after new input; no platform action was attempted."""
+    pass
+
+
 def text_segments(text):
     """Convert exact catalog labels, never interpret arbitrary CQ commands."""
     segments = []
@@ -130,6 +135,19 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
         from pathlib import Path
         return await send_item({'type': 'image', 'data': {'file': Path(path).resolve().as_uri()}})
 
+    async def send_video(path, reply_to=None, *, eligible=None, caption=''):
+        from pathlib import Path
+        from .daily_video import validate_video
+        path = Path(path).resolve()
+        await asyncio.to_thread(validate_video, path)
+        if callable(eligible) and not eligible():
+            raise QQVideoDeferred('QQ_VIDEO_DEFERRED')
+        if not isinstance(caption, str) or len(caption) > 256:
+            raise ValueError('QQ_VIDEO_CAPTION_INVALID')
+        items = text_segments(caption) if caption else []
+        items.append({'type': 'video', 'data': {'file': path.as_uri()}})
+        return await send_item(items, reply_to)
+
     async def send_file(path, name):
         from pathlib import Path
         path = Path(path).resolve()
@@ -155,6 +173,7 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
 
     send.audio = send_audio
     send.image = send_image
+    send.video = send_video
     send.file = send_file
     async def resolve_media(kind, reference):
         if kind not in {'audio', 'video', 'file'} or not re.fullmatch(r'[A-Za-z0-9_.-]{1,256}', reference):
@@ -191,6 +210,9 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
             from pathlib import Path
             return await send_item({'type': 'image', 'data': {'file': Path(path).resolve().as_uri()}}, reply_to)
         correlated.image = correlated_image
+        async def correlated_video(path, *, eligible=None):
+            return await send_video(path, reply_to, eligible=eligible)
+        correlated.video = correlated_video
         correlated.file = send_file
         correlated.resolve_media = resolve_media
         correlated.is_available = send.is_available

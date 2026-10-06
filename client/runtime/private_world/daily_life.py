@@ -53,12 +53,14 @@ IDLE_AFTER = timedelta(hours=2)
 
 def _activity_refresh_delay(current: dict, *, repeats: int = 0, idle: bool = False) -> timedelta:
     kind = current.get("activity_kind")
+    if kind == 'bath_started':
+        return timedelta(minutes=20)  # Reconsider the actual bath; never finish it by clock.
     if kind is None and current.get("meals"):
         kind = "meal"  # Older published records already carry structured meals.
     # Reconsider an awake activity at a bounded cadence. This only expires
     # the observation; a new decision/episode must still establish what
     # happens next, and the runtime continues to protect sleep and bathing.
-    if kind in {"rest", "practice", "reading", "creative", "housework", "walk", "errand"}:
+    if kind in {"rest", "practice", "reading", "creative", "housework", "walk", "errand", "bath_finished", "shopping"}:
         base = timedelta(minutes=60)
     elif kind in _SHORT_ACTIVITY_MINUTES:
         base = timedelta(minutes=_SHORT_ACTIVITY_MINUTES[kind])
@@ -350,6 +352,13 @@ class DailyLifeStore:
                     occurred_at TEXT NOT NULL, PRIMARY KEY(source_id, kind));
                 CREATE TABLE IF NOT EXISTS life_weather (
                     fetched_at TEXT PRIMARY KEY, payload TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS life_media_reservations (
+                    source_id TEXT PRIMARY KEY, request_sha256 TEXT NOT NULL,
+                    task_id TEXT NOT NULL, verified_at TEXT NOT NULL,
+                    source_sha256 TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS life_baths (
+                    source_id TEXT PRIMARY KEY, started_at TEXT NOT NULL,
+                    completed_source_id TEXT UNIQUE, completed_at TEXT);
                 CREATE TABLE IF NOT EXISTS character_development_topics (
                     key TEXT PRIMARY KEY, payload TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS character_development_events (
@@ -470,6 +479,14 @@ class DailyLifeStore:
             raise ValueError("DAILY_LIFE_ACTIVITY_KIND_INVALID")
         if not isinstance(current, dict) or set(current) != {"location", "activity", "note"}:
             raise ValueError("DAILY_LIFE_CURRENT_INVALID")
+        if activity_kind == 'bath_started' and (not episode or episode.get('activity_kind') != 'bath_started'
+                or episode.get('result', {}).get('status') != 'partial'):
+            raise ValueError('DAILY_LIFE_BATH_EPISODE_REQUIRED')
+        if activity_kind == 'bath_finished' and (not episode or episode.get('activity_kind') != 'bath_finished'
+                or episode.get('result', {}).get('status') != 'completed'):
+            raise ValueError('DAILY_LIFE_BATH_EPISODE_REQUIRED')
+        if activity_kind == 'shopping' and (not episode or episode.get('activity_kind') != 'shopping'):
+            raise ValueError('DAILY_LIFE_SHOPPING_EPISODE_REQUIRED')
         current = {k: _text(current[k], 180 if k == "note" else 60) for k in current}
         if not isinstance(projects, list) or len(projects) > 3:
             raise ValueError("DAILY_LIFE_PROJECTS_INVALID")
@@ -495,6 +512,10 @@ class DailyLifeStore:
             db.execute("BEGIN IMMEDIATE")
             if db.execute("SELECT 1 FROM life_moments WHERE source_id=?", (source_id,)).fetchone():
                 return False
+            active_bath = db.execute('SELECT source_id,started_at FROM life_baths WHERE completed_source_id IS NULL '
+                                     'AND started_at<=? ORDER BY started_at DESC LIMIT 1', (stamp,)).fetchone()
+            if activity_kind == 'bath_started' and active_bath:
+                raise ValueError('DAILY_LIFE_BATH_ALREADY_STARTED')
             if project_timing:
                 from .project_timing import validate as validate_project_timing
                 timings = validate_project_timing(project_timing, {'projects': self._projects_at(db, occurred_at)})
@@ -540,6 +561,14 @@ class DailyLifeStore:
             db.execute("INSERT INTO life_moments VALUES (?,?,?,?)", (source_id, stamp, "daily", _json(current)))
             from .life_episode import save as save_episode
             save_episode(db, episode, source_id, occurred_at)
+            if activity_kind == 'bath_started':
+                db.execute('INSERT INTO life_baths VALUES (?,?,NULL,NULL)', (source_id, stamp))
+            elif activity_kind == 'bath_finished' and active_bath:
+                db.execute('UPDATE life_baths SET completed_source_id=?,completed_at=? WHERE source_id=?',
+                           (source_id, stamp, active_bath['source_id']))
+            if episode and episode.get('effects', {}).get('morning_wake'):
+                current['event_kind'] = 'wake_up'
+                db.execute('UPDATE life_moments SET payload=? WHERE source_id=?', (_json(current), source_id))
             from .character_development import record_world
             record_world(db, occurred_at, development, development_basis)
             self._set_current(db, current)
@@ -654,9 +683,170 @@ class DailyLifeStore:
     def record_media_delivery(self, event: dict) -> bool:
         event = validate_delivery(event)
         with self._db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            if event['component'] == 'daily_life':
+                reservation = db.execute('SELECT * FROM life_media_reservations WHERE source_id=?',
+                                         (event['daily_event']['event_id'],)).fetchone()
+                if reservation is None:
+                    raise ValueError('DAILY_VIDEO_RESERVATION_REQUIRED')
+                if reservation['request_sha256'] != event['reply_sha256'] or reservation['task_id'] != event['task_id']:
+                    raise ValueError('DAILY_VIDEO_EVENT_CONFLICT')
+                verified = datetime.fromisoformat(reservation['verified_at'])
+                if not datetime.fromisoformat(event['daily_event']['event_at']) <= verified <= datetime.fromisoformat(event['occurred_at']):
+                    raise ValueError('DAILY_VIDEO_SOURCE_UNAVAILABLE')
+                previous = db.execute("SELECT payload FROM life_moments WHERE source_id=?", (event['event_id'],)).fetchone()
+                if previous and json.loads(previous[0])['delivery']['reply_sha256'] != event['reply_sha256']:
+                    raise ValueError('DAILY_VIDEO_EVENT_CONFLICT')
             cursor = db.execute('INSERT OR IGNORE INTO life_moments VALUES (?,?,?,?)',
                 (event['event_id'], _time(datetime.fromisoformat(event['occurred_at'])), 'media', _json({'delivery': event})))
             return cursor.rowcount == 1
+
+    def daily_video_event_matches(self, request: dict, *, now: datetime | None = None) -> bool:
+        from runtime.personal_chat.daily_video import validate_input
+        request = validate_input(request)
+        now = now or datetime.now(timezone.utc)
+        with self._db() as db:
+            return self._daily_video_event_matches(db, request, now)
+
+    def daily_video_can_prepare(self, request: dict, *, now: datetime | None = None) -> bool:
+        """A real start may prepare a clip; only the actual finish may send it."""
+        from runtime.personal_chat.daily_video import validate_input
+        request = validate_input(request)
+        now = now or datetime.now(timezone.utc)
+        with self._db() as db:
+            if self._daily_video_event_matches(db, request, now):
+                return True
+            if request['event_kind'] != 'bath_finished':
+                return False
+            bath = db.execute('SELECT started_at FROM life_baths WHERE source_id=?', (request['event_id'],)).fetchone()
+            return bool(bath and datetime.fromisoformat(bath[0]) == datetime.fromisoformat(request['event_at'])
+                        and datetime.fromisoformat(bath[0]) <= now)
+
+    def daily_video_sources(self, *, now: datetime, limit: int = 6) -> list[dict]:
+        """Small author candidates from actual sources; a plan is never a source."""
+        from runtime.personal_chat.daily_video import EVENT_KINDS
+        start = now.astimezone(LOCAL).replace(hour=0, minute=0, second=0, microsecond=0)
+        sources = []
+        with self._db() as db:
+            rows = db.execute("SELECT source_id,occurred_at,payload FROM life_moments "
+                "WHERE kind='daily' AND occurred_at>=? AND occurred_at<=? ORDER BY occurred_at DESC LIMIT 30",
+                (_time(start), _time(now))).fetchall()
+            for source_id, occurred_at, raw in rows:
+                item = json.loads(raw)
+                kind = item.get('event_kind') or item.get('activity_kind')
+                if kind == 'bath_started':
+                    bath = db.execute('SELECT completed_source_id FROM life_baths WHERE source_id=?', (source_id,)).fetchone()
+                    if not bath or bath[0] is not None:
+                        continue
+                    sources.append(dict(event_id=source_id, event_at=occurred_at, event_kind='bath_finished',
+                        event_status='preparing', location=item.get('location'),
+                        detail='已实际开始这次洗澡，视频可提前准备；尚未完成，不可发送。'))
+                    if len(sources) >= limit:
+                        break
+                    continue
+                if kind == 'bath_finished' and db.execute(
+                        'SELECT 1 FROM life_baths WHERE completed_source_id=?', (source_id,)).fetchone():
+                    continue  # The prepared clip retains the original start identity.
+                if kind not in EVENT_KINDS or db.execute(
+                        'SELECT 1 FROM life_media_reservations WHERE source_id=?', (source_id,)).fetchone():
+                    continue
+                if kind == 'shopping':
+                    episode_row = db.execute('SELECT payload FROM life_episodes WHERE source_id=?', (source_id,)).fetchone()
+                    if not episode_row or json.loads(episode_row[0]).get('result', {}).get('status') != 'completed':
+                        continue
+                if kind == 'meal' and not any(m.get('status') in {'eating', 'eaten'} for m in item.get('meals', [])):
+                    meal_row = db.execute('SELECT payload FROM life_meal_events WHERE source_id=?', (source_id,)).fetchone()
+                    meal = json.loads(meal_row[0]) if meal_row else {}
+                    if (meal.get('status') not in {'eating', 'eaten'}
+                            or meal.get('occurred_at') != occurred_at):
+                        continue
+                sources.append(dict(event_id=source_id, event_at=occurred_at, event_kind=kind,
+                    location=item.get('location'), detail=item.get('note', '')[:180]))
+                if len(sources) >= limit:
+                    break
+        return sources
+
+    def reserve_daily_video_delivery(self, request: dict, *, task_id: str,
+                                    now: datetime | None = None) -> bool:
+        """Retain a checked source binding before QQ; this is not a share fact."""
+        from runtime.personal_chat.daily_video import validate_input
+        request = validate_input(request)
+        now = now or datetime.now(timezone.utc)
+        stamp = _time(now)
+        if not isinstance(task_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', task_id):
+            raise ValueError('DAILY_VIDEO_TASK_INVALID')
+        digest = hashlib.sha256(json.dumps(request, sort_keys=True, ensure_ascii=False, allow_nan=False).encode()).hexdigest()
+        with self._db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            # Always recheck the author, even if a previous send was deferred.
+            if not self._daily_video_event_matches(db, request, now):
+                raise ValueError('DAILY_VIDEO_SOURCE_UNAVAILABLE')
+            old = db.execute('SELECT request_sha256,task_id FROM life_media_reservations WHERE source_id=?',
+                             (request['event_id'],)).fetchone()
+            if old:
+                if old['request_sha256'] != digest or old['task_id'] != task_id:
+                    raise ValueError('DAILY_VIDEO_EVENT_CONFLICT')
+                return False
+            bath = db.execute('SELECT completed_source_id FROM life_baths WHERE source_id=?',
+                              (request['event_id'],)).fetchone() if request['event_kind'] == 'bath_finished' else None
+            source_id = bath[0] if bath else request['event_id']
+            source = db.execute("SELECT payload FROM life_moments WHERE source_id=? AND kind='daily'",
+                                (source_id,)).fetchone()
+            if source is None:
+                source = db.execute('SELECT payload FROM life_meal_events WHERE source_id=?',
+                                    (request['event_id'],)).fetchone()
+            source_digest = hashlib.sha256(source[0].encode()).hexdigest()
+            db.execute('INSERT INTO life_media_reservations VALUES (?,?,?,?,?)',
+                       (request['event_id'], digest, task_id, stamp, source_digest))
+            return True
+
+    def record_daily_video_delivery(self, request: dict, *, task_id: str, message_id: str,
+                                    delivered_at: datetime) -> bool:
+        from runtime.reply.media_delivery import make_daily_delivery
+        return self.record_media_delivery(make_daily_delivery(request, task_id=task_id,
+            message_id=message_id, occurred_at=delivered_at))
+
+    @staticmethod
+    def _daily_video_event_matches(db, request, now):
+        when = datetime.fromisoformat(request['event_at'])
+        if when > now:
+            return False
+        if request['event_kind'] == 'bath_finished':
+            bath = db.execute('SELECT started_at,completed_source_id,completed_at FROM life_baths WHERE source_id=?',
+                              (request['event_id'],)).fetchone()
+            if bath:
+                if (datetime.fromisoformat(bath['started_at']) != when or not bath['completed_source_id']
+                        or datetime.fromisoformat(bath['completed_at']) > now):
+                    return False
+                ended = db.execute('SELECT payload FROM life_episodes WHERE source_id=?',
+                                   (bath['completed_source_id'],)).fetchone()
+                episode = json.loads(ended[0]) if ended else {}
+                return (episode.get('activity_kind') == 'bath_finished'
+                        and episode.get('result', {}).get('status') == 'completed')
+        row = db.execute("SELECT occurred_at,payload FROM life_moments WHERE source_id=? AND kind='daily'",
+                         (request['event_id'],)).fetchone()
+        if row:
+            payload = json.loads(row[1])
+            kind = payload.get('event_kind') or payload.get('activity_kind')
+            matches_kind = kind == request['event_kind']
+            if (datetime.fromisoformat(row[0]) == when
+                    and matches_kind):
+                if request['event_kind'] == 'shopping':
+                    episode_row = db.execute('SELECT payload FROM life_episodes WHERE source_id=?', (request['event_id'],)).fetchone()
+                    episode = json.loads(episode_row[0]) if episode_row else {}
+                    return (kind == 'shopping' and episode.get('activity_kind') == 'shopping'
+                            and episode.get('result', {}).get('status') == 'completed')
+                if request['event_kind'] != 'meal' or any(
+                        meal.get('status') in {'eating', 'eaten'} for meal in payload.get('meals', [])):
+                    return True
+        if request['event_kind'] == 'meal':
+            row = db.execute('SELECT payload FROM life_meal_events WHERE source_id=?', (request['event_id'],)).fetchone()
+            if row:
+                meal = json.loads(row[0])
+                return (meal.get('status') in {'eating', 'eaten'}
+                        and datetime.fromisoformat(meal['occurred_at']) == when)
+        # Clock-based sleep/bath schedules never certify wake/bath completion.
+        return False
 
     def record_image_observation(self, event: dict) -> bool:
         from runtime.image_understanding import validate_observation
@@ -1102,6 +1292,12 @@ class DailyLifeStore:
                ORDER BY occurred_at DESC,source_id DESC LIMIT 128""",
             (_time(now - timedelta(days=14)), _time(now)))]
         body = with_recovery(body, recovery_episodes, now, exchanges=exchanges, shifts=shifts)
+        bath = db.execute('SELECT source_id,started_at FROM life_baths WHERE started_at<=? '
+                          'AND (completed_at IS NULL OR completed_at>?) ORDER BY started_at DESC LIMIT 1',
+                          (_time(now), _time(now))).fetchone()
+        if bath:
+            body['authored_bath'] = dict(bath)
+            body.update(phase='bathing', phase_basis='published_bath_start', activity='林离洗澡中', availability='rest')
         latest_activity = world['today_activities'][-1] if world['today_activities'] else None
         if latest_activity and latest_activity.get('activity_kind') == 'rest':
             body['rest_observations'] = {

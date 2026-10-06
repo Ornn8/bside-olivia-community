@@ -12,6 +12,7 @@ import http.client
 import ipaddress
 import json
 import math
+import re
 from pathlib import Path
 import urllib.error
 import urllib.parse
@@ -121,6 +122,23 @@ def _validate_input(value):
         raise ValueError('invalid current turn')
 
 
+def _daily_video_experience(value):
+    if value is None:
+        return None
+    kinds = {'housework', 'walk', 'bath_finished', 'shopping', 'meal', 'wake_up'}
+    if (not isinstance(value, dict) or set(value) != {'event_ids', 'event_kinds', 'max_seconds'}
+            or type(value['max_seconds']) is not int or value['max_seconds'] != 15
+            or not isinstance(value['event_ids'], list) or not 1 <= len(value['event_ids']) <= 6
+            or not all(isinstance(item, str) and re.fullmatch(r'[A-Za-z0-9._:-]{1,128}', item)
+                       for item in value['event_ids'])
+            or len(set(value['event_ids'])) != len(value['event_ids'])
+            or not isinstance(value['event_kinds'], list) or not 1 <= len(value['event_kinds']) <= 6
+            or not all(isinstance(item, str) and item in kinds for item in value['event_kinds'])
+            or len(set(value['event_kinds'])) != len(value['event_kinds'])):
+        raise ValueError('invalid daily video experience')
+    return json.loads(_json(value))
+
+
 @dataclass(frozen=True)
 class FrozenCompanionTurn:
     input_json: str
@@ -130,10 +148,12 @@ class FrozenCompanionTurn:
     input_digest: str
     speech_enabled: bool = False
     bedtime_offer: bool = False
+    daily_video_json: str | None = None
 
     @classmethod
     def create(cls, *, messages, current_source_id, capabilities, environment,
-               forbidden_kinds, as_of, input_revision=0, speech_enabled=False, bedtime_offer=False):
+               forbidden_kinds, as_of, input_revision=0, speech_enabled=False, bedtime_offer=False,
+               daily_video_experience=None):
         try:
             if type(bedtime_offer) is not bool:
                 raise ValueError('invalid bedtime offer scope')
@@ -168,16 +188,27 @@ class FrozenCompanionTurn:
                 if not speech_enabled:
                     raise ValueError('bedtime offer requires speech capability')
                 binding['bedtime_offer'] = True
+            daily = _daily_video_experience(daily_video_experience)
+            if daily is not None:
+                if 'video_speech' not in capabilities['kinds']:
+                    raise ValueError('daily video capability missing')
+                binding['daily_video_experience'] = daily
             digest = hashlib.sha256(_json(binding).encode('utf-8')).hexdigest()
         except (ValueError, TypeError, KeyError, ValidationError, OverflowError):
             raise CompanionDecisionError('JEV_INPUT_INVALID') from None
         if len(_json({'input': value}).encode('utf-8')) > _MAX_INPUT_BYTES:
             raise CompanionDecisionError('JEV_INPUT_TOO_LARGE')
-        return cls(encoded, tuple(sources), when, input_revision, digest, speech_enabled, bedtime_offer)
+        return cls(encoded, tuple(sources), when, input_revision, digest, speech_enabled,
+                   bedtime_offer=bedtime_offer,
+                   daily_video_json=_json(daily) if daily is not None else None)
 
     @property
     def input(self):
         return json.loads(self.input_json)
+
+    @property
+    def daily_video_experience(self):
+        return json.loads(self.daily_video_json) if self.daily_video_json is not None else None
 
 
 @dataclass(frozen=True)
@@ -192,6 +223,7 @@ class FrozenCompanionDecision:
     profile: str = 'full'
     speech_json: str | None = None
     speech_offer: str | None = None
+    daily_video_json: str | None = None
 
     @classmethod
     def from_response(cls, turn, response):
@@ -208,20 +240,24 @@ class FrozenCompanionDecision:
         return cls(encoded, turn.input_digest, turn.source_ids, turn.input_revision, turn.as_of,
                    metering_json=metering, profile=response.get('evaluation', {}).get('profile', 'full'),
                    speech_json=_json(_speech_request(response.get('speech_request'))) if turn.speech_enabled else None,
-                   speech_offer=_speech_offer(response['speech_offer']) if turn.bedtime_offer else None)
+                   speech_offer=_speech_offer(response['speech_offer']) if turn.bedtime_offer else None,
+                   daily_video_json=turn.daily_video_json)
 
     @classmethod
     def from_record(cls, turn, record, *, profile='full'):
         """Restore only against the caller's freshly rebuilt complete turn."""
         try:
             fields = {'schema_version', 'plan', 'model', 'input_digest', 'source_id_map', 'input_revision', 'as_of'}
-            if (not isinstance(record, dict) or set(record) - {'metering', 'evaluation', 'speech_request', 'speech_offer'} != fields
+            if (not isinstance(record, dict) or set(record) - {
+                    'metering', 'evaluation', 'speech_request', 'speech_offer', 'daily_video_experience'} != fields
                     or record['schema_version'] != 'companion-decision/1' or record['model'] != MODEL
                     or record['input_digest'] != turn.input_digest or record['as_of'] != turn.as_of
                     or type(record['input_revision']) is not type(turn.input_revision)
                     or record['input_revision'] != turn.input_revision
                     or record['source_id_map'] != dict(turn.source_ids)):
                 raise ValueError('record does not match frozen turn')
+            if _daily_video_experience(record.get('daily_video_experience')) != turn.daily_video_experience:
+                raise ValueError('record daily video capability mismatch')
             _validate_evaluation(record)
             if turn.speech_enabled and 'speech_request' not in record:
                 raise ValueError('missing speech decision')
@@ -248,7 +284,8 @@ class FrozenCompanionDecision:
         return cls(encoded, turn.input_digest, turn.source_ids, turn.input_revision, turn.as_of,
                    metering_json=_json(metering) if metering is not None else None, profile=record_profile,
                    speech_json=_json(_speech_request(record.get('speech_request'))) if 'speech_request' in record else None,
-                   speech_offer=record.get('speech_offer') if turn.bedtime_offer else None)
+                   speech_offer=record.get('speech_offer') if turn.bedtime_offer else None,
+                   daily_video_json=turn.daily_video_json)
 
     @property
     def plan(self):
@@ -271,6 +308,8 @@ class FrozenCompanionDecision:
             result['speech_request'] = json.loads(self.speech_json)
         if self.speech_offer is not None:
             result['speech_offer'] = self.speech_offer
+        if self.daily_video_json is not None:
+            result['daily_video_experience'] = json.loads(self.daily_video_json)
         return result
 
     def writer_projection(self):
@@ -365,7 +404,8 @@ class JevDecisionPort:
     def _packet(self, turn):
         return {'input': turn.input, **({'profile': self.profile} if self.profile != 'full' else {}),
                 **({'speech_experience': True} if turn.speech_enabled else {}),
-                **({'bedtime_offer': True} if turn.bedtime_offer else {})}
+                **({'bedtime_offer': True} if turn.bedtime_offer else {}),
+                **({'daily_video_experience': turn.daily_video_experience} if turn.daily_video_json is not None else {})}
 
     def _request(self, turn):
         value = turn.input

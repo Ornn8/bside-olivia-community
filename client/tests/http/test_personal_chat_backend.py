@@ -69,8 +69,10 @@ _BASE_CASE = ('qq', '今天钢琴练得怎么样？', '那你明天再跟我说�
     [(None, variant, _BASE_CASE) for variant in ('plain', 'fenced', 'missing_sticker', 'numeric_sticker', 'extra_fields', 'native_media')]
     + [(code, 'plain', _BASE_CASE) for code in ('PROVIDER_TIMEOUT', 'PROVIDER_PROTOCOL', 'LLM_TIMEOUT', 'outer_timeout')]
     + [(None, variant, (channel, user, reply)) for channel in ('qq', 'wechat') for user, reply in _REPLY_CASES
-       for variant in ('missing_control', 'text_only', 'repeated_reply', 'unrequested_speech', 'invalid_unrequested_speech')])
-def test_backend_generate_uses_real_pipeline_persona_memory_and_world(monkeypatch, failure_code, envelope_variant, sample):
+       for variant in ('missing_control', 'text_only', 'repeated_reply', 'unrequested_speech', 'invalid_unrequested_speech')]
+    + [(None, variant, ('qq', '洗好了吗，拍一小段给我看看？', '刚洗好了，我拍一小段给你。'))
+       for variant in ('daily_video', 'daily_video_explicit')])
+def test_backend_generate_uses_real_pipeline_persona_memory_and_world(tmp_path, monkeypatch, failure_code, envelope_variant, sample):
     import local_server
     calls, logs = [], []
     channel, user, reply_text = sample
@@ -101,6 +103,10 @@ def test_backend_generate_uses_real_pipeline_persona_memory_and_world(monkeypatc
                                       continuation_summary='虚构摘要')
             elif envelope_variant == 'invalid_unrequested_speech':
                 body['speech'] = {'unexpected': 'invalid optional metadata'}
+            elif envelope_variant.startswith('daily_video'):
+                daily = CURRENT.get()['daily_video_candidates']
+                assert len(daily) == 1 and daily[0]['event_kind'] == 'bath_finished'
+                body['daily_video'] = dict(event_id=daily[0]['event_id'], spoken_text='刚洗完，头发还湿着呢。')
             raw = json.dumps(body)
             if envelope_variant == 'fenced':
                 raw = '```json\n' + raw + '\n```'
@@ -112,8 +118,16 @@ def test_backend_generate_uses_real_pipeline_persona_memory_and_world(monkeypatc
     adapter.gateway = Provider()
     monkeypatch.setattr(adapter, "_build_memory_prompt", lambda *a, **k: SimpleNamespace(text="synthetic-memory-keeps-piano", references=()))
     monkeypatch.setattr(adapter, "daily_life_fragments", lambda text: (UntrustedFragment("life.synthetic", "synthetic-world-evening-piano"),))
+    port = None
+    if envelope_variant == 'daily_video_explicit':
+        from tests.persona.test_jev_pipeline import Port, plan
+        value = plan(kind='video_speech')
+        value['understanding'].update(extras_allowed=False, requirements=[dict(id='r1', fulfillment='current',
+            alternatives=[dict(kinds=['video_speech'], min_assets=1, max_assets=1)], evidence_turn_ids=['t1'])])
+        value['proposal']['steps'][0]['requirement_ids'] = ['r1']
+        port = Port(value)
     pipeline = ReplyPipeline(ReplyOrchestrator(local_server._LetterGateway(adapter), timeout_seconds=1),
-        reviewer=NullReviewer(), rewriter=UnavailableRewriter())
+        reviewer=NullReviewer(), rewriter=UnavailableRewriter(), companion_decision_port=port)
     source = ContextVar("test_personal_source", default="previous-source")
     receipt = ContextVar("test_personal_receipt", default=None)
     server = SimpleNamespace(letters_adapter=adapter, reply_pipeline=pipeline,
@@ -174,7 +188,7 @@ def test_backend_generate_uses_real_pipeline_persona_memory_and_world(monkeypatc
     async def scenario(row=None):
         row = row if row is not None else {"life_received_at": datetime.now(timezone.utc).isoformat()}
         result = await backend.generate(server, event, row)
-        if envelope_variant in ('missing_sticker', 'numeric_sticker', 'text_only'):
+        if envelope_variant in ('missing_sticker', 'numeric_sticker', 'text_only', 'daily_video_explicit'):
             assert 'sticker_id' not in row
         else:
             assert row['sticker_id'].startswith('linli-')
@@ -208,11 +222,72 @@ def test_backend_generate_uses_real_pipeline_persona_memory_and_world(monkeypatc
                 pass
             service = PersonalChatService(server.store.personal_chats, server._persist_store_state,
                 generate, commit, {channel: (event.account_id, event.owner_id)})
+            if envelope_variant.startswith('daily_video'):
+                from runtime.private_world.daily_life import DailyLifeStore
+                from runtime.private_world.life_episode import create
+                from runtime.personal_chat.daily_video import DailyVideoWorker
+                from tests.http.test_daily_video import API
+                world, captured = DailyLifeStore(tmp_path / 'world.sqlite'), datetime.now(timezone.utc)
+                author_calls = []
+                class LifeAuthor:
+                    async def ask(self, state, questions, **kwargs):
+                        author_calls.append(state)
+                        return dict(trigger='own_activity', experience='0:ordinary:none')
+                episode = await create(LifeAuthor(), 'day:synthetic-bath', captured, 'bath_finished', {})
+                world.publish_day('day:synthetic-bath', dict(location='住处', activity='刚洗完澡',
+                    note=episode['result']['detail']), [], occurred_at=captured,
+                    activity_kind='bath_finished', episode=episode)
+                gate, videos, api = asyncio.Event(), [], API(asyncio.Event())
+                api.gate = gate
+                async def request(action, data):
+                    if action == 'capabilities':
+                        return dict(kinds=['daily_video'], daily_video_enabled=True, daily_video_scenes=[
+                            dict(scene_id='bathroom', event_kinds=['bath_finished'], locations=['住处'])])
+                    assert action == 'ack'
+                    return {}
+                api.request = request
+                worker = DailyVideoWorker(tmp_path / 'jobs', service, ('100', '200'), lambda: api,
+                    world, validator=lambda path: None, quiet_seconds=0)
+                server._daily_video_worker = worker
+                async def video(path, *, eligible, **kwargs):
+                    assert eligible() and service.rows[-1]['delivery_status'] == 'DELIVERED'
+                    assert len(world.history()['moments']) == 1
+                    videos.append(path)
+                    return 'synthetic-video-ack'
+                send.video, send.is_available = video, lambda: True
+                worker.bind('qq', send)
+                await worker.refresh_capabilities()
+                monitor = asyncio.create_task(worker.monitor())
             await service.handle(event, send)
             row = service.rows[-1]
             assert row['delivery_status'] == 'DELIVERED' and row['transport_confirmation'] == 'CONFIRMED'
             assert row['generation_attempts'] == 1 and generated == [reply_text]
             assert sent == [row['reply_text']]
+            if envelope_variant.startswith('daily_video'):
+                assert row['daily_video_request']['spoken_text'] == '刚洗完，头发还湿着呢。'
+                assert row['daily_video_request']['scene_id'] == 'bathroom'
+                if port is not None:
+                    assert len(port.turns) == 1
+                    assert row['companion_delivery'] == 'video_speech'
+                    assert row['requested_format'] == 'text'
+                    assert port.turns[0].daily_video_experience == dict(event_ids=['day:synthetic-bath'],
+                        event_kinds=['bath_finished'], max_seconds=15)
+                assert len(author_calls) == 1 and not api.calls and not videos
+                for _ in range(30):
+                    if api.calls:
+                        break
+                    await asyncio.sleep(.1)
+                assert len(api.calls) == 1 and not service.lock.locked() and not videos
+                gate.set()
+                await worker.wait_idle()
+                assert len(videos) == 1 and len(world.history()['moments']) == 2
+                assert worker.get('day:synthetic-bath')['world_status'] == 'COMMITTED'
+                await worker.intake_replies()
+                await worker.wait_idle()
+                assert len(api.calls) == 1 and len(videos) == 1
+                await worker.close()
+                monitor.cancel()
+                await asyncio.gather(monitor, return_exceptions=True)
             if service.consumer_tasks:
                 await asyncio.gather(*service.consumer_tasks.values())
         asyncio.run(delivered_scenario())

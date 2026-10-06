@@ -135,6 +135,44 @@ def test_actual_http_one_complete_decision_freezes_input_and_bounded_writer_proj
         decision.plan_json = '{}'
 
 
+def test_daily_video_descriptor_is_optional_frozen_and_sent_in_same_http_call(sidecar):
+    args = input_args()
+    args['capabilities']['kinds'].append('video_speech')
+    baseline = FrozenCompanionTurn.create(**args)
+    descriptor = dict(event_ids=['day:meal-1', 'day:meal-2'], event_kinds=['meal'], max_seconds=15)
+    frozen = FrozenCompanionTurn.create(**args, daily_video_experience=descriptor)
+    descriptor['event_ids'].append('not-frozen')
+    sidecar['body']['evaluation'] = dict(profile='single_delivery', not_evaluated=['control'])
+    decision = asyncio.run(JevDecisionPort(sidecar['url'], profile='single_delivery').decide(frozen)).decision
+    assert frozen.input_digest != baseline.input_digest and decision.matches(frozen)
+    assert len(sidecar['calls']) == 1
+    packet = json.loads(sidecar['calls'][0][2])
+    assert set(packet) == {'input', 'profile', 'daily_video_experience'}
+    assert packet['daily_video_experience'] == dict(event_ids=['day:meal-1', 'day:meal-2'], event_kinds=['meal'], max_seconds=15)
+    record = decision.record()
+    assert FrozenCompanionDecision.from_record(frozen, record, profile='single_delivery').matches(frozen)
+    record['daily_video_experience']['event_ids'][0] = 'day:changed'
+    with pytest.raises(CompanionDecisionError):
+        FrozenCompanionDecision.from_record(frozen, record, profile='single_delivery')
+
+
+@pytest.mark.parametrize('descriptor', [
+    {}, dict(event_ids=[], event_kinds=['meal'], max_seconds=15),
+    dict(event_ids=['x'] * 2, event_kinds=['meal'], max_seconds=15),
+    dict(event_ids=['汉字'], event_kinds=['meal'], max_seconds=15),
+    dict(event_ids=['x'], event_kinds=['rest'], max_seconds=15),
+    dict(event_ids=['x'], event_kinds=['meal'] * 2, max_seconds=15),
+    dict(event_ids=['x'], event_kinds=['meal'], max_seconds=True),
+    dict(event_ids=['x'], event_kinds=['meal'], max_seconds=60),
+    dict(event_ids=[str(i) for i in range(7)], event_kinds=['meal'], max_seconds=15),
+])
+def test_invalid_daily_video_descriptor_fails_before_call(descriptor):
+    args = input_args()
+    args['capabilities']['kinds'].append('video_speech')
+    with pytest.raises(CompanionDecisionError, match='JEV_INPUT_INVALID'):
+        FrozenCompanionTurn.create(**args, daily_video_experience=descriptor)
+
+
 @pytest.mark.parametrize('field,value', [
     ('input_revision', 5), ('as_of', '2026-09-27T03:01:00+00:00'),
     ('capabilities', dict(kinds=['text', 'image'], synchronize=False, playback_events=False,

@@ -44,8 +44,11 @@ class Port:
 
 
 def run(port, *, mode=ReplyMode.TEXT_LETTER, raw='我醒了，不是要睡觉', interpreter=None, history=(), budget=40000,
-        channel='qq'):
-    engine = Engine(json.dumps(envelope(), ensure_ascii=False) if mode is ReplyMode.FUTURE_IM else '醒啦，休息得怎么样？')
+        channel='qq', daily=(), daily_selection=None, kinds=None):
+    body = envelope()
+    if daily_selection is not None:
+        body['daily_video'] = daily_selection
+    engine = Engine(json.dumps(body, ensure_ascii=False) if mode is ReplyMode.FUTURE_IM else '醒啦，休息得怎么样？')
     pipeline = ReplyPipeline(engine, reviewer=NullReviewer(), rewriter=UnavailableRewriter(),
         discover_runtime_ports=False, current_turn_interpreter=interpreter, companion_decision_port=port)
     request = ReplyRequest(content=raw, request_id='dev:turn:1', messages=(dict(role='system', content='核心人格'),
@@ -53,7 +56,8 @@ def run(port, *, mode=ReplyMode.TEXT_LETTER, raw='我醒了，不是要睡觉', 
     context = ReplyContext.create(mode, future_im_enabled=True,
         trusted_time=TrustedTime(datetime(2026, 9, 27, tzinfo=timezone.utc)))
     token = CURRENT.set(dict(structured=True, raw_user_text=raw, proactive=False, channel=channel,
-        semantic_kinds=['text', 'audio_speech'], received_source_id='reply:dev:user', input_revision=3,
+        semantic_kinds=kinds or ['text', 'audio_speech'], daily_video_candidates=list(daily),
+        received_source_id='reply:dev:user', input_revision=3,
         decision_now='2026-09-27T08:00:00+08:00')) if mode is ReplyMode.FUTURE_IM else None
     try:
         return asyncio.run(pipeline.run(request, context)), engine
@@ -133,6 +137,53 @@ def test_audio_selection_is_frozen_without_tts_emotion_controls():
     result, engine = run(Port(plan(kind='audio_speech')), mode=ReplyMode.FUTURE_IM)
     assert result.state is ReplyState.COMPLETED and result.companion_delivery == 'audio_speech'
     assert 'inference_instruct' not in str(engine.requests[0].messages)
+
+
+@pytest.mark.parametrize('kind', ['text', 'audio_speech', 'image'])
+def test_explicit_other_medium_does_not_receive_extra_daily_video(kind):
+    from tests.http.test_daily_video import payload
+    candidate = {**payload(), 'detail': '刚整理好桌面。', 'location': '住处'}
+    port = Port(plan(kind=kind))
+    result, engine = run(port, mode=ReplyMode.FUTURE_IM, daily=[candidate],
+        daily_selection=dict(event_id=candidate['event_id'], spoken_text='整理好了。'),
+        kinds=['text', 'audio_speech', 'image', 'video_speech'])
+    assert result.state is ReplyState.COMPLETED and len(port.turns) == len(engine.requests) == 1
+    assert 'daily_video' not in json.loads(result.text)
+    assert '<daily_video_candidates>' not in str(engine.requests[0].messages)
+
+
+@pytest.mark.parametrize('channel,daily', [('qq', ()), ('wechat', ('candidate',))])
+def test_daily_video_requires_qq_actual_candidate_gate(channel, daily):
+    from tests.http.test_daily_video import payload
+    candidates = [{**payload(), 'detail': '已发生的整理。'}] if daily else []
+    port = Port(plan(kind='video_speech'))
+    result, engine = run(port, mode=ReplyMode.FUTURE_IM, channel=channel, daily=candidates,
+        kinds=['text', 'video_speech'])
+    assert result.error_code == 'JEV_PLAN_UNSUPPORTED' and not engine.requests
+    assert port.turns[0].daily_video_experience is None
+
+
+def test_long_speech_cannot_be_routed_to_daily_video():
+    from runtime.reply.companion_runtime import delivery_for, CompanionRuntimeError
+    decision = SimpleNamespace(plan=plan(kind='video_speech'), record=lambda: dict(
+        daily_video_experience=dict(event_ids=['day:x'], event_kinds=['meal'], max_seconds=15),
+        speech_request=dict(mode='story', target_seconds=300, continuation=False)))
+    with pytest.raises(CompanionRuntimeError, match='JEV_PLAN_UNSUPPORTED'):
+        delivery_for(decision, kinds=['text', 'video_speech'], daily_video=True)
+
+
+def test_legacy_paid_decision_stays_reusable_when_daily_video_capability_appears():
+    from runtime.reply.companion_runtime import prepare_decision
+    async def scenario():
+        port = Port()
+        arguments = dict(source_id='reply:dev:user', input_revision=3,
+            as_of='2026-09-27T00:00:00+00:00', kinds=['text', 'audio_speech'])
+        old = await prepare_decision(port, (), '原消息', **arguments)
+        arguments['kinds'].append('video_speech')
+        restored = await prepare_decision(port, (), '原消息', **arguments, cached=old.record(),
+            daily_video_experience=dict(event_ids=['day:new'], event_kinds=['meal'], max_seconds=15))
+        assert restored.record() == old.record() and len(port.turns) == 1
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize('requirement', ['none', 'pending_image', 'current_text'])

@@ -5,7 +5,7 @@ from datetime import datetime
 import json
 from jsonschema import Draft202012Validator, ValidationError
 
-KINDS = ('class', 'practice', 'reading', 'meal', 'rest', 'housework', 'walk', 'errand', 'creative')
+KINDS = ('class', 'practice', 'reading', 'meal', 'rest', 'housework', 'walk', 'errand', 'creative', 'bath_started', 'bath_finished', 'shopping')
 _ACTIVITY = {'type': 'object', 'additionalProperties': False, 'required': ['kind', 'place_id', 'focus'],
     'properties': {'kind': {'enum': list(KINDS)}, 'place_id': {'enum': ['home', 'campus', 'neighborhood', 'shop']},
                    'focus': {'type': 'string', 'maxLength': 40}}}
@@ -47,6 +47,9 @@ progress是当前这个事项或动作本次实际变化、卡点或暂停缘由
 progress不用于扩写世界：不得添写天气、住处、课程出勤、用餐、第三方或用户经历，不编造昨天或离线期间做过什么。当前地点/活动/餐食仍只由activity与meal决定；未知继续保留未知。暂停、无进展与失败也可是真实变化，不必每天成功。
 未知天气没有天气剧情入口；真实观测仅由程序提供。人格声明保持原有层级与置信度，不改写旧背景。不要添加契约外字段。
 character_development是同一时间截面的有限发展投影，仅影响对应key的倾向；未成熟的trying不是喜欢，baseline为avoid的重大差异最多有限尝试。不改写核心、生平、其他偏好、当前事实或关系权限。'''
+LIFE_PROMPT += '\nbath_finished只创作此刻确实完成的一次洗澡，地点home且focus为空；不是睡前时段自动已洗，也不是把计划或用户洗澡写成她的经历。没有这次实际行动选择其他活动。'
+LIFE_PROMPT += '\nbath_started是她此刻实际开始洗澡，home且focus为空，尚未洗完；已有rhythm.authored_bath时不再开始第二次澡，只在本次真实结束时选bath_finished，时间过去不自动完成。'
+LIFE_PROMPT += '\nshopping是她此刻在shop实际进行的一次购物，具体是否买到由本次过程决定；不等同errand出门准备或购物计划，不补造交易、品牌、用户或他人购物。'
 
 PROMPT = LIFE_PROMPT + '\ndevelopment默认为空数组，不为凑成长制造评价。它仅评价development_basis.sources中已经正式发布的旧活动，不能评价本次新决定或未来安排；最多3项，严格为source_id,key,stance,quote,reason，key只能来自development_topics，quote是旧world.note连续原文，主题可自然使用同义表达，reason是160字内的有限体验评价。\n结合旧活动具体内容及其已批准appraisal，判断她对活动本身的正面或负面体验，stance为positive或negative；情绪高兴/沮丧、做得成功/失败、用户爱好、被催促或被迫活动、一般疲惫，均不能机械换成喜欢/讨厌该活动。证据不足填空数组。trait只评价受控领域中这次具体行为的体验，不自夸性格或宣布已改变；taste只可评价已明确eaten的食物。成长由程序按多日证据慢慢累计，单次不成熟，不把模糊结果具体化。'
 
@@ -77,7 +80,9 @@ def decision_context(data: dict) -> dict:
     # class/practice choices merely because the care enum changed.
     needs_rest = unwell and wellbeing.get('care') in {'rest', 'consider_consultation'}
     sleep_due = (data['rhythm'].get('authored_sleep') or {}).get('status') == 'due'
-    allowed = (['rest'] if rest_phase or sleep_due else
+    authored_bath = data['rhythm'].get('authored_bath')
+    allowed = (['bath_finished', 'rest'] if authored_bath else ['rest', 'bath_started'] if data['rhythm']['phase'] == 'bathing' else
+               ['rest'] if rest_phase or sleep_due else
                ['rest', 'meal'] if needs_rest else
                ['class', 'rest'] if current_schedule['current_class'] and (unwell or data['rhythm'].get('rest') in {'tired', 'depleted'}) else
                ['class'] if current_schedule['current_class'] else
@@ -104,11 +109,15 @@ def compile_decision(value: dict, data: dict) -> tuple[dict, list, list]:
         raise ValueError('DAILY_LIFE_DECISION_CLASS_CONFLICT')
     if activity['kind'] == 'class' and (not course or activity['place_id'] != 'campus'):
         raise ValueError('DAILY_LIFE_DECISION_CLASS_CONFLICT')
+    if activity['kind'] in {'bath_started', 'bath_finished'} and (activity['place_id'] != 'home' or activity['focus'].strip()):
+        raise ValueError('DAILY_LIFE_DECISION_BATH_INVALID')
+    if activity['kind'] == 'shopping' and activity['place_id'] != 'shop':
+        raise ValueError('DAILY_LIFE_DECISION_SHOPPING_INVALID')
     if (activity['kind'] == 'meal') != (meal is not None):
         raise ValueError('DAILY_LIFE_DECISION_MEAL_CONFLICT')
     location = data['places'][activity['place_id']]['label']
     labels = {'practice': '练琴', 'reading': '阅读', 'rest': '休息', 'housework': '整理家务',
-              'walk': '散步', 'errand': '办日常杂事', 'creative': '创作'}
+              'walk': '散步', 'errand': '办日常杂事', 'creative': '创作', 'bath_started': '开始洗澡', 'bath_finished': '刚洗完澡', 'shopping': '买日常用品'}
 
     def describe(action, lesson=None):
         if action['kind'] == 'class':
@@ -136,7 +145,7 @@ def compile_decision(value: dict, data: dict) -> tuple[dict, list, list]:
     current = {'location': location, 'activity': description, 'note': note}
     updates = []
     if project is not None:
-        if activity['kind'] in {'meal', 'walk', 'errand'}:
+        if activity['kind'] in {'meal', 'walk', 'errand', 'bath_started', 'bath_finished', 'shopping'}:
             raise ValueError('DAILY_LIFE_DECISION_UNRELATED_PROJECT')
         old = next((p for p in data['projects'] if p['id'] == project['id']), None)
         if old and (old.get('deadline_expired') or old.get('time_scope') == 'transient'):

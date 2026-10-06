@@ -406,7 +406,8 @@ class DailyLifeRuntime:
                     # published moment advance again within that budget.
                     digest = hashlib.sha256(previous["source_id"].encode("utf-8")).hexdigest()[:12]
                     source_id += f":{digest}"
-                    if not sleep_due and state["rhythm"]["phase"] in {"bathing", "sleep", "interrupted_rest"}:
+                    if (not sleep_due and not state['rhythm'].get('authored_bath')
+                            and state["rhythm"]["phase"] in {"sleep", "interrupted_rest"}):
                         return
                 if exchange_actions:
                     source_id += ':exchange:' + hashlib.sha256(exchange_actions[0]['source_id'].encode()).hexdigest()[:12]
@@ -466,7 +467,7 @@ class DailyLifeRuntime:
                         repeated = (previous is not None and not exchange_actions and not timing_pending
                                     and result['activity']['kind'] == previous.get('activity_kind'))
                         if (meal_port is not None and result['activity']['kind'] != 'meal'
-                                and not (repeated and result['activity']['kind'] != 'rest')):
+                                and not (repeated and result['activity']['kind'] not in {'rest', 'bath_finished', 'shopping'})):
                             from .life_episode import create as create_episode
                             episode = await create_episode(meal_port, source_id, now, result['activity']['kind'],
                                                            {**data, 'selected_activity': result['activity'],

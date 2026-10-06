@@ -485,6 +485,10 @@ class ReplyPipeline:
                                             TURN_CONTEXT, media_locked)
             metadata = chat_metadata if chat_metadata is not None else (TURN_CONTEXT.get() or {})
             kinds = metadata.get('semantic_kinds', ['text'])
+            offered = metadata.get('daily_video_candidates') or [] if metadata.get('channel') == 'qq' else []
+            daily_experience = (dict(event_ids=[item['event_id'] for item in offered],
+                event_kinds=list(dict.fromkeys(item['event_kind'] for item in offered)), max_seconds=15)
+                if offered and 'video_speech' in kinds else None)
             try:
                 if isinstance(prepared, ReplyRequest) and prepared.messages is None:
                     prepared = replace(prepared, messages=prepared.normalized_messages())
@@ -496,7 +500,8 @@ class ReplyPipeline:
                     speech_enabled=(chat_metadata or {}).get('speech_enabled') is True,
                     bedtime_offer=(context.mode is ReplyMode.FUTURE_IM and (chat_metadata or {}).get('channel') == 'qq'
                                    and (chat_metadata or {}).get('bedtime_offer_enabled') is True
-                                   and not (chat_metadata or {}).get('proactive'))))
+                                   and not (chat_metadata or {}).get('proactive')),
+                    daily_video_experience=daily_experience))
                 companion_decision = decision.record()
                 save_decision = metadata.get('save_companion_decision')
                 if callable(save_decision):
@@ -504,7 +509,8 @@ class ReplyPipeline:
                         await save_decision(companion_decision)
                     except Exception:
                         raise CompanionRuntimeError('JEV_DECISION_NOT_SAVED') from None
-                companion_timing, companion_delivery = delivery_for(decision, kinds=kinds)
+                companion_timing, companion_delivery = delivery_for(decision, kinds=kinds,
+                    daily_video=bool(daily_experience))
                 if degraded and (companion_delivery not in {None, 'text'}
                                  or companion_decision.get('speech_request')):
                     # Missing world context cannot turn a valid requested media
@@ -575,13 +581,24 @@ class ReplyPipeline:
             except CompanionRuntimeError as error:
                 return PipelineResult(getattr(request, 'request_id', ''), ReplyState.FAILED,
                                       error_code=str(error), proactive_decision=proactive_decision)
+        daily_candidates = []
         if generation_note and isinstance(prepared, ReplyRequest) and prepared.messages:
+            daily_candidates = ((chat_metadata or {}).get('daily_video_candidates') or []
+                if (chat_metadata or {}).get('channel') == 'qq' else [])
+            if companion_decision is not None:
+                if companion_delivery != 'video_speech':
+                    daily_candidates = []
             # Finalize the delivery contract after dialogue/recall projection.
             # The current user input stays last; evidence cannot become the
             # last instruction defining what the model is supposed to output.
             from .fact_attribution import finalize_reply_messages
             try:
-                messages = finalize_reply_messages(prepared.messages, generation_note,
+                messages = prepared.messages
+                if daily_candidates:
+                    note = '<daily_video_candidates>' + json.dumps(daily_candidates,
+                        ensure_ascii=False, separators=(',', ':')).replace('<', r'\u003c') + '</daily_video_candidates>'
+                    messages = finalize_reply_messages(messages, note, max_input_chars=original_budget)
+                messages = finalize_reply_messages(messages, generation_note,
                                                    max_input_chars=original_budget)
                 from runtime.personal_chat.decision import INSTRUCTION as CHAT_RULES
                 if (chat_metadata or {}).get('structured') and generation_note == CHAT_RULES:
@@ -682,7 +699,8 @@ class ReplyPipeline:
                 now = datetime.fromisoformat(chat_metadata['decision_now']).timestamp()
                 options = dict(user=user_text, now=now, proactive=bool(chat_metadata.get('proactive')),
                                allow_user_silence=bool(ordinary_chat),
-                               allow_speech=bool(speech_request and chat_metadata.get('channel') == 'qq'))
+                                allow_speech=bool(speech_request and chat_metadata.get('channel') == 'qq'),
+                                daily_video_candidates=daily_candidates)
                 decision = decode(clean_text, **options)
                 if reconsidered_silence and decision.get('speech'):
                     return PipelineResult(candidate.request_id, ReplyState.FAILED,
@@ -702,6 +720,9 @@ class ReplyPipeline:
                             decision_rejection_reason='RECOVERY_ACTION_WITHOUT_PLAN')
                 if decision.get('dropped_media'):
                     envelope.pop('speech', None)
+                    clean_text = json.dumps(envelope, ensure_ascii=False)
+                if decision.get('dropped_daily_video'):
+                    envelope.pop('daily_video', None)
                     clean_text = json.dumps(envelope, ensure_ascii=False)
                 review_text = decision['text']
             except (ValueError, TypeError, KeyError) as exc:

@@ -34,13 +34,19 @@ class RemoteGeneration:
         headers['X-Olivia-Wardrobe-Protocol'] = 'daily-v2'
         payload = None
         if action == 'submit':
-            if set(data) != {'request_id', 'kind', 'input'} or data['kind'] not in ('tts', 'cover', 'image', 'video', 'original', 'lipsync', 'separate', 'cover_video', 'original_video') or not isinstance(data['input'], dict):
+            if set(data) != {'request_id', 'kind', 'input'} or data['kind'] not in ('tts', 'cover', 'image', 'video', 'original', 'lipsync', 'separate', 'cover_video', 'original_video', 'daily_video') or not isinstance(data['input'], dict):
                 raise CloudError('GPU_REQUEST_INVALID', 400)
+            if data['kind'] == 'daily_video':
+                from runtime.personal_chat.daily_video import validate_input
+                try:
+                    validate_input(data['input'])
+                except ValueError:
+                    raise CloudError('GPU_REQUEST_INVALID', 400) from None
             if not isinstance(data['request_id'], str) or not re.fullmatch(r'[A-Za-z0-9_-]{8,80}', data['request_id']):
                 raise CloudError('GPU_REQUEST_INVALID', 400)
             payload = data
             headers['Idempotency-Key'] = data['request_id']
-            headers['X-Olivia-Max-Charge-Cents'] = str(121 if data['kind'] == 'image' else 500 if data['kind'] in ('video', 'lipsync', 'cover_video', 'original_video') else 300 if data['kind'] == 'original' else 100)
+            headers['X-Olivia-Max-Charge-Cents'] = str(121 if data['kind'] == 'image' else 500 if data['kind'] in ('video', 'lipsync', 'cover_video', 'original_video', 'daily_video') else 300 if data['kind'] == 'original' else 100)
             path, method = '/v1/tasks', 'POST'
         elif action == 'capabilities' and data == {}:
             path, method = '/v1/capabilities', 'GET'
@@ -219,6 +225,8 @@ class RemoteGeneration:
     async def generate(self, kind, data, output, *, assets=None, timeout=3600, validate=None, receipt_path=None):
         caps = await self.request('capabilities', {})
         if kind not in caps['kinds']: raise CloudError('GPU_CAPABILITY_UNAVAILABLE', 503)
+        if kind == 'daily_video' and caps.get('daily_video_enabled') is not True:
+            raise CloudError('GPU_CAPABILITY_UNAVAILABLE', 503)
         data = dict(data)
         receipt = Path(receipt_path) if receipt_path else None
         saved = {}
@@ -230,7 +238,7 @@ class RemoteGeneration:
                     hashes[field] = hashlib.file_digest(source, 'sha256').hexdigest()
             fingerprint = hashlib.sha256(json.dumps([self.url, hashlib.sha256(self.token.encode()).hexdigest(),
                 kind, data, hashes], sort_keys=True).encode()).hexdigest()
-            video_receipt = kind in {'video', 'lipsync', 'cover_video', 'original_video'}
+            video_receipt = kind in {'video', 'lipsync', 'cover_video', 'original_video', 'daily_video'}
             try:
                 saved = json.loads(receipt.read_text(encoding='utf-8'))
                 if not isinstance(saved, dict) or saved.get('fingerprint') != fingerprint:
@@ -293,7 +301,7 @@ class RemoteGeneration:
         progress('generation', task)
         if task.get('stage') == 'skipped':
             return task
-        deadline = None if kind in {'video', 'lipsync', 'original_video', 'cover_video'} else time.monotonic() + timeout
+        deadline = None if kind in {'video', 'lipsync', 'original_video', 'cover_video', 'daily_video'} else time.monotonic() + timeout
         while task['status'] in ('queued', 'running') or task.get('stage') == 'uploading':
             if deadline is not None and time.monotonic() >= deadline:
                 await self.request('cancel', {'task_id': task['task_id']})
@@ -301,12 +309,12 @@ class RemoteGeneration:
             await asyncio.sleep(1)
             task = await self._status(task['task_id'])
             progress('generation', task)
-        if receipt and task['status'] in ('failed', 'cancelled') and not data.get('speech_mode'):
+        if receipt and task['status'] in ('failed', 'cancelled') and kind != 'daily_video' and not data.get('speech_mode'):
             receipt.unlink(missing_ok=True)
         if task['status'] == 'succeeded':
             progress('download', task)
         result = await self._download(task, output, validate=validate)
-        if (caps.get('result_acknowledgement') is True and kind not in ('cover_video', 'original_video')
+        if (caps.get('result_acknowledgement') is True and kind not in ('cover_video', 'original_video', 'daily_video')
                 and not data.get('speech_mode')):
             from runtime.gpu_cleanup import acknowledge_result
             await acknowledge_result(self, task['task_id'], output)

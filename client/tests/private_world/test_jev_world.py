@@ -50,6 +50,18 @@ class Choices:
         return answers
 
 
+@pytest.mark.parametrize('kind,key,location', [
+    ('bath_started', 'bath_started_0_home', '住处'),
+    ('bath_finished', 'bath_finished_0_home', '住处'), ('shopping', 'shopping_0_shop', '店里')])
+def test_same_world_choice_exposes_actual_bath_and_shopping_without_extra_call(tmp_path, kind, key, location):
+    data = context(tmp_path)
+    port = Choices(activity=key, project='none')
+    result = asyncio.run(decide(port, data, LIFE_PROMPT))
+    current, projects, meals = compile_decision(result, data)
+    assert len(port.calls) == 1 and result['activity']['kind'] == kind
+    assert current['location'] == location and not projects and not meals
+
+
 def test_class_and_illness_constraints_survive_jev(tmp_path):
     data = context(tmp_path, hour=6)
     assert data['allowed_activity_kinds'] == ['class']

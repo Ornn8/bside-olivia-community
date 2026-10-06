@@ -37,7 +37,8 @@ def _clear_draft(row):
                 'degraded_stages',
                 'voice_prepare_seconds', 'voice_prepare_status', 'voice_prepare_timeout_seconds',
                 'generation_retryable', 'generation_failure_context', 'generation_failures',
-                'silence_reason', 'skip_reason', 'user_controls_applied'):
+                'silence_reason', 'skip_reason', 'user_controls_applied',
+                'daily_video_request', 'daily_video_status', 'daily_video_error_code', 'daily_video_candidates'):
         row.pop(key, None)
 
 

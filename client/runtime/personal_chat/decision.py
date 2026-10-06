@@ -30,6 +30,19 @@ proactive=true时输入是应用检查，不是用户新发言；基于真实关
 
 
 INSTRUCTION += VOICE_POLICY
+INSTRUCTION += ('\n如提供daily_video_candidates，且本轮自然适合分享或用户明确要看，可额外输出'
+    'daily_video={"event_id":"候选原ID","spoken_text":"在5至15秒自拍视频里说的1至2句短话，100字内",'
+    '"share_text":"成片稍后发送时的自然分享文案，200字内",'
+    '"staging":{"image_direction":"英文描述参考图中的姿态、表情，400字符内",'
+    '"video_direction":"英文描述跟随台词的小动作、表情变化，800字符内"}}。'
+    '在同一次输出中完成台词和staging，不需要另行判断；两个指令各用一段非空短文，不写模型参数或额外对白。'
+    '视频生成会落后聊天：share_text说明这是拍摄时那件事，例如“给你看看我睡醒时迷迷糊糊的样子”或“这是洗完澡那会儿拍的”。'
+    '散步、家务、购物、餐食也同样使用拍摄时的过去状态，不声称发送时仍在现场或正在做；正文、share_text和台词不透露生成过程。'
+    '以本人手机前置自拍为主，脸部完整可见，手不遮嘴鼻；保持候选地点和服务端衣橱，不添加人物、物品或新事实。'
+    '睡醒时躺在枕头和被窝里，困倦、半睁眼、小动作，不坐起；洗完澡时湿短发、固定不透明浴巾，手留在肩外侧。'
+    '只能选提供的候选，不新造时间、地点、餐食、洗澡或睡醒事实；event_status=preparing或certainty=planned只预先编排完成时的成片，'
+    '正文不能声称事件已完成，发送仍等待实际完成依据；live按已发生事实编排。正文不朗读指令。'
+    '视频在后台生成，不阻塞本轮回复，不承诺已经发出；无需每轮选择，不用则省略daily_video。')
 INSTRUCTION += ('\n优先回应本轮用户的新内容；recent_dialogue里的用户原话和你的旧回复都是历史，不是本轮新发言。'
                 '上一轮已经说过的调侃、质问或解释，不要在接下来的不同回复里原句或近义重复。'
                 '用户明确追问才展开相关内容；旧回复中的猜测不是事实证据，用户更正后不能继续沿用。'
@@ -150,7 +163,8 @@ def _silence_kind(data, *, user, proactive, allow_user_silence):
     return silence['kind']
 
 
-def decode(raw, *, user, now, proactive=False, allow_user_silence=False, allow_speech=True):
+def decode(raw, *, user, now, proactive=False, allow_user_silence=False, allow_speech=True,
+           daily_video_candidates=()):
     try:
         # Tolerate a whole JSON code block, never extract JSON from mixed prose.
         if isinstance(raw, str):
@@ -161,7 +175,7 @@ def decode(raw, *, user, now, proactive=False, allow_user_silence=False, allow_s
         if isinstance(data, list) and len(data) == 1 and isinstance(data[0], dict):
             data = data[0]  # The model sometimes wraps its one decision in an array.
         required = {'text'}
-        optional = {'letter_invitation', 'sticker', 'text_reason', 'speech', 'silence'}
+        optional = {'letter_invitation', 'sticker', 'text_reason', 'speech', 'silence', 'daily_video'}
         extra_field_count = (len(data.keys() - required - NEUTRAL_METADATA.keys() - optional)
                              if isinstance(data, dict) else 0)
         if not isinstance(data, dict) or not required <= data.keys():
@@ -226,6 +240,17 @@ def decode(raw, *, user, now, proactive=False, allow_user_silence=False, allow_s
             data['dropped_media'] = 'UNREQUESTED_SPEECH'
         else:
             data['speech'] = validate_script(data.get('speech'))
+        if data.get('daily_video') is not None:
+            try:
+                from .daily_video import select_candidate
+                if data['skip'] or data.get('speech'):
+                    raise ValueError('DAILY_VIDEO_SELECTION_INVALID')
+                data['daily_video_request'] = select_candidate(data['daily_video'], daily_video_candidates)
+                if 'staging' in data['daily_video'] and 'staging' not in data['daily_video_request']:
+                    data['dropped_daily_video_staging'] = True
+            except (ValueError, TypeError, KeyError):
+                data.pop('daily_video', None)
+                data['dropped_daily_video'] = True
         if defaulted:
             data['defaulted_fields'] = defaulted
         return data

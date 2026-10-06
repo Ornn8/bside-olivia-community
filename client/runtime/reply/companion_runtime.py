@@ -117,7 +117,8 @@ def _decision_context(messages, required_sources=(), recent_turns=1):
 
 
 async def prepare_decision(port, messages, user_text, *, source_id, input_revision, as_of, kinds, cached=None,
-                           required_sources=(), speech_enabled=False, bedtime_offer=False):
+                           required_sources=(), speech_enabled=False, bedtime_offer=False,
+                           daily_video_experience=None):
     from .companion_decision import FrozenCompanionTurn, FrozenCompanionDecision
     metadata = TURN_CONTEXT.get() or {}
     reuse = isinstance(cached, dict) and cached.get('input_revision') == input_revision
@@ -147,6 +148,9 @@ async def prepare_decision(port, messages, user_text, *, source_id, input_revisi
         # A capability rollout must not invalidate a paid, frozen decision.
         # Legacy records have no speech slot; digest validation still catches edits.
         speech_enabled = 'speech_request' in cached
+        daily_video_experience = cached.get('daily_video_experience')
+        if daily_video_experience is None:
+            kinds = [kind for kind in kinds if kind != 'video_speech']
     from .companion_decision import CompanionDecisionError
     protected = set(required_sources)
     while True:
@@ -155,7 +159,9 @@ async def prepare_decision(port, messages, user_text, *, source_id, input_revisi
                 capabilities=dict(kinds=list(kinds), synchronize=False, playback_events=False,
                     compose_audio=False, compose_video=False, split_spoken_content=False),
                 environment=dict(can_read=None, can_view=None, can_listen=None), forbidden_kinds=[],
-                as_of=as_of, input_revision=input_revision, speech_enabled=speech_enabled, bedtime_offer=bedtime_offer)
+                as_of=as_of, input_revision=input_revision, speech_enabled=speech_enabled,
+                bedtime_offer=bedtime_offer,
+                daily_video_experience=daily_video_experience)
             break
         except CompanionDecisionError as exc:
             # Long QQ bursts can exceed one request's size or turn count. Leave out
@@ -181,7 +187,7 @@ async def prepare_decision(port, messages, user_text, *, source_id, input_revisi
     return result.decision
 
 
-def delivery_for(decision, *, kinds):
+def delivery_for(decision, *, kinds, daily_video=False):
     """Consume one text, speech or QQ image body and silence.
 
     Keep composite proposals explicit until their durable step consumer exists;
@@ -202,7 +208,11 @@ def delivery_for(decision, *, kinds):
             or proposal['contents'][0]['derived_from'] is not None):
         raise CompanionRuntimeError('JEV_PLAN_UNSUPPORTED')
     kind = step['parts'][0]['kind']
-    if kind not in {'text', 'audio_speech', 'image'} or kind not in kinds:
+    allowed = {'text', 'audio_speech', 'image'}
+    record = decision.record()
+    if daily_video and record.get('daily_video_experience') and not record.get('speech_request'):
+        allowed.add('video_speech')
+    if kind not in allowed or kind not in kinds:
         raise CompanionRuntimeError('JEV_PLAN_UNSUPPORTED')
     # Uncertain media must be clarified before a paid asset is generated.
     if resolution['status'] == 'needs_clarification' and kind != 'text':
@@ -258,6 +268,13 @@ def project_decision(messages, decision, *, max_input_chars, delivery):
         note += VOICE_PROSE
     elif delivery == 'text':
         note += '本轮交付已选定文字，结构化回复的 delivery 必须是 text。'
+    elif delivery == 'video_speech':
+        note += ('本轮交付已选定提供的日常事件候选的5–15秒自拍视频。delivery=text，正文先自然回应当前用户，'
+                 'daily_video必须从daily_video_candidates选择一个event_id并在同一次输出中撰写spoken_text短台词、'
+                 'staging.image_direction参考图姿态表情、staging.video_direction视频动作表情和share_text延后发送时的分享文案，遵守daily_video格式。'
+                 '不能省略daily_video，不选候选之外的事件，不把用户的活动当成自己的活动。'
+                 'event_status=preparing或planned候选只预先准备完成时的成片，不声称现在已完成，即使certainty=live也不例外。'
+                 '视频将在正文发送确认后后台生成，不能声称已拍好或已发送。speech必须为null，不生成长语音脚本。')
     elif delivery == 'letter_image':
         note += ('本轮信件会附带一张图片。写自然的文字回信，回应用户当前来信；'
                  '图片由后续流程制作，不要把绘图提示词当作回信，不声称图片已经生成或发送。')
