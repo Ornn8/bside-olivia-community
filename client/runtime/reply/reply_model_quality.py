@@ -1049,13 +1049,50 @@ class GatewayPersonaRewriter:
         if not rewritten:
             raise RuntimeError("REWRITE_OUTPUT_EMPTY")
         if not fact_sentences:
-            try:
-                envelope = json.loads(rewritten)
-            except ValueError:
-                envelope = None
-            if (isinstance(envelope, dict) and "text" in envelope
-                    or re.fullmatch(r"```(?:json)?\s*\n.*\n```", rewritten, re.S)):
+            wrapper_depth = 0
+            for _ in range(3):
+                if rewritten.startswith("```"):
+                    # One complete, supported code block only: the body may not
+                    # contain another fence, so two adjacent blocks cannot be
+                    # spliced into one accepted payload.
+                    fenced = re.fullmatch(
+                        r"```(?:json)?[ \t]*\n(?P<body>(?:(?!```).)*)\n```[ \t]*",
+                        rewritten,
+                        re.S,
+                    )
+                    if fenced is None:
+                        raise RuntimeError("REWRITE_OUTPUT_INVALID")
+                    rewritten = fenced.group("body").strip()
+                    wrapper_depth += 1
+                    continue
+                if not rewritten.startswith(("{", "[")):
+                    break
+                try:
+                    envelope = json.loads(rewritten)
+                except ValueError:
+                    # Looks like a JSON wrapper but is not valid JSON: statement
+                    # text merely bracketed by the author is left alone, while a
+                    # truncated wrapper fails closed.
+                    if (rewritten.startswith("{")
+                            or re.match(r'\[\s*(?:[\[{"0-9-]|true\b|false\b|null\b)', rewritten)):
+                        raise RuntimeError("REWRITE_OUTPUT_INVALID")
+                    break
+                if isinstance(envelope, list):
+                    # Arrays are not part of the generation envelope contract.
+                    raise RuntimeError("REWRITE_OUTPUT_INVALID")
+                if not isinstance(envelope, dict) or "text" not in envelope:
+                    if wrapper_depth:
+                        raise RuntimeError("REWRITE_OUTPUT_INVALID")
+                    break
+                if (set(envelope) != {"text"}
+                        or not isinstance(envelope.get("text"), str)):
+                    raise RuntimeError("REWRITE_OUTPUT_INVALID")
+                rewritten = envelope["text"].strip()
+                wrapper_depth += 1
+            else:
                 raise RuntimeError("REWRITE_OUTPUT_INVALID")
+            if not rewritten:
+                raise RuntimeError("REWRITE_OUTPUT_EMPTY")
         if fact_sentences:
             try:
                 return _apply_fact_sentence_edits(candidate, fact_sentences, rewritten)
