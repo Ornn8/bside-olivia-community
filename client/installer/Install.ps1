@@ -473,6 +473,27 @@ function Test-PathsOverlap {
     )
 }
 
+function Assert-OfficialSourceLocation {
+    param([string]$ProductRoot, [string]$PayloadRoot, [string]$SourceRoot)
+    Assert-NoReparsePointsInPath -LiteralPath $SourceRoot -ErrorCode 'OFFICIAL_INSTALL_PATH_REPARSE_POINT'
+    if (-not (Test-PathsOverlap -Left $ProductRoot -Right $SourceRoot)) { return }
+
+    # The bundled source may live only in the setup staging directory directly
+    # beneath the product root, disjoint from install/ and runtime/. All source
+    # files still undergo the usual manifest/hash checks before copying.
+    $payload = [IO.Path]::GetFullPath($PayloadRoot).TrimEnd('\')
+    $stage = Split-Path -Parent $payload
+    $root = [IO.Path]::GetFullPath($ProductRoot).TrimEnd('\')
+    $source = [IO.Path]::GetFullPath($SourceRoot).TrimEnd('\')
+    if ((Split-Path -Leaf $payload) -ieq 'OliviaPayload' -and
+        (Split-Path -Leaf $stage) -match '^\.olivia-setup-is-[a-z0-9]+\.tmp$' -and
+        [string]::Equals((Split-Path -Parent $stage), $root, [StringComparison]::OrdinalIgnoreCase) -and
+        [string]::Equals($source, (Join-Path $payload 'offline\original-client'), [StringComparison]::OrdinalIgnoreCase)) {
+        return
+    }
+    throw 'INSTALL_ROOT_OVERLAPS_OFFICIAL'
+}
+
 function Resolve-OfficialInstall {
     param(
         [string]$RequestedRoot,
@@ -1905,10 +1926,7 @@ $manifestPath = Join-Path $PayloadRoot 'installer\full-patch-manifest.json'
 $selectedOfficial = Resolve-OfficialInstall -RequestedRoot $selectedOfficial -ManifestPath $manifestPath
 $officialSelection = $selectedOfficial
 $selectedOfficial = [string]$officialSelection.Path
-Assert-NoReparsePointsInPath -LiteralPath $selectedOfficial -ErrorCode 'OFFICIAL_INSTALL_PATH_REPARSE_POINT'
-if (Test-PathsOverlap -Left $productRoot -Right $selectedOfficial) {
-    throw 'INSTALL_ROOT_OVERLAPS_OFFICIAL'
-}
+Assert-OfficialSourceLocation -ProductRoot $productRoot -PayloadRoot $PayloadRoot -SourceRoot $selectedOfficial
 $script:OfficialSourceDiagnostic = New-OfficialSourceDiagnostic -Selection $officialSelection -ManifestPath $manifestPath
 Write-SetupDiagnosticResult -Diagnostic $script:OfficialSourceDiagnostic
 Assert-OfficialSource -SourceRoot $selectedOfficial -ManifestPath $manifestPath
