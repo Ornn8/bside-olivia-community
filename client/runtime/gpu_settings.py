@@ -1,8 +1,9 @@
 """Cloud generation always uses the Olivia account key; there is no custom endpoint."""
 import os
 from pathlib import Path
+from runtime.official_endpoints import API_ORIGIN
 
-GPU_BASE = 'https://175.24.191.6'
+GPU_BASE = API_ORIGIN
 
 
 class GPUSettings:

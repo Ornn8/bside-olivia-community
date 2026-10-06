@@ -200,7 +200,7 @@ def test_launcher_loads_user_managed_llm_config_without_exposing_key(tmp_path: P
 
     environment = start_local._load_llm_environment({}, data_root)
 
-    assert environment["OLIVIA_LLM_BASE_URL"] == "https://175.24.191.6/v1"
+    assert environment["OLIVIA_LLM_BASE_URL"] == "https://api.bside-moon.cn/v1"
     assert environment["OLIVIA_LLM_MODEL"] == "qwen3.7-flash"
     assert environment["OLIVIA_LLM_API_KEY_ENV"] == "OLIVIA_LLM_API_KEY"
 
@@ -235,7 +235,7 @@ def test_launcher_silently_ignores_retired_custom_provider(
     )
 
     assert unprotected == []
-    assert environment["OLIVIA_LLM_BASE_URL"] == "https://175.24.191.6/v1"
+    assert environment["OLIVIA_LLM_BASE_URL"] == "https://api.bside-moon.cn/v1"
     assert environment["OLIVIA_LLM_MODEL"] == "claude-sonnet-5-5"
     assert environment["OLIVIA_LLM_API_KEY_ENV"] == "OLIVIA_LLM_API_KEY"
     assert "OLIVIA_LLM_API_KEY" not in environment
@@ -269,11 +269,11 @@ def test_launcher_adopts_saved_account_key_over_retired_provider(
     environment = start_local._load_llm_environment({}, data_root, include_secret=True)
 
     assert environment["OLIVIA_LLM_PROVIDER"] == "openai_compatible"
-    assert environment["OLIVIA_LLM_BASE_URL"] == "https://175.24.191.6/v1"
+    assert environment["OLIVIA_LLM_BASE_URL"] == "https://api.bside-moon.cn/v1"
     assert environment["OLIVIA_LLM_API_KEY"] == "account-key"
     assert retired_name not in unprotected
     saved = json.loads((config_root / "llm.json").read_text(encoding="utf-8"))
-    assert saved["base_url"] == "https://175.24.191.6/v1" and saved["model"] == "claude-sonnet-5-5"
+    assert saved["base_url"] == "https://api.bside-moon.cn/v1" and saved["model"] == "claude-sonnet-5-5"
     assert json.loads((config_root / "llm.retired.json").read_text(encoding="utf-8")) == retired
     # The setup API sees the same binding, so the account shows as connected.
     setup = LLMSetupService(data_root, protect=lambda value: value, unprotect=lambda value: value)
@@ -299,7 +299,9 @@ def test_launcher_does_not_replace_an_existing_relay_binding(tmp_path: Path) -> 
 
     start_local._load_llm_environment({}, data_root)
 
-    assert json.loads((config_root / "llm.json").read_text(encoding="utf-8")) == config
+    assert json.loads((config_root / "llm.json").read_text(encoding="utf-8")) == {
+        **config, "base_url": "https://api.bside-moon.cn/v1",
+    }
     assert not (config_root / "llm.retired.json").exists()
 
 
@@ -338,7 +340,7 @@ def test_launcher_reuses_saved_non_deepseek_provider_schema_on_restart(
     )
 
     assert environment["OLIVIA_LLM_PROVIDER"] == "openai_compatible"
-    assert environment["OLIVIA_LLM_BASE_URL"] == "https://175.24.191.6/v1"
+    assert environment["OLIVIA_LLM_BASE_URL"] == "https://api.bside-moon.cn/v1"
     assert environment["OLIVIA_LLM_MODEL"] == "qwen3.7-flash"
     assert environment["OLIVIA_LLM_MAX_RETRIES"] == "4"
     assert environment["OLIVIA_LLM_REQUIRES_API_KEY"] == "1"
@@ -672,7 +674,7 @@ def test_launcher_ignores_invalid_user_managed_llm_config(tmp_path: Path) -> Non
         inherited, data_root, include_secret=True
     )
 
-    assert environment["OLIVIA_LLM_BASE_URL"] == "https://175.24.191.6/v1"
+    assert environment["OLIVIA_LLM_BASE_URL"] == "https://api.bside-moon.cn/v1"
     assert environment["OLIVIA_LLM_MODEL"] == "claude-sonnet-5-5"
     assert environment["OLIVIA_LLM_PROVIDER"] == "none"
     assert "DEEPSEEK_API_KEY" not in environment
@@ -1573,7 +1575,7 @@ def test_launcher_preserves_compatible_llm_environment_overrides(
     assert {
         name: backend_environments[0][name]
         for name in overrides
-    } == overrides
+    } == {**overrides, "OLIVIA_LLM_BASE_URL": "https://api.bside-moon.cn/v1"}
 
 
 def test_launcher_supplies_gemini_defaults_when_llm_overrides_are_absent(
@@ -1604,7 +1606,7 @@ def test_launcher_supplies_gemini_defaults_when_llm_overrides_are_absent(
     monkeypatch.setattr(start_local.subprocess, "call", lambda *_args, **_kwargs: 0)
     defaults = {
         "OLIVIA_LLM_PROVIDER": "openai_compatible",
-        "OLIVIA_LLM_BASE_URL": "https://175.24.191.6/v1",
+        "OLIVIA_LLM_BASE_URL": "https://api.bside-moon.cn/v1",
         "OLIVIA_LLM_MODEL": "claude-sonnet-5-5",
         "OLIVIA_LLM_API_KEY_ENV": "OLIVIA_LLM_API_KEY",
         "OLIVIA_LLM_API_STYLE": "chat_completions",

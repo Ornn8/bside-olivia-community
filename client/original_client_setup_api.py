@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 
 from aiohttp import web
 from llm_gateway import ManagedLLMConfig
+from runtime.official_endpoints import migrate_saved_api_url
 
 
 SETUP_STATUS_PATH = "/toy/setup/status"
@@ -247,6 +248,7 @@ class LLMSetupService:
         self._config_root = Path(data_root) / "config"
         self._key_path = self._config_root / "deepseek_api_key.dpapi"
         self._config_path = self._config_root / "llm.json"
+        migrate_saved_api_url(self._config_path)
         self._complete_path = self._config_root / "initial_setup.json"
         self._protect = protect
         self._unprotect = unprotect

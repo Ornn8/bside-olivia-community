@@ -26,11 +26,12 @@ from runtime.diagnostics.usage_metrics import record_usage, purpose_for
 from runtime.tls import client_tls_context
 from runtime.reply.model_capabilities import model_capabilities
 from runtime.reply.model_request_policy import reasoning_request_parameters
+from runtime.official_endpoints import API_ORIGIN, canonical_api_base
 
 
 PROVIDER_USER_AGENT = "Olivia-Community/0.1"
 # The Olivia relay is the only supported provider; it always requires an account key.
-_RELAY_HOST = "175.24.191.6"
+_RELAY_HOST = urlsplit(API_ORIGIN).hostname
 
 
 def provider_request_headers(base_url: str, *, session_id: str | None = None) -> dict[str, str]:
@@ -242,7 +243,7 @@ class GatewayConfig:
 
         return cls(
             provider=provider,
-            base_url=str(base_url or "").strip(),
+            base_url=canonical_api_base(str(base_url or "").strip()),
             model=str(model or "").strip(),
             api_key_env=str(api_key_env or "").strip(),
             api_style=_normalize_api_style(api_style),
@@ -344,7 +345,7 @@ class ManagedLLMConfig:
         base_url = raw.get("base_url")
         if not isinstance(base_url, str) or len(base_url) > 512:
             raise ValueError("invalid managed LLM base URL")
-        normalized_url = base_url.strip().rstrip("/")
+        normalized_url = canonical_api_base(base_url.strip().rstrip("/"))
         try:
             parsed = urlsplit(normalized_url)
             port = parsed.port
@@ -829,7 +830,7 @@ class OpenAICompatibleAdapter(Gateway):
         *,
         key_resolver: Callable[[], str | None] | None = None,
     ) -> None:
-        self.config = config
+        self.config = replace(config, base_url=canonical_api_base(config.base_url))
         self.stream_enabled = bool(config.stream)
         self._key_resolver = key_resolver
         # One runtime connection serves this owner's conversation across turns.

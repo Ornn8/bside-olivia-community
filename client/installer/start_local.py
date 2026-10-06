@@ -25,6 +25,7 @@ from urllib.request import ProxyHandler, build_opener
 urlopen = build_opener(ProxyHandler({})).open
 
 from llm_gateway import ManagedLLMConfig
+from runtime.official_endpoints import canonical_api_base, migrate_saved_api_url, LEGACY_API_BASE
 
 from patch_companion_settings import (
     CompanionSettingsPatchError,
@@ -195,8 +196,14 @@ def _load_llm_environment(
 
     from original_client_relay_api import RELAY_BASE, RELAY_MODEL
 
+    migrate_saved_api_url(data_root / "config" / "llm.json")
     _adopt_saved_account_key(data_root / "config")
     values = environment.copy()
+    for name in ('OLIVIA_LLM_BASE_URL', 'OLIVIA_MEMORY_LLM_BASE_URL', 'OLIVIA_MEMORY_LLM_DEFAULT_BASE_URL'):
+        if name in values:
+            values[name] = canonical_api_base(values[name])
+    if values.get('OLIVIA_JEV_DECISION_URL') == LEGACY_API_BASE + '/companion/decide':
+        values['OLIVIA_JEV_DECISION_URL'] = RELAY_BASE + '/companion/decide'
     base_url = RELAY_BASE
     model = RELAY_MODEL
     provider = "openai_compatible"
@@ -240,6 +247,8 @@ def _load_llm_environment(
                 managed_key_absent = True
             else:
                 raise ValueError("missing key binding")
+        elif payload.get("schema_version") == 1:
+            saved_key_binding = key_path.is_file()
     except FileNotFoundError:
         pass
     except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):

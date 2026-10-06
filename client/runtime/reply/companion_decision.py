@@ -340,6 +340,9 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 def _endpoint(value):
     from original_client_relay_api import RELAY_BASE
+    from runtime.official_endpoints import LEGACY_API_BASE
+    if value == LEGACY_API_BASE + '/companion/decide':
+        return RELAY_BASE + '/companion/decide'
     if value == RELAY_BASE + '/companion/decide' and value.startswith('https://'):
         return value
     parsed = urllib.parse.urlsplit(value)
