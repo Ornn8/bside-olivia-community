@@ -58,6 +58,7 @@ PAYLOAD_EXTRA_DIRS = (
     "runtime/diagnostics",
 )
 PAYLOAD_EXTRA_FILES = (
+    "runtime/official_endpoints.py",
     "runtime/image_assets.py",
     "runtime/image_assets.json",
     "runtime/wardrobe.py",
@@ -133,6 +134,7 @@ PAYLOAD_REQUIRED_ROOT_FILES = {
     "video_capability_install.py",
 }
 PAYLOAD_REQUIRED_RELATIVE_FILES = {
+    "runtime/official_endpoints.py",
     "runtime/image_assets.py",
     "runtime/image_assets.json",
     "runtime/wardrobe.py",

@@ -57,9 +57,10 @@ def _pixels(path):
 
 def _vision_connection(server):
     from original_client_relay_api import RELAY_BASE
+    from runtime.official_endpoints import canonical_api_base, canonical_api_origin
     # An explicitly selected Olivia cloud account also supplies its vision model.
     # Never send the text-provider key to another provider or use a custom GPU URL.
-    cloud_url = os.environ.get('OLIVIA_GPU_API_URL', '').rstrip('/')
+    cloud_url = canonical_api_origin(os.environ.get('OLIVIA_GPU_API_URL', '').rstrip('/'))
     cloud_key = os.environ.get('OLIVIA_GPU_API_KEY', '')
     if cloud_url + '/v1' == RELAY_BASE and cloud_key.startswith('olivia-'):
         return RELAY_BASE, cloud_key
@@ -69,7 +70,7 @@ def _vision_connection(server):
     gateway = getattr(gateway, 'primary', gateway)
     if callable(getattr(gateway, '_key', None)):
         key = gateway._key() or key
-    url = str(getattr(config, 'base_url', '')).rstrip('/')
+    url = canonical_api_base(str(getattr(config, 'base_url', '')).rstrip('/'))
     return url, key
 
 

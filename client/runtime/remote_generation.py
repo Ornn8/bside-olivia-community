@@ -11,6 +11,7 @@ from runtime.tls import client_tls_context as gpu_tls_context
 from urllib.parse import urlsplit
 from aiohttp import ClientSession, ClientTimeout, ClientError, ClientSSLError, ClientConnectorError, TCPConnector
 from runtime.cloud_service import endpoint, CloudError
+from runtime.official_endpoints import canonical_api_origin
 
 
 def connection_error(exc):
@@ -22,7 +23,7 @@ def connection_error(exc):
 
 class RemoteGeneration:
     def __init__(self, url='', token=''):
-        self.url = endpoint(url) if url else ''
+        self.url = canonical_api_origin(endpoint(url)) if url else ''
         self.token = token
 
     async def request(self, action, data):
