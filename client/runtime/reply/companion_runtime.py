@@ -209,9 +209,10 @@ def delivery_for(decision, *, kinds, daily_video=False):
         raise CompanionRuntimeError('JEV_PLAN_UNSUPPORTED')
     kind = step['parts'][0]['kind']
     allowed = {'text', 'audio_speech', 'image'}
-    record = decision.record()
-    if daily_video and record.get('daily_video_experience') and not record.get('speech_request'):
-        allowed.add('video_speech')
+    if daily_video:
+        record = decision.record()
+        if record.get('daily_video_experience') and not record.get('speech_request'):
+            allowed.add('video_speech')
     if kind not in allowed or kind not in kinds:
         raise CompanionRuntimeError('JEV_PLAN_UNSUPPORTED')
     # Uncertain media must be clarified before a paid asset is generated.
