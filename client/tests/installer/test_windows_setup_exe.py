@@ -1123,8 +1123,8 @@ def test_private_inno_payload_reads_large_runtime_beside_setup_without_tmp_extra
     script = (ROOT / "installer/windows_setup.iss").read_text(encoding="utf-8")
     assert "#ifdef VideoRuntimePayload" in script
     assert "#ifdef VideoOfflinePayload" in script
-    assert "DiskSpanning=yes" not in script
-    assert "DiskSliceSize=" not in script
+    assert "#ifdef OriginalClientPayload\nDiskSpanning=yes" in script
+    assert "DiskSpanning=yes\nDiskSliceSize=1500000000\n#endif" in script
     assert 'Source: "{#PayloadRoot}\\offline\\video-runtime\\*"' not in script
     assert "-VideoRuntimePath" in script
     assert "{src}\\Olivia-video-runtime-private.zip" in script
@@ -1943,11 +1943,13 @@ def test_inno_wrapper_is_current_user_offline_and_delegates_to_install_ps1() -> 
     assert "SetupResultPath" in script
     assert "OLIVIA_SETUP_ERROR=" in script
     assert "OFFICIAL_INSTALL_AMBIGUOUS" in script
-    assert "上一步" in script
+    assert "重新运行安装器" in script
     assert ".diagnostic.json" in script
     assert "Olivia installer diagnostic:" in script
     assert "function PrepareToInstall" in script
-    assert "dontcopy noencryption" in script
+    assert 'DestDir: "{code:GetPayloadRoot}"' in script
+    assert "ExtractTemporaryFiles" not in script
+    assert "AfterInstall: InstallPayload" in script
     assert "OfficialDirPage" not in script
     assert "BrowseForFolder" not in script
     assert "{param:InstallRoot|" in script
