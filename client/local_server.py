@@ -923,7 +923,7 @@ class LetterAdapter:
             related = "\n".join(
                 pair.get("user_letter", "") + "\n" + pair.get("linli_reply", "")
                 for fragment in (self.recent_letter_fragments(content) if recent_fragments is None else recent_fragments)
-                if fragment.fragment_id == 'chat.recent'
+                if fragment.fragment_id not in {'chat.historical', 'chat.relationship'}
                 for pair in json.loads(fragment.text)["letters"]
             )
             now = self._now() if now is None else now
