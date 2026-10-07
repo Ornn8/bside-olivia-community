@@ -905,12 +905,17 @@ class LetterAdapter:
             return ()
         from runtime.reply.jev_questions import configured_questions
         from runtime.reply.world_context_selection import select_world_context, selection_dialogue
+        from runtime.personal_chat.presentation import CURRENT
         packet = self.daily_life.store.reply_candidates(now=now)
         packet['recent_dialogue'] = selection_dialogue(self.recent_letter_fragments(content, now=now))
         # Freeze the turn's local inputs before concurrent emotion evaluation
         # can update the store while selection awaits its provider.
         addressing = self.daily_life.store.addressing_profile(now=now)
-        value = await select_world_context(configured_questions(), packet, content)
+        # Proactive decisions verify this frozen activity and timetable against
+        # live state. Relevance selection must not discard their prerequisites.
+        selection = {'required_fields': ('current', 'last_observation', 'schedule')} if (
+            CURRENT.get() or {}).get('proactive') else {}
+        value = await select_world_context(configured_questions(), packet, content, **selection)
         fragments = [UntrustedFragment('linli.daily-life', value),
                      UntrustedFragment('linli.rhythm', json.dumps(packet['rhythm'], ensure_ascii=False))]
         if addressing:
