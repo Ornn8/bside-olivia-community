@@ -2836,6 +2836,22 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   // destinations inside the main window: desktop widgets can be off-screen.
   const WORLD_ROUTE = '#/world';
   const WARDROBE_ROUTE = '#/world/wardrobe';
+  const DIARY_ROUTE = '#/diary';
+  const diaryState = {checkedAt: 0, unseen: 0};
+  const refreshDiaryBadge = async (force=false) => {
+    if(!force&&Date.now()-diaryState.checkedAt<300000)return;
+    diaryState.checkedAt=Date.now();
+    try{
+      const page=await routeRequest('/toy/diary?limit=1');diaryState.unseen=Number(page?.unseen)||0;
+      const nav=document.querySelector('[data-olivia-main-navigation]');
+      const link=[...(nav?.querySelectorAll?.('a')||[])].find(item=>item.getAttribute?.('href')===DIARY_ROUTE);
+      if(!link?.querySelector)return;
+      let dot=link.querySelector('[data-diary-unseen]');
+      if(diaryState.unseen>0&&!dot){dot=document.createElement('span');dot.setAttribute('data-diary-unseen','');dot.setAttribute('aria-label','有新日记');
+        Object.assign(dot.style,{width:'7px',height:'7px',borderRadius:'50%',background:'#e58a7a',marginLeft:'6px',display:'inline-block'});link.append(dot);}
+      if(diaryState.unseen===0)dot?.remove();
+    }catch(_){/* The badge is optional; navigation must never depend on it. */}
+  };
   const mountWorldPage = (page) => {
     page.dataset.oliviaWorldPage='';page.setAttribute('aria-label','世界');
     const style=document.createElement('style');style.textContent=`
@@ -2918,7 +2934,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const route = window.location.hash.split("?")[0];
     const world=route===WORLD_ROUTE||route===WARDROBE_ROUTE;
     let nav = document.querySelector("[data-olivia-main-navigation]");
-    if (route !== "#/studio" && route !== "#/collection" && !world) {
+    if (route !== "#/studio" && route !== "#/collection" && route !== DIARY_ROUTE && !world) {
       nav?.remove();
       return;
     }
@@ -2930,7 +2946,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         position: "fixed", top: "60px", left: "120px", zIndex: "20",
         display: "flex", gap: "8px", WebkitAppRegion: "no-drag",
       });
-      for (const [label, href] of [["信箱", "#/collection"], ["世界", WORLD_ROUTE], ["曲库", "#/studio"]]) {
+      for (const [label, href] of [["信箱", "#/collection"], ["世界", WORLD_ROUTE], ["日记", DIARY_ROUTE], ["曲库", "#/studio"]]) {
         const link = text("a", label, "text-body-m");
         link.href = href;
         link.addEventListener('click',event=>{
@@ -2949,6 +2965,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       document.body.append(nav);
     }
     nav.style.left='120px';
+    void refreshDiaryBadge();
     for (const link of nav.querySelectorAll("a")) {
       const active = link.getAttribute("href") === (world?WORLD_ROUTE:route);
       if (active) link.setAttribute("aria-current", "page");
@@ -4033,6 +4050,148 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const header=document.createElement('header');header.className='ow-page-header';header.append(text('h1','衣橱'));
     page.replaceChildren(header,breadcrumb);mountWardrobeSetting(page);
   };
+  const diaryStyle = () => {
+    const style=document.createElement('style');style.textContent=`
+      [data-olivia-diary-page]{width:100%;height:100%;min-height:0;color:#ded9d1;display:flex;flex-direction:column;gap:20px;-webkit-app-region:no-drag}
+      .od-header{height:40px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
+      .od-header h1{font-size:30px;margin:0;font-weight:700}
+      .od-main{overflow-y:auto;background:#191a1c;border-radius:12px;padding:24px 32px;min-height:0;flex:1;box-sizing:border-box;scrollbar-width:thin}
+      .od-main button{border:1px solid #686a70;border-radius:999px;background:transparent;color:#ded9d1;padding:8px 18px;font:inherit;cursor:pointer}
+      .od-main button:hover:not(:disabled){background:#ffffff08}.od-main button:disabled{opacity:.5;cursor:wait}
+      .od-tools{display:flex;justify-content:space-between;align-items:center;gap:16px;color:#acb0b4;font-size:13px;margin-bottom:12px}
+      .od-card{display:block;width:100%;text-align:left;border:0!important;border-bottom:1px solid #383a3e!important;border-radius:0!important;padding:18px 4px!important}
+      .od-card-top{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+      .od-card time{color:#acb0b4;font-size:13px}.od-card strong{font-size:18px}
+      .od-mood{font-size:12px;color:#b6c8b0;border:1px solid #4b5a48;border-radius:999px;padding:1px 8px}
+      .od-new{width:8px;height:8px;border-radius:50%;background:#e58a7a;display:inline-block}
+      .od-card p{color:#acb0b4;margin:8px 0 0;line-height:1.6}
+      .od-entry h2{font-size:24px;margin:6px 0 4px}.od-entry .od-body p{line-height:1.9;margin:0 0 12px;font-size:16px}
+      .od-comments{border-top:1px solid #383a3e;margin-top:24px;padding-top:16px;display:grid;gap:10px}
+      .od-comment{background:#222327;border-radius:10px;padding:10px 14px;line-height:1.6}
+      .od-comment small{display:block;color:#8f9398;font-size:12px}
+      .od-main textarea{width:100%;box-sizing:border-box;min-height:72px;background:#111214;color:#ded9d1;border:1px solid #4a4c51;border-radius:10px;padding:10px;font:inherit;resize:vertical}
+      .od-actions{display:flex;gap:12px;justify-content:space-between;align-items:center;margin-top:10px}
+      .od-empty{color:#acb0b4;line-height:1.8;padding:40px 0;text-align:center}
+      .od-status{color:#acb0b4;font-size:13px;min-height:20px}
+    `;return style;
+  };
+  const diaryDate = day => {
+    const [y,m,d]=day.split('-').map(Number);
+    if(!d)return `${y}年${m}月 回忆`;
+    const week='日一二三四五六'[new Date(y,m-1,d).getDay()];
+    return `${m}月${d}日 星期${week}`;
+  };
+  const mountDiaryPage = page => {
+    page.setAttribute('data-olivia-diary-page','');page.setAttribute('aria-label','她的日记');
+    const header=document.createElement('header');header.className='od-header';header.append(text('h1','日记'));
+    const main=document.createElement('section');main.className='od-main';
+    page.replaceChildren(diaryStyle(),header,main);
+    let pageNo=1,entries=[],total=0,enabled=true;
+    const status=document.createElement('p');status.className='od-status';status.setAttribute('role','status');
+    const showList=async(append=false)=>{
+      if(!append){main.replaceChildren(text('p','正在翻开日记本……','od-empty'));pageNo=1;entries=[];}
+      try{
+        const data=await routeRequest('/toy/diary?page='+pageNo+'&limit=20');
+        entries=[...entries,...data.entries];total=data.total;enabled=data.enabled!==false;
+      }catch(_){main.replaceChildren(text('p','日记暂时打不开。','od-empty'),button('重试',()=>showList()));return;}
+      if(!page.isConnected)return;
+      const tools=document.createElement('div');tools.className='od-tools';
+      const note=text('span',enabled?'她每天凌晨会把前一天和你的事写下来；电脑没开的话，下次打开时补上。':'写日记已暂停。');
+      const toggle=button(enabled?'暂停写日记':'继续写日记',async()=>{
+        toggle.disabled=true;
+        try{const result=await routeRequest('/toy/diary/settings',{enabled:!enabled},{confirmed:true});enabled=result.enabled;showList();}
+        catch(_){toggle.disabled=false;status.textContent='没有保存成功，可以重新尝试。';}
+      });
+      const memoir=button('整理以前的回忆',()=>showMemoir());
+      const buttons=document.createElement('span');buttons.style.cssText='display:flex;gap:10px';buttons.append(memoir,toggle);
+      tools.append(note,buttons);
+      const list=document.createElement('div');
+      if(!entries.length)list.append(text('p','她还没写日记。和她聊过天之后，第二天凌晨或你下次打开时，她会把那天写下来。','od-empty'));
+      for(const entry of entries){
+        const card=document.createElement('button');card.type='button';card.className='od-card';
+        const top=document.createElement('div');top.className='od-card-top';
+        if(!entry.seen){const dot=document.createElement('span');dot.className='od-new';dot.setAttribute('aria-label','未读');top.append(dot);}
+        const time=text('time',diaryDate(entry.day));time.setAttribute('datetime',entry.day);
+        top.append(time,text('strong',entry.title));
+        if(entry.mood)top.append(text('span',entry.mood,'od-mood'));
+        if(entry.commented)top.append(text('span','已留言','od-mood'));
+        card.append(top,text('p',entry.excerpt+(entry.short?'':'…')));
+        card.addEventListener('click',()=>showEntry(entry.day));
+        list.append(card);
+      }
+      main.replaceChildren(tools,list,status);
+      if(entries.length<total)main.append(button('更早的日记',()=>{pageNo+=1;showList(true);}));
+    };
+    const showMemoir=async()=>{
+      main.replaceChildren(text('p','正在清点以前的信……','od-empty'));
+      let info;
+      try{info=await routeRequest('/toy/diary/memoir');}
+      catch(_){main.replaceChildren(text('p','暂时清点不了以前的信。','od-empty'),button('返回',()=>showList()));return;}
+      if(!page.isConnected)return;
+      const box=document.createElement('section');box.className='od-entry';
+      box.append(button('返回日记本',()=>showList()),text('h2','整理以前的回忆'));
+      if(info.running){
+        box.append(text('p',`她正在翻以前的信，已经写好 ${info.done} / ${info.total} 个月。可以先离开这里，写好的会出现在日记本里。`));
+        main.replaceChildren(box);setTimeout(()=>{if(page.isConnected&&main.contains(box))showMemoir();},5000);return;
+      }
+      if(!info.months.length){box.append(text('p','以前的信都已经整理好了。'));main.replaceChildren(box);return;}
+      const words=Math.max(1,Math.round(info.chars/10000));
+      box.append(text('p',`她会把以前每个月和你的信、聊天各写成一篇回忆，一共 ${info.months.length} 个月，约 ${words} 万字的旧信。`),
+        text('p','按你选的回信模型计费，费用大致相当于让她回 '+Math.max(1,Math.ceil(info.chars/6000))+' 封长信。记下的约定、纪念日和称呼，以后聊天时她都会记得。'));
+      if(info.failed)box.append(text('p',`上次有 ${info.failed} 个月没写成，可以再试一次。`));
+      const start=button('开始整理',async()=>{
+        start.disabled=true;
+        try{await routeRequest('/toy/diary/memoir/start',{months:info.months.map(m=>m.month)},{confirmed:true});showMemoir();}
+        catch(_){start.disabled=false;status.textContent='没有开始成功，可以重新尝试。';box.append(status);}
+      });
+      box.append(start);main.replaceChildren(box);
+    };
+    const showEntry=async day=>{
+      main.replaceChildren(text('p','正在翻到这一页……','od-empty'));
+      let entry;
+      if(!/^\d{4}-\d{2}(-\d{2})?$/.test(day))return showList();
+      try{entry=await routeRequest('/toy/diary/entry?day='+day);}
+      catch(_){main.replaceChildren(text('p','这一页暂时打不开。','od-empty'),button('返回',()=>showList()));return;}
+      if(!page.isConnected)return;
+      void refreshDiaryBadge(true);
+      const article=document.createElement('article');article.className='od-entry';
+      const back=button('返回日记本',()=>showList());
+      const time=text('time',diaryDate(entry.day));time.style.color='#acb0b4';
+      const body=document.createElement('div');body.className='od-body';
+      for(const paragraph of entry.body.split(/\n+/).filter(Boolean))body.append(text('p',paragraph));
+      article.append(back,document.createElement('br'),time,text('h2',entry.title),body);
+      const comments=document.createElement('section');comments.className='od-comments';
+      comments.append(text('strong','你的留言'));
+      for(const comment of entry.comments){const item=document.createElement('div');item.className='od-comment';
+        item.append(text('span',comment.text),text('small',new Date(comment.written_at).toLocaleString()));comments.append(item);}
+      const input=document.createElement('textarea');input.maxLength=500;input.placeholder='给她留句话，她下次和你说话时会看到';
+      const actions=document.createElement('div');actions.className='od-actions';
+      const send=button('留言',async()=>{
+        if(!input.value.trim())return;send.disabled=true;
+        try{await routeRequest('/toy/diary/comment',{day:entry.day,text:input.value},{confirmed:true});showEntry(entry.day);}
+        catch(_){send.disabled=false;status.textContent='留言没有保存成功，可以重新尝试。';}
+      });
+      let armed=false;
+      const remove=button('删除这篇',async()=>{
+        // Two clicks: the first explains what deleting forgets.
+        if(!armed){armed=true;remove.textContent='确认删除';status.textContent='删除后她也会忘掉这天记下的约定和小事。再点一次确认删除。';return;}
+        remove.disabled=true;
+        try{await routeRequest('/toy/diary/delete',{day:entry.day},{confirmed:true});showList();}
+        catch(_){remove.disabled=false;status.textContent='没有删除成功，可以重新尝试。';}
+      });
+      actions.append(remove,send);comments.append(input,actions,status);
+      main.replaceChildren(article,comments);
+    };
+    void showList();
+  };
+  const installNativeDiaryRoute = () => {
+    const native=window.__oliviaNativeView;
+    if(!native?.router||!native.h||native.router.hasRoute('olivia-diary'))return;
+    native.router.addRoute({path:'/diary',name:'olivia-diary',component:{
+      name:'OliviaDiaryView',render(){return native.h('main',{class:'mx-full h-full'})},mounted(){mountDiaryPage(this.$el)},
+    }});
+    if(window.location.hash===DIARY_ROUTE)void native.router.replace('/diary');
+  };
   const installNativeWardrobeRoute = () => {
     const native=window.__oliviaNativeView;
     if(!native?.router||!native.h||native.router.hasRoute('olivia-wardrobe'))return;
@@ -4154,7 +4313,41 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       }
     });
     row.append(copy, exportButton);
-    section.append(text("div", "诊断与反馈", "text-text-body text-title-m"), row);
+    section.append(text("div", "诊断与反馈", "text-text-body text-title-m"), row, mountImproveSetting());
+  };
+
+  const mountImproveSetting = () => {
+    const box=document.createElement("div");box.setAttribute("data-olivia-improve","");
+    box.className="flex flex-col gap-2 px-0 py-3 rounded-3";
+    const title=text("div","帮助改进 Olivia","text-text-body text-body-m font-medium");
+    const explain=text("div","开启后，从开启那一刻起，你和她的信件与聊天（你的话和她的回复，语音以文字形式）会匿名上传，"
+      +"只用来分析整体回复风格、改进她的表现，不对外提供，也不用来识别你。上传前会在本机去掉号码、链接、邮箱和账号；"
+      +"你自己写进信里的人名、地名可能保留。上传不带你的账户 Key，只带一个随机编号；数据加密保存 180 天。"
+      +"图片和其他非文字内容不上传。随时可以关闭，或删除已上传的内容。","text-text-secondary text-caption-m font-regular");
+    const state=text("div","","text-text-secondary text-caption-m font-regular");
+    const actions=document.createElement("div");actions.style.cssText="display:flex;gap:10px;flex-wrap:wrap";
+    let current={enabled:false,uploaded:0};
+    const toggle=button("开启",async()=>{
+      toggle.disabled=true;
+      try{current=await routeRequest("/toy/improve/settings",{enabled:!current.enabled},{confirmed:true});render();}
+      catch(_){state.textContent="没有保存成功，可以重新尝试。";}finally{toggle.disabled=false;}
+    });
+    let armed=false;
+    const forget=button("删除已上传的内容",async()=>{
+      if(!armed){armed=true;forget.textContent="确认删除";state.textContent="会请服务器删除这台电脑上传过的全部内容，并关闭帮助改进。再点一次确认。";return;}
+      forget.disabled=true;
+      try{current=await routeRequest("/toy/improve/forget",{},{confirmed:true});armed=false;forget.textContent="删除已上传的内容";render();state.textContent="已删除，并已关闭帮助改进。";}
+      catch(_){state.textContent="暂时连不上服务器，删除没有完成，请稍后再试。";}finally{forget.disabled=false;}
+    });
+    const render=()=>{
+      toggle.textContent=current.enabled?"关闭帮助改进":"开启帮助改进";
+      state.textContent=current.enabled?`已开启，已匿名上传 ${current.uploaded||0} 段对话。`:"未开启，不会上传任何内容。";
+      forget.hidden=!current.enabled&&!current.uploaded;
+    };
+    actions.append(toggle,forget);box.append(title,explain,state,actions);
+    void routeRequest("/toy/improve").then(value=>{current=value;render();}).catch(()=>{state.textContent="暂时读不到这项设置。";});
+    render();
+    return box;
   };
 
   const showLocalImportProgress = (state, home) => {
@@ -4784,6 +4977,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       scheduled = false;
       installNativeWorldRoute();
       installNativeWardrobeRoute();
+      installNativeDiaryRoute();
       constrainLetterInputs();
       applyProactiveSendGate();
       mountMainNavigation();

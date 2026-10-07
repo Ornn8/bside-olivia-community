@@ -56,6 +56,8 @@ PAYLOAD_EXTRA_DIRS = (
     "runtime/validation",
     "runtime/visual",
     "runtime/diagnostics",
+    "runtime/diary",
+    "runtime/improve",
 )
 PAYLOAD_EXTRA_FILES = (
     "runtime/official_endpoints.py",
