@@ -4331,7 +4331,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         if (!Number.isNaN(parsed.getTime())) date = parsed.toLocaleString("zh-CN", {timeZone:"Asia/Shanghai"}) + "（北京时间）";
       }
       const content = text("div", `你的信：\n${row.content || "（空）"}\n\n回信：\n${row.reply_text || "（空）"}`, "lm-copy");
-      col.append(text("strong", title), text("p", date), content);
+      col.append(text("strong", title, "text-text-body text-label-l"), text("p", date, "text-text-secondary text-body-m font-regular"), content);
       if (row.truncated) {
         const full = button("查看完整正文", async () => {
           full.disabled = true;
