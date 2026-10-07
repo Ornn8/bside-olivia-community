@@ -253,7 +253,17 @@ async def create(port, source_id, now, kind, context, *, meal=None):
         elif status=='skipped':
             paths={'skip':_path('当下不想开始进食','决定这一餐先不吃','paused','这次没有吃这一餐。')}
         elif status=='planned':
-            paths={'delay':_path('想先留一点间隔','把用餐安排到已经选定的稍后时刻','paused','这一餐尚未开始，保留明确的用餐计划。')}
+            preparation = {
+                'ordered': ('等待外卖送达', '已经下单，等待送餐', '外卖已经下单，尚未送达，也没有开始吃。'),
+                'preparing': ('餐食还需准备', '开始准备这一餐', '正在准备餐食，还没有开始吃。'),
+                'travelling': ('需要前往用餐地点', '准备出门就餐', '准备去计划中的地点吃饭，尚未到店。'),
+                'collecting': ('需要买饭带回', '准备去买这一餐', '准备买饭带回，还没有取到餐。'),
+            }.get(meal.get('meal_stage'))
+            if preparation:
+                obstacle, response, detail = preparation
+                paths={'preparing':_path(obstacle,response,'partial',detail)}
+            else:
+                paths={'delay':_path('想先留一点间隔','把用餐安排到已经选定的稍后时刻','paused','这一餐尚未开始，保留明确的用餐计划。')}
         else:
             paths={'ordinary':_path('没有明显阻碍','停下其他活动，开始进食','partial','这一餐正在吃，尚未结束。'),
                    'slow':_path('暂时没有很强的食欲','慢一点吃，不勉强赶进度','partial','已经开始进食，仍在慢慢吃。')}

@@ -105,7 +105,9 @@ def test_real_structured_gateway_format_failure_gets_only_one_world_correction(t
                 for s in packet['assessment']['sources']]})
             return {'choices':[{'finish_reason':'stop','message':{'content':content}}]}
         calls.append(body)
-        content='{"current":{"note":"obsolete prose"}}' if len(calls)==1 else json.dumps(decision())
+        value = decision()
+        value['activity']['place'] = None
+        content='{"current":{"note":"obsolete prose"}}' if len(calls)==1 else json.dumps(value)
         return {'choices':[{'finish_reason':'stop','message':{'content':content}}]}
     gateway._post_json=post
     store=DailyLifeStore(tmp_path/'world.db')

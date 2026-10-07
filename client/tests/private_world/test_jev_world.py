@@ -51,8 +51,8 @@ class Choices:
 
 
 @pytest.mark.parametrize('kind,key,location', [
-    ('bath_started', 'bath_started_0_home', '住处'),
-    ('bath_finished', 'bath_finished_0_home', '住处'), ('shopping', 'shopping_0_shop', '店里')])
+    ('bath_started', 'bath_started_0_home', '浴室'),
+    ('bath_finished', 'bath_finished_0_home', '浴室'), ('shopping', 'shopping_0_shop', '店里')])
 def test_same_world_choice_exposes_actual_bath_and_shopping_without_extra_call(tmp_path, kind, key, location):
     data = context(tmp_path)
     port = Choices(activity=key, project='none')
