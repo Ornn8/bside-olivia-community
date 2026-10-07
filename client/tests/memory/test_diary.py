@@ -155,3 +155,20 @@ def test_due_facts_repeat_anniversaries_yearly_and_dated_facts_on_their_day(tmp_
              {'kind': 'name', 'text': '叫她小猫咪', 'date': None, 'quote': 'q'}]
     store.save('2026-10-01', {'title': 't', 'mood': 'm', 'body': 'b', 'facts': facts}, now=NOW, model='m', short=False)
     assert {f['text'] for f in due_facts(store, NOW)} == {'纪念日', '今天考乐理'}
+
+
+def test_gift_cameras_validate_and_enter_her_context(tmp_path):
+    from runtime.gifts import validate_gifts
+    camera = {'id': 'instax-mini-12', 'name': 'Fujifilm instax mini 12', 'year': 2023, 'summary': '拍立得',
+              'specs': ['60mm f/12.7'], 'use': '纪念日', 'price_cents': 500, 'owned': True, 'extra': 'dropped'}
+    value = validate_gifts({'cameras': [camera], 'balance': {'balance_cents': 700}, 'charged_cents': 500,
+                            'item': 'instax-mini-12', 'already_owned': False})
+    assert 'extra' not in value['cameras'][0] and value['balance_cents'] == 700 and value['charged_cents'] == 500
+    with pytest.raises(ValueError):
+        validate_gifts({'cameras': [{**camera, 'id': 'Bad Id'}]})
+    store = DiaryStore(tmp_path / 'diary.sqlite3')
+    assert store.context(NOW) is None
+    store.remember_gifts(value['cameras'], NOW)
+    store.remember_gifts(value['cameras'], NOW + timedelta(days=3))  # the first day stays
+    context = json.loads(store.context(NOW))
+    assert context['gifts_from_user'] == [{'name': 'Fujifilm instax mini 12', 'received_on': '2026-10-08'}]
