@@ -360,6 +360,8 @@ ROUTES: dict[str, dict[str, Any]] = {
     "/toy/midi/cancelGenerate": _route(["POST"], "music.midi_jobs"),
     "/toy/midi/deleteJob": _route(["POST"], "music.midi_jobs"),
     "/toy/local-songs": _route(["GET"], "music.local_library"),
+    "/toy/sticker-packs": _route(["GET"], "letters.sticker_packs", read_only=True),
+    "/toy/sticker-packs/open": _route(["POST"], "letters.sticker_packs"),
     "/toy/local-songs/import": _route(["POST"], "music.local_library"),
     "/toy/local-songs/from-letter": _route(["POST"], "music.local_library"),
     "/toy/local-songs/rename": _route(["POST"], "music.local_library"),
