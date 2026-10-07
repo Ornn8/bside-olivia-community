@@ -2,13 +2,15 @@
 from __future__ import annotations
 
 from datetime import datetime
+from copy import deepcopy
 import json
 from jsonschema import Draft202012Validator, ValidationError
+from .place_detail import SCHEMA as PLACE_SCHEMA, validate as validate_place, label as place_label
 
 KINDS = ('class', 'practice', 'reading', 'meal', 'rest', 'housework', 'walk', 'errand', 'creative', 'bath_started', 'bath_finished', 'shopping')
 _ACTIVITY = {'type': 'object', 'additionalProperties': False, 'required': ['kind', 'place_id', 'focus'],
     'properties': {'kind': {'enum': list(KINDS)}, 'place_id': {'enum': ['home', 'campus', 'neighborhood', 'shop']},
-                   'focus': {'type': 'string', 'maxLength': 40}}}
+                   'focus': {'type': 'string', 'maxLength': 40}, 'place': {'anyOf': [{'type':'null'}, PLACE_SCHEMA]}}}
 SCHEMA = {'type': 'object', 'additionalProperties': False, 'required': ['activity', 'meal', 'project'], 'properties': {
     'activity': _ACTIVITY,
     'meal': {'anyOf': [{'type': 'null'}, {'type': 'object', 'additionalProperties': False,
@@ -28,10 +30,14 @@ _DEVELOPMENT = {'type': 'array', 'maxItems': 3, 'items': {'type': 'object', 'add
         'source_id': {'type': 'string', 'maxLength': 160}, 'key': {'type': 'string', 'maxLength': 48},
         'stance': {'enum': ['positive', 'negative']}, 'quote': {'type': 'string', 'minLength': 1, 'maxLength': 240},
         'reason': {'type': 'string', 'minLength': 1, 'maxLength': 160}}}}
+_STRICT_SCHEMA = deepcopy(SCHEMA)
+# The shared activity schema also covers next_activity; old stored choices may
+# omit place, while strict provider output must explicitly supply it or null.
+_STRICT_SCHEMA['properties']['activity']['required'].append('place')
 FORMAT = {'type': 'json_schema', 'json_schema': {'name': 'life_decision', 'strict': True,
-    'schema': {**SCHEMA, 'required': [*SCHEMA['required'], 'development'],
-               'properties': {**SCHEMA['properties'], 'development': _DEVELOPMENT}}}}
-LIFE_FORMAT = {'type': 'json_schema', 'json_schema': {'name': 'life_decision', 'strict': True, 'schema': SCHEMA}}
+    'schema': {**_STRICT_SCHEMA, 'required': [*_STRICT_SCHEMA['required'], 'development'],
+               'properties': {**_STRICT_SCHEMA['properties'], 'development': _DEVELOPMENT}}}}
+LIFE_FORMAT = {'type': 'json_schema', 'json_schema': {'name': 'life_decision', 'strict': True, 'schema': _STRICT_SCHEMA}}
 _VALIDATOR = Draft202012Validator(SCHEMA)
 
 LIFE_PROMPT = '''为角色决定现在这一小段自己的生活，只返回契约JSON，不写场景散文或历史叙述。
@@ -116,6 +122,11 @@ def compile_decision(value: dict, data: dict) -> tuple[dict, list, list]:
     if (activity['kind'] == 'meal') != (meal is not None):
         raise ValueError('DAILY_LIFE_DECISION_MEAL_CONFLICT')
     location = data['places'][activity['place_id']]['label']
+    place = validate_place(activity['place']) if activity.get('place') else None
+    if place:
+        if place['place_id'] != activity['place_id'] or (place['stage'] != 'arrived' and activity['kind'] != 'errand'):
+            raise ValueError('DAILY_LIFE_PLACE_INVALID')
+        location = place_label(place)
     labels = {'practice': '练琴', 'reading': '阅读', 'rest': '休息', 'housework': '整理家务',
               'walk': '散步', 'errand': '办日常杂事', 'creative': '创作', 'bath_started': '开始洗澡', 'bath_finished': '刚洗完澡', 'shopping': '买日常用品'}
 
@@ -143,6 +154,8 @@ def compile_decision(value: dict, data: dict) -> tuple[dict, list, list]:
         description = describe(activity, course)
         note = '在' + location + description + '。'
     current = {'location': location, 'activity': description, 'note': note}
+    if place:
+        current['place'] = place
     updates = []
     if project is not None:
         if activity['kind'] in {'meal', 'walk', 'errand', 'bath_started', 'bath_finished', 'shopping'}:

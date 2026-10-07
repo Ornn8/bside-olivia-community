@@ -59,7 +59,7 @@ def _compact_context(data):
     omitted['older_life_observations'] = max(0, len(recent) - 4)
     world = data['world']
     result['world'] = {key: world[key] for key in ('schedule', 'weather', 'meal_schedule') if key in world}
-    meal_fields = ('date', 'slot', 'food', 'status', 'occurred_at', 'started_at', 'ended_at', 'scheduled_for', 'stale')
+    meal_fields = ('date', 'slot', 'food', 'status', 'mode', 'meal_stage', 'place', 'occurred_at', 'started_at', 'ended_at', 'scheduled_for', 'stale')
     result['world']['meals'] = [{key: item[key] for key in meal_fields if key in item} for item in world.get('meals', [])]
     omitted['episode_details'] = len(world.get('recent_episodes', []))
     result['coverage'] = {'omitted_count': omitted,
@@ -182,8 +182,27 @@ def _activities(data, *, following=False):
             continue  # The existing schema represents meal plans only in meal.
         from .day_plan import focuses
         for index, focus in enumerate(focuses(data.get('day_plan'), kind, _FOCUSES.get(kind, ()))):
+            entry = next((e for e in (data.get('day_plan') or {}).get('activities', {}).get(kind, [])
+                          if e['focus'] == focus and e.get('place')), None)
+            if entry:
+                from .place_detail import validate
+                detail = validate(entry['place'])
+                detail['stage'] = 'arrived'
+                previous = (data.get('previous') or {}).get('place')
+                action_kind = kind
+                if (not following and previous and (previous['place_id'] != detail['place_id']
+                        or (detail['place_id'] != 'home' and previous['name'] != detail['name']))
+                        and 'errand' in allowed):
+                    detail['stage'] = 'travelling'
+                    action_kind = 'errand'
+                options[f'{kind}_{index}_{detail["place_id"]}'] = {
+                    'kind': action_kind, 'place_id': detail['place_id'], 'focus': focus, 'place': detail}
+                continue
             for place in _PLACES[kind]:
-                options[f'{kind}_{index}_{place}'] = {'kind': kind, 'place_id': place, 'focus': focus}
+                from .place_detail import activity_place
+                detail = activity_place(kind, place)
+                options[f'{kind}_{index}_{place}'] = {'kind': kind, 'place_id': place, 'focus': focus,
+                    **({'place': detail} if detail else {})}
     if following and data['world']['schedule'].get('next_class'):
         options['next_class'] = {'kind': 'class', 'place_id': 'campus', 'focus': ''}
     return options
@@ -196,6 +215,9 @@ def _meals(data):
     options = {}
     from .day_plan import foods as planned_foods
     for slot, catalog in _FOODS.items():
+        if (slot != 'snack' and (any(isinstance(item, dict) for item in
+                (data.get('day_plan') or {}).get('meals', {}).get(slot, [])) or records.get(slot, {}).get('mode'))):
+            continue  # The clock-driven lifecycle owns preparation, arrival and completion.
         foods = planned_foods(data.get('day_plan'), slot, catalog)
         old = records.get(slot)
         if old and old.get('status') in {'eaten', 'skipped'}:

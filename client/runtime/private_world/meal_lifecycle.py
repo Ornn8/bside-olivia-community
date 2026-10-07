@@ -73,7 +73,7 @@ def _recheck_basis(snapshot, when):
                                    and datetime.fromisoformat(recovery['occurred_at']) <= when else None}, sort_keys=True)
 
 
-def options(slot, old, now, *, classes=(), prospective=False):
+def options(slot, old, now, *, classes=(), prospective=False, plan=None):
     from .jev_world import _FOODS
     local = now.astimezone(LOCAL)
     due = local.replace(hour=HOURS[slot], minute=0, second=0, microsecond=0)
@@ -97,9 +97,16 @@ def options(slot, old, now, *, classes=(), prospective=False):
             if end <= now:
                 choices['finished_'+str(duration)] = _candidate(slot, old['food'], 'eaten', end, now,
                     started=start, recovered=now > end+timedelta(minutes=30))
+                choices['finished_'+str(duration)].update({k: old[k] for k in ('mode', 'place') if k in old})
+                if 'mode' in old:
+                    choices['finished_'+str(duration)]['meal_stage'] = 'finished'
         return choices
     overdue = local >= due + timedelta(hours=2) and not prospective and not (old and old['status'] == 'planned')
-    foods = list(_FOODS[slot])
+    from .day_plan import foods as planned_foods, meal_details
+    foods = list(planned_foods(plan, slot, _FOODS[slot]))
+    preparing = old and old.get('meal_stage') in {'ordered', 'preparing', 'travelling', 'collecting'}
+    if preparing:
+        foods = [old['food']]
     if old and old.get('food') and old['food'] not in foods:
         foods.append(old['food'])
     choices = {}
@@ -122,6 +129,26 @@ def options(slot, old, now, *, classes=(), prospective=False):
                 choices['plan_'+str(i)] = _candidate(slot, food, 'planned', now, now,
                                                     scheduled=planned)
         choices['skipped'] = _candidate(slot, '', 'skipped', now, now)
+    for key, candidate in choices.items():
+        if candidate['status'] == 'skipped':
+            continue
+        details = ({k: old[k] for k in ('mode','place') if k in old} if preparing
+                   else meal_details(plan, slot, candidate['food']))
+        if not details:
+            continue  # Old saved string plans retain their existing behavior.
+        candidate.update(details)
+        mode = details['mode']
+        if candidate.get('recovered'):
+            candidate['meal_stage'] = 'finished'
+        elif preparing and candidate['status'] == 'eating':
+            candidate['meal_stage'] = 'eating'
+        elif candidate['status'] == 'eating' and mode != 'canteen':
+            stage, delay = {'cook': ('preparing',25), 'delivery': ('ordered',30),
+                            'dine_out': ('travelling',20), 'takeaway': ('collecting',20)}[mode]
+            candidate.update(status='planned', meal_stage=stage, started_at=None,
+                             scheduled_for=(now+timedelta(minutes=delay)).isoformat())
+        else:
+            candidate['meal_stage'] = 'eating' if candidate['status']=='eating' else 'planned'
     return choices
 
 
@@ -170,6 +197,8 @@ async def advance(store, port, now):
     """At most one JEV call per due meal; failures retain a durable backoff."""
     now = now.astimezone(timezone.utc)
     today = now.astimezone(LOCAL).date().isoformat()
+    from .day_plan import load as load_day_plan
+    plan = load_day_plan(store, now)
     for slot in HOURS:
         snapshot = store.snapshot(now)
         old = next((m for m in snapshot['world']['meals'] if m['date']==today and m['slot']==slot), None)
@@ -177,7 +206,7 @@ async def advance(store, port, now):
         sleep = snapshot['rhythm'].get('authored_sleep')
         if sleep and sleep['status'] == 'sleeping':
             classes.append({'start': sleep['started_at'], 'end': sleep['end_at']})
-        candidates = options(slot, old, now, classes=classes)
+        candidates = options(slot, old, now, classes=classes, plan=plan)
         key = today+':'+slot
         basis = _recheck_basis(snapshot, now)
         actions = []
@@ -205,7 +234,7 @@ async def advance(store, port, now):
                     candidates['finish_now'] = _candidate(slot, old['food'], 'eaten', now, now, started=start)
             elif old['status'] == 'skipped' and (actions or autonomous) and now < _cutoff(slot, now):
                 candidates = {'keep_skipped': old}
-                for name, candidate in options(slot, None, now, classes=classes, prospective=True).items():
+                for name, candidate in options(slot, None, now, classes=classes, prospective=True, plan=plan).items():
                     if name.startswith(('eat_', 'plan_')):
                         candidates[name.replace('eat_', 'start_').replace('plan_', 'later_')] = candidate
         if not old or old['status'] != 'eating':
@@ -275,6 +304,8 @@ async def advance(store, port, now):
             action = answers.get('action')
             chosen = _chosen_for_action(candidates, chosen, action if action in families else None)
             meal = candidates[chosen]
+            if old and old.get('mode') and meal['status']=='eaten':
+                meal.update({k: old[k] for k in ('mode','place') if k in old}, meal_stage='finished')
             if chosen in {'keep_skipped', 'continue_eating'}:
                 with store._db() as db:
                     db.executemany('INSERT OR IGNORE INTO life_meal_exchange_review VALUES (?,?)',
@@ -296,14 +327,25 @@ async def advance(store, port, now):
                 db.executemany('INSERT OR IGNORE INTO life_meal_exchange_review VALUES (?,?)',
                                [(key,a['source_id']) for a in actions])
                 save_episode(db, episode, source, now)
-                if meal['status'] == 'eating':
+                if meal['status'] == 'eating' or meal.get('meal_stage') in {'ordered','preparing','travelling','collecting'}:
                     # This is a newly authored present action, so the main
                     # world view must not keep saying she is practising/asleep.
                     titles = {'breakfast':'早餐','lunch':'午餐','dinner':'晚餐'}
                     previous = snapshot.get('current') or {}
+                    place = meal.get('place')
+                    stage = meal.get('meal_stage')
+                    if stage in {'travelling', 'collecting', 'ordered'}:
+                        # Destination is a plan until the next authored arrival.
+                        location = previous.get('location') or '住处'
+                    else:
+                        location = place['name'] if place else previous.get('location') or '住处'
+                    description = {'ordered':'已下单，等待外卖', 'preparing':'正在准备餐食',
+                        'travelling':'准备出门就餐', 'collecting':'准备买饭带回'}.get(stage,'正在吃')
                     activity = dict(source_id=source, occurred_at=now.isoformat(),
-                        location=previous.get('location') or '住处', activity='吃'+titles[slot],
-                        note='正在吃'+meal['food']+'。', activity_kind='meal', progress=[], meals=[])
+                        location=location, activity=description+titles[slot],
+                        note=description+'：'+meal['food']+'。', activity_kind='meal', progress=[], meals=[],
+                        **({'place':place} if place and stage not in {'travelling','collecting','ordered'} else
+                           {'place':previous['place']} if previous.get('place') else {}))
                     db.execute('INSERT OR IGNORE INTO life_moments VALUES (?,?,?,?)',
                                (source, now.isoformat(), 'daily', json.dumps(activity,ensure_ascii=False)))
                 db.execute('DELETE FROM life_meal_retry WHERE meal_key=?',(key,))

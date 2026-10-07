@@ -24,7 +24,7 @@ _FIELDS = {'version', 'event_id', 'target_date', 'event_at', 'event_kind',
 
 def validate_input(value):
     try:
-        if (not isinstance(value, dict) or not _FIELDS <= set(value) <= _FIELDS | {'staging', 'share_text'}
+        if (not isinstance(value, dict) or not _FIELDS <= set(value) <= _FIELDS | {'staging', 'share_text', 'place'}
                 or type(value['version']) is not int or value['version'] != 1
                 or not isinstance(value['event_id'], str)
                 or not re.fullmatch(r'[A-Za-z0-9._:-]{1,128}', value['event_id'])
@@ -40,6 +40,12 @@ def validate_input(value):
             raise ValueError()
         when = datetime.fromisoformat(value['event_at'])
         if when.utcoffset() is None or when.astimezone(LOCAL).date().isoformat() != value['target_date']:
+            raise ValueError()
+        if 'place' in value:
+            from runtime.private_world.place_detail import validate
+            if validate(value['place'])['stage'] != 'arrived':
+                raise ValueError()
+        if value['scene_id'] == 'daily_place' and not value.get('place'):
             raise ValueError()
         if 'staging' in value:
             staging = value['staging']
@@ -103,7 +109,8 @@ def select_candidate(value, candidates):
     if candidate is None:
         raise ValueError('DAILY_VIDEO_SOURCE_UNAVAILABLE')
     selected = validate_input({key: candidate[key] for key in _FIELDS - {'spoken_text'}} |
-                              {'spoken_text': value['spoken_text'].strip()})
+                              {'spoken_text': value['spoken_text'].strip()} |
+                              ({'place': candidate['place']} if candidate.get('place') else {}))
     for key in ('staging', 'share_text'):
         if key not in value:
             continue
@@ -112,6 +119,14 @@ def select_candidate(value, candidates):
         except ValueError:
             pass  # Invalid optional copy never repeats the writer or discards normal chat.
     return selected
+
+
+def scene_matches(scene, source):
+    if source['event_kind'] not in scene['event_kinds']:
+        return False
+    if scene['scene_id'] == 'daily_place':
+        return bool(source.get('place') and source['place']['stage'] == 'arrived')
+    return source['location'] in [scene['scene_id'], *scene['locations']]
 
 
 class DailyVideoWorker:
@@ -218,12 +233,13 @@ class DailyVideoWorker:
         for source in store.daily_video_sources(now=now):
             if self.get(source['event_id']) is not None or self.preparation(source['event_id']) is not None:
                 continue
-            scene = next((scene for scene in self.scenes if source['event_kind'] in scene['event_kinds']
-                and source['location'] in [scene['scene_id'], *scene['locations']]), None)
+            ordered = sorted(self.scenes, key=lambda s: s['scene_id']=='daily_place')
+            scene = next((scene for scene in ordered if scene_matches(scene, source)), None)
             if scene is not None:
                 result.append(dict(version=1, certainty='live', scene_id=scene['scene_id'],
                     target_date=datetime.fromisoformat(source['event_at']).astimezone(LOCAL).date().isoformat(),
                     **{key: source[key] for key in ('event_id', 'event_at', 'event_kind', 'detail', 'location')},
+                    **({'place': source['place']} if source.get('place') else {}),
                     **({'event_status': 'preparing'} if source.get('event_status') == 'preparing' else {})))
         return result
 
@@ -282,8 +298,7 @@ class DailyVideoWorker:
                     frozen = next((item for item in reply.get('daily_video_candidates', [])
                         if item.get('event_id') == value['event_id']), None)
                     if frozen is None or not any(scene['scene_id'] == value['scene_id']
-                            and value['event_kind'] in scene['event_kinds']
-                            and frozen.get('location') in [scene['scene_id'], *scene['locations']]
+                            and scene_matches(scene, frozen)
                             for scene in self.scenes):
                         raise ValueError('DAILY_VIDEO_SCENE_UNAVAILABLE')
                 store = self.event_store() if callable(self.event_store) else self.event_store

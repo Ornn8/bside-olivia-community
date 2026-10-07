@@ -477,7 +477,7 @@ class DailyLifeStore:
         stamp = _time(occurred_at)
         if activity_kind is not None and activity_kind not in _ACTIVITY_KINDS:
             raise ValueError("DAILY_LIFE_ACTIVITY_KIND_INVALID")
-        if not isinstance(current, dict) or set(current) != {"location", "activity", "note"}:
+        if not isinstance(current, dict) or not {"location", "activity", "note"} <= set(current) <= {"location", "activity", "note", "place"}:
             raise ValueError("DAILY_LIFE_CURRENT_INVALID")
         if activity_kind == 'bath_started' and (not episode or episode.get('activity_kind') != 'bath_started'
                 or episode.get('result', {}).get('status') != 'partial'):
@@ -487,7 +487,13 @@ class DailyLifeStore:
             raise ValueError('DAILY_LIFE_BATH_EPISODE_REQUIRED')
         if activity_kind == 'shopping' and (not episode or episode.get('activity_kind') != 'shopping'):
             raise ValueError('DAILY_LIFE_SHOPPING_EPISODE_REQUIRED')
-        current = {k: _text(current[k], 180 if k == "note" else 60) for k in current}
+        from .place_detail import validate as validate_place, label as place_label
+        place = validate_place(current['place']) if 'place' in current else None
+        if place and current['location'] != place_label(place):
+            raise ValueError('DAILY_LIFE_PLACE_INVALID')
+        current = {k: _text(current[k], 180 if k == "note" else 60) for k in ('location', 'activity', 'note')}
+        if place:
+            current['place'] = place
         if not isinstance(projects, list) or len(projects) > 3:
             raise ValueError("DAILY_LIFE_PROJECTS_INVALID")
         checked = [_project(p) for p in projects]
@@ -718,6 +724,11 @@ class DailyLifeStore:
                 return True
             if request['event_kind'] != 'bath_finished':
                 return False
+            if request.get('place'):
+                source = db.execute("SELECT payload FROM life_moments WHERE source_id=? AND kind='daily'",
+                                    (request['event_id'],)).fetchone()
+                if not source or json.loads(source[0]).get('place') != request['place']:
+                    return False
             bath = db.execute('SELECT started_at FROM life_baths WHERE source_id=?', (request['event_id'],)).fetchone()
             return bool(bath and datetime.fromisoformat(bath[0]) == datetime.fromisoformat(request['event_at'])
                         and datetime.fromisoformat(bath[0]) <= now)
@@ -733,6 +744,8 @@ class DailyLifeStore:
                 (_time(start), _time(now))).fetchall()
             for source_id, occurred_at, raw in rows:
                 item = json.loads(raw)
+                if item.get('place', {}).get('stage', 'arrived') != 'arrived':
+                    continue
                 kind = item.get('event_kind') or item.get('activity_kind')
                 if kind == 'bath_started':
                     bath = db.execute('SELECT completed_source_id FROM life_baths WHERE source_id=?', (source_id,)).fetchone()
@@ -740,6 +753,7 @@ class DailyLifeStore:
                         continue
                     sources.append(dict(event_id=source_id, event_at=occurred_at, event_kind='bath_finished',
                         event_status='preparing', location=item.get('location'),
+                        **({'place': item['place']} if item.get('place') else {}),
                         detail='已实际开始这次洗澡，视频可提前准备；尚未完成，不可发送。'))
                     if len(sources) >= limit:
                         break
@@ -761,7 +775,8 @@ class DailyLifeStore:
                             or meal.get('occurred_at') != occurred_at):
                         continue
                 sources.append(dict(event_id=source_id, event_at=occurred_at, event_kind=kind,
-                    location=item.get('location'), detail=item.get('note', '')[:180]))
+                    location=item.get('location'), detail=item.get('note', '')[:180],
+                    **({'place': item['place']} if item.get('place') else {})))
                 if len(sources) >= limit:
                     break
         return sources
@@ -811,6 +826,11 @@ class DailyLifeStore:
         when = datetime.fromisoformat(request['event_at'])
         if when > now:
             return False
+        if request.get('place'):
+            source = db.execute("SELECT payload FROM life_moments WHERE source_id=? AND kind='daily'",
+                                (request['event_id'],)).fetchone()
+            if not source or json.loads(source[0]).get('place') != request['place']:
+                return False
         if request['event_kind'] == 'bath_finished':
             bath = db.execute('SELECT started_at,completed_source_id,completed_at FROM life_baths WHERE source_id=?',
                               (request['event_id'],)).fetchone()
@@ -1026,7 +1046,7 @@ class DailyLifeStore:
             "kind": "character_life_reference",
             "meaning": "同一事件日志的时间截面。current仅来自已发布角色生活；last_observation不是此刻活动。meals中stale表示当前用餐状态待更新，保留的是当时记录，不能据此说仍在吃、已经吃完或没吃。character_statement只证明林离说过，user_statement只证明用户陈述，不能互换人物或自行升级为已发生。事项status是带来源的记录；取消须保留，约定不等于完成。不同来源矛盾时保持未定，不选最新说法当真，不编造过渡。官方人设和关系权限仍由各自来源约束。",
             "stale": snapshot["stale"] or historical,
-            "current": {k: current[k] for k in ("location", "activity", "note", "occurred_at", "source_id")} if current else None,
+            "current": {k: current[k] for k in ("location", "activity", "note", "occurred_at", "source_id", "place") if k in current} if current else None,
             "threads": [],
         }
         if value['current']:
