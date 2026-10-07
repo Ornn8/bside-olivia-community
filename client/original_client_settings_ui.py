@@ -3294,13 +3294,14 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     singing_video: "唱歌",
     voice_song_video: "说话＋唱歌",
   };
-  const routeRequest = async (path, body) => {
+  // Writes the user starts from a button carry the companion confirmation the local server requires.
+  const routeRequest = async (path, body, {confirmed = false} = {}) => {
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 330000);
     try {
       const response = await fetch(new URL(path, apiBase), {
         method: body ? "POST" : "GET", cache: "no-store", credentials: "omit",
-        headers: { "Content-Type": "application/json", "Accept": "application/json" },
+        headers: { "Content-Type": "application/json", "Accept": "application/json", ...(confirmed ? {[CONFIRM_HEADER]: CONFIRM_VALUE} : {}) },
         ...(body ? { body: JSON.stringify(body) } : {}), signal: controller.signal,
       });
       const payload = await response.json();
@@ -3991,7 +3992,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       if(busy||selected===null||preview===selected)return;
       const value=preview;busy=true;render();status.textContent='正在保存风格…';
       try{
-        const result=await routeRequest('/toy/world/wardrobe',{request_id:videoReplyRequestId(),style_id:value});
+        const result=await routeRequest('/toy/world/wardrobe',{request_id:videoReplyRequestId(),style_id:value},{confirmed:true});
         if(!styles.some(style=>style.style_id===result.wardrobe?.style_id))throw Error('invalid wardrobe');
         selected=result.wardrobe.style_id;daily=result.daily_outfit||null;
         status.textContent=selected===value?'风格已生效，林离会按新风格挑选搭配。':'当前风格已由其他客户端更新，请重新读取。';
