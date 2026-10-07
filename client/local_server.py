@@ -6431,7 +6431,14 @@ async def _generate_reply_billed(letter_id, content, *, idempotency_key=None):
         letter['companion_decision'] = result.companion_decision
         letter['companion_timing'] = result.companion_timing
         letter['companion_delivery'] = result.companion_delivery
-        if result.companion_delivery == 'audio_speech' and exact_mode == ReplyMode.TEXT_LETTER.value:
+        from runtime.reply.companion_runtime import media_locked
+        # Like QQ, a letter is spoken by default once the user has turned voice
+        # replies on, unless JEV chose another medium or the user limited media.
+        default_voice = (result.companion_delivery == 'text' and not getattr(result, 'degraded_stages', None)
+                         and (letter.get('reply_routes') or {}).get('voice_reply') is True
+                         and not media_locked(result.companion_decision.get('plan')))
+        if ((result.companion_delivery == 'audio_speech' or default_voice)
+                and exact_mode == ReplyMode.TEXT_LETTER.value):
             # JEV found a spoken reply was asked for: send this letter as a voice reply.
             exact_mode = 'voice_reply'
             letter['reply_mode'] = exact_mode
