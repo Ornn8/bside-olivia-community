@@ -1907,6 +1907,55 @@
       }
     },
     "ui": {
+      "camera-canon-ixus-70": {
+        "content_type": "image/webp",
+        "filename": "camera-canon-ixus-70.webp",
+        "key": "distribution/olivia-images/ui/197c9c7c8d50a7542ff353eb3d0450bbdfcd2245636777b3ee2e663a4ad976c4/camera-canon-ixus-70.webp",
+        "sha256": "197c9c7c8d50a7542ff353eb3d0450bbdfcd2245636777b3ee2e663a4ad976c4",
+        "size_bytes": 99156
+      },
+      "camera-dji-osmo-pocket-3": {
+        "content_type": "image/webp",
+        "filename": "camera-dji-osmo-pocket-3.webp",
+        "key": "distribution/olivia-images/ui/93a19d5e46dd5412635002d3d6c273d0d50ecbec435f52c8a0743052622f25fd/camera-dji-osmo-pocket-3.webp",
+        "sha256": "93a19d5e46dd5412635002d3d6c273d0d50ecbec435f52c8a0743052622f25fd",
+        "size_bytes": 42938
+      },
+      "camera-fujifilm-x100vi": {
+        "content_type": "image/webp",
+        "filename": "camera-fujifilm-x100vi.webp",
+        "key": "distribution/olivia-images/ui/c7fe09427e5dadecf5c8cb3b849d4fda4f9c65c2b6e957df9ea18b93b1c4b5fa/camera-fujifilm-x100vi.webp",
+        "sha256": "c7fe09427e5dadecf5c8cb3b849d4fda4f9c65c2b6e957df9ea18b93b1c4b5fa",
+        "size_bytes": 173078
+      },
+      "camera-instax-mini-12": {
+        "content_type": "image/webp",
+        "filename": "camera-instax-mini-12.webp",
+        "key": "distribution/olivia-images/ui/68524a0c42954713134f4d3b1b5ba607af43e36ea3cf6867db62173135844caa/camera-instax-mini-12.webp",
+        "sha256": "68524a0c42954713134f4d3b1b5ba607af43e36ea3cf6867db62173135844caa",
+        "size_bytes": 45662
+      },
+      "camera-kodak-ektar-h35": {
+        "content_type": "image/webp",
+        "filename": "camera-kodak-ektar-h35.webp",
+        "key": "distribution/olivia-images/ui/c5a4c6982d556ebb65dd1f923f2e0d8108a34dc3839f6bf17e51b62374ed9966/camera-kodak-ektar-h35.webp",
+        "sha256": "c5a4c6982d556ebb65dd1f923f2e0d8108a34dc3839f6bf17e51b62374ed9966",
+        "size_bytes": 129128
+      },
+      "camera-ricoh-gr-iiix": {
+        "content_type": "image/webp",
+        "filename": "camera-ricoh-gr-iiix.webp",
+        "key": "distribution/olivia-images/ui/2e25536f5bd15abf06e102ff4c770227f070939717b9e6c4048c7c12a21cc3db/camera-ricoh-gr-iiix.webp",
+        "sha256": "2e25536f5bd15abf06e102ff4c770227f070939717b9e6c4048c7c12a21cc3db",
+        "size_bytes": 187452
+      },
+      "camera-sony-a7c-ii-50gm": {
+        "content_type": "image/webp",
+        "filename": "camera-sony-a7c-ii-50gm.webp",
+        "key": "distribution/olivia-images/ui/d0c7810c30af84b5e1f1e102e8748f37f282ef1a58a6c2363075b33d34b94f09/camera-sony-a7c-ii-50gm.webp",
+        "sha256": "d0c7810c30af84b5e1f1e102e8748f37f282ef1a58a6c2363075b33d34b94f09",
+        "size_bytes": 132304
+      },
       "wechat-payment": {
         "content_type": "image/jpeg",
         "filename": "wechat-payment.jpeg",
