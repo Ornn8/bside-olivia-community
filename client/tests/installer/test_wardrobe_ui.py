@@ -43,8 +43,10 @@ def test_world_wardrobe_entry_browse_confirm_rollback_and_layout():
         page.add_script_tag(content=helpers + '''
           let style='original';window.failSave=false;window.failLoad=false;window.writes=[];
           const videoReplyRequestId=()=> 'video_reply_setting:synthetic';
-          const routeRequest=async(path,body)=>{
+          const routeRequest=async(path,body,options={})=>{
             if(path!='/toy/world/wardrobe')throw Error('incorrect endpoint');
+            // The local server refuses an unconfirmed style change (COMPANION_CONFIRMATION_REQUIRED).
+            if(body&&options.confirmed!==true)throw Error('unconfirmed write');
             if(body){window.writes.push(body);if(window.failSave)throw Error('synthetic failure');style=body.style_id;return {wardrobe:{style_id:style},daily_outfit:null};}
             if(window.failLoad)throw Error('synthetic read failure');
             return {wardrobe:{style_id:style},wardrobe_styles:window.styles};
