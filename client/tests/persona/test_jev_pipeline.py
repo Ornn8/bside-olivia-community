@@ -295,3 +295,17 @@ def test_actual_projection_overflow_does_not_trim_core_or_call_writer():
     assert result.error_code == 'JEV_CONTEXT_BUDGET_EXCEEDED'
     assert len(port.turns) == 1 and not engine.requests
     assert port.turns[0].input['messages'][-1]['text'] == '当前原话' * 20
+
+
+
+def test_daily_video_candidates_that_do_not_fit_are_dropped_not_fatal():
+    """A long chat fits the budget; the optional video offer must not push the reply over it."""
+    from tests.http.test_daily_video import payload
+    candidate = {**payload(), 'detail': '刚整理好桌面。' * 40, 'location': '住处'}
+    result, engine = run(Port(plan(kind='video_speech')), mode=ReplyMode.FUTURE_IM, daily=[candidate],
+        history=(dict(role='assistant', content='旧' * 32750),),
+        daily_selection=dict(event_id=candidate['event_id'], spoken_text='整理好了。'),
+        kinds=['text', 'audio_speech', 'image', 'video_speech'])
+    assert result.state is ReplyState.COMPLETED, result.error_code
+    assert '<daily_video_candidates>' not in str(engine.requests[0].messages)
+    assert sum(len(str(m.get('content', ''))) for m in engine.requests[0].messages) <= 40000
