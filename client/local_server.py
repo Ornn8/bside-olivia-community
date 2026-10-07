@@ -4498,6 +4498,30 @@ async def route(
         except CloudError as exc:
             return err(exc.status,exc.code,{'error_code':exc.code})
 
+    if p == '/toy/world/gifts':
+        from runtime.remote_generation import RemoteGeneration
+        from runtime.cloud_service import CloudError
+        try:
+            api = RemoteGeneration(_os.environ.get('OLIVIA_GPU_API_URL', ''), _os.environ.get('OLIVIA_GPU_API_KEY', ''))
+            if method == 'POST':
+                if not companion_confirmed:
+                    return err(403, 'COMPANION_CONFIRMATION_REQUIRED', {})
+                if not isinstance(body, dict) or set(body) != {'item'}:
+                    return err(400, 'GIFT_REQUEST_INVALID', {'error_code': 'GIFT_REQUEST_INVALID'})
+                result = await api.request('gifts_buy', body)
+            elif method == 'GET':
+                result = await api.request('gifts_get', {})
+            else:
+                return err(405, 'METHOD_NOT_ALLOWED', {})
+        except CloudError as exc:
+            return err(exc.status, exc.code, {'error_code': exc.code})
+        if diary_store is not None:
+            try:
+                diary_store.remember_gifts([c for c in result['cameras'] if c['owned']], datetime.now(timezone.utc))
+            except (OSError, ValueError, sqlite3.Error):
+                pass
+        return ok(result)
+
     if p.startswith('/toy/improve'):
         from runtime.improve import upload as improve
         root = _state_root()

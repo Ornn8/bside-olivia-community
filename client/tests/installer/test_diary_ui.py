@@ -10,7 +10,8 @@ def test_diary_list_read_comment_and_delete():
     playwright = pytest.importorskip('playwright.sync_api')
     source = BOOTSTRAP_JAVASCRIPT
     diary = (source[source.index('  const DIARY_ROUTE ='):source.index('  const mountWorldPage =')]
-             + source[source.index('  const diaryStyle ='):source.index('  const installNativeWardrobeRoute =')])
+             + source[source.index('  const goWorld ='):source.index('  const openWardrobe =')]
+             + source[source.index('  const diaryStyle ='):source.index('  const mountCamerasPage =')])
     helpers = source[source.index('  const text = (tag, value, className)'):source.index('  const setButtonsBusy =')]
     with playwright.sync_playwright() as p:
         browser = p.chromium.launch(channel='msedge', headless=True)

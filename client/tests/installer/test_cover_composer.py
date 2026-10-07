@@ -58,7 +58,7 @@ window.__oliviaNativeView={h:(tag)=>document.createElement(tag),router:{hasRoute
 installNativeWorldRoute();check(routeRecord.path==='/world','independent native route');
 location.hash=WORLD_ROUTE;mountMainNavigation();
 const view=routeRecord.component,el=view.render();document.body.append(el);view.mounted.call({$el:el});await Promise.resolve();
-const links=[...document.querySelectorAll('nav a')];check(links.map(n=>n.textContent).join(',')==='信箱,世界,日记,曲库','navigation order');
+const links=[...document.querySelectorAll('nav a')];check(links.map(n=>n.textContent).join(',')==='信箱,世界,物品栏,曲库','navigation order');
 const navigationLeft=document.querySelector('nav').style.left;
 check(links[1].getAttribute('aria-current')==='page','world selected');check(document.querySelector('main [data-world-main]'),'world main mounted');
 mountMainNavigation();check(reads===1,'does not reload on DOM changes');

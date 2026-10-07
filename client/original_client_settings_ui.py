@@ -2836,20 +2836,21 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   // destinations inside the main window: desktop widgets can be off-screen.
   const WORLD_ROUTE = '#/world';
   const WARDROBE_ROUTE = '#/world/wardrobe';
-  const DIARY_ROUTE = '#/diary';
+  const ITEMS_ROUTE = '#/world/items';
+  const DIARY_ROUTE = '#/world/diary';
+  const CAMERAS_ROUTE = '#/world/cameras';
   const diaryState = {checkedAt: 0, unseen: 0};
   const refreshDiaryBadge = async (force=false) => {
     if(!force&&Date.now()-diaryState.checkedAt<300000)return;
     diaryState.checkedAt=Date.now();
     try{
       const page=await routeRequest('/toy/diary?limit=1');diaryState.unseen=Number(page?.unseen)||0;
-      const nav=document.querySelector('[data-olivia-main-navigation]');
-      const link=[...(nav?.querySelectorAll?.('a')||[])].find(item=>item.getAttribute?.('href')===DIARY_ROUTE);
-      if(!link?.querySelector)return;
-      let dot=link.querySelector('[data-diary-unseen]');
-      if(diaryState.unseen>0&&!dot){dot=document.createElement('span');dot.setAttribute('data-diary-unseen','');dot.setAttribute('aria-label','有新日记');
-        Object.assign(dot.style,{width:'7px',height:'7px',borderRadius:'50%',background:'#e58a7a',marginLeft:'6px',display:'inline-block'});link.append(dot);}
-      if(diaryState.unseen===0)dot?.remove();
+      for(const target of document.querySelectorAll?.('[data-diary-badge]')||[]){
+        let dot=target.querySelector('[data-diary-unseen]');
+        if(diaryState.unseen>0&&!dot){dot=document.createElement('span');dot.setAttribute('data-diary-unseen','');dot.setAttribute('aria-label','有新日记');
+          Object.assign(dot.style,{width:'7px',height:'7px',borderRadius:'50%',background:'#e58a7a',marginLeft:'6px',display:'inline-block'});target.append(dot);}
+        if(diaryState.unseen===0)dot?.remove();
+      }
     }catch(_){/* The badge is optional; navigation must never depend on it. */}
   };
   const mountWorldPage = (page) => {
@@ -2905,8 +2906,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       @media(max-width:580px){.olivia-world-columns{grid-template-columns:1fr}.olivia-world-aside{padding:20px 0 0;border-left:0;border-top:1px solid #383a3e}.olivia-world-tabs{gap:20px}.olivia-world-heading{align-items:flex-start}.olivia-world-heading .olivia-world-line{align-items:flex-start}[data-world-main]{padding:18px}.olivia-world-meta{gap:8px}}
     `;
     const header=document.createElement('header');header.className='olivia-world-header';header.append(text('h1','世界'));
-    const wardrobeEntry=button('衣橱',()=>openWardrobe());wardrobeEntry.setAttribute('data-olivia-wardrobe-entry','');
-    wardrobeEntry.setAttribute('aria-label','打开林离的衣橱');
+    const wardrobeEntry=button('物品栏',()=>openItems());wardrobeEntry.setAttribute('data-olivia-items-entry','');
+    wardrobeEntry.setAttribute('aria-label','打开林离的物品栏');wardrobeEntry.setAttribute('data-diary-badge','');
+    setTimeout(()=>void refreshDiaryBadge(true),0);
     // The top row is shared with the native tabs and the account controls; keep it to the title.
     const tools=document.createElement('div');tools.className='olivia-world-tools';tools.append(wardrobeEntry);
     const panel=document.createElement('section');panel.dataset.worldMain='';
@@ -2932,9 +2934,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   };
   const mountMainNavigation = () => {
     const route = window.location.hash.split("?")[0];
-    const world=route===WORLD_ROUTE||route===WARDROBE_ROUTE;
+    const world=route===WORLD_ROUTE||route.startsWith(WORLD_ROUTE+'/');
     let nav = document.querySelector("[data-olivia-main-navigation]");
-    if (route !== "#/studio" && route !== "#/collection" && route !== DIARY_ROUTE && !world) {
+    if (route !== "#/studio" && route !== "#/collection" && !world) {
       nav?.remove();
       return;
     }
@@ -2946,9 +2948,10 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         position: "fixed", top: "60px", left: "120px", zIndex: "20",
         display: "flex", gap: "8px", WebkitAppRegion: "no-drag",
       });
-      for (const [label, href] of [["信箱", "#/collection"], ["世界", WORLD_ROUTE], ["日记", DIARY_ROUTE], ["曲库", "#/studio"]]) {
+      for (const [label, href] of [["信箱", "#/collection"], ["世界", WORLD_ROUTE], ["物品栏", ITEMS_ROUTE], ["曲库", "#/studio"]]) {
         const link = text("a", label, "text-body-m");
         link.href = href;
+        if (href === ITEMS_ROUTE) link.setAttribute("data-diary-badge", "");
         link.addEventListener('click',event=>{
           if(event.button!==0||event.ctrlKey||event.metaKey||event.shiftKey||event.altKey)return;
           const router=window.__oliviaNativeView?.router;if(!router)return;
@@ -2965,9 +2968,10 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       document.body.append(nav);
     }
     nav.style.left='120px';
-    void refreshDiaryBadge();
+    if(world)void refreshDiaryBadge();
     for (const link of nav.querySelectorAll("a")) {
-      const active = link.getAttribute("href") === (world?WORLD_ROUTE:route);
+      const current = route===WORLD_ROUTE ? WORLD_ROUTE : world ? ITEMS_ROUTE : route;
+      const active = link.getAttribute("href") === current;
       if (active) link.setAttribute("aria-current", "page");
       else link.removeAttribute("aria-current");
       link.style.color = active ? "#111827" : "#d1d5db";
@@ -4037,16 +4041,50 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     return panel;
   };
 
+  const goWorld = path => {
+    const router=window.__oliviaNativeView?.router;
+    if(router)void router.push(path);else window.location.hash='#'+path;
+  };
+  const openItems = () => goWorld('/world/items');
+  const itemsBreadcrumb = current => {
+    const breadcrumb=document.createElement('nav');breadcrumb.className='ow-breadcrumb';breadcrumb.setAttribute('aria-label','所在位置');
+    const link=(label,path)=>{const a=text('a',label);a.href='#'+path;
+      a.addEventListener('click',event=>{if(event.button!==0||event.ctrlKey||event.metaKey||event.shiftKey||event.altKey)return;event.preventDefault();goWorld(path);});return a;};
+    breadcrumb.append(link('返回世界','/world'),text('span','/'));
+    if(current)breadcrumb.append(link('物品栏','/world/items'),text('span','/'),text('span',current));
+    else breadcrumb.append(text('span','物品栏'));
+    return breadcrumb;
+  };
+  const mountItemsPage = page => {
+    page.setAttribute('data-olivia-items-page','');page.setAttribute('aria-label','林离的物品栏');
+    const style=document.createElement('style');style.textContent=`
+      [data-olivia-items-page]{width:100%;height:100%;color:#ded9d1;display:flex;flex-direction:column;gap:16px;-webkit-app-region:no-drag}
+      [data-olivia-items-page] h1{font-size:30px;margin:0;font-weight:700}
+      .oi-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px;background:#191a1c;border-radius:12px;padding:24px}
+      .oi-card{display:flex;flex-direction:column;gap:8px;text-align:left;border:1px solid #383a3e;border-radius:12px;background:#1f2023;color:#ded9d1;padding:20px;font:inherit;cursor:pointer;min-height:120px}
+      .oi-card:hover{background:#25262a}.oi-card strong{font-size:20px;display:flex;align-items:center}
+      .oi-card span{color:#acb0b4;font-size:14px;line-height:1.6}
+      .ow-breadcrumb{display:flex;gap:10px;align-items:center;color:#acb0b4;font-size:14px}.ow-breadcrumb a{color:#ded9d1;text-decoration:none}
+    `;
+    const header=document.createElement('header');header.append(text('h1','物品栏'));
+    const grid=document.createElement('section');grid.className='oi-grid';
+    for(const [title,copy,path,label] of [['衣橱','给她挑每天的穿搭风格。','/world/wardrobe','打开林离的衣橱'],
+        ['拍摄设备','你送她的相机，她拍照时会自己挑着用。','/world/cameras','打开林离的拍摄设备'],
+        ['日记本','她每天写给你看的日记和以前的回忆。','/world/diary','打开林离的日记本']]){
+      const card=document.createElement('button');card.type='button';card.className='oi-card';card.setAttribute('aria-label',label);
+      const heading=text('strong',title);if(path==='/world/diary')heading.setAttribute('data-diary-badge','');
+      card.append(heading,text('span',copy));card.addEventListener('click',()=>goWorld(path));grid.append(card);
+    }
+    page.replaceChildren(style,header,itemsBreadcrumb(),grid);
+    void refreshDiaryBadge(true);
+  };
   const openWardrobe = () => {
     const router=window.__oliviaNativeView?.router;
     if(router)void router.push('/world/wardrobe');else window.location.hash=WARDROBE_ROUTE;
   };
   const mountWardrobePage = page => {
     page.setAttribute('data-olivia-wardrobe-page','');page.setAttribute('aria-label','林离的衣橱');
-    const breadcrumb=document.createElement('nav');breadcrumb.className='ow-breadcrumb';breadcrumb.setAttribute('aria-label','衣橱位置');
-    const back=text('a','返回世界');back.href=WORLD_ROUTE;
-    back.addEventListener('click',event=>{if(event.button!==0||event.ctrlKey||event.metaKey||event.shiftKey||event.altKey)return;const router=window.__oliviaNativeView?.router;if(router){event.preventDefault();void router.push('/world');}});
-    breadcrumb.append(back,text('span','/'),text('span','衣橱'));
+    const breadcrumb=itemsBreadcrumb('衣橱');breadcrumb.setAttribute('aria-label','衣橱位置');
     const header=document.createElement('header');header.className='ow-page-header';header.append(text('h1','衣橱'));
     page.replaceChildren(header,breadcrumb);mountWardrobeSetting(page);
   };
@@ -4083,9 +4121,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   };
   const mountDiaryPage = page => {
     page.setAttribute('data-olivia-diary-page','');page.setAttribute('aria-label','她的日记');
-    const header=document.createElement('header');header.className='od-header';header.append(text('h1','日记'));
+    const header=document.createElement('header');header.className='od-header';header.append(text('h1','日记本'));
     const main=document.createElement('section');main.className='od-main';
-    page.replaceChildren(diaryStyle(),header,main);
+    page.replaceChildren(diaryStyle(),header,itemsBreadcrumb('日记本'),main);
     let pageNo=1,entries=[],total=0,enabled=true;
     const status=document.createElement('p');status.className='od-status';status.setAttribute('role','status');
     const showList=async(append=false)=>{
@@ -4184,13 +4222,75 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     };
     void showList();
   };
+  const mountCamerasPage = page => {
+    page.setAttribute('data-olivia-cameras-page','');page.setAttribute('aria-label','林离的拍摄设备');
+    const style=document.createElement('style');style.textContent=`
+      [data-olivia-cameras-page]{width:100%;height:100%;min-height:0;color:#ded9d1;display:flex;flex-direction:column;gap:16px;-webkit-app-region:no-drag}
+      [data-olivia-cameras-page] h1{font-size:30px;margin:0;font-weight:700}
+      .oc-main{overflow-y:auto;background:#191a1c;border-radius:12px;padding:24px;min-height:0;flex:1;box-sizing:border-box;scrollbar-width:thin}
+      .oc-note{color:#acb0b4;font-size:13px;margin:0 0 16px;line-height:1.7}
+      .oc-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px}
+      .oc-card{border:1px solid #383a3e;border-radius:12px;background:#1f2023;padding:18px;display:flex;flex-direction:column;gap:8px}
+      .oc-card img{width:100%;aspect-ratio:4/3;object-fit:contain;background:#f4f1ec;border-radius:8px}
+      .oc-card strong{font-size:18px}.oc-card small{color:#acb0b4}
+      .oc-card ul{margin:0;padding-left:18px;color:#c9c5be;font-size:13px;line-height:1.7}
+      .oc-card p{margin:0;color:#acb0b4;font-size:14px;line-height:1.6}
+      .oc-card button{align-self:flex-start;border:1px solid #686a70;border-radius:999px;background:transparent;color:#ded9d1;padding:8px 18px;font:inherit;cursor:pointer}
+      .oc-card button:disabled{opacity:.6;cursor:default}.oc-owned{color:#b6c8b0;font-size:13px}
+      .oc-status{color:#acb0b4;font-size:13px;min-height:20px}
+      .ow-breadcrumb{display:flex;gap:10px;align-items:center;color:#acb0b4;font-size:14px}.ow-breadcrumb a{color:#ded9d1;text-decoration:none}
+    `;
+    const header=document.createElement('header');header.append(text('h1','拍摄设备'));
+    const main=document.createElement('section');main.className='oc-main';
+    const status=document.createElement('p');status.className='oc-status';status.setAttribute('role','status');
+    page.replaceChildren(style,header,itemsBreadcrumb('拍摄设备'),main);
+    const render=data=>{
+      const grid=document.createElement('div');grid.className='oc-grid';
+      for(const camera of data.cameras){
+        const card=document.createElement('article');card.className='oc-card';
+        const image=document.createElement('img');image.alt=camera.name;image.src='/toy/images/ui/camera-'+camera.id;
+        image.addEventListener('error',()=>image.remove());
+        card.append(image,text('strong',camera.name),text('small',camera.year+' 年 · '+camera.summary));
+        const specs=document.createElement('ul');for(const spec of camera.specs)specs.append(text('li',spec));
+        card.append(specs,text('p','她会在这时候用：'+camera.use));
+        if(camera.owned){card.append(text('span','已送给她','oc-owned'));}
+        else{
+          let armed=false;
+          const give=button('送给她 · ¥'+(camera.price_cents/100).toFixed(2),async()=>{
+            if(!armed){armed=true;give.textContent='确认送出（¥'+(camera.price_cents/100).toFixed(2)+'）';status.textContent='会从账户余额扣除，送出后一直归她。';return;}
+            give.disabled=true;
+            try{const result=await routeRequest('/toy/world/gifts',{item:camera.id},{confirmed:true});
+              status.textContent=result.already_owned?'她已经有这台了，没有重复扣费。':'送出了！她下次拍照时就可能用上它。';render(result);}
+            catch(error){give.disabled=false;armed=false;give.textContent='送给她 · ¥'+(camera.price_cents/100).toFixed(2);
+              status.textContent=String(error?.message||'').includes('BALANCE')?'余额不足，请先在右上角「账户」充值。':'没有送出成功，没有扣费，可以重新尝试。';}
+          });
+          card.append(give);
+        }
+        grid.append(card);
+      }
+      const note=text('p','送她一台相机，它就一直是她的。她拍照时会按场合挑：在家随手多用手机，出门、纪念日或想拍好看的照片时会拿出你送的相机。'
+        +(typeof data.balance_cents==='number'?' 账户余额 ¥'+(data.balance_cents/100).toFixed(2)+'。':''),'oc-note');
+      main.replaceChildren(note,grid,status);
+    };
+    main.append(text('p','正在打开她的设备柜……','oc-note'));
+    void routeRequest('/toy/world/gifts').then(data=>{if(page.isConnected)render(data);})
+      .catch(()=>{if(page.isConnected)main.replaceChildren(text('p','拍摄设备暂时打不开。','oc-note'),button('重试',()=>mountCamerasPage(page)));});
+  };
   const installNativeDiaryRoute = () => {
     const native=window.__oliviaNativeView;
     if(!native?.router||!native.h||native.router.hasRoute('olivia-diary'))return;
-    native.router.addRoute({path:'/diary',name:'olivia-diary',component:{
+    native.router.addRoute({path:'/world/diary',name:'olivia-diary',component:{
       name:'OliviaDiaryView',render(){return native.h('main',{class:'mx-full h-full'})},mounted(){mountDiaryPage(this.$el)},
     }});
-    if(window.location.hash===DIARY_ROUTE)void native.router.replace('/diary');
+    if(!native.router.hasRoute('olivia-items'))native.router.addRoute({path:'/world/items',name:'olivia-items',component:{
+      name:'OliviaItemsView',render(){return native.h('main',{class:'mx-full h-full'})},mounted(){mountItemsPage(this.$el)},
+    }});
+    if(!native.router.hasRoute('olivia-cameras'))native.router.addRoute({path:'/world/cameras',name:'olivia-cameras',component:{
+      name:'OliviaCamerasView',render(){return native.h('main',{class:'mx-full h-full'})},mounted(){mountCamerasPage(this.$el)},
+    }});
+    if(window.location.hash===DIARY_ROUTE)void native.router.replace('/world/diary');
+    if(window.location.hash===ITEMS_ROUTE)void native.router.replace('/world/items');
+    if(window.location.hash===CAMERAS_ROUTE)void native.router.replace('/world/cameras');
   };
   const installNativeWardrobeRoute = () => {
     const native=window.__oliviaNativeView;

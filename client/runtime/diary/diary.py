@@ -173,6 +173,21 @@ class DiaryStore:
                 CREATE TABLE IF NOT EXISTS diary_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
             ''')
 
+    def remember_gifts(self, cameras, now):
+        """Keep the owned cameras and the first day each was seen; never forget a gift here."""
+        with self._db() as db:
+            row = db.execute("SELECT value FROM diary_settings WHERE key='gifts'").fetchone()
+            known = json.loads(row['value']) if row else {}
+            for camera in cameras:
+                known.setdefault(camera['id'], {'name': camera['name'], 'received_on': local_day(now)})
+            db.execute("INSERT INTO diary_settings VALUES ('gifts',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                       (json.dumps(known, ensure_ascii=False),))
+
+    def gifts(self):
+        with self._db() as db:
+            row = db.execute("SELECT value FROM diary_settings WHERE key='gifts'").fetchone()
+        return list(json.loads(row['value']).values()) if row else []
+
     def enabled(self):
         with self._db() as db:
             row = db.execute("SELECT value FROM diary_settings WHERE key='enabled'").fetchone()
@@ -288,7 +303,8 @@ class DiaryStore:
                     facts.append({**{k: fact[k] for k in ('kind', 'text', 'date')}, 'noted_on': row['day']})
             comments = {r['day']: r['text'] for r in db.execute(
                 'SELECT day,text FROM diary_comments ORDER BY written_at')}
-        if not recent and not facts:
+        gifts = self.gifts()
+        if not recent and not facts and not gifts:
             return None
         entries = [{'day': r['day'], 'title': r['title'], 'body': r['body'][:CONTEXT_BODY_CHARS],
                     **({'user_comment': comments[r['day']][:200]} if r['day'] in comments else {})}
@@ -296,7 +312,9 @@ class DiaryStore:
         return json.dumps({'kind': 'linli_diary',
                            'meaning': '这是林离自己写给对方看的日记和她记下的事。facts 中的约定、纪念日、称呼和对方近况来自当时对方的原话；'
                                       'user_comment 是对方读日记后的留言。日期以 day 和 date 为准。',
-                           'recent_entries': entries, 'facts': facts[:CONTEXT_FACTS]},
+                           'recent_entries': entries, 'facts': facts[:CONTEXT_FACTS],
+                           **({'gifts_from_user': gifts, 'gifts_meaning': '对方送你的相机，都在你身边，拍照时会挑着用；'
+                               'received_on 是收到的那天，那天还没道谢的话可以自然提起。'} if gifts else {})},
                           ensure_ascii=False, separators=(',', ':'))
 
 
