@@ -301,3 +301,43 @@ assert row['letter_status'] == 'COMPLETED' and row['reply_mode'] == 'voice_reply
 assert row['reply_video_enabled'] is False and row['media_status'] == 'PENDING'
 assert scheduled == ['voice_reply']
 ''')
+
+
+def test_letters_are_spoken_by_default_when_voice_replies_are_on(tmp_path):
+    run_isolated(tmp_path, r'''
+import asyncio
+import local_server as server
+from runtime.reply.reply_pipeline import ReplyPipeline, UnavailableRewriter
+from runtime.reply.reply_reviewer import NullReviewer
+from tests.persona.test_jev_pipeline import Port, plan
+from tests.persona.test_reply_semantic_wiring import Engine
+
+server.daily_life_runtime = None
+server._current_life_rhythm = lambda: {}
+server._schedule_text_reply_delay = lambda *a: None
+server._commit_private_world_letter = lambda row: False
+server.letters_adapter.remember_conversation = lambda *a: None
+scheduled = []
+server._schedule_media_job = lambda letter_id, content, text, mode: scheduled.append((letter_id, mode))
+limited = plan()
+# The user asked for a text reply this time (e.g. "这次回文字就好").
+limited['understanding'].update(extras_allowed=False, requirements=[dict(id='r1', fulfillment='current',
+    alternatives=[dict(kinds=['text'], min_assets=1, max_assets=1)], evidence_turn_ids=['t1'])])
+limited['proposal']['steps'][0]['requirement_ids'] = ['r1']
+for letter_id, voice_on, decision, expected in (('plain-voice-on', True, plan(), 'voice_reply'),
+                                                ('plain-voice-off', False, plan(), 'text_letter'),
+                                                ('text-only-asked', True, limited, 'text_letter')):
+    row = {'letter_id': letter_id, 'content': '今天考完试了，好累',
+           'reply_routes': {'voice_reply': voice_on, 'singing_video': False, 'voice_song_video': False},
+           'image_reply_settings': {'enabled': False}}
+    server.store.letters[:] = [row]
+    server.store.personal_chats[:] = []
+    server.reply_pipeline = ReplyPipeline(Engine('辛苦啦，先好好睡一觉。'), reviewer=NullReviewer(),
+        rewriter=UnavailableRewriter(), discover_runtime_ports=False, companion_decision_port=Port(decision))
+    assert asyncio.run(server.generate_reply(row['letter_id'], row['content']))
+    assert row['letter_status'] == 'COMPLETED' and row['reply_mode'] == expected, (letter_id, row['reply_mode'])
+    assert row['companion_delivery'] == 'text'
+    if expected == 'voice_reply':
+        assert row['reply_video_enabled'] is False and row['media_status'] == 'PENDING'
+assert scheduled == [('plain-voice-on', 'voice_reply')]
+''')
