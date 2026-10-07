@@ -597,7 +597,14 @@ class ReplyPipeline:
                 if daily_candidates:
                     note = '<daily_video_candidates>' + json.dumps(daily_candidates,
                         ensure_ascii=False, separators=(',', ':')).replace('<', r'\u003c') + '</daily_video_candidates>'
-                    messages = finalize_reply_messages(messages, note, max_input_chars=original_budget)
+                    try:
+                        # The context was sized before these candidates existed. An optional
+                        # video offer must never cost the reply: drop it when it does not fit.
+                        with_candidates = finalize_reply_messages(messages, note, max_input_chars=original_budget)
+                        finalize_reply_messages(with_candidates, generation_note, max_input_chars=original_budget)
+                        messages = with_candidates
+                    except ValueError:
+                        daily_candidates = []
                 messages = finalize_reply_messages(messages, generation_note,
                                                    max_input_chars=original_budget)
                 from runtime.personal_chat.decision import INSTRUCTION as CHAT_RULES
