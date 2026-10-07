@@ -221,3 +221,21 @@ def test_full_original_read_keeps_long_text_and_receipt_aliases(tmp_path):
     full = index.browse_page("local-user", source_id="reply:1", full=True)
     assert full["originals"][0]["text"] == long
     assert full["originals"][0]["excerpt"] is False
+
+
+def test_qq_message_is_listed_once_beside_its_reply(tmp_path):
+    index = SourceRetrieval(tmp_path/"originals.sqlite3")
+    received = NOW - timedelta(minutes=2)
+    index.put_received("local-user", "received-user:q1", "就是8月26号的信呀", received)
+    index.put("local-user", "reply:q1:1", "就是8月26号的信呀", "我记得那天。", NOW)
+    index.alias_received("local-user", "reply:q1:1", ["received-user:q1"])
+    index.put("local-user", "reply:letter:1", "普通来信", "收到啦。", NOW - timedelta(hours=1))
+    page = index.browse_page("local-user", limit=20)
+    rows = [(r["source_id"], r["speaker"]) for r in page["originals"]]
+    assert rows.count(("received-user:q1", "user")) == 1 and ("reply:q1:1", "user") not in rows
+    assert ("reply:q1:1", "linli") in rows and ("reply:letter:1", "user") in rows
+    assert page["total"] == 4
+    family = index.browse_page("local-user", source_id="reply:q1:1", full=True)
+    assert sorted((r["source_id"], r["speaker"]) for r in family["originals"]) == [
+        ("received-user:q1", "user"), ("reply:q1:1", "linli")]
+    assert [r["source_id"] for r in index.browse("local-user", "", 10)["originals"]].count("reply:q1:1") == 1

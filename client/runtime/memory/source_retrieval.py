@@ -271,6 +271,12 @@ class SourceRetrieval:
             db.executemany("INSERT OR IGNORE INTO archive_targets VALUES (?,?)", ((user, source) for source in sources))
             db.execute("INSERT OR REPLACE INTO archive_scan VALUES (?,?)", (user, datetime.now(timezone.utc).isoformat()))
 
+    # A QQ message is indexed when it arrives and again inside its reply exchange.
+    # The browser lists the arrival record only, so one message appears once.
+    _SHOWN = ("NOT (actor='user' AND source LIKE 'reply:%' AND EXISTS (SELECT 1 FROM source_aliases a "
+              "JOIN originals r ON r.user=a.user AND r.source=a.receipt_source AND r.actor='user' "
+              "WHERE a.user=originals.user AND a.exchange_source=originals.source))")
+
     def browse(self, user, query, limit):
         with closing(self.connect()) as db:
             indexed = db.execute("SELECT COUNT(DISTINCT source) FROM originals WHERE user=?", (user,)).fetchone()[0]
@@ -279,7 +285,8 @@ class SourceRetrieval:
                 COALESCE(SUM(EXISTS(SELECT 1 FROM originals o WHERE o.user=t.user AND o.source=t.source)),0),
                 COALESCE(SUM(EXISTS(SELECT 1 FROM forgotten f WHERE f.user=t.user AND f.source=t.source)),0)
                 FROM archive_targets t WHERE user=?""", (user,)).fetchone()
-            rows = [] if query else db.execute("SELECT source,actor,stamp,text FROM originals WHERE user=? ORDER BY stamp DESC,source,actor LIMIT ?", (user, limit)).fetchall()
+            rows = [] if query else db.execute("SELECT source,actor,stamp,text FROM originals WHERE user=? AND " + self._SHOWN +
+                                               " ORDER BY stamp DESC,source,actor LIMIT ?", (user, limit)).fetchall()
         if query:
             records = self.search(query, user, limit=limit)
             rows = [(r.source_id, r.metadata['speaker'], r.occurred_at.isoformat() if r.occurred_at else None, r.text) for r in records]
@@ -297,7 +304,7 @@ class SourceRetrieval:
         if (source_id is not None and (not isinstance(source_id, str) or not source_id or len(source_id) > 160)
                 or type(full) is not bool or full and source_id is None):
             raise ValueError("MEMORY_BROWSE_OPTIONS_INVALID")
-        where, args = ["user=?"], [user]
+        where, args = ["user=?", self._SHOWN], [user]
         if query and query.strip():
             where.append("instr(lower(text),lower(?))>0")
             args.append(query.strip())
