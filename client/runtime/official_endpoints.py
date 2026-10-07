@@ -10,7 +10,11 @@ DOWNLOAD_BASE = 'https://download.bside-moon.cn/installers/'
 WEBSITE = 'https://bside-moon.cn/'
 LEGACY_API_ORIGIN = 'https://175.24.191.6'
 LEGACY_API_BASE = LEGACY_API_ORIGIN + '/v1'
-COMPONENT_COS_HOST = 'iupaper-1387429524.cos.ap-guangzhou.myqcloud.com'
+COMPONENT_COS_HOST = 'olivia-files-1400665687.cos.ap-guangzhou.myqcloud.com'
+COMPONENT_COS_HOSTS = frozenset({
+    COMPONENT_COS_HOST,
+    'iupaper-1387429524.cos.ap-guangzhou.myqcloud.com',
+})
 COMPONENT_COS_PREFIX = '/olivia/components/'
 
 
