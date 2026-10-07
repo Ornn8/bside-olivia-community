@@ -188,11 +188,18 @@ class DailyLifeRuntime:
 
     @property
     def emotion(self):
+        return self._get_emotion()
+
+    def _get_emotion(self, *, initialize: bool = True):
         if self._emotion is None:
             try:
                 from .character_emotion_runtime import CharacterEmotionRuntime
-                self._emotion = CharacterEmotionRuntime(self.store, self.gateway, self.emotion_persona,
-                    relationship=self.relationship, timeout_seconds=self.timeout_seconds, dialogue_rows=self.dialogue_rows)
+                emotion = CharacterEmotionRuntime(self.store, self.gateway, self.emotion_persona,
+                    relationship=self.relationship, timeout_seconds=self.timeout_seconds,
+                    dialogue_rows=self.dialogue_rows, initialize=initialize)
+                if not initialize:
+                    return emotion
+                self._emotion = emotion
             except Exception:
                 return None
         return self._emotion
@@ -284,18 +291,13 @@ class DailyLifeRuntime:
             )
 
     def snapshot(self, now: datetime, *, read_only: bool = False) -> dict:
-        if self.relationship is not None:
-            relation = self.relationship()
-            affinity = (min(relation.trust, relation.comfort) + relation.closeness) / 200
-            if not read_only:
-                self.store.adapt_routine(now, affinity=affinity)
         value = self.store.snapshot(now)
         value.update(refreshing=self._lock.locked() or (self._task is not None and not self._task.done()),
                      error_code=self.error_code, last_failure_code=getattr(self, '_last_failure_code', None))
         # Support health probes read the life projection without adapting the
         # routine or lazily creating optional emotion/affect stores.
-        emotion = None if read_only else self.emotion
-        view = emotion.view(now) if emotion is not None else {}
+        emotion = None if read_only else self._get_emotion(initialize=False)
+        view = emotion.view(now, read_only=True) if emotion is not None else {}
         value['emotion'] = dict(
             status='available' if emotion is not None and not emotion.error_code else 'unavailable',
             observed_at=now.isoformat(),
@@ -368,6 +370,10 @@ class DailyLifeRuntime:
             local_time = now.astimezone(_SHANGHAI)
             source_id = f"day:{local_time:%Y%m%d}:{local_time.hour // 6}"
             try:
+                if self.relationship is not None:
+                    relation = self.relationship()
+                    affinity = (min(relation.trust, relation.comfort) + relation.closeness) / 200
+                    await asyncio.to_thread(self.store.adapt_routine, now, affinity=affinity)
                 duties = configured_duties()
                 persona = self.persona()
                 development_topics = self.store.configure_development(persona)
