@@ -130,7 +130,7 @@ def test_explicit_audio_does_not_use_optional_default_voice_budget(monkeypatch, 
     assert row['requested_format'] == 'voice' and 'voice_fallback' not in row
 
 
-def test_explicit_audio_timeout_fails_its_media_contract_instead_of_sending_text(monkeypatch, tmp_path):
+def test_explicit_audio_timeout_sends_the_written_text(monkeypatch, tmp_path):
     server, row = real_voice_server(monkeypatch, tmp_path,
         pipeline_result(delivery='audio_speech'))
     monkeypatch.setattr(backend, '_VOICE_RENDER_TIMEOUT_SECONDS', .04)
@@ -141,16 +141,15 @@ def test_explicit_audio_timeout_fails_its_media_contract_instead_of_sending_text
     server.render_reply_audio = render
     async def scenario():
         try:
-            with pytest.raises(RuntimeError, match='JEV_PLAN_UNSUPPORTED'):
-                await backend.generate(server,
-                    PersonalMessage('qq', 'b', 'u', 'voice', 'Use voice, please'), row)
+            return await backend.generate(server,
+                PersonalMessage('qq', 'b', 'u', 'voice', 'Use voice, please'), row)
         finally:
             release.set()
-    asyncio.run(scenario())
+    assert asyncio.run(scenario())
     assert row['voice_prepare_status'] == 'timeout'
     assert row['voice_fallback'] == 'PERSONAL_CHAT_TTS_TIMEOUT'
-    assert row['delivery_basis'] == 'JEV_MEDIA_PLAN'
-    assert 'prepared_audio' not in row and row.get('delivery_status') != 'DELIVERED'
+    assert row['delivery_basis'] == 'VOICE_RENDER_TIMEOUT'
+    assert 'prepared_audio' not in row
 
 
 @pytest.mark.parametrize('obsolete', ['revision', 'receipt'])

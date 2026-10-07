@@ -389,15 +389,15 @@ def test_pre_writer_save_rejects_obsolete_turn(monkeypatch, tmp_path, supersessi
     assert 'companion_decision' not in row
 
 
-def test_jev_voice_render_failure_does_not_fall_back_to_text(monkeypatch, tmp_path):
+def test_jev_voice_render_failure_delivers_the_written_text(monkeypatch, tmp_path):
+    # A paid, reviewed reply is never dropped because its speech could not be made.
     server, row, _, _, _ = server_fixture(monkeypatch, tmp_path, pipeline_result(delivery='audio_speech'))
     async def unavailable(*a, **kwargs): raise RuntimeError('synthetic TTS failure')
     monkeypatch.setattr(backend, 'prepare_chat_audio', unavailable)
-    async def scenario():
-        with pytest.raises(RuntimeError, match='JEV_PLAN_UNSUPPORTED'):
-            await backend.generate(server, PersonalMessage('qq', 'b', 'u', '1', 'Hello'), row)
-    asyncio.run(scenario())
-    assert 'prepared_audio' not in row and row['companion_decision'] == RECORD
+    text = asyncio.run(backend.generate(server, PersonalMessage('qq', 'b', 'u', '1', 'Hello'), row))
+    assert text and 'prepared_audio' not in row and row['companion_decision'] == RECORD
+    assert row['delivery_basis'] == 'VOICE_RENDER_FAILED'
+    assert row['voice_fallback'] == 'PERSONAL_CHAT_TTS_UNAVAILABLE'
 
 
 def test_failed_writer_result_retains_pre_writer_decision(monkeypatch, tmp_path):
