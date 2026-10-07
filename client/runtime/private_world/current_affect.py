@@ -28,9 +28,11 @@ def digest(value):
 
 
 class CurrentAffect:
-    def __init__(self, life_store):
+    def __init__(self, life_store, *, initialize: bool = True):
         self.store = life_store
         self.lock = asyncio.Lock()
+        if not initialize:
+            return
         with self.store._db() as db:
             db.execute('''CREATE TABLE IF NOT EXISTS character_current_affect (
                 singleton INTEGER PRIMARY KEY CHECK(singleton=1), payload TEXT NOT NULL,

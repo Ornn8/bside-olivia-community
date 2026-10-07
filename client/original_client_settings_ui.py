@@ -393,7 +393,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const timeoutMs = path === VIDEO_CAPABILITY_PATH || path === VIDEO_REPLY_SETTINGS_PATH
       ? 300000
       : path === MEMORY_PATH ? 45000
-      : path === STATUS_PATH || path === PROACTIVE_STATUS_PATH ? 15000 : 5000;
+      : path === DAILY_LIFE_PATH || path === STATUS_PATH || path === PROACTIVE_STATUS_PATH ? 15000 : 5000;
     const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
     let failureStage = 'request', httpStatus;
     try {
