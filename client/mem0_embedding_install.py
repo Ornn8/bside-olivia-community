@@ -18,6 +18,7 @@ import threading
 import uuid
 from typing import Protocol
 
+from installer.uninstall_safety import native_path
 from mem0_memory import (
     MEM0_EMBEDDING_MODEL,
     MEM0_EMBEDDING_MODEL_REVISION,
@@ -181,7 +182,7 @@ class Mem0EmbeddingInstaller:
                 self._set_state(EmbeddingInstallStatus.READY)
                 return EmbeddingInstallResult("NOOP")
             self._set_state(EmbeddingInstallStatus.INSTALLING)
-            stage_root = self.config.model_cache / f"{_STAGE_PREFIX}{uuid.uuid4().hex}"
+            stage_root = Path(native_path(self.config.model_cache / f"{_STAGE_PREFIX}{uuid.uuid4().hex}"))
             promotion: _PromotionState | None = None
             committed = False
             preserve_stage = False
