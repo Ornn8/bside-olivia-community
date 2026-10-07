@@ -2836,6 +2836,23 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   // destinations inside the main window: desktop widgets can be off-screen.
   const WORLD_ROUTE = '#/world';
   const WARDROBE_ROUTE = '#/world/wardrobe';
+  const ITEMS_ROUTE = '#/world/items';
+  const DIARY_ROUTE = '#/world/diary';
+  const CAMERAS_ROUTE = '#/world/cameras';
+  const diaryState = {checkedAt: 0, unseen: 0};
+  const refreshDiaryBadge = async (force=false) => {
+    if(!force&&Date.now()-diaryState.checkedAt<300000)return;
+    diaryState.checkedAt=Date.now();
+    try{
+      const page=await routeRequest('/toy/diary?limit=1');diaryState.unseen=Number(page?.unseen)||0;
+      for(const target of document.querySelectorAll?.('[data-diary-badge]')||[]){
+        let dot=target.querySelector('[data-diary-unseen]');
+        if(diaryState.unseen>0&&!dot){dot=document.createElement('span');dot.setAttribute('data-diary-unseen','');dot.setAttribute('aria-label','有新日记');
+          Object.assign(dot.style,{width:'7px',height:'7px',borderRadius:'50%',background:'#e58a7a',marginLeft:'6px',display:'inline-block'});target.append(dot);}
+        if(diaryState.unseen===0)dot?.remove();
+      }
+    }catch(_){/* The badge is optional; navigation must never depend on it. */}
+  };
   const mountWorldPage = (page) => {
     page.dataset.oliviaWorldPage='';page.setAttribute('aria-label','世界');
     const style=document.createElement('style');style.textContent=`
@@ -2889,8 +2906,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       @media(max-width:580px){.olivia-world-columns{grid-template-columns:1fr}.olivia-world-aside{padding:20px 0 0;border-left:0;border-top:1px solid #383a3e}.olivia-world-tabs{gap:20px}.olivia-world-heading{align-items:flex-start}.olivia-world-heading .olivia-world-line{align-items:flex-start}[data-world-main]{padding:18px}.olivia-world-meta{gap:8px}}
     `;
     const header=document.createElement('header');header.className='olivia-world-header';header.append(text('h1','世界'));
-    const wardrobeEntry=button('衣橱',()=>openWardrobe());wardrobeEntry.setAttribute('data-olivia-wardrobe-entry','');
-    wardrobeEntry.setAttribute('aria-label','打开林离的衣橱');
+    const wardrobeEntry=button('物品栏',()=>openItems());wardrobeEntry.setAttribute('data-olivia-items-entry','');
+    wardrobeEntry.setAttribute('aria-label','打开林离的物品栏');wardrobeEntry.setAttribute('data-diary-badge','');
+    setTimeout(()=>void refreshDiaryBadge(true),0);
     // The top row is shared with the native tabs and the account controls; keep it to the title.
     const tools=document.createElement('div');tools.className='olivia-world-tools';tools.append(wardrobeEntry);
     const panel=document.createElement('section');panel.dataset.worldMain='';
@@ -2916,7 +2934,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   };
   const mountMainNavigation = () => {
     const route = window.location.hash.split("?")[0];
-    const world=route===WORLD_ROUTE||route===WARDROBE_ROUTE;
+    const world=route===WORLD_ROUTE||route.startsWith(WORLD_ROUTE+'/');
     let nav = document.querySelector("[data-olivia-main-navigation]");
     if (route !== "#/studio" && route !== "#/collection" && !world) {
       nav?.remove();
@@ -2930,9 +2948,10 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         position: "fixed", top: "60px", left: "120px", zIndex: "20",
         display: "flex", gap: "8px", WebkitAppRegion: "no-drag",
       });
-      for (const [label, href] of [["信箱", "#/collection"], ["世界", WORLD_ROUTE], ["曲库", "#/studio"]]) {
+      for (const [label, href] of [["信箱", "#/collection"], ["世界", WORLD_ROUTE], ["物品栏", ITEMS_ROUTE], ["曲库", "#/studio"]]) {
         const link = text("a", label, "text-body-m");
         link.href = href;
+        if (href === ITEMS_ROUTE) link.setAttribute("data-diary-badge", "");
         link.addEventListener('click',event=>{
           if(event.button!==0||event.ctrlKey||event.metaKey||event.shiftKey||event.altKey)return;
           const router=window.__oliviaNativeView?.router;if(!router)return;
@@ -2949,8 +2968,10 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       document.body.append(nav);
     }
     nav.style.left='120px';
+    if(world)void refreshDiaryBadge();
     for (const link of nav.querySelectorAll("a")) {
-      const active = link.getAttribute("href") === (world?WORLD_ROUTE:route);
+      const current = route===WORLD_ROUTE ? WORLD_ROUTE : world ? ITEMS_ROUTE : route;
+      const active = link.getAttribute("href") === current;
       if (active) link.setAttribute("aria-current", "page");
       else link.removeAttribute("aria-current");
       link.style.color = active ? "#111827" : "#d1d5db";
@@ -4020,18 +4041,256 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     return panel;
   };
 
+  const goWorld = path => {
+    const router=window.__oliviaNativeView?.router;
+    if(router)void router.push(path);else window.location.hash='#'+path;
+  };
+  const openItems = () => goWorld('/world/items');
+  const itemsBreadcrumb = current => {
+    const breadcrumb=document.createElement('nav');breadcrumb.className='ow-breadcrumb';breadcrumb.setAttribute('aria-label','所在位置');
+    const link=(label,path)=>{const a=text('a',label);a.href='#'+path;
+      a.addEventListener('click',event=>{if(event.button!==0||event.ctrlKey||event.metaKey||event.shiftKey||event.altKey)return;event.preventDefault();goWorld(path);});return a;};
+    breadcrumb.append(link('返回世界','/world'),text('span','/'));
+    if(current)breadcrumb.append(link('物品栏','/world/items'),text('span','/'),text('span',current));
+    else breadcrumb.append(text('span','物品栏'));
+    return breadcrumb;
+  };
+  const mountItemsPage = page => {
+    page.setAttribute('data-olivia-items-page','');page.setAttribute('aria-label','林离的物品栏');
+    const style=document.createElement('style');style.textContent=`
+      [data-olivia-items-page]{width:100%;height:100%;color:#ded9d1;display:flex;flex-direction:column;gap:16px;-webkit-app-region:no-drag}
+      [data-olivia-items-page] h1{font-size:30px;margin:0;font-weight:700}
+      .oi-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px;background:#191a1c;border-radius:12px;padding:24px}
+      .oi-card{display:flex;flex-direction:column;gap:8px;text-align:left;border:1px solid #383a3e;border-radius:12px;background:#1f2023;color:#ded9d1;padding:20px;font:inherit;cursor:pointer;min-height:120px}
+      .oi-card:hover{background:#25262a}.oi-card strong{font-size:20px;display:flex;align-items:center}
+      .oi-card span{color:#acb0b4;font-size:14px;line-height:1.6}
+      .ow-breadcrumb{display:flex;gap:10px;align-items:center;color:#acb0b4;font-size:14px}.ow-breadcrumb a{color:#ded9d1;text-decoration:none}
+    `;
+    const header=document.createElement('header');header.append(text('h1','物品栏'));
+    const grid=document.createElement('section');grid.className='oi-grid';
+    for(const [title,copy,path,label] of [['衣橱','给她挑每天的穿搭风格。','/world/wardrobe','打开林离的衣橱'],
+        ['拍摄设备','你送她的相机，她拍照时会自己挑着用。','/world/cameras','打开林离的拍摄设备'],
+        ['日记本','她每天写给你看的日记和以前的回忆。','/world/diary','打开林离的日记本']]){
+      const card=document.createElement('button');card.type='button';card.className='oi-card';card.setAttribute('aria-label',label);
+      const heading=text('strong',title);if(path==='/world/diary')heading.setAttribute('data-diary-badge','');
+      card.append(heading,text('span',copy));card.addEventListener('click',()=>goWorld(path));grid.append(card);
+    }
+    page.replaceChildren(style,header,itemsBreadcrumb(),grid);
+    void refreshDiaryBadge(true);
+  };
   const openWardrobe = () => {
     const router=window.__oliviaNativeView?.router;
     if(router)void router.push('/world/wardrobe');else window.location.hash=WARDROBE_ROUTE;
   };
   const mountWardrobePage = page => {
     page.setAttribute('data-olivia-wardrobe-page','');page.setAttribute('aria-label','林离的衣橱');
-    const breadcrumb=document.createElement('nav');breadcrumb.className='ow-breadcrumb';breadcrumb.setAttribute('aria-label','衣橱位置');
-    const back=text('a','返回世界');back.href=WORLD_ROUTE;
-    back.addEventListener('click',event=>{if(event.button!==0||event.ctrlKey||event.metaKey||event.shiftKey||event.altKey)return;const router=window.__oliviaNativeView?.router;if(router){event.preventDefault();void router.push('/world');}});
-    breadcrumb.append(back,text('span','/'),text('span','衣橱'));
+    const breadcrumb=itemsBreadcrumb('衣橱');breadcrumb.setAttribute('aria-label','衣橱位置');
     const header=document.createElement('header');header.className='ow-page-header';header.append(text('h1','衣橱'));
     page.replaceChildren(header,breadcrumb);mountWardrobeSetting(page);
+  };
+  const diaryStyle = () => {
+    const style=document.createElement('style');style.textContent=`
+      [data-olivia-diary-page]{width:100%;height:100%;min-height:0;color:#ded9d1;display:flex;flex-direction:column;gap:20px;-webkit-app-region:no-drag}
+      .od-header{height:40px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
+      .od-header h1{font-size:30px;margin:0;font-weight:700}
+      .od-main{overflow-y:auto;background:#191a1c;border-radius:12px;padding:24px 32px;min-height:0;flex:1;box-sizing:border-box;scrollbar-width:thin}
+      .od-main button{border:1px solid #686a70;border-radius:999px;background:transparent;color:#ded9d1;padding:8px 18px;font:inherit;cursor:pointer}
+      .od-main button:hover:not(:disabled){background:#ffffff08}.od-main button:disabled{opacity:.5;cursor:wait}
+      .od-tools{display:flex;justify-content:space-between;align-items:center;gap:16px;color:#acb0b4;font-size:13px;margin-bottom:12px}
+      .od-card{display:block;width:100%;text-align:left;border:0!important;border-bottom:1px solid #383a3e!important;border-radius:0!important;padding:18px 4px!important}
+      .od-card-top{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+      .od-card time{color:#acb0b4;font-size:13px}.od-card strong{font-size:18px}
+      .od-mood{font-size:12px;color:#b6c8b0;border:1px solid #4b5a48;border-radius:999px;padding:1px 8px}
+      .od-new{width:8px;height:8px;border-radius:50%;background:#e58a7a;display:inline-block}
+      .od-card p{color:#acb0b4;margin:8px 0 0;line-height:1.6}
+      .od-entry h2{font-size:24px;margin:6px 0 4px}.od-entry .od-body p{line-height:1.9;margin:0 0 12px;font-size:16px}
+      .od-comments{border-top:1px solid #383a3e;margin-top:24px;padding-top:16px;display:grid;gap:10px}
+      .od-comment{background:#222327;border-radius:10px;padding:10px 14px;line-height:1.6}
+      .od-comment small{display:block;color:#8f9398;font-size:12px}
+      .od-main textarea{width:100%;box-sizing:border-box;min-height:72px;background:#111214;color:#ded9d1;border:1px solid #4a4c51;border-radius:10px;padding:10px;font:inherit;resize:vertical}
+      .od-actions{display:flex;gap:12px;justify-content:space-between;align-items:center;margin-top:10px}
+      .od-empty{color:#acb0b4;line-height:1.8;padding:40px 0;text-align:center}
+      .od-status{color:#acb0b4;font-size:13px;min-height:20px}
+    `;return style;
+  };
+  const diaryDate = day => {
+    const [y,m,d]=day.split('-').map(Number);
+    if(!d)return `${y}年${m}月 回忆`;
+    const week='日一二三四五六'[new Date(y,m-1,d).getDay()];
+    return `${m}月${d}日 星期${week}`;
+  };
+  const mountDiaryPage = page => {
+    page.setAttribute('data-olivia-diary-page','');page.setAttribute('aria-label','她的日记');
+    const header=document.createElement('header');header.className='od-header';header.append(text('h1','日记本'));
+    const main=document.createElement('section');main.className='od-main';
+    page.replaceChildren(diaryStyle(),header,itemsBreadcrumb('日记本'),main);
+    let pageNo=1,entries=[],total=0,enabled=true;
+    const status=document.createElement('p');status.className='od-status';status.setAttribute('role','status');
+    const showList=async(append=false)=>{
+      if(!append){main.replaceChildren(text('p','正在翻开日记本……','od-empty'));pageNo=1;entries=[];}
+      try{
+        const data=await routeRequest('/toy/diary?page='+pageNo+'&limit=20');
+        entries=[...entries,...data.entries];total=data.total;enabled=data.enabled!==false;
+      }catch(_){main.replaceChildren(text('p','日记暂时打不开。','od-empty'),button('重试',()=>showList()));return;}
+      if(!page.isConnected)return;
+      const tools=document.createElement('div');tools.className='od-tools';
+      const note=text('span',enabled?'她每天凌晨会把前一天和你的事写下来；电脑没开的话，下次打开时补上。':'写日记已暂停。');
+      const toggle=button(enabled?'暂停写日记':'继续写日记',async()=>{
+        toggle.disabled=true;
+        try{const result=await routeRequest('/toy/diary/settings',{enabled:!enabled},{confirmed:true});enabled=result.enabled;showList();}
+        catch(_){toggle.disabled=false;status.textContent='没有保存成功，可以重新尝试。';}
+      });
+      const memoir=button('整理以前的回忆',()=>showMemoir());
+      const buttons=document.createElement('span');buttons.style.cssText='display:flex;gap:10px';buttons.append(memoir,toggle);
+      tools.append(note,buttons);
+      const list=document.createElement('div');
+      if(!entries.length)list.append(text('p','她还没写日记。和她聊过天之后，第二天凌晨或你下次打开时，她会把那天写下来。','od-empty'));
+      for(const entry of entries){
+        const card=document.createElement('button');card.type='button';card.className='od-card';
+        const top=document.createElement('div');top.className='od-card-top';
+        if(!entry.seen){const dot=document.createElement('span');dot.className='od-new';dot.setAttribute('aria-label','未读');top.append(dot);}
+        const time=text('time',diaryDate(entry.day));time.setAttribute('datetime',entry.day);
+        top.append(time,text('strong',entry.title));
+        if(entry.mood)top.append(text('span',entry.mood,'od-mood'));
+        if(entry.commented)top.append(text('span','已留言','od-mood'));
+        card.append(top,text('p',entry.excerpt+(entry.short?'':'…')));
+        card.addEventListener('click',()=>showEntry(entry.day));
+        list.append(card);
+      }
+      main.replaceChildren(tools,list,status);
+      if(entries.length<total)main.append(button('更早的日记',()=>{pageNo+=1;showList(true);}));
+    };
+    const showMemoir=async()=>{
+      main.replaceChildren(text('p','正在清点以前的信……','od-empty'));
+      let info;
+      try{info=await routeRequest('/toy/diary/memoir');}
+      catch(_){main.replaceChildren(text('p','暂时清点不了以前的信。','od-empty'),button('返回',()=>showList()));return;}
+      if(!page.isConnected)return;
+      const box=document.createElement('section');box.className='od-entry';
+      box.append(button('返回日记本',()=>showList()),text('h2','整理以前的回忆'));
+      if(info.running){
+        box.append(text('p',`她正在翻以前的信，已经写好 ${info.done} / ${info.total} 个月。可以先离开这里，写好的会出现在日记本里。`));
+        main.replaceChildren(box);setTimeout(()=>{if(page.isConnected&&main.contains(box))showMemoir();},5000);return;
+      }
+      if(!info.months.length){box.append(text('p','以前的信都已经整理好了。'));main.replaceChildren(box);return;}
+      const words=Math.max(1,Math.round(info.chars/10000));
+      box.append(text('p',`她会把以前每个月和你的信、聊天各写成一篇回忆，一共 ${info.months.length} 个月，约 ${words} 万字的旧信。`),
+        text('p','按你选的回信模型计费，费用大致相当于让她回 '+Math.max(1,Math.ceil(info.chars/6000))+' 封长信。记下的约定、纪念日和称呼，以后聊天时她都会记得。'));
+      if(info.failed)box.append(text('p',`上次有 ${info.failed} 个月没写成，可以再试一次。`));
+      const start=button('开始整理',async()=>{
+        start.disabled=true;
+        try{await routeRequest('/toy/diary/memoir/start',{months:info.months.map(m=>m.month)},{confirmed:true});showMemoir();}
+        catch(_){start.disabled=false;status.textContent='没有开始成功，可以重新尝试。';box.append(status);}
+      });
+      box.append(start);main.replaceChildren(box);
+    };
+    const showEntry=async day=>{
+      main.replaceChildren(text('p','正在翻到这一页……','od-empty'));
+      let entry;
+      if(!/^\d{4}-\d{2}(-\d{2})?$/.test(day))return showList();
+      try{entry=await routeRequest('/toy/diary/entry?day='+day);}
+      catch(_){main.replaceChildren(text('p','这一页暂时打不开。','od-empty'),button('返回',()=>showList()));return;}
+      if(!page.isConnected)return;
+      void refreshDiaryBadge(true);
+      const article=document.createElement('article');article.className='od-entry';
+      const back=button('返回日记本',()=>showList());
+      const time=text('time',diaryDate(entry.day));time.style.color='#acb0b4';
+      const body=document.createElement('div');body.className='od-body';
+      for(const paragraph of entry.body.split(/\n+/).filter(Boolean))body.append(text('p',paragraph));
+      article.append(back,document.createElement('br'),time,text('h2',entry.title),body);
+      const comments=document.createElement('section');comments.className='od-comments';
+      comments.append(text('strong','你的留言'));
+      for(const comment of entry.comments){const item=document.createElement('div');item.className='od-comment';
+        item.append(text('span',comment.text),text('small',new Date(comment.written_at).toLocaleString()));comments.append(item);}
+      const input=document.createElement('textarea');input.maxLength=500;input.placeholder='给她留句话，她下次和你说话时会看到';
+      const actions=document.createElement('div');actions.className='od-actions';
+      const send=button('留言',async()=>{
+        if(!input.value.trim())return;send.disabled=true;
+        try{await routeRequest('/toy/diary/comment',{day:entry.day,text:input.value},{confirmed:true});showEntry(entry.day);}
+        catch(_){send.disabled=false;status.textContent='留言没有保存成功，可以重新尝试。';}
+      });
+      let armed=false;
+      const remove=button('删除这篇',async()=>{
+        // Two clicks: the first explains what deleting forgets.
+        if(!armed){armed=true;remove.textContent='确认删除';status.textContent='删除后她也会忘掉这天记下的约定和小事。再点一次确认删除。';return;}
+        remove.disabled=true;
+        try{await routeRequest('/toy/diary/delete',{day:entry.day},{confirmed:true});showList();}
+        catch(_){remove.disabled=false;status.textContent='没有删除成功，可以重新尝试。';}
+      });
+      actions.append(remove,send);comments.append(input,actions,status);
+      main.replaceChildren(article,comments);
+    };
+    void showList();
+  };
+  const mountCamerasPage = page => {
+    page.setAttribute('data-olivia-cameras-page','');page.setAttribute('aria-label','林离的拍摄设备');
+    const style=document.createElement('style');style.textContent=`
+      [data-olivia-cameras-page]{width:100%;height:100%;min-height:0;color:#ded9d1;display:flex;flex-direction:column;gap:16px;-webkit-app-region:no-drag}
+      [data-olivia-cameras-page] h1{font-size:30px;margin:0;font-weight:700}
+      .oc-main{overflow-y:auto;background:#191a1c;border-radius:12px;padding:24px;min-height:0;flex:1;box-sizing:border-box;scrollbar-width:thin}
+      .oc-note{color:#acb0b4;font-size:13px;margin:0 0 16px;line-height:1.7}
+      .oc-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px}
+      .oc-card{border:1px solid #383a3e;border-radius:12px;background:#1f2023;padding:18px;display:flex;flex-direction:column;gap:8px}
+      .oc-card img{width:100%;aspect-ratio:4/3;object-fit:contain;background:#f4f1ec;border-radius:8px}
+      .oc-card strong{font-size:18px}.oc-card small{color:#acb0b4}
+      .oc-card ul{margin:0;padding-left:18px;color:#c9c5be;font-size:13px;line-height:1.7}
+      .oc-card p{margin:0;color:#acb0b4;font-size:14px;line-height:1.6}
+      .oc-card button{align-self:flex-start;border:1px solid #686a70;border-radius:999px;background:transparent;color:#ded9d1;padding:8px 18px;font:inherit;cursor:pointer}
+      .oc-card button:disabled{opacity:.6;cursor:default}.oc-owned{color:#b6c8b0;font-size:13px}
+      .oc-status{color:#acb0b4;font-size:13px;min-height:20px}
+      .ow-breadcrumb{display:flex;gap:10px;align-items:center;color:#acb0b4;font-size:14px}.ow-breadcrumb a{color:#ded9d1;text-decoration:none}
+    `;
+    const header=document.createElement('header');header.append(text('h1','拍摄设备'));
+    const main=document.createElement('section');main.className='oc-main';
+    const status=document.createElement('p');status.className='oc-status';status.setAttribute('role','status');
+    page.replaceChildren(style,header,itemsBreadcrumb('拍摄设备'),main);
+    const render=data=>{
+      const grid=document.createElement('div');grid.className='oc-grid';
+      for(const camera of data.cameras){
+        const card=document.createElement('article');card.className='oc-card';
+        const image=document.createElement('img');image.alt=camera.name;image.src='/toy/images/ui/camera-'+camera.id;
+        image.addEventListener('error',()=>image.remove());
+        card.append(image,text('strong',camera.name),text('small',camera.year+' 年 · '+camera.summary));
+        const specs=document.createElement('ul');for(const spec of camera.specs)specs.append(text('li',spec));
+        card.append(specs,text('p','她会在这时候用：'+camera.use));
+        if(camera.owned){card.append(text('span','已送给她','oc-owned'));}
+        else{
+          let armed=false;
+          const give=button('送给她 · ¥'+(camera.price_cents/100).toFixed(2),async()=>{
+            if(!armed){armed=true;give.textContent='确认送出（¥'+(camera.price_cents/100).toFixed(2)+'）';status.textContent='会从账户余额扣除，送出后一直归她。';return;}
+            give.disabled=true;
+            try{const result=await routeRequest('/toy/world/gifts',{item:camera.id},{confirmed:true});
+              status.textContent=result.already_owned?'她已经有这台了，没有重复扣费。':'送出了！她下次拍照时就可能用上它。';render(result);}
+            catch(error){give.disabled=false;armed=false;give.textContent='送给她 · ¥'+(camera.price_cents/100).toFixed(2);
+              status.textContent=String(error?.message||'').includes('BALANCE')?'余额不足，请先在右上角「账户」充值。':'没有送出成功，没有扣费，可以重新尝试。';}
+          });
+          card.append(give);
+        }
+        grid.append(card);
+      }
+      const note=text('p','送她一台相机，它就一直是她的。她拍照时会按场合挑：在家随手多用手机，出门、纪念日或想拍好看的照片时会拿出你送的相机。'
+        +(typeof data.balance_cents==='number'?' 账户余额 ¥'+(data.balance_cents/100).toFixed(2)+'。':''),'oc-note');
+      main.replaceChildren(note,grid,status);
+    };
+    main.append(text('p','正在打开她的设备柜……','oc-note'));
+    void routeRequest('/toy/world/gifts').then(data=>{if(page.isConnected)render(data);})
+      .catch(()=>{if(page.isConnected)main.replaceChildren(text('p','拍摄设备暂时打不开。','oc-note'),button('重试',()=>mountCamerasPage(page)));});
+  };
+  const installNativeDiaryRoute = () => {
+    const native=window.__oliviaNativeView;
+    if(!native?.router||!native.h||native.router.hasRoute('olivia-diary'))return;
+    native.router.addRoute({path:'/world/diary',name:'olivia-diary',component:{
+      name:'OliviaDiaryView',render(){return native.h('main',{class:'mx-full h-full'})},mounted(){mountDiaryPage(this.$el)},
+    }});
+    if(!native.router.hasRoute('olivia-items'))native.router.addRoute({path:'/world/items',name:'olivia-items',component:{
+      name:'OliviaItemsView',render(){return native.h('main',{class:'mx-full h-full'})},mounted(){mountItemsPage(this.$el)},
+    }});
+    if(!native.router.hasRoute('olivia-cameras'))native.router.addRoute({path:'/world/cameras',name:'olivia-cameras',component:{
+      name:'OliviaCamerasView',render(){return native.h('main',{class:'mx-full h-full'})},mounted(){mountCamerasPage(this.$el)},
+    }});
+    if(window.location.hash===DIARY_ROUTE)void native.router.replace('/world/diary');
+    if(window.location.hash===ITEMS_ROUTE)void native.router.replace('/world/items');
+    if(window.location.hash===CAMERAS_ROUTE)void native.router.replace('/world/cameras');
   };
   const installNativeWardrobeRoute = () => {
     const native=window.__oliviaNativeView;
@@ -4154,7 +4413,41 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       }
     });
     row.append(copy, exportButton);
-    section.append(text("div", "诊断与反馈", "text-text-body text-title-m"), row);
+    section.append(text("div", "诊断与反馈", "text-text-body text-title-m"), row, mountImproveSetting());
+  };
+
+  const mountImproveSetting = () => {
+    const box=document.createElement("div");box.setAttribute("data-olivia-improve","");
+    box.className="flex flex-col gap-2 px-0 py-3 rounded-3";
+    const title=text("div","帮助改进 Olivia","text-text-body text-body-m font-medium");
+    const explain=text("div","开启后，从开启那一刻起，你和她的信件与聊天（你的话和她的回复，语音以文字形式）会匿名上传，"
+      +"只用来分析整体回复风格、改进她的表现，不对外提供，也不用来识别你。上传前会在本机去掉号码、链接、邮箱和账号；"
+      +"你自己写进信里的人名、地名可能保留。上传不带你的账户 Key，只带一个随机编号；数据加密保存 180 天。"
+      +"图片和其他非文字内容不上传。随时可以关闭，或删除已上传的内容。","text-text-secondary text-caption-m font-regular");
+    const state=text("div","","text-text-secondary text-caption-m font-regular");
+    const actions=document.createElement("div");actions.style.cssText="display:flex;gap:10px;flex-wrap:wrap";
+    let current={enabled:false,uploaded:0};
+    const toggle=button("开启",async()=>{
+      toggle.disabled=true;
+      try{current=await routeRequest("/toy/improve/settings",{enabled:!current.enabled},{confirmed:true});render();}
+      catch(_){state.textContent="没有保存成功，可以重新尝试。";}finally{toggle.disabled=false;}
+    });
+    let armed=false;
+    const forget=button("删除已上传的内容",async()=>{
+      if(!armed){armed=true;forget.textContent="确认删除";state.textContent="会请服务器删除这台电脑上传过的全部内容，并关闭帮助改进。再点一次确认。";return;}
+      forget.disabled=true;
+      try{current=await routeRequest("/toy/improve/forget",{},{confirmed:true});armed=false;forget.textContent="删除已上传的内容";render();state.textContent="已删除，并已关闭帮助改进。";}
+      catch(_){state.textContent="暂时连不上服务器，删除没有完成，请稍后再试。";}finally{forget.disabled=false;}
+    });
+    const render=()=>{
+      toggle.textContent=current.enabled?"关闭帮助改进":"开启帮助改进";
+      state.textContent=current.enabled?`已开启，已匿名上传 ${current.uploaded||0} 段对话。`:"未开启，不会上传任何内容。";
+      forget.hidden=!current.enabled&&!current.uploaded;
+    };
+    actions.append(toggle,forget);box.append(title,explain,state,actions);
+    void routeRequest("/toy/improve").then(value=>{current=value;render();}).catch(()=>{state.textContent="暂时读不到这项设置。";});
+    render();
+    return box;
   };
 
   const showLocalImportProgress = (state, home) => {
@@ -4784,6 +5077,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       scheduled = false;
       installNativeWorldRoute();
       installNativeWardrobeRoute();
+      installNativeDiaryRoute();
       constrainLetterInputs();
       applyProactiveSendGate();
       mountMainNavigation();

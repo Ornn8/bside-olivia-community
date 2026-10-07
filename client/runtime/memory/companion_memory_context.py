@@ -254,10 +254,10 @@ class CompanionMemoryPromptBuilder:
                 )
 
         if not bool(getattr(self.conversation_memory, "enabled", True)):
-            return self.render(self.collect(query, exclude_source_ids=exclude_source_ids), max_chars=budget)
+            return self.render(self.collect_at(query, as_of=_now(), exclude_source_ids=exclude_source_ids), max_chars=budget)
 
         if budget > 2400:
-            return self.render(self.collect(query, exclude_source_ids=exclude_source_ids), max_chars=budget)
+            return self.render(self.collect_at(query, as_of=_now(), exclude_source_ids=exclude_source_ids), max_chars=budget)
         current_budget = max(0, int(budget * self.current_share))
         archive_budget = max(0, budget - current_budget)
         archive = MemoryPromptBuilder(
@@ -441,6 +441,54 @@ class CompanionMemoryPromptBuilder:
                                        stop_reason="partial_source_failure")
         archive = self._collect_archive(query, excluded)
         return _merge_recall(current, archive, query=query)
+
+    def attach_diary(self, diary) -> None:
+        """Her diary is a dated index into the originals: find the day, then read that day."""
+        self.diary = diary
+
+    def collect_at(self, query: str, *, as_of, exclude_source_ids=()) -> RecallResult:
+        """Exact references first: named dates, then days her diary links to the question.
+
+        Both read complete originals of those days and lead the ranked search
+        results, so a remembered day cannot be pushed out by keyword neighbours.
+        """
+        result = self.collect(query, exclude_source_ids=exclude_source_ids)
+        index = self._original_index()
+        if index is None or not isinstance(query, str) or not query.strip():
+            return result
+        from datetime import datetime, time as day_time, timedelta
+        from .date_reference import SHANGHAI, day_ranges
+        excluded = tuple(exclude_source_ids)
+        days = [(first, last, 'date') for first, last in day_ranges(query, as_of)]
+        diary = getattr(self, 'diary', None)
+        if diary is not None:
+            try:
+                days += [(first, last, 'diary') for first, last in diary.matching_days(query, before=as_of)]
+            except Exception:
+                pass
+        leading, seen = [], set()
+        for first, last, route in days[:4]:
+            start = datetime.combine(first, day_time(), SHANGHAI)
+            end = datetime.combine(last, day_time(), SHANGHAI) + timedelta(days=1)
+            try:
+                records = index.sources_in_range(self.user_id, start, end, query,
+                                                 exclude_source_ids=excluded, limit=2 if route == 'diary' else 4)
+            except Exception:
+                continue
+            for record in records:
+                converted = _ConversationMemoryView._convert(record)
+                converted = replace(converted, metadata={**converted.metadata, 'retrieval_route': route},
+                                    provenance={**converted.provenance, 'requested_reference': route})
+                if converted.memory_id not in seen:
+                    seen.add(converted.memory_id)
+                    leading.append(converted)
+        if not leading:
+            return result
+        sources = {source_id(record) for record in leading}
+        rest = tuple(record for record in result.records if source_id(record) not in sources)
+        states = dict(result.source_status)
+        states['date_reference'] = 'available'
+        return replace(result, records=(*leading, *rest), source_status=tuple(states.items()))
 
     def render(self, result: RecallResult, *, max_chars: int) -> MemoryPrompt:
         return MemoryPromptBuilder(
@@ -671,3 +719,8 @@ def _combined_status(
 
 
 __all__ = ["CompanionMemoryPromptBuilder"]
+
+
+def _now():
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc)

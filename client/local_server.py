@@ -933,7 +933,7 @@ class LetterAdapter:
             related = "\n".join(
                 pair.get("user_letter", "") + "\n" + pair.get("linli_reply", "")
                 for fragment in (self.recent_letter_fragments(content) if recent_fragments is None else recent_fragments)
-                if fragment.fragment_id not in {'chat.historical', 'chat.relationship'}
+                if fragment.fragment_id not in {'chat.historical', 'chat.relationship', 'chat.diary'}
                 for pair in json.loads(fragment.text)["letters"]
             )
             now = self._now() if now is None else now
@@ -979,6 +979,14 @@ class LetterAdapter:
             relationship = builder.relationship_context(as_of=now, exclude_source_ids=self._memory_source_exclusions())
             if json.loads(relationship).get('records'):
                 fragments += (UntrustedFragment('chat.relationship', relationship),)
+        diary = getattr(self, 'diary', None)
+        if diary is not None:
+            try:
+                written = diary.context(now)
+            except (OSError, ValueError, sqlite3.Error):
+                written = None
+            if written:
+                fragments += (UntrustedFragment('chat.diary', written),)
         return fragments
 
     @staticmethod
@@ -1668,6 +1676,25 @@ def _create_daily_life_runtime() -> DailyLifeRuntime | None:
 
 daily_life_runtime = _create_daily_life_runtime()
 letters_adapter.daily_life = daily_life_runtime
+
+
+def _create_diary_store():
+    try:
+        from runtime.diary.diary import DiaryStore
+        path, _reason, enabled = resolve_private_world_database(user_id=_memory_config.user_id)
+        if not enabled or path is None:
+            return None
+        return DiaryStore(path.with_name("diary.sqlite3"))
+    except (OSError, RuntimeError, ValueError, TypeError, ImportError, sqlite3.Error):
+        _safe_log('diary_unavailable', failure_stage='initialization')
+        return None
+
+
+diary_store = _create_diary_store()
+letters_adapter.diary = diary_store
+if diary_store is not None and getattr(letters_adapter, 'memory_prompt_builder', None) is not None:
+    # Recall uses her diary as a dated index into the originals.
+    letters_adapter.memory_prompt_builder.diary = diary_store
 
 
 def _create_candidate_runtime() -> PrivateWorldCandidateRuntime:
@@ -3194,6 +3221,7 @@ def _refresh_proactive_context(*, pending_draft=None) -> dict:
                       if preview_configured(_state_root()) else None)
         if invitation:
             context['candidates'].insert(0, invitation)
+        context['candidates'][:0] = _diary_due_candidates(rows, context)
         root = _state_root()
         if root is not None:
             write_json(root / 'proactive/context.json', context)
@@ -3201,6 +3229,39 @@ def _refresh_proactive_context(*, pending_draft=None) -> dict:
         context['blocked'] = True
         _safe_log('proactive_context_unavailable')
     return context
+
+
+def _diary_due_candidates(rows, context) -> list:
+    """A remembered day (anniversary, the user's exam, a promised date) is a reason to reach out."""
+    if diary_store is None:
+        return []
+    from datetime import timedelta
+    from runtime.diary.diary import due_facts, SHANGHAI as DIARY_ZONE
+    now = datetime.now(timezone.utc)
+    latest = max((row for row in rows if row.get('origin') != 'proactive' and row.get('content')
+                  and (row.get('letter_status') == 'COMPLETED' or row.get('delivery_status') == 'DELIVERED')),
+                 key=lambda row: str(row.get('life_received_at') or row.get('created_at') or ''), default=None)
+    if latest is None:
+        return []
+    try:
+        facts = due_facts(diary_store, now)
+    except (OSError, ValueError, sqlite3.Error):
+        return []
+    start = datetime.combine(now.astimezone(DIARY_ZONE).date(), datetime.min.time(), DIARY_ZONE)
+    used = {row.get('proactive_candidate_id') for row in rows if row.get('origin') == 'proactive'}
+    result = []
+    for fact in facts:
+        item = {'source_id': f"reply:{latest['letter_id']}:{latest.get('reply_revision', 1)}",
+                'kind': 'diary_due', 'remembered': fact}
+        item['id'] = hashlib.sha256(json.dumps({'kind': 'diary_due', 'fact': fact, 'day': start.date().isoformat()},
+                                               sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:32]
+        if item['id'] in used:
+            continue
+        item.update(not_before=(start + timedelta(hours=9)).timestamp(), expires_at=(start + timedelta(hours=22)).timestamp(),
+                    relationship_tier=context.get('initiative_profile', {}).get('tier'),
+                    relationship_caution=context.get('initiative_profile', {}).get('caution'))
+        result.append(item)
+    return result
 
 
 def _proactive_status() -> dict:
@@ -3260,6 +3321,10 @@ def _proactive_instruction(intent, *, planning, mode='text'):
         if mode == 'text':
             from runtime.reply.letter_presentation import LETTER_PRESENTATION_INSTRUCTION
             task += '\n' + LETTER_PRESENTATION_INSTRUCTION
+    if intent.get('kind') == 'diary_due':
+        task += ('\n今天是她日记里记下的日子：opportunity.remembered 写明了是什么事。'
+                 '纪念日就自然地提起并表达心意；对方今天要考试、体检或出行，就关心一句；约好的事就主动提起。'
+                 '只说这件记下的事本身，不编造当时的细节。')
     if intent.get('kind') == 'contact_invitation':
         task += ('\n本次关系资格已由应用确认。自然地提出交换联系方式，并明确询问用户想要QQ还是微信；'
                  '不要提分数、解锁、系统门槛，不声称已经添加或用户已经同意，不编造账号或二维码。'
@@ -3565,7 +3630,7 @@ async def _jev_proactive_tick() -> None:
         write_json(root / 'proactive/schedule.json', schedule)
         turn = await _prepare_proactive_turn(intent, now=now)
         state = turn['initiative_state']
-        kinds = {'correspondence_followup': 'followup', 'shared_followup': 'shared_topic',
+        kinds = {'correspondence_followup': 'followup', 'shared_followup': 'shared_topic', 'diary_due': 'shared_topic',
                  'relationship_checkin': 'connection', 'affection_checkin': 'connection',
                  'contact_invitation': 'connection', 'life_share': 'daily_share'}
         offered = [{'id': intent['id'], 'kind': kinds[intent['kind']],
@@ -3654,6 +3719,100 @@ async def _proactive_tick() -> None:
         _proactive_reason = 'waiting'
     else:
         _proactive_reason = 'deferred'
+
+
+async def _diary_tick(now=None) -> None:
+    from runtime.diary.diary import due_days, write_day, day_life
+    from runtime.private_world.daily_life_runtime import life_persona
+    if diary_store is None or not diary_store.enabled():
+        return
+    now = now or datetime.now(timezone.utc)
+    rows = [*store.letters, *store.personal_chats]
+    for day in due_days(diary_store, now)[:2]:
+        try:
+            outcome = await write_day(diary_store, letters_adapter.gateway, day, rows,
+                persona=life_persona(letters_adapter.persona_v2_path),
+                life=day_life(getattr(daily_life_runtime, 'store', None), day), now=now)
+        except (GatewayError, asyncio.TimeoutError, OSError, RuntimeError, ValueError, TypeError, KeyError, sqlite3.Error) as exc:
+            diary_store.failed(day, type(exc).__name__)
+            _safe_log('diary_write_failed', error_code=getattr(exc, 'code', None) or type(exc).__name__)
+            continue
+        if outcome == 'empty':
+            diary_store.skip(day, 'EMPTY_DAY')
+        else:
+            _safe_log('diary_written')
+
+
+_memoir_state = {'running': False, 'done': 0, 'failed': 0, 'total': 0}
+
+
+async def _write_memoirs(months) -> None:
+    from runtime.diary.diary import write_month
+    from runtime.private_world.daily_life_runtime import life_persona
+    _memoir_state.update(running=True, done=0, failed=0, total=len(months))
+    try:
+        rows = [*store.letters, *store.personal_chats]
+        for month in months:
+            try:
+                await write_month(diary_store, letters_adapter.gateway, month, rows,
+                                  persona=life_persona(letters_adapter.persona_v2_path))
+                _memoir_state['done'] += 1
+            except (GatewayError, asyncio.TimeoutError, OSError, RuntimeError, ValueError, TypeError, KeyError, sqlite3.Error) as exc:
+                _memoir_state['failed'] += 1
+                _safe_log('diary_memoir_failed', error_code=getattr(exc, 'code', None) or type(exc).__name__)
+    finally:
+        _memoir_state['running'] = False
+
+
+def _running_version() -> str:
+    try:
+        value = json.loads((Path(__file__).resolve().parent / 'installer' / 'release-version.json').read_text('utf-8'))['version']
+        return value if isinstance(value, str) and len(value) <= 32 else 'unknown'
+    except (OSError, ValueError, KeyError, TypeError):
+        return 'unknown'
+
+
+async def _improve_post(path, payload):
+    from runtime.improve.upload import post_json
+    await asyncio.to_thread(post_json, getattr(letters_adapter.config, 'base_url', ''), path, payload)
+
+
+async def _improve_loop() -> None:
+    from runtime.improve.upload import upload_once
+    await asyncio.sleep(300)
+    while True:
+        root = _state_root()
+        if root is not None:
+            try:
+                await upload_once(root, [*store.letters, *store.personal_chats], _improve_post,
+                                  client_version=_running_version())
+            except (OSError, RuntimeError, ValueError, TypeError):
+                _safe_log('improve_upload_deferred')
+        await asyncio.sleep(1800)
+
+
+async def _vector_index_loop() -> None:
+    """Embed earlier exchanges in the background so recall can match by meaning."""
+    await asyncio.sleep(180)
+    while True:
+        indexed = 0
+        index = getattr(conversation_memory_adapter, 'index_original_vectors', None)
+        if callable(index):
+            try:
+                indexed = await asyncio.to_thread(index, _memory_config.user_id, limit=64)
+            except Exception:
+                _safe_log('memory_vector_index_deferred')
+        await asyncio.sleep(20 if indexed else 600)
+
+
+async def _diary_loop() -> None:
+    await asyncio.sleep(120)
+    while True:
+        try:
+            await _diary_tick()
+        except (OSError, RuntimeError, ValueError, TypeError, sqlite3.Error):
+            _safe_log('diary_check_unavailable')
+        await asyncio.sleep(900)
 
 
 async def _proactive_loop() -> None:
@@ -4348,6 +4507,107 @@ async def route(
             return ok(result)
         except CloudError as exc:
             return err(exc.status,exc.code,{'error_code':exc.code})
+
+    if p == '/toy/world/gifts':
+        from runtime.remote_generation import RemoteGeneration
+        from runtime.cloud_service import CloudError
+        try:
+            api = RemoteGeneration(_os.environ.get('OLIVIA_GPU_API_URL', ''), _os.environ.get('OLIVIA_GPU_API_KEY', ''))
+            if method == 'POST':
+                if not companion_confirmed:
+                    return err(403, 'COMPANION_CONFIRMATION_REQUIRED', {})
+                if not isinstance(body, dict) or set(body) != {'item'}:
+                    return err(400, 'GIFT_REQUEST_INVALID', {'error_code': 'GIFT_REQUEST_INVALID'})
+                result = await api.request('gifts_buy', body)
+            elif method == 'GET':
+                result = await api.request('gifts_get', {})
+            else:
+                return err(405, 'METHOD_NOT_ALLOWED', {})
+        except CloudError as exc:
+            return err(exc.status, exc.code, {'error_code': exc.code})
+        if diary_store is not None:
+            try:
+                diary_store.remember_gifts([c for c in result['cameras'] if c['owned']], datetime.now(timezone.utc))
+            except (OSError, ValueError, sqlite3.Error):
+                pass
+        return ok(result)
+
+    if p.startswith('/toy/improve'):
+        from runtime.improve import upload as improve
+        root = _state_root()
+        if root is None:
+            return err(503, 'IMPROVE_UNAVAILABLE', {'error_code': 'IMPROVE_UNAVAILABLE'})
+        if p == '/toy/improve' and method == 'GET':
+            return ok(improve.public(improve.read_state(root)))
+        if method != 'POST':
+            return err(405, 'METHOD_NOT_ALLOWED', {})
+        if not companion_confirmed:
+            return err(403, 'COMPANION_CONFIRMATION_REQUIRED', {})
+        try:
+            if p == '/toy/improve/settings' and isinstance(body, dict) and set(body) == {'enabled'}:
+                return ok(improve.set_enabled(root, body['enabled']))
+            if p == '/toy/improve/forget' and body in ({}, None):
+                return ok(await improve.forget(root, _improve_post))
+        except ValueError:
+            return err(400, 'IMPROVE_REQUEST_INVALID', {'error_code': 'IMPROVE_REQUEST_INVALID'})
+        except (OSError, RuntimeError):
+            return err(503, 'IMPROVE_FORGET_UNAVAILABLE', {'error_code': 'IMPROVE_FORGET_UNAVAILABLE'})
+        return err(400, 'IMPROVE_REQUEST_INVALID', {'error_code': 'IMPROVE_REQUEST_INVALID'})
+
+    if p.startswith('/toy/diary'):
+        if diary_store is None:
+            return err(503, 'DIARY_UNAVAILABLE', {'error_code': 'DIARY_UNAVAILABLE'})
+        from runtime.diary.diary import local_day
+        try:
+            if p == '/toy/diary' and method == 'GET':
+                page = diary_store.page(page=int(query.get('page', 1)), limit=int(query.get('limit', 20)))
+                return ok({**page, 'enabled': diary_store.enabled(), 'today': local_day(datetime.now(timezone.utc))})
+            if p == '/toy/diary/memoir' and method == 'GET':
+                from runtime.diary.diary import memoir_months
+                months = memoir_months(diary_store, [*store.letters, *store.personal_chats], datetime.now(timezone.utc))
+                return ok({'months': months, 'chars': sum(m['chars'] for m in months), **_memoir_state})
+            if p == '/toy/diary/entry' and method == 'GET':
+                entry = diary_store.entry(str(query.get('day', '')))
+                if entry is None:
+                    return err(404, 'DIARY_ENTRY_NOT_FOUND', {'error_code': 'DIARY_ENTRY_NOT_FOUND'})
+                diary_store.mark_seen(entry['day'])
+                return ok(entry)
+            if method != 'POST':
+                return err(405, 'METHOD_NOT_ALLOWED', {})
+            if not companion_confirmed:
+                return err(403, 'COMPANION_CONFIRMATION_REQUIRED', {})
+            if not isinstance(body, dict):
+                return err(400, 'DIARY_REQUEST_INVALID', {'error_code': 'DIARY_REQUEST_INVALID'})
+            if p == '/toy/diary/settings' and set(body) == {'enabled'}:
+                diary_store.set_enabled(body['enabled'])
+                return ok({'enabled': diary_store.enabled()})
+            if p == '/toy/diary/memoir/start' and set(body) == {'months'}:
+                from runtime.diary.diary import memoir_months
+                available = {m['month'] for m in memoir_months(diary_store, [*store.letters, *store.personal_chats],
+                                                                datetime.now(timezone.utc))}
+                months = body['months']
+                if (not isinstance(months, list) or not months or len(months) > 120
+                        or any(month not in available for month in months)):
+                    return err(400, 'DIARY_MEMOIR_INVALID', {'error_code': 'DIARY_MEMOIR_INVALID'})
+                if _memoir_state['running']:
+                    return err(409, 'DIARY_MEMOIR_RUNNING', {'error_code': 'DIARY_MEMOIR_RUNNING'})
+                _memoir_state['running'] = True  # claimed before the task starts
+                task = asyncio.create_task(_write_memoirs(sorted(set(months))))
+                media_tasks.add(task)
+                task.add_done_callback(media_tasks.discard)
+                return ok({'started': len(set(months))})
+            if p == '/toy/diary/comment' and set(body) == {'day', 'text'}:
+                diary_store.add_comment(str(body['day']), body['text'], datetime.now(timezone.utc))
+                return ok(diary_store.entry(str(body['day'])))
+            if p == '/toy/diary/delete' and set(body) == {'day'}:
+                diary_store.delete(str(body['day']))
+                return ok({'deleted': str(body['day'])})
+            return err(400, 'DIARY_REQUEST_INVALID', {'error_code': 'DIARY_REQUEST_INVALID'})
+        except KeyError:
+            return err(404, 'DIARY_ENTRY_NOT_FOUND', {'error_code': 'DIARY_ENTRY_NOT_FOUND'})
+        except ValueError as exc:
+            code = str(exc) if str(exc).startswith('DIARY_') else 'DIARY_REQUEST_INVALID'
+            return err(400, code, {'error_code': code})
 
     if p == "/toy/settings/reply-routes":
         from runtime.wardrobe import catalog
@@ -5814,6 +6074,16 @@ async def _start_reply_tasks(_app: web.Application) -> None:
     photo_recovery = asyncio.create_task(_recover_photo_memories())
     media_tasks.add(photo_recovery)
     photo_recovery.add_done_callback(media_tasks.discard)
+    vector_task = asyncio.create_task(_vector_index_loop())
+    media_tasks.add(vector_task)
+    vector_task.add_done_callback(media_tasks.discard)
+    improve_task = asyncio.create_task(_improve_loop())
+    media_tasks.add(improve_task)
+    improve_task.add_done_callback(media_tasks.discard)
+    if diary_store is not None:
+        diary_task = asyncio.create_task(_diary_loop())
+        media_tasks.add(diary_task)
+        diary_task.add_done_callback(media_tasks.discard)
     if daily_life_runtime is not None:
         daily_life_runtime.schedule_refresh(datetime.now(timezone.utc))
         refresh_task = asyncio.create_task(_refresh_daily_life_periodically())

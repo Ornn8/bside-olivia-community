@@ -712,12 +712,12 @@ async def _generate_billed(server, event, row):
                 row.pop('prepared_audio', None)
                 row['voice_fallback'] = ('PERSONAL_CHAT_TTS_TIMEOUT' if voice_status == 'timeout'
                                          else 'PERSONAL_CHAT_TTS_UNAVAILABLE')
-                if basis == 'QQ_DEFAULT_VOICE':
-                    # Speech is our presentation default, not a promised asset.
-                    # Deliver only this already-reviewed body when waiting ends.
+                if basis == 'QQ_DEFAULT_VOICE' or companion is not None:
+                    # The reply is written and paid for. When speech cannot be made,
+                    # deliver this already-reviewed body as text instead of nothing.
                     row['delivery_basis'] = ('VOICE_RENDER_TIMEOUT' if voice_status == 'timeout'
                                              else 'VOICE_RENDER_FAILED')
-                elif companion is not None or contact is not None:
+                elif contact is not None:
                     raise RuntimeError('JEV_PLAN_UNSUPPORTED') from None
                 else:
                     raise RuntimeError(row['voice_fallback']) from None

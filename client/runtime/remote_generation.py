@@ -61,6 +61,14 @@ class RemoteGeneration:
                 raise CloudError('GPU_REQUEST_INVALID',400)
             payload=data
             path, method = '/v1/wardrobe', 'POST'
+        elif action == 'gifts_get' and data == {}:
+            path, method = '/v1/gifts', 'GET'
+        elif action == 'gifts_buy':
+            if not isinstance(data, dict) or set(data) != {'item'} or not isinstance(data['item'], str) \
+                    or not re.fullmatch(r'[a-z0-9-]{3,40}', data['item']):
+                raise CloudError('GPU_REQUEST_INVALID', 400)
+            payload = data
+            path, method = '/v1/gifts', 'POST'
         elif action in ('billing_prices', 'billing_account', 'billing_statement') and data == {}:
             path, method = '/v1/billing/' + action.removeprefix('billing_'), 'GET'
         elif action in ('status', 'cancel', 'ack'):
@@ -94,6 +102,9 @@ class RemoteGeneration:
                         raw.extend(chunk)
                         if len(raw) > 262144: raise CloudError('GPU_RESPONSE_INVALID', 502)
                     result = json.loads(raw)
+            if action in ('gifts_get', 'gifts_buy'):
+                from runtime.gifts import validate_gifts
+                return validate_gifts(result)
             if action in ('wardrobe_get','wardrobe_set'):
                 from runtime.wardrobe import validate_cloud_state
                 return validate_cloud_state(result)

@@ -56,12 +56,15 @@ PAYLOAD_EXTRA_DIRS = (
     "runtime/validation",
     "runtime/visual",
     "runtime/diagnostics",
+    "runtime/diary",
+    "runtime/improve",
 )
 PAYLOAD_EXTRA_FILES = (
     "runtime/official_endpoints.py",
     "runtime/image_assets.py",
     "runtime/image_assets.json",
     "runtime/wardrobe.py",
+    "runtime/gifts.py",
     "runtime/model_policy.py",
     "runtime/model_policy_aliases.json",
     "runtime/chinese_calendar.py",
@@ -139,6 +142,7 @@ PAYLOAD_REQUIRED_RELATIVE_FILES = {
     "runtime/image_assets.py",
     "runtime/image_assets.json",
     "runtime/wardrobe.py",
+    "runtime/gifts.py",
     "installer/patch_local_login.py",
     "runtime/model_policy.py",
     "runtime/model_policy_aliases.json",
