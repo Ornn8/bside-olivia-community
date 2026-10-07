@@ -16,7 +16,7 @@ import urllib.request
 from urllib.parse import quote, urlsplit
 import webbrowser
 import zipfile
-from runtime.official_endpoints import COMPONENT_COS_HOST
+from runtime.official_endpoints import COMPONENT_COS_HOSTS
 
 
 NAPCAT_VERSION = "v4.18.28"
@@ -35,7 +35,7 @@ _MAX_MEMBERS = 20_000
 _WEBUI_AUTH: dict[tuple[int, str], tuple[str, float]] = {}
 _WEBUI_AUTH_LOCK = threading.Lock()
 _ALLOWED_DOWNLOAD_HOSTS = frozenset({
-    COMPONENT_COS_HOST,
+    *COMPONENT_COS_HOSTS,
     "3fa206f49fd071a9eff9a1c9905208dd.r2.cloudflarestorage.com",
     "github.com",
     "release-assets.githubusercontent.com",

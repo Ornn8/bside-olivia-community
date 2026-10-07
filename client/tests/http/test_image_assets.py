@@ -28,10 +28,12 @@ async def test_lazy_r2_download_survives_restart_and_refreshes_expired_ticket(tm
     monkeypatch.setattr(assets, '_catalog', lambda: {'wardrobe': {'mori-01': entry}})
     calls = []
     async def ticket(request):
+        assert request.headers['X-Olivia-Component-Storage'] == 'cos-v2'
         calls.append('ticket')
         return web.json_response({**entry, 'url': str(client.make_url('/r2'))})
     async def download(request):
         assert 'Authorization' not in request.headers
+        assert 'X-Olivia-Component-Storage' not in request.headers
         calls.append('r2')
         return web.Response(status=403) if calls.count('r2') == 1 else web.Response(body=raw)
     app = web.Application()

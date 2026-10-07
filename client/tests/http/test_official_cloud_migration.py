@@ -17,6 +17,7 @@ from runtime.reply.companion_decision import JevDecisionPort
 LEGACY = 'https://175.24.191.6/v1'
 OFFICIAL = 'https://api.bside-moon.cn/v1'
 COS = 'https://iupaper-1387429524.cos.ap-guangzhou.myqcloud.com'
+NEW_COS = 'https://olivia-files-1400665687.cos.ap-guangzhou.myqcloud.com'
 
 
 @pytest.mark.parametrize('schema', [1, 2, 3])
@@ -135,22 +136,26 @@ def test_both_official_hosts_require_an_account_key():
                 'base_url': base, 'model': 'qwen3.7-flash', 'max_retries': 2, 'requires_api_key': False})
 
 
-def test_exact_cos_distribution_image_and_legacy_r2_are_allowed():
+@pytest.mark.parametrize('cos', [NEW_COS, COS])
+def test_exact_cos_distribution_image_and_legacy_r2_are_allowed(cos):
     entry = {'key': 'distribution/olivia-images/wardrobe/synthetic/look.webp'}
-    for url in (COS + '/olivia/components/' + entry['key'] + '?q-signature=synthetic',
+    for url in (cos + '/olivia/components/' + entry['key'] + '?q-signature=synthetic',
                 'https://' + image_assets.R2_HOST + '/vocal-backlog/' + entry['key']):
         image_assets._validate_download_url(url, entry)
-    for url in (COS + '/other/' + entry['key'], COS.replace('iupaper', 'other') + '/olivia/components/' + entry['key'],
-                COS + '/olivia/components/' + entry['key'] + '#fragment',
-                COS.replace('https:', 'http:') + '/olivia/components/' + entry['key']):
+    for url in (cos + '/other/' + entry['key'], cos.replace('.cos.', '-other.cos.') + '/olivia/components/' + entry['key'],
+                cos + '/olivia/components/' + entry['key'] + '#fragment',
+                cos + ':444/olivia/components/' + entry['key'],
+                cos.replace('https://', 'https://user@') + '/olivia/components/' + entry['key'],
+                cos.replace('https:', 'http:') + '/olivia/components/' + entry['key']):
         with pytest.raises(CloudError, match='IMAGE_ASSET_INVALID'):
             image_assets._validate_download_url(url, entry)
 
 
-def test_cos_qq_ticket_keeps_pinned_version_size_and_hash(monkeypatch):
+@pytest.mark.parametrize('cos', [NEW_COS, COS])
+def test_cos_qq_ticket_keeps_pinned_version_size_and_hash(monkeypatch, cos):
     from runtime.personal_chat import napcat_bundle as bundle, napcat_installer as installer
     key = f'distribution/olivia-components/qq/v4.18.28/{bundle.BUNDLE_SHA256}/Olivia-QQ-v4.18.28-full.zip'
-    url = COS + '/olivia/components/' + key + '?q-signature=synthetic'
+    url = cos + '/olivia/components/' + key + '?q-signature=synthetic'
     calls = []
     class Response:
         def __enter__(self): return self
@@ -160,6 +165,7 @@ def test_cos_qq_ticket_keeps_pinned_version_size_and_hash(monkeypatch):
             return json.dumps({'url': url, 'sha256': bundle.BUNDLE_SHA256, 'size_bytes': bundle.BUNDLE_SIZE}).encode()
     def open_ticket(request, **kwargs):
         calls.append(request.full_url)
+        assert request.get_header('X-olivia-component-storage') == 'cos-v2'
         return Response()
     monkeypatch.setattr(bundle.urllib.request, 'urlopen', open_ticket)
     assert bundle._ticket() == url
@@ -167,3 +173,9 @@ def test_cos_qq_ticket_keeps_pinned_version_size_and_hash(monkeypatch):
     assert installer._allowed_download_url(url)
     assert not installer._allowed_download_url(url.replace('.com/', '.com:444/'))
     assert not installer._allowed_download_url(url + '#fragment')
+    for invalid in (url.replace('.cos.', '-other.cos.'),
+                    url.replace('/olivia/components/', '/other/'),
+                    url.replace('/v4.18.28/', '/v0.0.0/')):
+        url = invalid
+        with pytest.raises(installer.NapCatSetupError, match='NAPCAT_SOURCE_INVALID'):
+            bundle._ticket()

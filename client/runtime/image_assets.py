@@ -15,7 +15,7 @@ import zipfile
 from aiohttp import ClientSession, ClientTimeout, TCPConnector, ClientError
 from runtime.cloud_service import CloudError
 from runtime.remote_generation import gpu_tls_context
-from runtime.official_endpoints import COMPONENT_COS_HOST, COMPONENT_COS_PREFIX, canonical_api_origin
+from runtime.official_endpoints import COMPONENT_COS_HOSTS, COMPONENT_COS_PREFIX, canonical_api_origin
 
 R2_HOST = '3fa206f49fd071a9eff9a1c9905208dd.r2.cloudflarestorage.com'
 R2_BUCKET = 'vocal-backlog'
@@ -38,7 +38,7 @@ def _validate_download_url(url, entry):
         parsed = urlsplit(url)
         source_matches = (parsed.hostname == R2_HOST
                           and parsed.path == '/' + R2_BUCKET + '/' + quote(entry['key'], safe='/')) or (
-                          parsed.hostname == COMPONENT_COS_HOST
+                          parsed.hostname in COMPONENT_COS_HOSTS
                           and parsed.path == COMPONENT_COS_PREFIX + quote(entry['key'], safe='/'))
         valid = (parsed.scheme == 'https' and source_matches
                  and not parsed.username and not parsed.password and not parsed.fragment
@@ -162,7 +162,8 @@ async def ensure_image(data_root, kind, asset_id, *, base_url=None):
             try:
                 async with ClientSession(timeout=ClientTimeout(total=45), trust_env=False,
                         connector=TCPConnector(ssl=gpu_tls_context())) as session:
-                    async with session.get(ticket_url, allow_redirects=False) as response:
+                    async with session.get(ticket_url, allow_redirects=False,
+                            headers={'X-Olivia-Component-Storage': 'cos-v2'}) as response:
                         if response.status != 200:
                             raise CloudError('IMAGE_ASSET_UNAVAILABLE', 503)
                         raw = await response.content.read(8193)
