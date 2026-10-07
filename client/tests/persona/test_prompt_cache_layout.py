@@ -177,3 +177,13 @@ def test_oversized_plan_drops_oldest_dialogue_instead_of_failing():
     with pytest.raises(CompanionRuntimeError):
         project_decision(({'role': 'system', 'content': 'p' * 500}, {'role': 'user', 'content': '在吗'}),
                          decision, max_input_chars=100, delivery='text')
+
+
+def test_plan_never_discards_current_user_text_that_looks_like_history():
+    from types import SimpleNamespace
+    from runtime.reply.companion_runtime import project_decision, CompanionRuntimeError
+    decision = SimpleNamespace(plan={}, writer_projection=lambda: {})
+    current = {'role': 'user', 'content': '[历史消息 {}]\n' + '当前原文' * 1000}
+    with pytest.raises(CompanionRuntimeError, match='JEV_CONTEXT_BUDGET_EXCEEDED'):
+        project_decision(({'role': 'system', 'content': '核心规则'}, current),
+                         decision, max_input_chars=2000, delivery='text')

@@ -138,6 +138,36 @@ def test_real_pipeline_defer_is_persisted_without_writer_or_send(monkeypatch, tm
     assert env.rows[0]['delivery_status'] == 'SKIPPED'
 
 
+@pytest.mark.parametrize('chosen', [21, 24])
+def test_proactive_keeps_live_state_when_selector_skips_it(monkeypatch, tmp_path, chosen):
+    """Replay the two recorded selection maps with synthetic local facts."""
+    from runtime.reply import jev_questions
+    env = environment(monkeypatch, tmp_path)
+    packet = dict(base=dict(kind='character_life_reference', stale=False, current=None,
+                           as_of=env.snapshot['current']['occurred_at']),
+                  rhythm=env.snapshot['rhythm'], records=[
+                      dict(field='schedule', value=env.snapshot['world']['schedule']),
+                      dict(field='weather', value={}),
+                      dict(field='character_development', value={}),
+                      dict(field='current', value=env.snapshot['current']),
+                      *[dict(field='threads', many=True, value=dict(id=f't{i}', title='一件小事'))
+                        for i in range(27)]])
+    class Selector:
+        async def ask(self, state, questions, *, purpose):
+            assert purpose == 'reply-world-selection'
+            return {key: 'useful' if key == f'r{chosen}' else 'skip' for key in questions}
+    monkeypatch.setattr(jev_questions, 'configured_questions', lambda: Selector())
+    env.server.letters_adapter.daily_life = SimpleNamespace(store=SimpleNamespace(
+        reply_candidates=lambda **kwargs: deepcopy(packet), addressing_profile=lambda **kwargs: []))
+    env.server.letters_adapter.recent_letter_fragments = lambda *args, **kwargs: ()
+    run_contact(env)
+    assert len(env.calls) == len(env.writes) == len(env.sent) == 1
+    assert env.calls[0]['activity']['occurred_at'] == env.snapshot['current']['occurred_at']
+    assert env.calls[0]['activity']['note'] == env.snapshot['current']['note']
+    assert env.calls[0]['world']['schedule'] == env.snapshot['world']['schedule']
+    assert env.rows[0]['delivery_status'] == 'DELIVERED'
+
+
 def test_writer_cannot_reverse_send_decision_into_skip(monkeypatch, tmp_path):
     from tests.http.test_personal_chat_decision import envelope
     env = environment(monkeypatch, tmp_path, body=envelope(text='', skip=True))
