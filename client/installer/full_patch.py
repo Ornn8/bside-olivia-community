@@ -68,6 +68,7 @@ PAYLOAD_EXTRA_FILES = (
     "runtime/_chinese_calendar_data.py",
     "runtime/image_reply.py",
     "runtime/image_understanding.py",
+    "runtime/incoming_media.py",
     "runtime/cloud_service.py",
     "runtime/gpu_settings.py",
     "runtime/music_settings.py",
@@ -183,6 +184,7 @@ PAYLOAD_REQUIRED_RELATIVE_FILES = {
     "runtime/diagnostics/__init__.py",
     "runtime/diagnostics/support_bundle.py",
     "runtime/reply/stage_recovery.py",
+    "runtime/incoming_media.py",
     "runtime/original_client_media_http.py",
     "runtime/video_reply_settings.py",
 }
