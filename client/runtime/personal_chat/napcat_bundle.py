@@ -7,7 +7,7 @@ import threading
 import urllib.request
 from urllib.parse import urlsplit
 import zipfile
-from runtime.official_endpoints import API_BASE, COMPONENT_COS_HOST, COMPONENT_COS_PREFIX
+from runtime.official_endpoints import API_BASE, COMPONENT_COS_HOSTS, COMPONENT_COS_PREFIX
 
 TICKET_URL = API_BASE + '/components/qq/download'
 R2_HOST = '3fa206f49fd071a9eff9a1c9905208dd.r2.cloudflarestorage.com'
@@ -20,7 +20,8 @@ _LOCK = threading.Lock()
 def _ticket():
     from runtime.remote_generation import gpu_tls_context
     from .napcat_installer import NapCatSetupError
-    request = urllib.request.Request(TICKET_URL, headers={'User-Agent': 'Olivia-QQ-bootstrap/1'})
+    request = urllib.request.Request(TICKET_URL, headers={
+        'User-Agent': 'Olivia-QQ-bootstrap/1', 'X-Olivia-Component-Storage': 'cos-v2'})
     with urllib.request.urlopen(request, context=gpu_tls_context(), timeout=20) as response:
         if response.geturl() != TICKET_URL:
             raise NapCatSetupError('NAPCAT_SOURCE_INVALID')
@@ -28,10 +29,10 @@ def _ticket():
     url = value.get('url', '')
     parsed = urlsplit(url)
     if (value.get('sha256') != BUNDLE_SHA256 or value.get('size_bytes') != BUNDLE_SIZE
-            or parsed.scheme != 'https' or parsed.hostname not in {R2_HOST, COMPONENT_COS_HOST}
+            or parsed.scheme != 'https' or parsed.hostname not in {R2_HOST, *COMPONENT_COS_HOSTS}
             or parsed.username or parsed.password or parsed.port not in (None, 443)
             or parsed.fragment or parsed.path != (
-                COMPONENT_COS_PREFIX if parsed.hostname == COMPONENT_COS_HOST else '/vocal-backlog/') + BUNDLE_KEY):
+                COMPONENT_COS_PREFIX if parsed.hostname in COMPONENT_COS_HOSTS else '/vocal-backlog/') + BUNDLE_KEY):
         raise NapCatSetupError('NAPCAT_SOURCE_INVALID')
     return url
 
