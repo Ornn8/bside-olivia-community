@@ -2967,7 +2967,11 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       }
       document.body.append(nav);
     }
-    nav.style.left='120px';
+    // A longer sub-page title (拍摄设备) would sit under the fixed navigation.
+    const title=world&&route!==WORLD_ROUTE?document.querySelector('main header h1'):null;
+    const titleText=title&&document.createRange();titleText?.selectNodeContents(title);
+    const titleEnd=titleText?Math.ceil(titleText.getBoundingClientRect().right)+16:0;
+    nav.style.left=Math.max(120,titleEnd)+'px';
     if(world)void refreshDiaryBadge();
     for (const link of nav.querySelectorAll("a")) {
       const current = route===WORLD_ROUTE ? WORLD_ROUTE : world ? ITEMS_ROUTE : route;
@@ -4248,7 +4252,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       const grid=document.createElement('div');grid.className='oc-grid';
       for(const camera of data.cameras){
         const card=document.createElement('article');card.className='oc-card';
-        const image=document.createElement('img');image.alt=camera.name;image.src='/toy/images/ui/camera-'+camera.id;
+        const image=document.createElement('img');image.alt=camera.name;image.src=new URL('/toy/images/ui/camera-'+camera.id,apiBase).href;
         image.addEventListener('error',()=>image.remove());
         card.append(image,text('strong',camera.name),text('small',camera.year+' 年 · '+camera.summary));
         const specs=document.createElement('ul');for(const spec of camera.specs)specs.append(text('li',spec));
