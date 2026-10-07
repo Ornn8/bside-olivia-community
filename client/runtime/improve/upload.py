@@ -138,3 +138,16 @@ async def forget(root, post):
     state.update(enabled=False, device_id=None, consent_at=None, uploaded_until=None, uploaded=0)
     write_state(root, state)
     return public(state)
+
+
+def post_json(base, path, payload):
+    """POST anonymized data to the cloud relay without any account credential."""
+    import urllib.request
+    base = (base or '').rstrip('/')
+    if not base.startswith('https://'):
+        raise RuntimeError('IMPROVE_ENDPOINT_UNAVAILABLE')
+    request = urllib.request.Request(base + path, data=json.dumps(payload, ensure_ascii=False).encode('utf-8'),
+                                     headers={'Content-Type': 'application/json'}, method='POST')
+    with urllib.request.urlopen(request, timeout=30) as response:
+        if response.status != 200:
+            raise RuntimeError('IMPROVE_UPLOAD_FAILED')

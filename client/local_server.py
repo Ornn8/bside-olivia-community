@@ -3764,19 +3764,6 @@ async def _write_memoirs(months) -> None:
         _memoir_state['running'] = False
 
 
-def _improve_post_sync(path, payload):
-    """POST anonymized data to the cloud relay without any account credential."""
-    import urllib.request
-    base = (getattr(letters_adapter.config, 'base_url', '') or '').rstrip('/')
-    if not base.startswith('https://'):
-        raise RuntimeError('IMPROVE_ENDPOINT_UNAVAILABLE')
-    request = urllib.request.Request(base + path, data=json.dumps(payload, ensure_ascii=False).encode('utf-8'),
-                                     headers={'Content-Type': 'application/json'}, method='POST')
-    with urllib.request.urlopen(request, timeout=30) as response:
-        if response.status != 200:
-            raise RuntimeError('IMPROVE_UPLOAD_FAILED')
-
-
 def _running_version() -> str:
     try:
         value = json.loads((Path(__file__).resolve().parent / 'installer' / 'release-version.json').read_text('utf-8'))['version']
@@ -3786,7 +3773,8 @@ def _running_version() -> str:
 
 
 async def _improve_post(path, payload):
-    await asyncio.to_thread(_improve_post_sync, path, payload)
+    from runtime.improve.upload import post_json
+    await asyncio.to_thread(post_json, getattr(letters_adapter.config, 'base_url', ''), path, payload)
 
 
 async def _improve_loop() -> None:
