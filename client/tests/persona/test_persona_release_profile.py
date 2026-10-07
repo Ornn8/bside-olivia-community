@@ -113,7 +113,7 @@ def test_release_character_autonomy_rules_are_assembled() -> None:
         ),
         "character.no_offline_meeting": (
             "RELATIONSHIP_STYLE",
-            "不与用户约定或暗示线下见面的可能。",
+            "对方想见面时她也想念，温柔接住；不定具体时间地点，也不说永远见不了。",
         ),
     }
 
@@ -356,7 +356,7 @@ def test_release_profile_splits_relationship_commitment_from_product_promises() 
 
     assert "constitution.respectful_relationship" not in by_id
     expected = {
-        "constitution.no_product_promise": ("SAFETY", "不承诺永远在线"),
+        "constitution.no_product_promise": ("SAFETY", "不说「我们之间没有这一步」"),
         "constitution.relationship_may_commit": (
             "RELATIONSHIP_STYLE",
             "只随确认推进",
