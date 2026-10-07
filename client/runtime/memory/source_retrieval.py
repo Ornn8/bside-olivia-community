@@ -54,6 +54,8 @@ class SourceRetrieval:
         db.execute('CREATE TABLE IF NOT EXISTS source_dependencies '
                    '(user TEXT, dependency_id TEXT, payload TEXT NOT NULL, retracted INTEGER NOT NULL DEFAULT 0, '
                    'PRIMARY KEY(user,dependency_id))')
+        db.execute('CREATE TABLE IF NOT EXISTS source_vectors '
+                   '(user TEXT, source TEXT, model TEXT, digest TEXT, vector BLOB, PRIMARY KEY(user,source,model))')
         db.execute('CREATE TABLE IF NOT EXISTS source_aliases '
                    '(user TEXT, exchange_source TEXT, receipt_source TEXT, PRIMARY KEY(user,exchange_source,receipt_source))')
         db.execute('CREATE TABLE IF NOT EXISTS relationship_quotes '
@@ -647,6 +649,85 @@ class SourceRetrieval:
                               **metadata,
                               **({'history_actor': actor} if source.startswith('history:') else {})}))
         return tuple(result)
+
+    def sources_in_range(self, user, first, last, query='', *, exclude_source_ids=(), limit=6):
+        """Complete exchanges received between two instants, best matching the question first."""
+        excluded = set(exclude_source_ids)
+        wanted = set(terms((query or '')[:2000]))
+        with closing(self.connect()) as db:
+            db.execute('BEGIN')
+            excluded.update(row[0] for row in db.execute('SELECT source FROM forgotten WHERE user=?', (user,)))
+            rows = db.execute('SELECT source, MIN(stamp), GROUP_CONCAT(text, char(10)) FROM originals WHERE user=? '
+                              'AND stamp IS NOT NULL AND julianday(stamp) >= julianday(?) AND julianday(stamp) < julianday(?) '
+                              'GROUP BY source', (user, first.isoformat(), last.isoformat())).fetchall()
+            ranked = sorted((row for row in rows if row[0] not in excluded),
+                            key=lambda row: (-len(wanted.intersection(terms(row[2] or ''))), row[1], row[0]))
+            return tuple(record for source, _, _ in ranked[:limit]
+                         for record in self._source_records(db, user, source, {'retrieval_route': 'date'}))
+
+    # Semantic index over whole exchanges. Vectors are derived data: a changed or
+    # forgotten original simply loses its vector and is embedded again later.
+    @staticmethod
+    def _exchange_text(rows):
+        user = ' '.join(text for actor, text in rows if actor == 'user')
+        linli = ' '.join(text for actor, text in rows if actor != 'user')
+        return (user[:600] + '\n' + linli[:400]).strip()
+
+    def vectors_missing(self, user, model, limit=32):
+        """Exchanges whose current text has no vector for this model, newest first."""
+        with closing(self.connect()) as db:
+            sources = [row[0] for row in db.execute(
+                'SELECT source FROM originals WHERE user=? GROUP BY source ORDER BY MAX(stamp) DESC', (user,))]
+            result = []
+            for source in sources:
+                if db.execute('SELECT 1 FROM forgotten WHERE user=? AND source=?', (user, source)).fetchone():
+                    continue
+                rows = db.execute('SELECT actor,text FROM originals WHERE user=? AND source=? ORDER BY actor DESC',
+                                  (user, source)).fetchall()
+                text = self._exchange_text(rows)
+                if not text:
+                    continue
+                digest = _digest(text)
+                stored = db.execute('SELECT digest FROM source_vectors WHERE user=? AND source=? AND model=?',
+                                    (user, source, model)).fetchone()
+                if stored is None or stored[0] != digest:
+                    result.append((source, digest, text))
+                    if len(result) >= limit:
+                        break
+            return result
+
+    def put_vectors(self, user, model, items):
+        """items: (source, digest, vector) with a unit-length float vector."""
+        from array import array
+        with closing(self.connect()) as db, db:
+            for source, digest, vector in items:
+                db.execute('INSERT OR REPLACE INTO source_vectors VALUES (?,?,?,?,?)',
+                           (user, source, model, digest, array('f', vector).tobytes()))
+
+    def nearest_sources(self, user, model, vector, *, limit=12, exclude_source_ids=()):
+        """Sources ranked by cosine similarity to a unit-length query vector."""
+        from array import array
+        excluded = set(exclude_source_ids)
+        query = array('f', vector)
+        scored = []
+        with closing(self.connect()) as db:
+            excluded.update(row[0] for row in db.execute('SELECT source FROM forgotten WHERE user=?', (user,)))
+            for source, blob in db.execute('SELECT source,vector FROM source_vectors WHERE user=? AND model=?', (user, model)):
+                if source in excluded:
+                    continue
+                stored = array('f')
+                stored.frombytes(blob)
+                if len(stored) == len(query):
+                    scored.append((sum(a * b for a, b in zip(query, stored)), source))
+        scored.sort(reverse=True)
+        result = []
+        with closing(self.connect()) as db:
+            for score, source in scored[:limit]:
+                row = db.execute("SELECT text FROM originals WHERE user=? AND source=? AND actor='user'", (user, source)).fetchone()                     or db.execute('SELECT text FROM originals WHERE user=? AND source=?', (user, source)).fetchone()
+                snippet = ' '.join((row[0] if row else '').split())[:200]
+                if snippet:
+                    result.append((source, score, snippet))
+        return result
 
     def get_sources(self, user, source_ids, exclude_source_ids=()):
         """Read complete source groups atomically; never restore forgotten data."""

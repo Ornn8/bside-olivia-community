@@ -173,6 +173,58 @@ class DiaryStore:
                 CREATE TABLE IF NOT EXISTS diary_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
             ''')
 
+    def matching_days(self, query, *, before=None, limit=1):
+        """Days (or memoir months) whose entry shares the question's rare words, best first.
+
+        Returns inclusive (first_day, last_day) date pairs. Ordinary words shared by
+        most entries carry almost no weight, so only a real match leads.
+        """
+        import math
+        from datetime import date as calendar_date
+        from runtime.memory.source_retrieval import terms
+        wanted = set(terms((query or '')[:2000]))
+        if not wanted:
+            return []
+        cutoff = local_day(before) if before is not None else None
+        with self._db() as db:
+            rows = db.execute('SELECT day,title,body,facts FROM diary_entries').fetchall()
+        documents = []
+        for row in rows:
+            if cutoff is not None and row['day'][:10] > cutoff:
+                continue
+            facts = ' '.join(f"{fact['text']} {fact.get('quote', '')}" for fact in json.loads(row['facts']))
+            documents.append((row['day'], set(terms(' '.join((row['title'], row['body'], facts))))))
+        if not documents:
+            return []
+        frequency = {}
+        for _, words in documents:
+            for word in words & wanted:
+                frequency[word] = frequency.get(word, 0) + 1
+        total = len(documents)
+        # A word in more than a third of the entries says nothing about which day it was.
+        rare = {word for word, count in frequency.items() if count <= max(1, total // 3)}
+        scored = []
+        for day, words in documents:
+            shared = words & wanted & rare
+            if len(shared) >= 3:
+                scored.append((sum(math.log((total + 1) / (frequency[word] + 0.5)) for word in shared), day))
+        scored.sort(key=lambda item: (-item[0], item[1]))
+        if not scored:
+            return []
+        best = scored[0][0]
+        result = []
+        for score, day in scored[:limit]:
+            # Keep runners-up only when they match nearly as strongly as the best entry.
+            if score < best * 0.6:
+                continue
+            if len(day) == 10:
+                first = last = calendar_date.fromisoformat(day)
+            else:
+                first = calendar_date.fromisoformat(day + '-01')
+                last = (calendar_date(first.year + first.month // 12, first.month % 12 + 1, 1) - timedelta(days=1))
+            result.append((first, last))
+        return result
+
     def remember_gifts(self, cameras, now):
         """Keep the owned cameras and the first day each was seen; never forget a gift here."""
         with self._db() as db:

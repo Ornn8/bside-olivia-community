@@ -1687,6 +1687,9 @@ def _create_diary_store():
 
 diary_store = _create_diary_store()
 letters_adapter.diary = diary_store
+if diary_store is not None and getattr(letters_adapter, 'memory_prompt_builder', None) is not None:
+    # Recall uses her diary as a dated index into the originals.
+    letters_adapter.memory_prompt_builder.diary = diary_store
 
 
 def _create_candidate_runtime() -> PrivateWorldCandidateRuntime:
@@ -3793,6 +3796,20 @@ async def _improve_loop() -> None:
             except (OSError, RuntimeError, ValueError, TypeError):
                 _safe_log('improve_upload_deferred')
         await asyncio.sleep(1800)
+
+
+async def _vector_index_loop() -> None:
+    """Embed earlier exchanges in the background so recall can match by meaning."""
+    await asyncio.sleep(180)
+    while True:
+        indexed = 0
+        index = getattr(conversation_memory_adapter, 'index_original_vectors', None)
+        if callable(index):
+            try:
+                indexed = await asyncio.to_thread(index, _memory_config.user_id, limit=64)
+            except Exception:
+                _safe_log('memory_vector_index_deferred')
+        await asyncio.sleep(20 if indexed else 600)
 
 
 async def _diary_loop() -> None:
@@ -6064,6 +6081,9 @@ async def _start_reply_tasks(_app: web.Application) -> None:
     photo_recovery = asyncio.create_task(_recover_photo_memories())
     media_tasks.add(photo_recovery)
     photo_recovery.add_done_callback(media_tasks.discard)
+    vector_task = asyncio.create_task(_vector_index_loop())
+    media_tasks.add(vector_task)
+    vector_task.add_done_callback(media_tasks.discard)
     improve_task = asyncio.create_task(_improve_loop())
     media_tasks.add(improve_task)
     improve_task.add_done_callback(media_tasks.discard)
