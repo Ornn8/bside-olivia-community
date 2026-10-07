@@ -64,7 +64,7 @@ def _input_evidence():
         '<', r'\u003c').replace('>', r'\u003e') + '</evidence_summary>'
 
 
-def finalize_reply_messages(messages, instruction, *, max_input_chars):
+def finalize_reply_messages(messages, instruction, *, max_input_chars, trim_history=True):
     """Place one delivery contract after context assembly, before current input."""
     result = [dict(m) for m in messages
               if not (m.get('role') == 'system' and m.get('content') == instruction)]
@@ -72,8 +72,18 @@ def finalize_reply_messages(messages, instruction, *, max_input_chars):
                     if result[i].get('role') == 'user'), len(result))
     if instruction:
         result.insert(current, {'role': 'system', 'content': instruction})
-    if sum(len(str(m.get('content', ''))) for m in result) > max_input_chars:
-        raise ValueError('INPUT_TOO_LONG')
+    # Late delivery/speech instructions must fit too. Keep core rules, evidence
+    # and the current input intact; evict only oldest projected dialogue frames.
+    while sum(len(str(m.get('content', ''))) for m in result) > max_input_chars:
+        current = next((i for i in range(len(result)-1, -1, -1)
+                        if result[i].get('role') == 'user'), len(result))
+        oldest = next((i for i, m in enumerate(result[:current])
+                       if m.get('role') in ('user', 'assistant')
+                       and isinstance(m.get('content'), str)
+                       and m['content'].startswith('[历史消息 ')), None) if trim_history else None
+        if oldest is None:
+            raise ValueError('INPUT_TOO_LONG')
+        del result[oldest]
     return tuple(result)
 
 

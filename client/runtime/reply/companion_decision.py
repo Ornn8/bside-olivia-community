@@ -65,7 +65,7 @@ ERROR_CODES = frozenset({
     'JEV_BILLING_UNAVAILABLE', 'JEV_BILLING_RECEIPT_INVALID', 'JEV_BILLING_RESPONSE_INVALID',
     'JEV_BILLING_ACCOUNT_UNAVAILABLE', 'JEV_BILLING_TURN_INVALID',
     *(f'JEV_BILLING_HTTP_{status}' for status in (401, 402, 403, 409, 429, 502, 503, 504)),
-    *(f'JEV_HTTP_{status}' for status in (400, 401, 404, 413, 429, 503)),
+    *(f'JEV_HTTP_{status}' for status in (400, 401, 404, 413, 429, 502, 503, 504)),
 })
 from runtime.reply.jev_limits import JEV_MAX_INPUT_BYTES as _MAX_INPUT_BYTES
 _MAX_RESPONSE_BYTES = 262144

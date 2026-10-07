@@ -35,7 +35,8 @@ async def invoke(pipeline, mode, raw, *, metadata=None, request=None):
 
 
 @pytest.mark.parametrize('mode', [ReplyMode.TEXT_LETTER, ReplyMode.FUTURE_IM])
-@pytest.mark.parametrize('code', ['JEV_UNAVAILABLE', 'JEV_TIMEOUT', 'JEV_PROVIDER_HTTP_429'])
+@pytest.mark.parametrize('code', ['JEV_UNAVAILABLE', 'JEV_TIMEOUT', 'JEV_PROVIDER_HTTP_429',
+                                  'JEV_HTTP_502', 'JEV_HTTP_504'])
 def test_auxiliary_transport_failure_can_complete_reviewed_text(mode, code, monkeypatch):
     monkeypatch.delenv('OLIVIA_JEV_DECISION_URL', raising=False)
     raw = '早上好，今天怎么样？'

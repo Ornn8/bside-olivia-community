@@ -284,15 +284,8 @@ def project_decision(messages, decision, *, max_input_chars, delivery):
                  '该正文不会作为聊天文字发出；描述符合当前请求的画面，不声称照片已生成或已发送。'
                  '这张照片一定会发出：只描述画面，不推辞、不说拍不了、没带手机、不给看或下次再拍。')
     note += '\n<companion_decision>\n' + encoded + '\n</companion_decision>'
-    result = [dict(message) for message in messages]
-    position = next((i for i in range(len(result) - 1, -1, -1) if result[i].get('role') == 'user'), len(result))
-    result.insert(position, dict(role='system', content=note))
-    # The plan arrives after assembly. When it does not fit, give up the oldest
-    # native dialogue messages first rather than the whole reply.
-    while sum(len(message.get('content', '')) for message in result) > max_input_chars:
-        oldest = next((i for i, m in enumerate(result) if m.get('role') in ('user', 'assistant')
-                       and isinstance(m.get('content'), str) and m['content'].startswith('[历史消息 ')), None)
-        if oldest is None:
-            raise CompanionRuntimeError('JEV_CONTEXT_BUDGET_EXCEEDED')
-        del result[oldest]
-    return tuple(result)
+    from .fact_attribution import finalize_reply_messages
+    try:
+        return finalize_reply_messages(messages, note, max_input_chars=max_input_chars)
+    except ValueError:
+        raise CompanionRuntimeError('JEV_CONTEXT_BUDGET_EXCEEDED') from None

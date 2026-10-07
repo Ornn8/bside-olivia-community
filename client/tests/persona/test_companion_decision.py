@@ -233,7 +233,7 @@ def test_port_only_accepts_the_local_full_decision_endpoint(endpoint):
     assert error.value.code == 'JEV_CONFIGURATION_INVALID'
 
 
-@pytest.mark.parametrize('status', [400, 401, 404, 413, 429, 503])
+@pytest.mark.parametrize('status', [400, 401, 404, 413, 429, 502, 503, 504])
 def test_http_errors_are_explicit_no_decision_and_never_retried(sidecar, status):
     sidecar.update(status=status, body=dict(error='secret provider detail', decision=None))
     result = decide(sidecar)
