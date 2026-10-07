@@ -32,3 +32,34 @@ def test_pack_sticker_is_served_from_the_folder_and_missing_one_is_not_downloade
     assert path == folder / 'linli-109.png'
     with pytest.raises(CloudError, match='STICKER_PACK_NOT_INSTALLED'):
         asyncio.run(image_assets.ensure_image(tmp_path, 'stickers', 'linli-200', base_url='http://127.0.0.1:1'))
+
+
+def test_sticker_pack_routes_answer_through_the_local_server(tmp_path, monkeypatch):
+    import asyncio
+    import subprocess
+
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    import local_server
+
+    monkeypatch.setenv('OLIVIA_LOCAL_DATA_ROOT', str(tmp_path / 'data'))
+    opened = []
+    monkeypatch.setattr(subprocess, 'Popen', lambda args, **kwargs: opened.append(args))
+
+    async def scenario():
+        app = web.Application()
+        app.router.add_route('*', '/{tail:.*}', local_server.handler)
+        async with TestClient(TestServer(app)) as client:
+            headers = {'Origin': 'https://olivia.local', 'X-Olivia-Companion-Action': 'confirmed'}
+            listed = await client.get('/toy/sticker-packs', headers=headers)
+            assert listed.status == 200
+            data = (await listed.json())['data']
+            assert data['folder'] == str(tmp_path / 'data' / 'sticker-packs')
+            assert isinstance(data['packs'], list)
+            assert (await client.post('/toy/sticker-packs/open', json={})).status == 403
+            opened_folder = await client.post('/toy/sticker-packs/open', json={}, headers=headers)
+            assert opened_folder.status == 200
+            assert (tmp_path / 'data' / 'sticker-packs').is_dir()
+
+    asyncio.run(scenario())

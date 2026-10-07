@@ -2845,7 +2845,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       [data-world-main]{overflow-y:auto;overflow-x:hidden;background:#191a1c;border-radius:12px;padding:28px 32px;min-height:0;flex:1;display:block;box-sizing:border-box;scrollbar-width:thin}
       [data-world-main] p{line-height:1.7;margin:8px 0}
       [data-world-main] h3{font-size:26px;margin:0}[data-world-main] h4{font-size:21px;margin:0}
-      [data-world-main] button,.olivia-world-header button{border:1px solid #686a70;border-radius:999px;background:transparent;color:#ded9d1;padding:9px 18px;font:inherit;cursor:pointer}
+      .olivia-world-tools{display:flex;justify-content:flex-end;margin:12px 0}
+      [data-world-main] button,.olivia-world-tools button{border:1px solid #686a70;border-radius:999px;background:transparent;color:#ded9d1;padding:9px 18px;font:inherit;cursor:pointer}
       [data-world-main] summary{cursor:pointer;line-height:1.7}
       [data-world-main] article{background:transparent!important;padding:12px 0!important}
       .olivia-world-heading{display:flex;justify-content:space-between;align-items:center;gap:16px}
@@ -2889,9 +2890,11 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     `;
     const header=document.createElement('header');header.className='olivia-world-header';header.append(text('h1','世界'));
     const wardrobeEntry=button('衣橱',()=>openWardrobe());wardrobeEntry.setAttribute('data-olivia-wardrobe-entry','');
-    wardrobeEntry.setAttribute('aria-label','打开林离的衣橱');header.append(wardrobeEntry);
+    wardrobeEntry.setAttribute('aria-label','打开林离的衣橱');
+    // The top row is shared with the native tabs and the account controls; keep it to the title.
+    const tools=document.createElement('div');tools.className='olivia-world-tools';tools.append(wardrobeEntry);
     const panel=document.createElement('section');panel.dataset.worldMain='';
-    page.replaceChildren(style,header,panel);
+    page.replaceChildren(style,header,tools,panel);
     panel.append(text('p','正在读取林离的生活……'));
     void requestJson(STATUS_PATH).then(payload=>{if(page.isConnected)return renderPrivateWorldPanel(panel,payload.capabilities?.private_world)}).catch(error=>{
       reportDailyLifeFailure(error, 'request', 'companion_status');
@@ -3837,7 +3840,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const wardrobeStyle = () => {
     const style=document.createElement('style');style.textContent=`
       [data-olivia-wardrobe-page]{width:100%;height:100%;min-height:0;display:flex;flex-direction:column;gap:20px;color:#e9e3d8;-webkit-app-region:no-drag}
-      .ow-breadcrumb{display:flex;gap:14px;align-items:center;min-height:40px;flex-shrink:0;font-size:14px;color:#bcb5aa}
+      .ow-page-header{height:40px;display:flex;align-items:center;flex-shrink:0}
+.ow-page-header h1{font-size:30px;margin:0;font-weight:700}
+.ow-breadcrumb{display:flex;gap:14px;align-items:center;min-height:40px;flex-shrink:0;font-size:14px;color:#bcb5aa}
       .ow-breadcrumb a{display:inline-flex;gap:8px;align-items:center;color:#e9e3d8;text-decoration:none;padding:8px 0}
       .ow-breadcrumb svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.6}
       [data-olivia-wardrobe]{--ow-paper:#e4d8c3;--ow-muted:#b9b1a5;box-sizing:border-box;background:#1b1c1e;color:#e9e3d8;padding:28px 36px;min-height:0;overflow-y:auto;overflow-x:hidden;flex:1;border-radius:12px}
@@ -4024,7 +4029,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const back=text('a','返回世界');back.href=WORLD_ROUTE;
     back.addEventListener('click',event=>{if(event.button!==0||event.ctrlKey||event.metaKey||event.shiftKey||event.altKey)return;const router=window.__oliviaNativeView?.router;if(router){event.preventDefault();void router.push('/world');}});
     breadcrumb.append(back,text('span','/'),text('span','衣橱'));
-    page.replaceChildren(breadcrumb);mountWardrobeSetting(page);
+    const header=document.createElement('header');header.className='ow-page-header';header.append(text('h1','衣橱'));
+    page.replaceChildren(header,breadcrumb);mountWardrobeSetting(page);
   };
   const installNativeWardrobeRoute = () => {
     const native=window.__oliviaNativeView;
