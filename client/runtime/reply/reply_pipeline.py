@@ -49,7 +49,7 @@ _TEXT_RECOVERY_CODES = frozenset({
     'JEV_UNAVAILABLE', 'JEV_TIMEOUT', 'JEV_WORLD_SELECTION_UNAVAILABLE',
     'JEV_PROVIDER_CONNECT_FAILED', 'JEV_PROVIDER_READ_FAILED', 'JEV_PROVIDER_JSON_INVALID',
     *(f'JEV_PROVIDER_HTTP_{n}' for n in (429, 500, 502, 503, 504, 529)),
-    'JEV_HTTP_429', 'JEV_HTTP_503',
+    'JEV_HTTP_429', 'JEV_HTTP_502', 'JEV_HTTP_503', 'JEV_HTTP_504',
 })
 _TEXT_RECOVERY_NOTE = (
     '本轮部分辅助理解或世界资料暂不可用，缺失信息保持未知。当前用户原话、核心人格、'
@@ -600,8 +600,8 @@ class ReplyPipeline:
                     try:
                         # The context was sized before these candidates existed. An optional
                         # video offer must never cost the reply: drop it when it does not fit.
-                        with_candidates = finalize_reply_messages(messages, note, max_input_chars=original_budget)
-                        finalize_reply_messages(with_candidates, generation_note, max_input_chars=original_budget)
+                        with_candidates = finalize_reply_messages(messages, note, max_input_chars=original_budget, trim_history=False)
+                        finalize_reply_messages(with_candidates, generation_note, max_input_chars=original_budget, trim_history=False)
                         messages = with_candidates
                     except ValueError:
                         daily_candidates = []
