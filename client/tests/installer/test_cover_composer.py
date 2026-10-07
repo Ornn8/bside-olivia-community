@@ -58,12 +58,12 @@ window.__oliviaNativeView={h:(tag)=>document.createElement(tag),router:{hasRoute
 installNativeWorldRoute();check(routeRecord.path==='/world','independent native route');
 location.hash=WORLD_ROUTE;mountMainNavigation();
 const view=routeRecord.component,el=view.render();document.body.append(el);view.mounted.call({$el:el});await Promise.resolve();
-const links=[...document.querySelectorAll('nav a')];check(links.map(n=>n.textContent).join(',')==='信箱,世界,曲库','navigation order');
+const links=[...document.querySelectorAll('nav a')];check(links.map(n=>n.textContent).join(',')==='信箱,世界,物品栏,曲库','navigation order');
 const navigationLeft=document.querySelector('nav').style.left;
 check(links[1].getAttribute('aria-current')==='page','world selected');check(document.querySelector('main [data-world-main]'),'world main mounted');
 mountMainNavigation();check(reads===1,'does not reload on DOM changes');
-links[2].click();check(pushes[0]==='/studio','navigation uses native router');
-view.beforeUnmount.call({$el:el});el.remove();location.hash='#/studio';mountMainNavigation();check(!document.querySelector('[data-olivia-world-page]'),'world removed');check(links[2].getAttribute('aria-current')==='page','studio selected');check(document.querySelector('nav').style.left===navigationLeft,'navigation stays in place');
+links[3].click();check(pushes[0]==='/studio','navigation uses native router');
+view.beforeUnmount.call({$el:el});el.remove();location.hash='#/studio';mountMainNavigation();check(!document.querySelector('[data-olivia-world-page]'),'world removed');check(links[3].getAttribute('aria-current')==='page','studio selected');check(document.querySelector('nav').style.left===navigationLeft,'navigation stays in place');
 location.hash='#/collection';mountMainNavigation();check(links[0].getAttribute('aria-current')==='page','mailbox selected');
 document.getElementById('acceptance').textContent='PASS';
 })().catch(e=>document.getElementById('acceptance').textContent='FAIL:'+e.message);

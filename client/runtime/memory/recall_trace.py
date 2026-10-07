@@ -18,9 +18,12 @@ def _alternate(records, priority):
     groups = {}
     for record in records:
         groups.setdefault(source_id(record), []).append(record)
-    pointers = [group for source, group in groups.items() if source in priority]
-    searched = [group for source, group in groups.items() if source not in priority]
-    ordered = []
+    requested = [group for group in groups.values()
+                 if any(record.metadata.get('retrieval_route') in {'date', 'diary'} for record in group)]
+    pointers = [group for source, group in groups.items() if source in priority and group not in requested]
+    searched = [group for source, group in groups.items() if source not in priority and group not in requested]
+    # Days the user named (or her diary matched) lead; they answer the question asked.
+    ordered = [record for group in requested for record in group]
     for index in range(max(len(pointers), len(searched))):
         ordered.extend(pointers[index] if index < len(pointers) else ())
         ordered.extend(searched[index] if index < len(searched) else ())

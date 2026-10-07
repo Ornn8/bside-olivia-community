@@ -348,6 +348,16 @@ async def _select_history_messages(messages, gateway, *, max_input_chars, reques
                     selected.append(complete)
                 elif complete != offered[source] or any(r.get('interpretation_dependencies') for r in complete):
                     gap = True
+            if not ids:
+                # The user named this day, or her diary pointed to it: that original is
+                # what was asked about even when the relevance check kept nothing.
+                for source, group in offered.items():
+                    if len(selected) == 2:
+                        break
+                    if any((r.get('provenance') or {}).get('requested_reference') in {'date', 'diary'} for r in group):
+                        complete = close_group(group, offered, dependencies)
+                        if len(_block([*selected, complete])) <= remaining:
+                            selected.append(complete)
             status, reason = 'checked', (reason if reason == 'dependency_store' else None)
         except Exception as error:
             reason = ('timeout' if isinstance(error, TimeoutError) else

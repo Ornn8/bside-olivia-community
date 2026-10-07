@@ -592,6 +592,11 @@ class DeferredConversationMemoryAdapter:
         with self._using_current() as delegate:
             return delegate.register_archive_sources(user_id=user_id, sources=sources)
 
+    def index_original_vectors(self, user_id, *, limit=32):
+        with self._using_current() as delegate:
+            index = getattr(delegate, 'index_original_vectors', None)
+            return index(user_id, limit=limit) if callable(index) else 0
+
     def search_evidence_context(self, query: str, *, user_id: str, limit: int, exclude_source_ids=()):
         return self.search_evidence_result(query, user_id=user_id, limit=limit,
                                            exclude_source_ids=exclude_source_ids).records
@@ -1341,6 +1346,48 @@ class Mem0ConversationMemoryAdapter:
             sorted(records_by_id.values(), key=_record_search_key)
         )[:limit], None
 
+    def _embedder(self):
+        """The provider's own local embedding model, when long-term memory is installed."""
+        model = getattr(self.backend, 'embedding_model', None)
+        embed = getattr(model, 'embed', None)
+        return embed if callable(embed) else None
+
+    def index_original_vectors(self, user_id: str, *, limit: int = 32) -> int:
+        """Embed a bounded batch of exchanges that have no current vector."""
+        embed = self._embedder()
+        if embed is None:
+            return 0
+        user_id = self._normalized_user_id(user_id)
+        missing = self._originals.vectors_missing(user_id, self.config.embedding_model, limit=limit)
+        items = []
+        for source, digest, text in missing:
+            vector = embed(text, 'add')
+            norm = sum(value * value for value in vector) ** 0.5 or 1.0
+            items.append((source, digest, [value / norm for value in vector]))
+        if items:
+            self._originals.put_vectors(user_id, self.config.embedding_model, items)
+        return len(items)
+
+    def _original_vector_hits(self, query, user_id, excluded):
+        """Exchanges whose meaning is close to the question, as semantic candidates."""
+        embed = self._embedder()
+        if embed is None:
+            return ()
+        try:
+            self.index_original_vectors(user_id, limit=16)
+            vector = embed(query[:500], 'search')
+            norm = sum(value * value for value in vector) ** 0.5 or 1.0
+            hits = self._originals.nearest_sources(user_id, self.config.embedding_model,
+                                                   [value / norm for value in vector], limit=12,
+                                                   exclude_source_ids=excluded)
+            return tuple(ConversationMemoryRecord(memory_id='vector:' + hashlib.sha256(source.encode()).hexdigest()[:32],
+                                                  text=snippet, user_id=user_id, source_id=source,
+                                                  score=max(0.0, min(1.0, float(score))),
+                                                  metadata={'retrieval_route': 'semantic'})
+                         for source, score, snippet in hits if score >= 0.45)
+        except Exception:
+            return ()
+
     def search_evidence_context(self, query: str, *, user_id: str, limit: int, exclude_source_ids=()):
         return self.search_evidence_result(query, user_id=user_id, limit=limit,
                                            exclude_source_ids=exclude_source_ids).records
@@ -1361,6 +1408,7 @@ class Mem0ConversationMemoryAdapter:
         semantic, error = self._search_context_result(query, user_id=user_id, limit=20)
         self._last_error_code = error
         semantic = tuple(replace(record, user_id=user_id) for record in semantic)
+        semantic = semantic + self._original_vector_hits(query, user_id, excluded)
         source_status = [("semantic", "unavailable" if error else "available")]
         try:
             records = self._originals.search(query, user_id, semantic, limit=limit, exclude_source_ids=excluded, expanded=limit > 8)

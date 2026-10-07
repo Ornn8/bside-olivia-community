@@ -913,6 +913,9 @@ const statusPayload = (status) => ({
   if (endpoint.pathname === "/toy/sticker-packs") {
     return {ok:true,json:async()=>({code:0,data:{folder:"C:/fixture/sticker-packs",packs:[]}})};
   }
+  if (endpoint.pathname === "/toy/improve") {
+    return {ok:true,json:async()=>({code:0,data:{enabled:false,uploaded:0,since:null}})};
+  }
   mutationPaths.push(endpoint.pathname);
   return { ok: true, json: async () => ({ status: "APPLIED", request_id: "memory.lifecycle.1", affected_count: 0 }) };
 };
