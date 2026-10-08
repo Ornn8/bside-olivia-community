@@ -166,7 +166,7 @@ def _remember_ui(data_root, asset_id, entry):
 
 
 def _ticket_entry(kind, asset_id, ticket):
-    """The entry a download ticket describes, pinned to the official object for its digest."""
+    """The entry a download ticket describes, pinned to the storage object for its digest."""
     try:
         filename = unquote(urlsplit(ticket['url']).path.rsplit('/', 1)[-1])
         entry = {'content_type': ticket['content_type'], 'filename': filename,
