@@ -86,7 +86,7 @@ def test_full_catalog_keeps_every_sticker_and_approved_outfit():
     assert set(catalog['stickers']) == set(_files())
     assert set(catalog['wardrobe']) == set().union(*DAILY_LOOKS.values())
     assert len(catalog['stickers']) == 272
-    assert len(catalog['wardrobe']) == 47
+    assert len(catalog['wardrobe']) == 58
 
 
 @_async_test

@@ -119,12 +119,7 @@ def _save_builtin(raw, target, entry):
     return True
 
 
-async def ensure_image(data_root, kind, asset_id, *, base_url=None):
-    """No eager download; verified cache works offline and across patch versions."""
-    try:
-        entry = _catalog()[kind][asset_id]
-    except (KeyError, TypeError):
-        raise CloudError('IMAGE_ASSET_NOT_FOUND', 404) from None
+def validate_entry(kind, asset_id, entry):
     try:
         filename, digest = entry['filename'], entry['sha256']
         if (kind not in {'stickers','wardrobe','ui'} or not re.fullmatch(r'[a-z0-9-]{1,80}', asset_id)
@@ -136,6 +131,49 @@ async def ensure_image(data_root, kind, asset_id, *, base_url=None):
             raise ValueError()
     except (KeyError, TypeError, ValueError):
         raise CloudError('IMAGE_CATALOG_INVALID', 503) from None
+    return dict(entry)
+
+
+def _wardrobe_index(data_root):
+    return _cache_path(data_root, 'wardrobe', {'sha256':'catalog', 'filename':'index.json'})
+
+
+def image_entry(data_root, kind, asset_id):
+    if kind == 'wardrobe' and data_root is not None:
+        try:
+            path = _wardrobe_index(data_root)
+            with path.open('rb') as source:
+                raw = source.read(2097153)
+            if len(raw) > 2097152:
+                raise ValueError()
+            entries = json.loads(raw)
+            if asset_id in entries:
+                return validate_entry(kind, asset_id, entries[asset_id])
+        except (OSError, ValueError, TypeError):
+            pass  # A fresh server catalog will repair a missing/corrupt index.
+    try:
+        return validate_entry(kind, asset_id, _catalog()[kind][asset_id])
+    except (KeyError, TypeError):
+        raise CloudError('IMAGE_ASSET_NOT_FOUND', 404) from None
+
+
+def save_wardrobe_catalog(data_root, state):
+    from runtime.wardrobe import CLOUD_CATALOG_PROTOCOL, validate_cloud_state
+    if state.get('catalog_protocol') != CLOUD_CATALOG_PROTOCOL:
+        return
+    validate_cloud_state(state)
+    if data_root is None:
+        raise CloudError('IMAGE_CACHE_UNAVAILABLE', 503)
+    entries = {look['look_id']: look['image_asset'] for style in state['wardrobe_styles'] for look in style['looks']}
+    raw = json.dumps(entries, ensure_ascii=False, sort_keys=True).encode('utf-8')
+    if len(raw) > 2097152:
+        raise CloudError('IMAGE_CATALOG_INVALID', 503)
+    _save_builtin(raw, _wardrobe_index(data_root), {'size_bytes':len(raw), 'sha256':hashlib.sha256(raw).hexdigest()})
+
+
+async def ensure_image(data_root, kind, asset_id, *, base_url=None):
+    """No eager download; verified cache works offline and across patch versions."""
+    entry = image_entry(data_root, kind, asset_id)
     if data_root is None:
         raise CloudError('IMAGE_CACHE_UNAVAILABLE', 503)
     target = _cache_path(data_root, kind, entry)

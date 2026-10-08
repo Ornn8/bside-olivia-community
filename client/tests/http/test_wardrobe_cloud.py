@@ -138,7 +138,7 @@ def test_cloud_reference_preview_and_local_proxy_keep_correct_media_type(format,
                 assert kind=='wardrobe' and look_id=='mori-01'
                 return cached
             monkeypatch.setattr('runtime.image_assets.ensure_image',ensure)
-            monkeypatch.setattr('runtime.image_assets._catalog',lambda:{'wardrobe':{'mori-01':{'content_type':'image/'+format.lower()}}})
+            monkeypatch.setattr('runtime.image_assets.image_entry',lambda *_:{'content_type':'image/'+format.lower()})
             proxy=web.Application();proxy.router.add_get('/toy/wardrobe/images/mori-01',local_server.handler)
             async with TestClient(TestServer(proxy)) as client:
                 response=await client.get('/toy/wardrobe/images/mori-01')

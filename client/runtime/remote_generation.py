@@ -33,6 +33,9 @@ class RemoteGeneration:
         # Old installations require exactly four photo-plan fields. Negotiate
         # wardrobe metadata on every read/replay, including existing orders.
         headers['X-Olivia-Wardrobe-Protocol'] = 'daily-v2'
+        from .wardrobe import CLOUD_CATALOG_PROTOCOL
+        # Keep v2 metadata working against servers that predate this catalog.
+        headers['X-Olivia-Wardrobe-Catalog'] = CLOUD_CATALOG_PROTOCOL
         payload = None
         if action == 'submit':
             if set(data) != {'request_id', 'kind', 'input'} or data['kind'] not in ('tts', 'cover', 'image', 'video', 'original', 'lipsync', 'separate', 'cover_video', 'original_video', 'daily_video') or not isinstance(data['input'], dict):
@@ -54,18 +57,18 @@ class RemoteGeneration:
         elif action == 'wardrobe_get' and data == {}:
             path, method = '/v1/wardrobe', 'GET'
         elif action == 'wardrobe_set':
-            from runtime.wardrobe import DAILY_STYLES
+            from runtime.wardrobe import valid_style_id
             if (not isinstance(data,dict) or set(data)!={'request_id','style_id'}
                     or not isinstance(data['request_id'],str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,255}',data['request_id'])
-                    or data['style_id'] not in DAILY_STYLES):
+                    or not valid_style_id(data['style_id'])):
                 raise CloudError('GPU_REQUEST_INVALID',400)
             payload=data
             path, method = '/v1/wardrobe', 'POST'
         elif action == 'wardrobe_buy':
-            from runtime.wardrobe import DAILY_LOOKS
+            from runtime.wardrobe import valid_look_id
             if (not isinstance(data,dict) or set(data)!={'request_id','look_id','max_charge_cents'}
                     or not isinstance(data['request_id'],str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,255}',data['request_id'])
-                    or not isinstance(data['look_id'],str) or data['look_id'] not in set().union(*DAILY_LOOKS.values())
+                    or not valid_look_id(data['look_id'])
                     or type(data['max_charge_cents']) is not int or data['max_charge_cents'] not in (0,500)):
                 raise CloudError('GPU_REQUEST_INVALID',400)
             payload=data
@@ -118,7 +121,7 @@ class RemoteGeneration:
                     raw = bytearray()
                     async for chunk in response.content.iter_chunked(16384):
                         raw.extend(chunk)
-                        if len(raw) > 262144: raise CloudError('GPU_RESPONSE_INVALID', 502)
+                        if len(raw) > (2097152 if action.startswith('wardrobe_') else 262144): raise CloudError('GPU_RESPONSE_INVALID', 502)
                     result = json.loads(raw)
             if action in ('gifts_get', 'gifts_buy'):
                 from runtime.gifts import validate_gifts
@@ -213,8 +216,8 @@ class RemoteGeneration:
             raise CloudError('GPU_RESPONSE_INVALID', 502) from None
 
     async def wardrobe_image(self, look_id):
-        from runtime.wardrobe import DAILY_LOOKS
-        if not isinstance(look_id,str) or not any(look_id in looks for looks in DAILY_LOOKS.values()):
+        from runtime.wardrobe import valid_look_id
+        if not valid_look_id(look_id):
             raise CloudError('WARDROBE_IMAGE_INVALID',400)
         if not self.url or not self.token:
             raise CloudError('GPU_NOT_CONFIGURED',503)
