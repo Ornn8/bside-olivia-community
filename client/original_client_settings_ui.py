@@ -3590,10 +3590,20 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const body = typeof config.data === "string" ? JSON.parse(config.data) : config.data;
     if (!body || (!resending && (typeof body.content !== "string" || !body.content.trim()))) return config;
     let preview;
-    const editor=!resending && coverComposer?.isConnected && coverComposer.value===body.content ? composerCovers.get(coverComposer) : null;
+    const composerInput=coverComposer;
+    const editor=!resending && composerInput?.isConnected && composerInput.value===body.content ? composerCovers.get(composerInput) : null;
+    const composerMode=editor?.mode;
     let attachment=null;
     try{if(editor && editor.mode!=='letter')attachment=editor.materialForSend()}
     catch(error){error.config=config;throw error}
+    const requireUnchangedComposer=()=>{
+      if(!attachment)return;
+      let current;
+      try{if(editor.mode===composerMode)current=editor.materialForSend()}catch{}
+      if(!composerInput.isConnected || composerInput.value!==body.content || JSON.stringify(current)!==JSON.stringify(attachment)){
+        throw Object.assign(new Error('回信形式或歌曲内容已变更，请确认后重新寄出。草稿已保留。'),{config,code:'ERR_CANCELED',__CANCEL__:true});
+      }
+    };
     try { do { preview = await routeRequest("/toy/letter/route-preview", {...(resending ? {letter_id:body.letter_id || body.letterId} : {content: body.content}),
       ...(attachment?.original_output ? {original_output:attachment.original_output,music_options:attachment.music_options} :
         attachment ? {cover_source_id:attachment.cover_source_id,cover_output:attachment.cover_output} : {})});
@@ -3647,6 +3657,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         : fallback)) + (code ? `（${code}）` : "") + "信件尚未寄出。";
       throw error;
     }
+    requireUnchangedComposer();
     let once;
     let videoOnce;
     if (preview.image_enabled && !await confirmAction(
@@ -3677,10 +3688,11 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       const cap=(quote.max_charge_cents/100).toFixed(2);
       const musicPrice=quote.original_music_retail_price;
       const priceDetail=originalCharge?(musicPrice?`原创单曲每首 ¥${(musicPrice.min_cents/100).toFixed(2)}–${(musicPrice.max_cents/100).toFixed(2)}，提交时锁定随机报价；视频另含视频费用，以本次总上限为准。`:'原创音乐按时长定价 ¥2–3，含小幅随机浮动，最终不超过 ¥3；视频另含视频费用，以本次总上限为准。'):'成功后按实际占用结算。';
-      if(!await confirmAction(`本次云端生成将从 Olivia 余额预留 ¥${cap}，本次最多收费 ¥${cap}。${priceDetail}多余预留释放；失败全退。回信文字另按 Token 计费。确认寄出？`)){
+      if(!await confirmAction(`本次生成${preview.video_enabled===true?'视频回信':'音频回信'}。云端生成将从 Olivia 余额预留 ¥${cap}，本次最多收费 ¥${cap}。${priceDetail}多余预留释放；失败全退。回信文字另按 Token 计费。确认寄出？`)){
         throw Object.assign(new Error('已取消发送，草稿保留。'),{config,code:'ERR_CANCELED',__CANCEL__:true});
       }
     }
+    requireUnchangedComposer();
     if (once) material.route_allow_once = once;
     if (videoOnce) material.route_video_once = videoOnce;
     config.data = {...body, material};
