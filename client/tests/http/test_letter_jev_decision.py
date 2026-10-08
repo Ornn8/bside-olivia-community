@@ -102,7 +102,7 @@ assert row['letter_status'] == 'FAILED' and row['error_code'] == 'LLM_TIMEOUT'
 ''')
 
 
-def test_unsupported_valid_plan_is_saved_and_not_reclassified_on_retry(tmp_path):
+def test_unsupported_valid_plan_is_saved_and_answered_in_text(tmp_path):
     run_isolated(tmp_path, r'''
 import asyncio
 import local_server as server
@@ -120,13 +120,13 @@ server._schedule_text_reply_delay = lambda *a: None
 value = plan()
 value['proposal']['steps'].append(dict(id='s2', medium='text', parts=[dict(kind='text', content_ref='c1')],
     after=[dict(step_id='s1', event='delivered')], requirement_ids=[]))
-engine, port = Engine('must not generate'), Port(value)
+engine, port = Engine('这次先用文字回你。'), Port(value)
 server.reply_pipeline = ReplyPipeline(engine, reviewer=NullReviewer(), rewriter=UnavailableRewriter(),
     discover_runtime_ports=False, companion_decision_port=port)
-for _ in range(2):
-    assert not asyncio.run(server.generate_reply(row['letter_id'], row['content']))
-assert len(port.turns) == 1 and not engine.requests
-assert row['error_code'] == 'JEV_PLAN_UNSUPPORTED'
+assert asyncio.run(server.generate_reply(row['letter_id'], row['content']))
+assert len(port.turns) == 1 and len(engine.requests) == 1
+assert '只能用文字回复' in str(engine.requests[0].messages)
+assert not row.get('error_code')
 assert len(row['companion_decision']['plan']['proposal']['steps']) == 2
 ''')
 

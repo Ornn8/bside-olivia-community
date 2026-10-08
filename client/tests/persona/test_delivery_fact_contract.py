@@ -106,7 +106,9 @@ def test_every_fact_span_is_checked_and_separately_confirmed(monkeypatch):
             if 'confirmation_rules' not in state:
                 for key in questions:
                     code = key.split(':', 1)[1]
-                    if code.isupper():
+                    if code == 'OFF_TURN_REPLY':
+                        answers[key] = 'current'  # a whole-reply question, not a span
+                    elif code.isupper():
                         answers[key] = 'none'
                     elif code.startswith('fact:'):
                         answers[key] = 'unsupported'

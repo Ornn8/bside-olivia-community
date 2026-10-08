@@ -67,3 +67,14 @@ def test_failed_upload_keeps_the_batch_and_bad_setting_is_rejected(tmp_path):
     assert len(pending(rows, read_state(tmp_path))) == 1
     with pytest.raises(ValueError):
         set_enabled(tmp_path, 'yes')
+
+
+def test_media_labels_show_what_the_turn_could_carry_and_why_a_video_did_not_go_out(tmp_path):
+    rows = [chat('在干嘛', '在咖啡馆', NOW + timedelta(minutes=1), image_available=True,
+                 image_reply_settings={'enabled': True}, daily_video_candidates=[{'event_id': 'day:x'}],
+                 companion_delivery='video_speech', daily_video_dropped='WRITER_OMITTED'),
+            chat('晚安', '晚安', NOW + timedelta(minutes=2), companion_delivery='free text not a label')]
+    set_enabled(tmp_path, True, now=NOW)
+    first, second = [item for _, item in pending(rows, read_state(tmp_path))]
+    assert first['media'] == {'offered': ['image', 'video'], 'planned': 'video_speech', 'video': 'WRITER_OMITTED'}
+    assert 'media' not in second  # nothing offered, and a non-label value is never uploaded

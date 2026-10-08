@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 import stat
 import tempfile
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 from weakref import WeakKeyDictionary
 import zipfile
 
@@ -138,7 +138,55 @@ def _wardrobe_index(data_root):
     return _cache_path(data_root, 'wardrobe', {'sha256':'catalog', 'filename':'index.json'})
 
 
+def _ui_index(data_root):
+    return _cache_path(data_root, 'ui', {'sha256':'catalog', 'filename':'index.json'})
+
+
+def _read_index(path):
+    try:
+        with path.open('rb') as source:
+            raw = source.read(2097153)
+        if len(raw) > 2097152:
+            raise ValueError()
+        value = json.loads(raw)
+        return value if isinstance(value, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def _remember_ui(data_root, asset_id, entry):
+    """Keep the cloud's current entry so the picture still shows offline later."""
+    entries = _read_index(_ui_index(data_root))
+    if entries.get(asset_id) == entry:
+        return
+    entries[asset_id] = entry
+    raw = json.dumps(entries, ensure_ascii=False, sort_keys=True).encode('utf-8')
+    if len(raw) <= 2097152:
+        _save_builtin(raw, _ui_index(data_root), {'size_bytes':len(raw), 'sha256':hashlib.sha256(raw).hexdigest()})
+
+
+def _ticket_entry(kind, asset_id, ticket):
+    """The entry a download ticket describes, pinned to the storage object for its digest."""
+    try:
+        filename = unquote(urlsplit(ticket['url']).path.rsplit('/', 1)[-1])
+        entry = {'content_type': ticket['content_type'], 'filename': filename,
+                 'key': f"distribution/olivia-images/{kind}/{ticket['sha256']}/{filename}",
+                 'sha256': ticket['sha256'], 'size_bytes': ticket['size_bytes']}
+    except (KeyError, TypeError, ValueError, AttributeError):
+        raise CloudError('IMAGE_ASSET_INVALID', 502) from None
+    entry = validate_entry(kind, asset_id, entry)
+    _validate_download_url(ticket['url'], entry)
+    return entry
+
+
 def image_entry(data_root, kind, asset_id):
+    if kind == 'ui' and data_root is not None:
+        known = _read_index(_ui_index(data_root)).get(asset_id)
+        if known is not None:
+            try:
+                return validate_entry(kind, asset_id, known)
+            except CloudError:
+                pass
     if kind == 'wardrobe' and data_root is not None:
         try:
             path = _wardrobe_index(data_root)
@@ -171,9 +219,37 @@ def save_wardrobe_catalog(data_root, state):
     _save_builtin(raw, _wardrobe_index(data_root), {'size_bytes':len(raw), 'sha256':hashlib.sha256(raw).hexdigest()})
 
 
+async def _cloud_ui_entry(base, asset_id):
+    """Interface pictures are cloud-owned: the relay's current entry wins over the
+    copy shipped with this version, so new or replaced pictures need no client release."""
+    async with ClientSession(timeout=ClientTimeout(total=20), trust_env=False,
+            connector=TCPConnector(ssl=gpu_tls_context())) as session:
+        async with session.get(base + '/v1/components/images/ui/' + asset_id, allow_redirects=False,
+                headers={'X-Olivia-Component-Storage': 'cos-v2'}) as response:
+            if response.status != 200:
+                raise CloudError('IMAGE_ASSET_UNAVAILABLE', 503)
+            raw = await response.content.read(8193)
+    if len(raw) > 8192:
+        raise CloudError('IMAGE_ASSET_INVALID', 502)
+    try:
+        return _ticket_entry('ui', asset_id, json.loads(raw))
+    except ValueError:
+        raise CloudError('IMAGE_ASSET_INVALID', 502) from None
+
+
 async def ensure_image(data_root, kind, asset_id, *, base_url=None):
     """No eager download; verified cache works offline and across patch versions."""
-    entry = image_entry(data_root, kind, asset_id)
+    from runtime.gpu_settings import GPU_BASE
+    base = canonical_api_origin((base_url or os.environ.get('OLIVIA_GPU_API_URL') or GPU_BASE).rstrip('/'))
+    entry = None
+    if kind == 'ui' and data_root is not None and re.fullmatch(r'[a-z0-9-]{1,80}', asset_id):
+        try:
+            entry = await _cloud_ui_entry(base, asset_id)
+            await asyncio.to_thread(_remember_ui, data_root, asset_id, entry)
+        except (ClientError, TimeoutError, OSError, CloudError):
+            entry = None  # offline: the remembered or shipped entry still serves a cached copy
+    if entry is None:
+        entry = image_entry(data_root, kind, asset_id)
     if data_root is None:
         raise CloudError('IMAGE_CACHE_UNAVAILABLE', 503)
     target = _cache_path(data_root, kind, entry)
@@ -191,8 +267,6 @@ async def ensure_image(data_root, kind, asset_id, *, base_url=None):
             if pack_file is None:
                 raise CloudError('STICKER_PACK_NOT_INSTALLED', 404)
             return pack_file
-        from runtime.gpu_settings import GPU_BASE
-        base = canonical_api_origin((base_url or os.environ.get('OLIVIA_GPU_API_URL') or GPU_BASE).rstrip('/'))
         ticket_url = base + '/v1/components/images/' + kind + '/' + asset_id
         target.parent.mkdir(parents=True, exist_ok=True)
         for attempt in range(2):
