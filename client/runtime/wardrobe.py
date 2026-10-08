@@ -2,15 +2,36 @@
 from datetime import date
 import re
 
-# Exact IDs in the trusted 20261004-e94ffc6dd51b catalog. Original has no look.
+# Keep each catalog's exact allowlist during rolling client/server upgrades.
 DAILY_LOOK_COUNTS = {'mori': 14, 'rebellious': 1, 'dark': 1, 'cargo': 1,
                      'tie-shorts': 1, 'french': 8, 'earth': 3, 'japanese': 4,
                      'sweet': 6, 'doll': 8}
+PREVIOUS_DAILY_COUNTS = dict(DAILY_LOOK_COUNTS)
+DAILY_LOOK_COUNTS.update(dark=4, french=9, japanese=6, doll=10, fantasy=3)
 DAILY_STYLES = ('original', *DAILY_LOOK_COUNTS)
 LEGACY_DAILY_STYLES = DAILY_STYLES[:6]
 DAILY_LOOKS = {style: frozenset(style + f'-{i:02}' for i in range(1, count + 1))
                for style, count in DAILY_LOOK_COUNTS.items()}
-DAILY_CATALOG = '20261004-e94ffc6dd51b'
+PREVIOUS_DAILY_CATALOG = '20261004-e94ffc6dd51b'
+DAILY_CATALOG = '20261008-400d35c64251'
+CLOUD_CATALOG_PROTOCOL = 'dynamic-v1'
+DAILY_CATALOGS = {
+    PREVIOUS_DAILY_CATALOG: {style: frozenset(style + f'-{i:02}' for i in range(1, count + 1))
+                             for style, count in PREVIOUS_DAILY_COUNTS.items()},
+    DAILY_CATALOG: DAILY_LOOKS,
+}
+
+
+def valid_style_id(value):
+    return isinstance(value, str) and re.fullmatch(r'[a-z][a-z0-9]*(?:-[a-z0-9]+)*', value) is not None and len(value) <= 40
+
+
+def valid_look_id(value):
+    return isinstance(value, str) and re.fullmatch(r'[a-z][a-z0-9-]*-[0-9]{2,4}', value) is not None and len(value) <= 80
+
+
+def valid_catalog_version(value):
+    return isinstance(value, str) and re.fullmatch(r'[0-9]{8}-[a-f0-9]{12}', value) is not None
 
 
 def validate_daily_outfit(value):
@@ -21,40 +42,46 @@ def validate_daily_outfit(value):
         raise ValueError('WARDROBE_OUTFIT_INVALID')
     date.fromisoformat(value['date'])
     if (value['timezone']!='Asia/Shanghai' or type(value['preference_revision']) is not int
-            or value['preference_revision']<1 or value['style_id'] not in DAILY_STYLES[1:]
-            or value['catalog_version']!=DAILY_CATALOG
-            or not isinstance(value['look_id'],str) or value['look_id'] not in DAILY_LOOKS[value['style_id']]
+            or value['preference_revision']<1 or not valid_style_id(value['style_id']) or value['style_id']=='original'
+            or not valid_catalog_version(value['catalog_version']) or not valid_look_id(value['look_id'])
+            or value['look_id'].rsplit('-',1)[0] != value['style_id']
+            or value['catalog_version'] in DAILY_CATALOGS and value['look_id'] not in DAILY_CATALOGS[value['catalog_version']].get(value['style_id'], ())
             or not isinstance(value['reference_sha256'],str) or not re.fullmatch(r'[a-f0-9]{64}',value['reference_sha256'])):
         raise ValueError('WARDROBE_OUTFIT_INVALID')
     return dict(value)
 
 
 def validate_cloud_state(value):
-    if not isinstance(value,dict) or value.get('catalog_version')!=DAILY_CATALOG or value.get('timezone')!='Asia/Shanghai':
+    if isinstance(value, dict) and value.get('catalog_protocol') == CLOUD_CATALOG_PROTOCOL:
+        return validate_dynamic_state(value)
+    if (not isinstance(value,dict) or not isinstance(value.get('catalog_version'), str)
+            or value['catalog_version'] not in DAILY_CATALOGS or value.get('timezone')!='Asia/Shanghai'):
         raise ValueError('WARDROBE_STATE_INVALID')
+    catalog_looks = DAILY_CATALOGS[value['catalog_version']]
+    catalog_styles = {'original', *catalog_looks}
     date.fromisoformat(value['date'])
     if 'purchases' in value:
         purchases = value['purchases']
         if (not isinstance(purchases,dict) or purchases.get('price_cents') != 500 or purchases.get('free_limit') != 3
                 or type(purchases.get('free_remaining')) is not int or not 0 <= purchases['free_remaining'] <= 3
                 or not isinstance(purchases.get('owned'),list)
-                or any(not isinstance(item,str) or item not in set().union(*DAILY_LOOKS.values()) for item in purchases['owned'])
+                or any(not isinstance(item,str) or item not in set().union(*catalog_looks.values()) for item in purchases['owned'])
                 or len(set(purchases['owned'])) != len(purchases['owned'])):
             raise ValueError('WARDROBE_STATE_INVALID')
     preference=value['wardrobe']
     if (not isinstance(preference,dict) or set(preference)!={'style_id','preference_revision'}
-            or preference['style_id'] not in DAILY_STYLES or type(preference['preference_revision']) is not int
+            or preference['style_id'] not in catalog_styles or type(preference['preference_revision']) is not int
             or preference['preference_revision']<0):
         raise ValueError('WARDROBE_STATE_INVALID')
     styles=value['wardrobe_styles']
     if (not isinstance(styles,list) or any(not isinstance(s,dict) for s in styles)
-            or len(styles) not in (len(LEGACY_DAILY_STYLES), len(DAILY_STYLES))
-            or {s.get('style_id') for s in styles} not in (set(LEGACY_DAILY_STYLES), set(DAILY_STYLES))
+            or len(styles) not in (len(LEGACY_DAILY_STYLES), len(catalog_styles))
+            or {s.get('style_id') for s in styles} not in (set(LEGACY_DAILY_STYLES), catalog_styles)
             or len({s.get('style_id') for s in styles}) != len(styles)
             or preference['style_id'] not in {s['style_id'] for s in styles}):
         raise ValueError('WARDROBE_STATE_INVALID')
     for style in styles:
-        allowed_looks = DAILY_LOOKS.get(style['style_id'], frozenset())
+        allowed_looks = catalog_looks.get(style['style_id'], frozenset())
         if not all(isinstance(style.get(k),str) and len(style[k])<=1000 for k in ('label','description')) or not isinstance(style.get('looks'),list) or len(style['looks'])>len(allowed_looks):
             raise ValueError('WARDROBE_STATE_INVALID')
         seen_looks = set()
@@ -65,7 +92,53 @@ def validate_cloud_state(value):
                 raise ValueError('WARDROBE_STATE_INVALID')
             seen_looks.add(look['look_id'])
     outfit=validate_daily_outfit(value.get('daily_outfit'))
-    if outfit and (outfit['date']!=value['date'] or outfit['style_id']!=preference['style_id'] or outfit['preference_revision']!=preference['preference_revision']):
+    if outfit and (outfit['look_id'] not in catalog_looks.get(outfit['style_id'], ())
+                  or outfit['date']!=value['date'] or outfit['style_id']!=preference['style_id'] or outfit['preference_revision']!=preference['preference_revision']):
+        raise ValueError('WARDROBE_STATE_INVALID')
+    return value
+
+
+def validate_dynamic_state(value):
+    """Trust the authenticated server's catalog, never paths or arbitrary URLs."""
+    from runtime.image_assets import validate_entry
+    if not valid_catalog_version(value.get('catalog_version')) or value.get('timezone') != 'Asia/Shanghai':
+        raise ValueError('WARDROBE_STATE_INVALID')
+    date.fromisoformat(value['date'])
+    styles = value.get('wardrobe_styles')
+    if not isinstance(styles, list) or not 1 <= len(styles) <= 100:
+        raise ValueError('WARDROBE_STATE_INVALID')
+    style_ids, look_ids, hashes = set(), set(), {}
+    for style in styles:
+        if not isinstance(style, dict) or not valid_style_id(style.get('style_id')) or style['style_id'] in style_ids:
+            raise ValueError('WARDROBE_STATE_INVALID')
+        sid = style['style_id']; style_ids.add(sid)
+        if (not all(isinstance(style.get(k), str) and len(style[k]) <= 1000 for k in ('label','description'))
+                or not isinstance(style.get('looks'), list) or len(style['looks']) > 1000):
+            raise ValueError('WARDROBE_STATE_INVALID')
+        for look in style['looks']:
+            if (not isinstance(look, dict) or not valid_look_id(look.get('look_id')) or sid == 'original'
+                    or look['look_id'].rsplit('-',1)[0] != sid or look['look_id'] in look_ids
+                    or not isinstance(look.get('label'), str) or not 1 <= len(look['label']) <= 200):
+                raise ValueError('WARDROBE_STATE_INVALID')
+            validate_entry('wardrobe', look['look_id'], look.get('image_asset'))
+            look_ids.add(look['look_id'])
+            hashes[look['look_id']] = look['image_asset']['sha256']
+    if 'original' not in style_ids or len(look_ids) > 1000:
+        raise ValueError('WARDROBE_STATE_INVALID')
+    pref = value.get('wardrobe')
+    if (not isinstance(pref, dict) or set(pref) != {'style_id','preference_revision'}
+            or pref['style_id'] not in style_ids or type(pref['preference_revision']) is not int or pref['preference_revision'] < 0):
+        raise ValueError('WARDROBE_STATE_INVALID')
+    purchases = value.get('purchases')
+    if purchases is not None and (not isinstance(purchases, dict) or purchases.get('price_cents') != 500
+            or purchases.get('free_limit') != 3 or type(purchases.get('free_remaining')) is not int
+            or not 0 <= purchases['free_remaining'] <= 3 or not isinstance(purchases.get('owned'), list)
+            or any(not valid_look_id(lid) for lid in purchases['owned'])
+            or len(set(purchases['owned'])) != len(purchases['owned']) or len(purchases['owned']) > 1000):
+        raise ValueError('WARDROBE_STATE_INVALID')
+    outfit = validate_daily_outfit(value.get('daily_outfit'))
+    if outfit and (outfit['look_id'] not in look_ids or outfit['reference_sha256'] != hashes[outfit['look_id']] or outfit['style_id'] != pref['style_id']
+            or outfit['preference_revision'] != pref['preference_revision'] or outfit['date'] != value['date']):
         raise ValueError('WARDROBE_STATE_INVALID')
     return value
 

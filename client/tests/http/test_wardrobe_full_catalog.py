@@ -10,8 +10,8 @@ from runtime.cloud_service import CloudError
 from runtime.remote_generation import RemoteGeneration
 
 # Approved category sizes; all labels and hashes below are synthetic fixtures.
-COUNTS = {'mori': 14, 'rebellious': 1, 'dark': 1, 'cargo': 1, 'tie-shorts': 1,
-          'french': 8, 'earth': 3, 'japanese': 4, 'sweet': 6, 'doll': 8}
+COUNTS = {'mori': 14, 'rebellious': 1, 'dark': 4, 'cargo': 1, 'tie-shorts': 1,
+          'french': 9, 'earth': 3, 'japanese': 6, 'sweet': 6, 'doll': 10, 'fantasy': 3}
 CATEGORIES = [{'id': style, 'name': style, 'description': 'Synthetic clothing',
                'looks': [{'id': f'{style}-{number:02}', 'label': 'Synthetic look',
                           'sha256': 'a' * 64} for number in range(1, count + 1)]}
@@ -38,21 +38,22 @@ def state(style_id='original'):
 
 
 @pytest.mark.parametrize('style_id,look_id,sha256', ALL_LOOKS)
-def test_all_trusted_47_daily_outfits(style_id, look_id, sha256):
+def test_all_trusted_58_daily_outfits(style_id, look_id, sha256):
     value = outfit(style_id, look_id, sha256)
     assert wardrobe.validate_daily_outfit(value) == value
 
 
 @pytest.mark.parametrize('style_id', ['original'] + [c['id'] for c in CATEGORIES])
-def test_all_11_preferences_accept_complete_server_catalog(style_id):
+def test_all_12_preferences_accept_complete_server_catalog(style_id):
     value = state(style_id)
     assert wardrobe.validate_cloud_state(value) == value
 
 
 @pytest.mark.parametrize('key,value', [
     ('reference_sha256', 'A' * 64), ('reference_sha256', '../secret'),
-    ('look_id', '../doll-08'), ('look_id', 'doll-09'), ('look_id', 'sweet-06'),
+    ('look_id', '../doll-08'), ('look_id', 'doll-11'), ('look_id', 'sweet-06'),
     ('style_id', 'original'), ('style_id', 'unknown'), ('catalog_version', 'untrusted'),
+    ('catalog_version', []),
     ('timezone', 'UTC'), ('preference_revision', True), ('preference_revision', 0),
 ])
 def test_daily_metadata_remains_strict(key, value):
@@ -92,6 +93,7 @@ def test_actual_adapter_all_styles_all_previews_and_all_daily_metadata():
     async def scenario():
         headers_seen = []
         async def catalog(request):
+            assert request.headers['X-Olivia-Wardrobe-Catalog'] == wardrobe.CLOUD_CATALOG_PROTOCOL
             headers_seen.append(request.headers.get('X-Olivia-Wardrobe-Protocol'))
             style_id = (await request.json())['style_id'] if request.method == 'POST' else 'original'
             return web.json_response(state(style_id))
@@ -111,7 +113,7 @@ def test_actual_adapter_all_styles_all_previews_and_all_daily_metadata():
         app.router.add_get('/v1/tasks/{task_id}', task)
         async with TestServer(app) as server:
             api = RemoteGeneration(str(server.make_url('')).rstrip('/'), 'synthetic-fixture')
-            assert len((await api.request('wardrobe_get', {}))['wardrobe_styles']) == 11
+            assert len((await api.request('wardrobe_get', {}))['wardrobe_styles']) == 12
             for c in CATEGORIES:
                 result = await api.request('wardrobe_set', {'request_id': 'fixture-' + c['id'], 'style_id': c['id']})
                 assert result['wardrobe']['style_id'] == c['id']
@@ -120,7 +122,24 @@ def test_actual_adapter_all_styles_all_previews_and_all_daily_metadata():
                 result = await api.request('status', {'task_id': str(i)})
                 assert result['media_plan']['daily_outfit']['look_id'] == look_id
             assert set(headers_seen) == {'daily-v2'}
-            for invalid in ('../secret', 'doll-09', 'earth-00', 'doll-99', 'original-01'):
+            for invalid in ('../secret', 'doll/11', 'earth-xx', 'doll-99999'):
                 with pytest.raises(CloudError) as caught: await api.wardrobe_image(invalid)
                 assert caught.value.code == 'WARDROBE_IMAGE_INVALID'
     asyncio.run(scenario())
+
+
+def test_rolling_upgrade_accepts_old_catalog_but_not_new_ids_under_old_version():
+    value = state()
+    value['catalog_version'] = wardrobe.PREVIOUS_DAILY_CATALOG
+    old = wardrobe.DAILY_CATALOGS[wardrobe.PREVIOUS_DAILY_CATALOG]
+    value['wardrobe_styles'] = [
+        {**s, 'looks': [look for look in s['looks'] if look['look_id'] in old.get(s['style_id'], ())]}
+        for s in value['wardrobe_styles'] if s['style_id'] == 'original' or s['style_id'] in old]
+    assert wardrobe.validate_cloud_state(value) == value
+    original = {**outfit(), 'catalog_version': wardrobe.PREVIOUS_DAILY_CATALOG}
+    assert wardrobe.validate_daily_outfit(original) == original
+    with pytest.raises(ValueError):
+        wardrobe.validate_daily_outfit({**outfit('fantasy', 'fantasy-02'),
+                                       'catalog_version': wardrobe.PREVIOUS_DAILY_CATALOG})
+    value['purchases'] = {'price_cents': 500, 'free_limit': 3, 'free_remaining': 2, 'owned': ['fantasy-02']}
+    with pytest.raises(ValueError): wardrobe.validate_cloud_state(value)
