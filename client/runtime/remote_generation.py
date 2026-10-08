@@ -78,6 +78,15 @@ class RemoteGeneration:
                 raise CloudError('GPU_REQUEST_INVALID', 400)
             payload = data
             path, method = '/v1/gifts', 'POST'
+        elif action == 'pets_get' and data == {}:
+            path, method = '/v1/pets', 'GET'
+        elif action == 'pets_post':
+            from runtime.pets import validate_request
+            try:
+                payload = validate_request(data)
+            except ValueError:
+                raise CloudError('GPU_REQUEST_INVALID', 400) from None
+            path, method = '/v1/pets', 'POST'
         elif action in ('billing_prices', 'billing_account', 'billing_statement') and data == {}:
             path, method = '/v1/billing/' + action.removeprefix('billing_'), 'GET'
         elif action in ('status', 'cancel', 'ack'):
@@ -114,6 +123,9 @@ class RemoteGeneration:
             if action in ('gifts_get', 'gifts_buy'):
                 from runtime.gifts import validate_gifts
                 return validate_gifts(result)
+            if action in ('pets_get', 'pets_post'):
+                from runtime.pets import validate_pets
+                return validate_pets(result)
             if action in ('wardrobe_get','wardrobe_set','wardrobe_buy'):
                 from runtime.wardrobe import validate_cloud_state
                 return validate_cloud_state(result)
