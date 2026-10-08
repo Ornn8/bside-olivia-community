@@ -3821,7 +3821,7 @@ async def _pets_tick() -> None:
         result = await RemoteGeneration(_os.environ['OLIVIA_GPU_API_URL'], _os.environ['OLIVIA_GPU_API_KEY']).request('pets_get', {})
     except CloudError:
         return
-    diary_store.remember_pets(result['pets'], datetime.now(timezone.utc))
+    diary_store.remember_pets(result['pets'], datetime.now(timezone.utc), [item['name'] for item in result['items'] if item['owned']])
 
 
 async def _diary_loop() -> None:
@@ -4572,7 +4572,7 @@ async def route(
             return err(exc.status, exc.code, {'error_code': exc.code})
         if diary_store is not None:
             try:
-                diary_store.remember_pets(result['pets'], datetime.now(timezone.utc))
+                diary_store.remember_pets(result['pets'], datetime.now(timezone.utc), [item['name'] for item in result['items'] if item['owned']])
             except (OSError, ValueError, sqlite3.Error):
                 pass
         return ok(result)

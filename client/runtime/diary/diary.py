@@ -235,7 +235,7 @@ class DiaryStore:
             db.execute("INSERT INTO diary_settings VALUES ('gifts',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                        (json.dumps(known, ensure_ascii=False),))
 
-    def remember_pets(self, pets, now):
+    def remember_pets(self, pets, now, items=()):
         """Keep the latest pet state from the cloud, with the day each pet first appeared."""
         with self._db() as db:
             row = db.execute("SELECT value FROM diary_settings WHERE key='pets'").fetchone()
@@ -243,10 +243,17 @@ class DiaryStore:
             current = [{**pet, 'adopted_on': known.get(pet['breed'], {}).get('adopted_on') or local_day(now)} for pet in pets]
             db.execute("INSERT INTO diary_settings VALUES ('pets',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                        (json.dumps(current, ensure_ascii=False),))
+            db.execute("INSERT INTO diary_settings VALUES ('pet_items',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                       (json.dumps(list(items), ensure_ascii=False),))
 
     def pets(self):
         with self._db() as db:
             row = db.execute("SELECT value FROM diary_settings WHERE key='pets'").fetchone()
+        return json.loads(row['value']) if row else []
+
+    def pet_items(self):
+        with self._db() as db:
+            row = db.execute("SELECT value FROM diary_settings WHERE key='pet_items'").fetchone()
         return json.loads(row['value']) if row else []
 
     def gifts(self):
@@ -371,7 +378,7 @@ class DiaryStore:
                 'SELECT day,text FROM diary_comments ORDER BY written_at')}
         gifts = self.gifts()
         from runtime.pets import context as pet_context
-        pets = pet_context(self.pets())
+        pets = pet_context(self.pets(), self.pet_items())
         if not recent and not facts and not gifts and not pets:
             return None
         entries = [{'day': r['day'], 'title': r['title'], 'body': r['body'][:CONTEXT_BODY_CHARS],
