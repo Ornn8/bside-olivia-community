@@ -4494,9 +4494,9 @@ async def route(
             if method=='POST':
                 if not companion_confirmed:
                     return err(403,'COMPANION_CONFIRMATION_REQUIRED',{})
-                if not isinstance(body,dict) or set(body)!={'request_id','style_id'}:
+                if not isinstance(body,dict) or set(body) not in ({'request_id','style_id'}, {'request_id','look_id','max_charge_cents'}):
                     return err(400,'WARDROBE_STYLE_INVALID',{})
-                result=await api.request('wardrobe_set',body)
+                result=await api.request('wardrobe_buy' if 'look_id' in body else 'wardrobe_set',body)
             elif method=='GET':
                 result=await api.request('wardrobe_get',{})
             else:

@@ -3904,6 +3904,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       .ow-gallery:has(.ow-garment:only-child){grid-template-columns:minmax(0,320px)}
       .ow-garment{margin:0;min-width:0}.ow-garment img{display:block;width:100%;aspect-ratio:3/4;object-fit:contain;background:#f7f6f2;border-radius:8px}
       .ow-garment figcaption{padding-top:9px;color:var(--ow-muted);font-size:12px;line-height:1.6;overflow-wrap:anywhere}
+      .ow-purchase{margin-top:10px;border:1px solid #7e7465;border-radius:6px;background:transparent;color:inherit;padding:8px 12px;font:inherit;cursor:pointer}.ow-purchase:disabled{opacity:.6;cursor:default}
       .ow-image-error{aspect-ratio:3/4;display:flex;align-items:center;justify-content:center;background:#292927;color:var(--ow-muted);font-size:13px;border-radius:8px;padding:12px}
       @media(max-width:900px){.ow-gallery{grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}}
       .ow-footer{margin-top:20px;padding-top:20px;border-top:1px solid #49443c;display:flex;align-items:center;gap:18px;flex-wrap:wrap}
@@ -3982,10 +3983,12 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const feedback=document.createElement('div');feedback.className='ow-feedback';
     const status=text('p','正在读取衣橱…');status.setAttribute('role','status');
     const retry=button('重新读取',()=>{void load();});retry.className='ow-retry';retry.hidden=true;feedback.append(status,retry);
-    let selected=null,preview=null,busy=false,styles=[],daily=null;const tabs=[];
+    let selected=null,preview=null,busy=false,styles=[],daily=null,purchases=null;const tabs=[];
+    const purchaseNote=text('p','');intro.append(purchaseNote);
     const render=()=>{
       const saved=styles.find(style=>style.style_id===selected),outfit=styles.find(style=>style.style_id===preview);
       currentLabel.textContent=saved?.label||'尚未读取';
+      purchaseNote.textContent=purchases?'服装每件 ¥5，一次解锁长期使用；还可自选免费领取 '+purchases.free_remaining+' / 3 件。原版日常免费。':'';
       for(const tab of tabs){tab.disabled=busy;tab.setAttribute('aria-selected',String(tab.dataset.style===preview));tab.tabIndex=tab.dataset.style===preview?0:-1;tab.querySelector('small').textContent=tab.dataset.style===selected?'已选择':tab.dataset.style===preview?'正在查看':'';}
       if(outfit){
         look.setAttribute('aria-labelledby','ow-style-'+outfit.style_id);
@@ -3998,15 +4001,34 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           const image=document.createElement('img');image.alt=item.label;image.loading='lazy';image.src=item.image_url;
           image.addEventListener('error',()=>{image.replaceWith(text('span','参考图暂未加载，请重新读取。','ow-image-error'));},{once:true});
           const caption=text('figcaption',item.label+(daily?.look_id===item.look_id?' · 今日穿搭':''));figure.append(image,caption);gallery.append(figure);
+          if(purchases){
+            const owned=purchases.owned.includes(item.look_id);
+            let armed=false;const cap=purchases.free_remaining>0?0:500;
+            const claim=button(owned?'已拥有':cap===0?'免费领取':'¥5 解锁',()=>{
+              if(!armed){armed=true;claim.textContent=cap===0?'确认免费领取':'确认购买 · ¥5';status.textContent=cap===0?'领取「'+item.label+'」会占用一个免费自选名额。':'购买「'+item.label+'」将从余额扣除 ¥5，解锁后长期可用。';return;}
+              void acquire(item,cap);
+            });
+            claim.disabled=busy||owned;claim.className='ow-purchase';figure.append(claim);
+          }
         }
         gallery.hidden=!(outfit.looks||[]).length;
         for(const [i,value] of (outfit.pieces||[]).entries()){const row=document.createElement('div');row.className='ow-piece';row.append(text('dt',['上装','下装','鞋履与配饰'][i]||'搭配'),text('dd',value));pieces.append(row);}
         for(const color of outfit.colors||[]){if(!/^#[0-9a-f]{6}$/i.test(color))continue;const swatch=document.createElement('span');swatch.style.backgroundColor=color;swatches.append(swatch);}
       }
-      apply.disabled=busy||selected===null||preview===selected;
+      apply.disabled=busy||selected===null||preview===selected||Boolean(purchases&&preview!=='original'&&!(outfit?.looks||[]).some(item=>purchases.owned.includes(item.look_id)));
       apply.textContent=busy?'正在保存…':preview===selected&&selected!==null?'已指定此风格':'指定这个风格';retry.disabled=busy;
     };
     const browse=value=>{preview=value;render();};
+    const acquire=async(item,cap)=>{
+      if(busy||!purchases||purchases.owned.includes(item.look_id))return;
+      busy=true;render();status.textContent='正在解锁…';
+      try{
+        const result=await routeRequest('/toy/world/wardrobe',{request_id:videoReplyRequestId(),look_id:item.look_id,max_charge_cents:cap},{confirmed:true});
+        purchases=result.purchases;daily=result.daily_outfit||null;selected=result.wardrobe.style_id;
+        status.textContent='已解锁「'+item.label+'」，可以指定此风格供林离搭配。';
+      }catch(_){status.textContent='未确认解锁成功，请重新读取衣橱。余额不足请先充值；免费名额若已用完，需要另行确认 ¥5 购买。';retry.hidden=false;}
+      finally{busy=false;render();}
+    };
     rail.addEventListener('keydown',event=>{
       if(!['ArrowRight','ArrowLeft','ArrowDown','ArrowUp','Home','End'].includes(event.key)||busy||!tabs.length)return;
       event.preventDefault();const index=tabs.findIndex(tab=>tab.dataset.style===preview);
@@ -4029,7 +4051,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       try{
         const result=await routeRequest('/toy/world/wardrobe');
         if(!Array.isArray(result.wardrobe_styles)||!result.wardrobe_styles.some(style=>style.style_id===result.wardrobe?.style_id))throw Error('invalid wardrobe');
-        styles=result.wardrobe_styles;selected=preview=result.wardrobe.style_id;daily=result.daily_outfit||null;tabs.length=0;rail.replaceChildren();
+        styles=result.wardrobe_styles;selected=preview=result.wardrobe.style_id;daily=result.daily_outfit||null;purchases=result.purchases||null;tabs.length=0;rail.replaceChildren();
         for(const style of styles){
           const tab=button('',()=>browse(style.style_id));tab.className='ow-style';tab.dataset.style=style.style_id;tab.id='ow-style-'+style.style_id;
           tab.setAttribute('role','tab');tab.setAttribute('aria-controls',look.id);tab.setAttribute('aria-label',style.label);
