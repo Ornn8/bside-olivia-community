@@ -1896,6 +1896,35 @@ function Register-VerifiedMemoryRuntime {
     }
 }
 
+function ConvertTo-ExtendedPath {
+    param([Parameter(Mandatory)][string]$Path)
+    $full = [IO.Path]::GetFullPath($Path)
+    if ($full.StartsWith('\\?\')) { return $full }
+    if ($full.StartsWith('\\')) { return '\\?\UNC\' + $full.Substring(2) }
+    return '\\?\' + $full
+}
+
+function Install-ManagedCoreDependencies {
+    param([string]$PythonExe, [string]$PipBootstrap, [string]$SitePackages,
+          [string]$Wheelhouse, [string]$Requirements, [string]$PipInstaller)
+    # pip extracts into TEMP before moving into --target. Both paths must
+    # work without the machine-wide LongPathsEnabled registry option.
+    $temporary = ConvertTo-ExtendedPath ([IO.Path]::GetTempPath().TrimEnd('\'))
+    $previous = @{}
+    foreach ($name in @('TEMP', 'TMP', 'TMPDIR')) {
+        $previous[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+    }
+    try {
+        foreach ($name in $previous.Keys) { [Environment]::SetEnvironmentVariable($name, $temporary, 'Process') }
+        & $PythonExe '-m' 'zipfile' '-e' (ConvertTo-ExtendedPath $PipBootstrap) (ConvertTo-ExtendedPath $SitePackages)
+        if ($LASTEXITCODE -ne 0) { throw 'OFFLINE_CORE_PIP_BOOTSTRAP_FAILED' }
+        & $PythonExe (ConvertTo-ExtendedPath $PipInstaller) 'install' '--disable-pip-version-check' '--no-index' '--find-links' (ConvertTo-ExtendedPath $Wheelhouse) '--require-hashes' '--only-binary=:all:' '--target' (ConvertTo-ExtendedPath $SitePackages) '-r' (ConvertTo-ExtendedPath $Requirements)
+        if ($LASTEXITCODE -ne 0) { throw 'OFFLINE_CORE_DEPENDENCY_INSTALL_FAILED' }
+    } finally {
+        foreach ($name in $previous.Keys) { [Environment]::SetEnvironmentVariable($name, $previous[$name], 'Process') }
+    }
+}
+
 function Test-ManagedServerDependencies {
     param(
         [Parameter(Mandatory)]
@@ -1903,7 +1932,8 @@ function Test-ManagedServerDependencies {
     )
 
     try {
-        & $PythonExe '-c' "import aiohttp,jsonschema,io; from PIL import Image; b=io.BytesIO(); Image.new('RGB',(2,2)).save(b,format='PNG'); b.seek(0); Image.open(b).load()" 2>$null
+        $packages = ConvertTo-ExtendedPath (Join-Path (Split-Path -Parent $PythonExe) 'site-packages')
+        & $PythonExe '-c' "import sys; sys.path.insert(0,sys.argv[1]); import aiohttp,jsonschema,io; from PIL import Image; b=io.BytesIO(); Image.new('RGB',(2,2)).save(b,format='PNG'); b.seek(0); Image.open(b).load()" $packages 2>$null
         return $LASTEXITCODE -eq 0
     } catch {
         if ($LASTEXITCODE -eq 0) { throw }
@@ -1958,10 +1988,7 @@ try {
     if (-not $pth) { throw 'OFFLINE_CORE_RUNTIME_INVALID' }
     Update-ManagedPythonPath -PthPath $pth.FullName
     if (-not (Test-ManagedServerDependencies -PythonExe $candidateExe)) {
-        & $candidateExe '-m' 'zipfile' '-e' $coreAssets.PipBootstrap $sitePackages
-        if ($LASTEXITCODE -ne 0) { throw 'OFFLINE_CORE_PIP_BOOTSTRAP_FAILED' }
-        & $candidateExe '-m' 'pip' 'install' '--disable-pip-version-check' '--no-index' '--find-links' $coreAssets.Wheelhouse '--require-hashes' '--only-binary=:all:' '--target' $sitePackages '-r' $requirements
-        if ($LASTEXITCODE -ne 0) { throw 'OFFLINE_CORE_DEPENDENCY_INSTALL_FAILED' }
+        Install-ManagedCoreDependencies -PythonExe $candidateExe -PipBootstrap $coreAssets.PipBootstrap -SitePackages $sitePackages -Wheelhouse $coreAssets.Wheelhouse -Requirements $requirements -PipInstaller (Join-Path $PayloadRoot 'installer\pip_runtime.py')
         if (-not (Test-ManagedServerDependencies -PythonExe $candidateExe)) {
             throw 'OFFLINE_CORE_DEPENDENCY_VERIFY_FAILED'
         }

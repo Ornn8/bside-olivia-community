@@ -580,7 +580,7 @@ def test_breeze_runtime_bootstrap_is_hash_locked_and_wheel_only(
     assert "--no-deps" in command
     assert "--only-binary=:all:" in command
     assert "--find-links" in command
-    assert str(tmp_path / "breeze" / "wheels") in command
+    assert video_capability_install.native_path(tmp_path / "breeze" / "wheels") in command
     assert "--no-index" in command
     assert "--extra-index-url" not in command
     assert "--no-binary" not in command
