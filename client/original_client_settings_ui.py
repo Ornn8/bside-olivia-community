@@ -4109,7 +4109,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const grid=document.createElement('section');grid.className='oi-grid';
     for(const [title,copy,path,label] of [['衣橱','给她挑每天的穿搭风格。','/world/wardrobe','打开林离的衣橱'],
         ['拍摄设备','你送她的相机，她拍照时会自己挑着用。','/world/cameras','打开林离的拍摄设备'],
-        ['宠物','领养一只猫或狗陪她，会慢慢长大，也会出现在她的照片里。','/world/pets','打开林离的宠物'],
+        ['宠物','领养一只猫陪她，会慢慢长大，也会出现在她的照片里。','/world/pets','打开林离的宠物'],
         ['日记本','她每天写给你看的日记和以前的回忆。','/world/diary','打开林离的日记本']]){
       const card=document.createElement('button');card.type='button';card.className='oi-card';card.setAttribute('aria-label',label);
       const heading=text('strong',title);if(path==='/world/diary')heading.setAttribute('data-diary-badge','');
@@ -4317,7 +4317,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       .catch(()=>{if(page.isConnected)main.replaceChildren(text('p','拍摄设备暂时打不开。','oc-note'),button('重试',()=>mountCamerasPage(page)));});
   };
   const mountPetsPage = page => {
-    page.setAttribute('data-olivia-pets-page','');page.setAttribute('aria-label','林离的宠物');
+    page.setAttribute('data-olivia-pets-page','');page.setAttribute('aria-label','林离的猫');
     const style=document.createElement('style');style.textContent=`
       [data-olivia-pets-page]{width:100%;height:100%;min-height:0;color:#ded9d1;display:flex;flex-direction:column;gap:16px;-webkit-app-region:no-drag}
       [data-olivia-pets-page] h1{font-size:30px;margin:0;font-weight:700}
@@ -4327,11 +4327,12 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       .op-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:16px;margin-bottom:20px}
       .op-card{border:1px solid #383a3e;border-radius:12px;background:#1f2023;padding:18px;display:flex;flex-direction:column;gap:8px}
       .op-card img{width:100%;aspect-ratio:3/4;object-fit:cover;background:#f4f1ec;border-radius:8px}
+      .op-card.op-item img{aspect-ratio:1/1;object-fit:contain}
       .op-card strong{font-size:18px}.op-card small{color:#acb0b4}
       .op-card p{margin:0;color:#acb0b4;font-size:14px;line-height:1.6}
       .op-card input{border:1px solid #4a4c52;border-radius:8px;background:#151618;color:#ded9d1;padding:8px 10px;font:inherit}
       .op-card button{align-self:flex-start;border:1px solid #686a70;border-radius:999px;background:transparent;color:#ded9d1;padding:8px 18px;font:inherit;cursor:pointer}
-      .op-card button:disabled{opacity:.6;cursor:default}
+      .op-card button:disabled{opacity:.6;cursor:default}.op-owned{color:#b6c8b0;font-size:13px}
       .op-status{color:#acb0b4;font-size:13px;min-height:20px}
       .ow-breadcrumb{display:flex;gap:10px;align-items:center;color:#acb0b4;font-size:14px}.ow-breadcrumb a{color:#ded9d1;text-decoration:none}
     `;
@@ -4340,58 +4341,83 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const status=document.createElement('p');status.className='op-status';status.setAttribute('role','status');
     page.replaceChildren(style,header,itemsBreadcrumb('宠物'),main);
     const yuan=cents=>'¥'+(cents/100).toFixed(2);
-    const picture=(breed,stage,alt)=>{
+    const picture=(path,alt)=>{
       const image=document.createElement('img');image.alt=alt;image.loading='lazy';
-      image.src=new URL('/toy/images/ui/pet-'+breed+'-'+stage,apiBase).href;
+      image.src=new URL('/toy/images/ui/'+path,apiBase).href;
       image.addEventListener('error',()=>image.remove());return image;
     };
     const failure=error=>String(error?.message||'').includes('BALANCE')?'余额不足，请先在右上角「账户」充值。':'没有成功，没有扣费，可以重新尝试。';
-    const pendingFood={};
+    const confirmed=(label,confirmText,hint,action)=>{
+      let armed=false;
+      const control=button(label,async()=>{
+        if(!armed){armed=true;control.textContent=confirmText;status.textContent=hint;return;}
+        control.disabled=true;
+        try{await action();}
+        catch(error){control.disabled=false;armed=false;control.textContent=label;status.textContent=failure(error);}
+      });
+      return control;
+    };
     const render=data=>{
-      const owned=new Set(data.pets.map(pet=>pet.breed));
-      const nodes=[text('p','领养一只宠物陪她：'+yuan(data.adopt_cents)+'，附一袋粮，够吃 '+data.bag_days+' 天。她每天喂它，吃满天数就会长大；'
-        +'粮吃完了它只是暂停长大，不会生病也不会饿着。她在家拍照时会带上它，狗狗出门散步时也会跟着。'
+      const nodes=[text('p','领养一只猫陪她：'+yuan(data.adopt_cents)+'，最多 '+data.max_pets+' 只。猫粮不用买，她每天都会喂；'
+        +'你也可以让她多喂几次（每天最多 '+data.feeds_per_day+' 次），常常多喂会把它养得圆滚滚。'
+        +'猫会慢慢长大，正好在她身边时会出现在她的照片里。'
         +(typeof data.balance_cents==='number'?' 账户余额 '+yuan(data.balance_cents)+'。':''),'op-note')];
       if(data.pets.length){
-        nodes.push(text('h2','她的宠物'));
+        nodes.push(text('h2','她的猫'));
         const grid=document.createElement('div');grid.className='op-grid';
         for(const pet of data.pets){
           const card=document.createElement('article');card.className='op-card';
-          const food=data.foods[pet.species];
-          const growth=pet.next_stage_at===null?'已经长大了。':'已经吃了 '+pet.fed_days+' 天，再吃 '+(pet.next_stage_at-pet.fed_days)+' 天就长大一点。';
-          card.append(picture(pet.breed,pet.stage,pet.name),text('strong',pet.name),text('small',pet.breed_name+' · '+pet.stage_name+' · 这会儿在'+pet.room),
-            text('p',growth),text('p',pet.food_days>0?food+'还够吃 '+pet.food_days+' 天。':food+'吃完了，它会先停在现在的样子。'));
-          let armed=false;
-          const label='买一袋'+food+' · '+yuan(data.food_cents);
-          const buy=button(label,async()=>{
-            if(!armed){armed=true;buy.textContent='确认购买（'+yuan(data.food_cents)+'）';status.textContent='会从账户余额扣除，一袋够吃 '+data.bag_days+' 天。';return;}
-            buy.disabled=true;
-            pendingFood[pet.species]=pendingFood[pet.species]||'food-'+Date.now().toString(36)+Math.random().toString(36).slice(2,10);
-            try{const result=await routeRequest('/toy/world/pets',{action:'food',species:pet.species,request_id:pendingFood[pet.species]},{confirmed:true});
-              delete pendingFood[pet.species];status.textContent='买好了，她会接着每天喂它。';render(result);}
-            catch(error){buy.disabled=false;armed=false;buy.textContent=label;status.textContent=failure(error);}
+          const growth=pet.next_stage_in===null?'已经长大了。':'再过 '+pet.next_stage_in+' 天就长大一点。';
+          card.append(picture('pet-'+(pet.image||pet.breed+'-'+pet.stage),pet.name),text('strong',pet.name),
+            text('small',pet.breed_name+' · '+pet.stage_name+' · '+pet.personality_name+' · '+pet.build_name),
+            text('p',growth+' 这会儿在'+pet.room+'。'));
+          const left=pet.feeds_left_today;
+          const feed=button(left?'让她喂一下（今天还能喂 '+left+' 次）':'今天已经喂饱了',async()=>{
+            feed.disabled=true;
+            try{const result=await routeRequest('/toy/world/pets',{action:'feed',breed:pet.breed},{confirmed:true});
+              status.textContent=result.fed?'她给「'+pet.name+'」加了一顿。':'今天已经喂饱了，明天再来。';render(result);}
+            catch(error){feed.disabled=false;status.textContent='没喂上，可以再试一次。';}
           });
-          card.append(buy);grid.append(card);
+          feed.disabled=!left;
+          card.append(feed);grid.append(card);
         }
         nodes.push(grid);
+        nodes.push(text('h2','猫用品'));
+        const shop=document.createElement('div');shop.className='op-grid';
+        for(const item of data.items){
+          const card=document.createElement('article');card.className='op-card op-item';
+          card.append(picture('pet-item-'+item.id,item.name),text('strong',item.name),
+            text('small',item.kind==='wear'?'穿戴在猫身上':'摆在她家里'),text('p',item.summary));
+          if(item.owned){card.append(text('span','已经买了，会出现在她的照片里','op-owned'));}
+          else{
+            card.append(confirmed('买给它 · '+yuan(item.price_cents),'确认购买（'+yuan(item.price_cents)+'）',
+              '会从账户余额扣除，买一次一直都在。',async()=>{
+                const result=await routeRequest('/toy/world/pets',{action:'item',item:item.id},{confirmed:true});
+                status.textContent='买好了！'+item.name+'会出现在她的照片里。';render(result);
+              }));
+          }
+          shop.append(card);
+        }
+        nodes.push(shop);
       }
+      const owned=new Set(data.pets.map(pet=>pet.breed));
       const available=data.breeds.filter(breed=>!owned.has(breed.id));
-      if(available.length){
+      if(available.length&&data.pets.length<data.max_pets){
         nodes.push(text('h2','领养'));
         const grid=document.createElement('div');grid.className='op-grid';
         for(const breed of available){
           const card=document.createElement('article');card.className='op-card';
           const name=document.createElement('input');name.maxLength=8;name.placeholder='给它起个名字（8 字以内）';name.setAttribute('aria-label','给'+breed.name+'起名字');
-          card.append(picture(breed.id,1,breed.name),text('strong',breed.name),text('small',breed.stages.join(' → ')),text('p',breed.summary),name);
+          card.append(picture('pet-'+(breed.image||breed.id+'-1'),breed.name),text('strong',breed.name),text('small',breed.stages.join(' → ')),text('p',breed.summary),name);
           let armed=false;
           const label='领养 · '+yuan(data.adopt_cents);
           const adopt=button(label,async()=>{
             const chosen=name.value.trim();
             if(!chosen){status.textContent='先给它起个名字吧。';name.focus();return;}
-            if(!armed){armed=true;adopt.textContent='确认领养「'+chosen+'」（'+yuan(data.adopt_cents)+'）';status.textContent='会从账户余额扣除，含一袋粮。';return;}
+            if(!armed){armed=true;adopt.textContent='确认领养「'+chosen+'」（'+yuan(data.adopt_cents)+'）';status.textContent='会从账户余额扣除。';return;}
             adopt.disabled=true;
             try{const result=await routeRequest('/toy/world/pets',{action:'adopt',breed:breed.id,name:chosen},{confirmed:true});
-              status.textContent='「'+chosen+'」到家了！她拍照时会带上它。';render(result);}
+              status.textContent='「'+chosen+'」到家了！';render(result);}
             catch(error){adopt.disabled=false;armed=false;adopt.textContent=label;
               status.textContent=String(error?.message||'').includes('GPU_REQUEST_INVALID')?'名字里不能有特殊符号，换一个试试。':failure(error);}
           });
@@ -4402,7 +4428,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       }
       main.replaceChildren(...nodes,status);
     };
-    main.append(text('p','正在看看她的宠物……','op-note'));
+    main.append(text('p','正在看看她的猫……','op-note'));
     void routeRequest('/toy/world/pets').then(data=>{if(page.isConnected)render(data);})
       .catch(()=>{if(page.isConnected)main.replaceChildren(text('p','宠物暂时打不开。','op-note'),button('重试',()=>mountPetsPage(page)));});
   };

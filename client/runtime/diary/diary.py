@@ -235,7 +235,7 @@ class DiaryStore:
             db.execute("INSERT INTO diary_settings VALUES ('gifts',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                        (json.dumps(known, ensure_ascii=False),))
 
-    def remember_pets(self, pets, now):
+    def remember_pets(self, pets, now, items=()):
         """Keep the latest pet state from the cloud, with the day each pet first appeared."""
         with self._db() as db:
             row = db.execute("SELECT value FROM diary_settings WHERE key='pets'").fetchone()
@@ -243,11 +243,41 @@ class DiaryStore:
             current = [{**pet, 'adopted_on': known.get(pet['breed'], {}).get('adopted_on') or local_day(now)} for pet in pets]
             db.execute("INSERT INTO diary_settings VALUES ('pets',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                        (json.dumps(current, ensure_ascii=False),))
+            db.execute("INSERT INTO diary_settings VALUES ('pet_items',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                       (json.dumps(list(items), ensure_ascii=False),))
 
     def pets(self):
         with self._db() as db:
             row = db.execute("SELECT value FROM diary_settings WHERE key='pets'").fetchone()
         return json.loads(row['value']) if row else []
+
+    def pet_items(self):
+        with self._db() as db:
+            row = db.execute("SELECT value FROM diary_settings WHERE key='pet_items'").fetchone()
+        return json.loads(row['value']) if row else []
+
+    def remember_wardrobe(self, state, now):
+        """Keep the clothes she owns and what she wears today, from the cloud wardrobe state."""
+        names = {look['look_id']: f"{style['label']}·{look['label']}" if look['label'] != style['label'] else style['label']
+                 for style in state.get('wardrobe_styles', []) for look in style.get('looks', [])}
+        owned = [names[look] for look in (state.get('purchases') or {}).get('owned', []) if look in names]
+        outfit = state.get('daily_outfit') or {}
+        value = {'owned': owned, 'today': ({'date': outfit['date'], 'outfit': names[outfit['look_id']]}
+                                           if outfit.get('look_id') in names else None)}
+        with self._db() as db:
+            db.execute("INSERT INTO diary_settings VALUES ('wardrobe',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                       (json.dumps(value, ensure_ascii=False),))
+
+    def wardrobe(self, now):
+        """Owned clothes, and today's outfit only on the day it was chosen for."""
+        with self._db() as db:
+            row = db.execute("SELECT value FROM diary_settings WHERE key='wardrobe'").fetchone()
+        if not row:
+            return None
+        value = json.loads(row['value'])
+        today = value.get('today')
+        return {'owned': value.get('owned', []),
+                'today': today['outfit'] if today and today.get('date') == local_day(now) else None}
 
     def gifts(self):
         with self._db() as db:
@@ -371,8 +401,14 @@ class DiaryStore:
                 'SELECT day,text FROM diary_comments ORDER BY written_at')}
         gifts = self.gifts()
         from runtime.pets import context as pet_context
-        pets = pet_context(self.pets())
-        if not recent and not facts and not gifts and not pets:
+        pets = pet_context(self.pets(), self.pet_items())
+        wardrobe = self.wardrobe(now) or {}
+        clothes = {**({'clothes_from_user': wardrobe['owned']} if wardrobe.get('owned') else {}),
+                   **({'wearing_today': wardrobe['today']} if wardrobe.get('today') else {})}
+        if clothes:
+            clothes['clothes_meaning'] = ('clothes_from_user 是对方给你挑或买的衣服，都在你衣柜里，平时会换着穿；'
+                                          'wearing_today 是你今天穿的那套，今天发的照片和视频里也是这一身。')
+        if not recent and not facts and not gifts and not pets and not clothes:
             return None
         entries = [{'day': r['day'], 'title': r['title'], 'body': r['body'][:CONTEXT_BODY_CHARS],
                     **({'user_comment': comments[r['day']][:200]} if r['day'] in comments else {})}
@@ -383,7 +419,7 @@ class DiaryStore:
                            'recent_entries': entries, 'facts': facts[:CONTEXT_FACTS],
                            **({'gifts_from_user': gifts, 'gifts_meaning': '对方送你的相机，都在你身边，拍照时会挑着用；'
                                'received_on 是收到的那天，那天还没道谢的话可以自然提起。'} if gifts else {}),
-                           **(pets or {})},
+                           **(pets or {}), **clothes},
                           ensure_ascii=False, separators=(',', ':'))
 
 
