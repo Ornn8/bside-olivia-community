@@ -58,6 +58,13 @@ _TEXT_RECOVERY_NOTE = (
     '本轮只有文字回应权限，没有有效媒体或控制计划。用户要求的媒体尚未完成，'
     '不得声称已经制作、发送或兑现；偏好、未来任务和记忆不得改变，也不能承诺稍后主动发送。'
 )
+# The asked-for form (voice, video, a song) cannot be delivered this turn. The
+# message still deserves an answer: reply in text and say so plainly.
+_UNSUPPORTED_MEDIA_NOTE = (
+    '本轮用户要求或适合的形式（例如语音、视频、点歌）现在无法交付，只能用文字回复。'
+    '先正常回应当前原话的内容，再自然地说一句这次先用文字回，不解释系统原因，'
+    '不声称已经发出或稍后会发送语音、视频或歌曲。'
+)
 _TEXT_RECOVERY_OUTPUT = (
     '\n本轮恢复路径只输出文字：delivery="text",text_reason=null,skip=false,sticker=null，'
     'listening、initiative、letter均为keep，pause_until、letter_until、followup_at均为null，'
@@ -545,7 +552,9 @@ class ReplyPipeline:
                               else companion_delivery)),
                     max_input_chars=original_budget-len(generation_note)-2)
             except CompanionRuntimeError as error:
-                if not text_recovery_allowed or str(error) not in _TEXT_RECOVERY_CODES or companion_decision is not None:
+                unsupported = str(error) == 'JEV_PLAN_UNSUPPORTED'
+                if (not text_recovery_allowed or str(error) not in _TEXT_RECOVERY_CODES and not unsupported
+                        or companion_decision is not None and not unsupported):
                     return PipelineResult(getattr(request, 'request_id', ''), ReplyState.FAILED,
                         error_code=str(error), companion_decision=companion_decision,
                         failure_context=getattr(error, 'failure_context', {}))
@@ -557,7 +566,8 @@ class ReplyPipeline:
             from .fact_attribution import finalize_reply_messages
             try:
                 prepared = replace(prepared, messages=finalize_reply_messages(
-                    _generation_messages(prepared), _TEXT_RECOVERY_NOTE,
+                    _generation_messages(prepared),
+                    _UNSUPPORTED_MEDIA_NOTE if degraded.get('decision') == 'JEV_PLAN_UNSUPPORTED' else _TEXT_RECOVERY_NOTE,
                     max_input_chars=original_budget-len(generation_note)-len(_TEXT_RECOVERY_OUTPUT)-2))
             except ValueError:
                 return PipelineResult(getattr(request, 'request_id', ''), ReplyState.FAILED,

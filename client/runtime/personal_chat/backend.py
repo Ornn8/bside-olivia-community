@@ -631,9 +631,12 @@ async def _generate_billed(server, event, row):
         basis = 'WRITER_SELECTION'
         if companion is not None:
             delivery = row['companion_delivery']
-            if delivery not in semantic_kinds:
-                raise RuntimeError('JEV_PLAN_UNSUPPORTED')
             if delivery == 'video_speech' and not decision.get('daily_video_request'):
+                # The plan chose her current-moment video but the writer left the
+                # video out: the written reply still goes out, without a video.
+                delivery = row['companion_delivery'] = 'text'
+                row['daily_video_dropped'] = 'WRITER_OMITTED'
+            if delivery not in semantic_kinds:
                 raise RuntimeError('JEV_PLAN_UNSUPPORTED')
             mode = 'voice' if delivery == 'audio_speech' else 'text'
             basis = 'JEV_MEDIA_PLAN'

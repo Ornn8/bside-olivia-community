@@ -152,11 +152,12 @@ _LAYER_SPECS = {
             "二十一、语气与回复原则",
             "二十二、疲劳与低带宽状态",
         ),
-        "codes": ("GENERIC_COUNSELOR", "STYLE_DRIFT"),
+        "codes": ("GENERIC_COUNSELOR", "STYLE_DRIFT", "OFF_TURN_REPLY"),
         "question": (
             "Does the reply directly engage one or two live emotional cores "
             "of the current input, rather than exhaustively recap, make a "
-            "checklist, give generic counselling, or force resolution?"
+            "checklist, give generic counselling, or force resolution? "
+            "It must answer the last user message, not an earlier one."
         ),
     },
     "continuity_memory": {
@@ -948,6 +949,15 @@ class GatewayPersonaRewriter:
             if delivery_length_contract is not None
             else ""
         )
+        off_turn_repair = (
+            " OFF_TURN_REPLY means the candidate answered an earlier message instead of "
+            "the last user message. Write a fresh reply to the last user message itself; "
+            "bring up the earlier topic only if that message refers to it. "
+            "候选回应的是更早的消息，不是最后一条用户消息：重写为对最后一条消息本身的回应，"
+            "最后一条没有提到的旧话题不要接。"
+            if "OFF_TURN_REPLY" in violation_codes
+            else ""
+        )
         text_letter_repair = (
             " In text_letter, do not add a question just to create a closing; "
             "preserve genuine curiosity about what the user shared, even when "
@@ -985,6 +995,7 @@ class GatewayPersonaRewriter:
                     "Did I explain why I chose to say it this way? "
                     "Did I include more than one reminder or piece of advice? "
                     "Revise as needed without outputting the checklist."
+                    f"{off_turn_repair}"
                     f"{text_letter_repair}"
                     f"{evidence_repair}"
                     f"{delivery_length_repair}"
@@ -2404,7 +2415,9 @@ def _aggregate_layer_results(
             # fact, permission and text-integrity evidence belongs to its own layer.
             severity = ('soft' if name in {'focus_response', 'autonomy_life'}
                         else 'hard' if item.hard_violations or item.score == 0 else 'soft')
-            entries.extend((code, severity, None) for code in codes)
+            # Answering an earlier message instead of this one is not a preference:
+            # the user's message went unanswered, so it is rewritten.
+            entries.extend((code, 'hard' if code == 'OFF_TURN_REPLY' else severity, None) for code in codes)
         for code, severity, evidence in entries:
             start = evidence.start if evidence is not None else 0
             end = evidence.end if evidence is not None else len(candidate)

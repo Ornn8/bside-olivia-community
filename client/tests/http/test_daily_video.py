@@ -892,6 +892,20 @@ def test_delayed_ready_video_sends_capture_caption_with_same_ack(tmp_path):
     asyncio.run(scenario())
 
 
+def test_video_plan_without_writer_video_still_delivers_the_reply(tmp_path, monkeypatch):
+    from runtime.personal_chat import backend
+    from runtime.personal_chat.events import PersonalMessage
+    from tests.http.test_chat_jev_decision import server_fixture, pipeline_result
+    from tests.http.test_personal_chat_decision import envelope
+    result = pipeline_result(delivery='video_speech', text=envelope(text='刚收拾好，你看我这一小块。'))
+    server, row, calls, _, _ = server_fixture(monkeypatch, tmp_path, result)
+    row['daily_video_candidates'] = [{**payload(), 'detail': '实际整理过的小区域。'}]
+    reply = asyncio.run(backend.generate(server, PersonalMessage('qq', '100', '200', '1', '在干嘛'), row))
+    assert reply == '刚收拾好，你看我这一小块。' and len(calls) == 1
+    assert row['companion_delivery'] == 'text' and row['daily_video_dropped'] == 'WRITER_OMITTED'
+    assert 'daily_video_request' not in row
+
+
 @pytest.mark.parametrize('selection', [dict(event_id='missing', spoken_text='短视频正文。'),
     dict(event_id=payload()['event_id'], spoken_text='x' * 101),
     dict(event_id=payload()['event_id'], spoken_text='正文', scene_id='invented')])

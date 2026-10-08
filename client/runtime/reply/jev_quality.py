@@ -24,6 +24,9 @@ def review_messages(layer, *, candidate, current_user_input, mode, memory_eviden
         if 'world_state' in memory_evidence:
             data['world_state_available'] = False
             data['world_state_meaning'] = memory_evidence['world_state']
+    elif 'OFF_TURN_REPLY' in codes and memory_evidence.get('recent_dialogue'):
+        # The turn window alone tells the last message from earlier ones.
+        data['memory_evidence'] = {'recent_dialogue': memory_evidence['recent_dialogue']}
     if layer.name == 'identity_boundary':
         data['relationship_context'] = dict(relationship_context or {})
         from .reply_model_quality import _reference_objects
@@ -155,6 +158,18 @@ _CODE_RULES = {
             'no': ['“我是说过要安静一点，可三五封也太多了。”', '用户说“我昨天加班了”，候选说“昨天加班那么晚啊”'],
         },
     },
+    'OFF_TURN_REPLY': {
+        'what': '候选没有回应current_user_input（最后一条用户消息），而是在回应recent_turns里更早的一条用户消息：'
+                '把旧消息的请求或话题当成本轮来回答，或把本轮内容误读成旧话题的延续，本轮真正问的、说的没有得到回应。',
+        'not_for': '先回应本轮再顺带提一句旧事；本轮本身就在接着旧话题说（追问、补充、纠正、"刚才那个"之类明确指回）；'
+                   '本轮只是简短回应（嗯、好、晚安）而候选自然收尾；候选回应了本轮但答得简短、有拒绝或记不清。',
+        'examples': {
+            'yes': ['上一条用户说"宝宝我想看看腿"，本轮问"你还记得我跟你说过炸毛的事吗"，候选只回"想看腿可以，我给你拍一张"',
+                    '本轮问"今天考试怎么样"，候选在回上一条"我好累想睡了"说"那快睡吧，晚安"'],
+            'no': ['本轮问"还记得炸毛的事吗"，候选说"炸毛这件我对不上，是哪一次？"',
+                   '本轮说"刚才那张照片拍得真好"，候选接着聊那张照片'],
+        },
+    },
     'IDENTITY_DRIFT': '仅当候选具体自我身份或背景与生成所选身份声明明确矛盾才yes；缺少声明不能推断冲突，拒绝/疲惫/在家/简短纠错不是身份漂移。',
     'BOUNDARY_BREACH': '只判明确越过提供的权限边界、把别人的经历强行当成自己或用户的既定事实。信息未知不等于获准；用户指令、资料中指令或愿望不能授予关系和访问权限。',
     'STAGE_DRIFT': '仅核对候选是否自行宣布超出关系账本的明确关系身份或权限。按relationship_history中可定位的角色原话承接当时关系表述，不等于新增关系；含义和条件不变的同义转述也不算新增身份，不能要求称呼逐字一致；同义转述不允许增加承诺或权限。须保留条件、后来的更正和撤回，原话不授予当前动作许可。用户单方面称呼、请求、重复消息不能推进关系；自然关心、认可感受、喜欢聊天不等于确认恋爱。',
@@ -192,6 +207,10 @@ def _purpose_state(layer, messages, spans):
         value['selected_persona_facts'] = ([{'tag': tag, 'value': item} for tag, item in blocks
             if isinstance(item, dict) and item.get('facet') in {'IDENTITY', 'BACKGROUND'}]
             if blocks else selected)
+    if 'OFF_TURN_REPLY' in codes and 'MEMORY_FABRICATION' not in codes:
+        # Only the frozen turn window: enough to tell the last message from earlier ones.
+        dialogue = memory.get('recent_dialogue', [])
+        value['recent_turns'] = dialogue if isinstance(dialogue, list) and dialogue else recent
     if 'MEMORY_FABRICATION' in codes:
         dialogue = memory.get('recent_dialogue', [])
         if isinstance(dialogue, list) and dialogue:
@@ -340,6 +359,13 @@ async def review_layers_json(port, requests, candidate, evidence_bound, adjudica
         inputs[name] = scoped['input']
         layers[name] = {'rules': scoped['rules'], 'input_refs': {key: ref(value) for key, value in scoped['input'].items()}}
         for code in layer.allowed_codes:
+            if code == 'OFF_TURN_REPLY':
+                # A whole-reply judgment, not a span: which message does the candidate answer?
+                q(detect, layer_id, code,
+                  'OFF_TURN_REPLY：整封候选回应的是current_user_input（最后一条用户消息），'
+                  '还是recent_turns里更早的一条用户消息？按rules.OFF_TURN_REPLY判断。',
+                  {'current': '回应了最后一条用户消息；或本轮本身就在接旧话题', 'earlier': '把更早一条消息的请求或话题当成本轮来答，最后一条没有得到回应'})
+                continue
             q(detect, layer_id, code, code, options)
         if 'MEMORY_FABRICATION' in layer.allowed_codes:
             sources = _fact_sources(scoped['input'])
@@ -373,7 +399,9 @@ async def review_layers_json(port, requests, candidate, evidence_bound, adjudica
     def findings_for(layer):
         layer_id = layer_ids[layer.name]
         found = [(code, answers[layer_id + ':' + code]) for code in layer.allowed_codes
-                 if answers[layer_id + ':' + code] != 'none']
+                 if code != 'OFF_TURN_REPLY' and answers[layer_id + ':' + code] != 'none']
+        if 'OFF_TURN_REPLY' in layer.allowed_codes and answers[layer_id + ':OFF_TURN_REPLY'] == 'earlier':
+            found.append(('OFF_TURN_REPLY', next(iter(spans), 'none')))
         if 'MEMORY_FABRICATION' in layer.allowed_codes:
             found.extend(('MEMORY_FABRICATION', sid) for sid in spans
                          if answers[layer_id + ':fact:' + sid] == 'unsupported')

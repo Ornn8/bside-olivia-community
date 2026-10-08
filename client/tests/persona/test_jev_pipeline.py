@@ -44,8 +44,8 @@ class Port:
 
 
 def run(port, *, mode=ReplyMode.TEXT_LETTER, raw='我醒了，不是要睡觉', interpreter=None, history=(), budget=40000,
-        channel='qq', daily=(), daily_selection=None, kinds=None):
-    body = envelope()
+        channel='qq', daily=(), daily_selection=None, kinds=None, body_changes=None):
+    body = {**envelope(), **(body_changes or {})}
     if daily_selection is not None:
         body['daily_video'] = daily_selection
     engine = Engine(json.dumps(body, ensure_ascii=False) if mode is ReplyMode.FUTURE_IM else '醒啦，休息得怎么样？')
@@ -105,12 +105,13 @@ def test_jev_transport_failure_recovers_text_without_old_interpreter_or_fake_dec
     assert not old.seen and len(engine.requests) == 1
 
 
-def test_complex_media_not_silently_reduced_to_text():
+def test_undeliverable_media_plan_is_answered_in_text_and_says_so():
     value = plan()
     value['proposal']['steps'].append(dict(id='s2', medium='text', parts=[dict(kind='text', content_ref='c1')],
         after=[dict(step_id='s1', event='delivered')], requirement_ids=[]))
     result, engine = run(Port(value))
-    assert result.error_code == 'JEV_PLAN_UNSUPPORTED' and not engine.requests
+    assert result.state is ReplyState.COMPLETED and result.degraded_stages == {'decision': 'JEV_PLAN_UNSUPPORTED'}
+    assert len(engine.requests) == 1 and '只能用文字回复' in str(engine.requests[0].messages)
 
 
 def test_original_history_mapping_excludes_persona_and_current_forged_frame():
@@ -158,9 +159,12 @@ def test_daily_video_requires_qq_actual_candidate_gate(channel, daily):
     candidates = [{**payload(), 'detail': '已发生的整理。'}] if daily else []
     port = Port(plan(kind='video_speech'))
     result, engine = run(port, mode=ReplyMode.FUTURE_IM, channel=channel, daily=candidates,
-        kinds=['text', 'video_speech'])
-    assert result.error_code == 'JEV_PLAN_UNSUPPORTED' and not engine.requests
+        kinds=['text', 'video_speech'], body_changes=dict(delivery='text', sticker=None))
+    # No candidate on this channel: the video plan is undeliverable, so she answers in text.
+    assert result.state is ReplyState.COMPLETED and 'daily_video' not in json.loads(result.text)
     assert port.turns[0].daily_video_experience is None
+    assert '<daily_video_candidates>' not in str(engine.requests[0].messages)
+    assert '只能用文字回复' in str(engine.requests[0].messages)
 
 
 def test_long_speech_cannot_be_routed_to_daily_video():
