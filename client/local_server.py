@@ -3809,7 +3809,8 @@ _pets_checked_at = 0.0
 
 
 async def _pets_tick() -> None:
-    """Refresh her pets every few hours so replies know their age and food without opening the page."""
+    """Refresh what she owns every few hours (pets, cameras, clothes and today's outfit),
+    so replies know it without the user opening those pages."""
     global _pets_checked_at
     if (diary_store is None or time.time() - _pets_checked_at < 10800
             or not _os.environ.get('OLIVIA_GPU_API_URL') or not _os.environ.get('OLIVIA_GPU_API_KEY')):
@@ -3817,11 +3818,16 @@ async def _pets_tick() -> None:
     _pets_checked_at = time.time()
     from runtime.remote_generation import RemoteGeneration
     from runtime.cloud_service import CloudError
-    try:
-        result = await RemoteGeneration(_os.environ['OLIVIA_GPU_API_URL'], _os.environ['OLIVIA_GPU_API_KEY']).request('pets_get', {})
-    except CloudError:
-        return
-    diary_store.remember_pets(result['pets'], datetime.now(timezone.utc), [item['name'] for item in result['items'] if item['owned']])
+    api = RemoteGeneration(_os.environ['OLIVIA_GPU_API_URL'], _os.environ['OLIVIA_GPU_API_KEY'])
+    now = datetime.now(timezone.utc)
+    for action, remember in (
+            ('pets_get', lambda r: diary_store.remember_pets(r['pets'], now, [i['name'] for i in r['items'] if i['owned']])),
+            ('gifts_get', lambda r: diary_store.remember_gifts([c for c in r['cameras'] if c['owned']], now)),
+            ('wardrobe_get', lambda r: diary_store.remember_wardrobe(r, now))):
+        try:
+            remember(await api.request(action, {}))
+        except (CloudError, KeyError, TypeError, ValueError):
+            continue  # one unavailable page never hides the others
 
 
 async def _diary_loop() -> None:
@@ -4526,6 +4532,11 @@ async def route(
                 return err(405,'METHOD_NOT_ALLOWED',{})
             from runtime.image_assets import save_wardrobe_catalog
             await asyncio.to_thread(save_wardrobe_catalog, _local_data_root(), result)
+            if diary_store is not None:
+                try:
+                    diary_store.remember_wardrobe(result, datetime.now(timezone.utc))
+                except (OSError, ValueError, KeyError, TypeError, sqlite3.Error):
+                    pass
             for style in result['wardrobe_styles']:
                 for look in style['looks']:
                     look['image_url']=f"http://127.0.0.1:{PORT}/toy/wardrobe/images/{look['look_id']}"
