@@ -610,7 +610,7 @@ class ReplyPipeline:
                 from runtime.personal_chat.decision import INSTRUCTION as CHAT_RULES
                 if (chat_metadata or {}).get('structured') and generation_note == CHAT_RULES:
                     from .fact_attribution import cache_output_rules
-                    messages = cache_output_rules(messages, generation_note)
+                    messages = cache_output_rules(messages, generation_note, max_input_chars=original_budget)
             except ValueError:
                 return PipelineResult(prepared.request_id, ReplyState.FAILED,
                                       error_code='INPUT_TOO_LONG', retryable=False)
