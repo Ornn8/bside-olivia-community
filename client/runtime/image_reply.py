@@ -540,8 +540,8 @@ async def _server_photo(server, row, content, text, api, photo_id, settings, pro
     from PIL import Image
     reference = _photo_reference(row,text)
     if row.get('image_wardrobe_protocol')=='daily':
-        from runtime.wardrobe import DAILY_CATALOG
-        reference['wardrobe']={'mode':'daily','catalog_version':DAILY_CATALOG}
+        from runtime.wardrobe import CLOUD_CATALOG_PROTOCOL
+        reference['wardrobe']={'mode':'daily','catalog_version':CLOUD_CATALOG_PROTOCOL}
     reference['requested_image'] = is_companion_image(row)
     request = {'incoming':content,'reply':text,'reference':reference}
     row.setdefault('image_server_request', request)

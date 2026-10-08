@@ -1018,8 +1018,7 @@ class ManagedMem0Runtime:
     def _command(self, *, target: Path, source: str | None, wheelhouse: Path | None) -> list[str]:
         command = [
             str(self.python_executable),
-            "-m",
-            "pip",
+            native_path(Path(__file__).resolve().parent / "installer/pip_runtime.py"),
             "install",
             "--disable-pip-version-check",
             "--require-hashes",
@@ -1036,9 +1035,9 @@ class ManagedMem0Runtime:
             native_path(self.requirements),
         ]
         if wheelhouse is not None:
-            command[6:6] = ["--no-index", "--find-links", native_path(wheelhouse)]
+            command[5:5] = ["--no-index", "--find-links", native_path(wheelhouse)]
         elif source is not None:
-            command[6:6] = ["--index-url", source, "--cache-dir", native_path(self.cache)]
+            command[5:5] = ["--index-url", source, "--cache-dir", native_path(self.cache)]
         return command
 
     def install(

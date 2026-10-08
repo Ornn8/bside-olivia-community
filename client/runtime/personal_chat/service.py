@@ -256,7 +256,7 @@ class PersonalChatService:
             correlated = send.for_exchange(event) if callable(getattr(send, 'for_exchange', None)) else send
             code = row.get('error_code')
             if code in {'PERSONAL_CHAT_PROVIDER_USAGE_PENDING', 'PERSONAL_CHAT_PROVIDER_REQUEST_DUPLICATE'}:
-                text = '【系统提示】这条消息的生成用量还在核对，暂时没能回复。请先不要重复发送，等待服务处理。'
+                text = '【系统提示】这条消息暂时没能回复，用量仍在核对。请勿反复重发同一条；你可以发送新消息继续聊天。'
             elif code == 'PERSONAL_CHAT_PROVIDER_BUSY':
                 text = '【系统提示】服务暂时无法受理这条回复，请稍后再试。'
             else:

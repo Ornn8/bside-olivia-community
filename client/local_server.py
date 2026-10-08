@@ -2121,7 +2121,7 @@ async def handler(request: web.Request):
             return web.Response(status=405)
         if request.headers.get('Origin') and not origin_allowed(request.headers['Origin']):
             return web.Response(status=403)
-        from runtime.image_assets import ensure_image, _catalog
+        from runtime.image_assets import ensure_image, image_entry
         from runtime.cloud_service import CloudError
         try:
             parts=request.path.split('/')
@@ -2132,7 +2132,7 @@ async def handler(request: web.Request):
             else:
                 return web.Response(status=404)
             target=await ensure_image(_local_data_root(),kind,asset_id)
-            return web.FileResponse(target,headers={'Content-Type':_catalog()[kind][asset_id]['content_type'],
+            return web.FileResponse(target,headers={'Content-Type':image_entry(_local_data_root(),kind,asset_id)['content_type'],
                 'Cache-Control':'private, no-cache',**CORS_HEADERS(request)})
         except CloudError as exc:
             return web.Response(status=404 if exc.code in {'IMAGE_ASSET_NOT_FOUND','STICKER_PACK_NOT_INSTALLED'} else 503)
@@ -4524,6 +4524,8 @@ async def route(
                 result=await api.request('wardrobe_get',{})
             else:
                 return err(405,'METHOD_NOT_ALLOWED',{})
+            from runtime.image_assets import save_wardrobe_catalog
+            await asyncio.to_thread(save_wardrobe_catalog, _local_data_root(), result)
             for style in result['wardrobe_styles']:
                 for look in style['looks']:
                     look['image_url']=f"http://127.0.0.1:{PORT}/toy/wardrobe/images/{look['look_id']}"

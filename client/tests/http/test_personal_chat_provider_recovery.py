@@ -270,3 +270,55 @@ def test_usage_pending_loopback_gateway_is_not_resubmitted_by_chat_loop(tmp_path
             finally:
                 await runner.cleanup()
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('headroom', [0, 512])
+def test_full_chat_context_reaches_writer_without_losing_recall(tmp_path, monkeypatch, headroom):
+    from runtime.memory import history_selection
+    from runtime.personal_chat.decision import INSTRUCTION
+
+    server, calls, sent, committed, persisted, captured, send, boot = _fixture(tmp_path, monkeypatch, [])
+    selected, authored = [], []
+    provider = server.letters_adapter.gateway
+    complete = provider.complete
+
+    async def record_request(messages, *, request_id=None):
+        authored.append(messages)
+        return await complete(messages, request_id=request_id)
+
+    async def full_history(messages, gateway, *, max_input_chars, **kwargs):
+        # Simulate a large archive filling its allowed recall budget. Keep the
+        # real persona/time/output assembly and durable QQ send path in use.
+        result = [dict(m) for m in messages]
+        result.insert(-1, {'role': 'assistant', 'content': '[历史消息 {}]\n合成的已确认约定'})
+        remaining = max_input_chars - sum(len(m['content']) for m in result) - headroom
+        assert remaining > 0
+        result[0]['content'] += '忆' * remaining
+        selected.append((result, max_input_chars))
+        return tuple(result)
+
+    monkeypatch.setattr(provider, 'complete', record_request)
+    monkeypatch.setattr(history_selection, 'select_history_messages', full_history)
+
+    async def scenario():
+        app, runner = await boot()
+        try:
+            event = PersonalMessage('qq', '100', '200', 'large-context', '吃完记得休息')
+            await captured['handler'](event, send)
+            await asyncio.sleep(0)
+            row = server.store.personal_chats[0]
+            assert row['delivery_status'] == 'DELIVERED', row.get('error_code')
+            assert len(calls) == 1 and sent == ['synthetic reply 1']
+            assert committed == [event.exchange_id]
+            assert row.get('generation_failure_notice') != 'DELIVERED'
+        finally:
+            await runner.cleanup()
+    asyncio.run(scenario())
+    before, recall_limit = selected[0]
+    after = authored[0]
+    assert sum(len(m['content']) for m in after) <= recall_limit + len(INSTRUCTION) + 2
+    assert after[-1] == before[-1]
+    assert sum(m['content'].count('忆') for m in after) == sum(m['content'].count('忆') for m in before)
+    assert sum(m['content'].count(INSTRUCTION) for m in after) == 1
+    assert [m for m in after if m['role'] == 'assistant'] == [m for m in before if m['role'] == 'assistant']
+    assert ('<chat_output_rules>' in after[0]['content']) == bool(headroom)

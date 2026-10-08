@@ -168,6 +168,7 @@ RELEASE_INSTALLER_FILES = {
     "installer/full_patch.py",
     "installer/full-patch-manifest.json",
     "installer/Install.ps1",
+    "installer/pip_runtime.py",
     "installer/activate_private_video.py",
     "installer/patch_native_navigation.py",
     "installer/patch_native_splash.py",

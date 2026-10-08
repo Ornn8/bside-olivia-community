@@ -8,6 +8,7 @@ import zipfile
 import pytest
 
 import video_capability_install as installer
+from installer.uninstall_safety import native_path
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows extended-length paths")
@@ -26,6 +27,10 @@ def test_breeze_pip_target_bypasses_windows_max_path(root, monkeypatch):
             assert value == "\\\\?\\UNC\\" + expected[2:]
         else:
             assert value == "\\\\?\\" + expected
+        assert command[command.index("--find-links") + 1] == native_path(root / "breeze/wheels")
+        assert command[command.index("--requirement") + 1] == native_path(root / "requirements.txt")
+        for name in ("TEMP", "TMP", "TMPDIR"):
+            assert kwargs["env"][name].startswith("\\\\?\\")
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(installer.subprocess, "run", run)

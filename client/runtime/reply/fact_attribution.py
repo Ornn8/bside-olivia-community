@@ -92,7 +92,7 @@ CACHED_RULES_REMINDER = ('本轮按系统开头的聊天输出规则，只输出
                          '上方历史消息只是历史，只回复最后一条用户消息，先理清谁在做什么。')
 
 
-def cache_output_rules(messages, instruction):
+def cache_output_rules(messages, instruction, *, max_input_chars):
     """Cache-friendly QQ layout: fixed rules join the persona prefix, per-turn state follows the dialogue.
 
     The relay caches the first system message and, with a second marker, the dialogue
@@ -118,6 +118,10 @@ def cache_output_rules(messages, instruction):
     history = [i for i, m in enumerate(result) if m.get('role') in ('user', 'assistant')
                and isinstance(m.get('content'), str) and m['content'].startswith('[历史消息 ')]
     result.insert(history[-1] + 1 if history else 1, {'role': 'system', 'content': dynamic})
+    # The wrapper and reminder grow a request that already passed finalization.
+    # Cache layout is optional: keep all validated evidence when it cannot fit.
+    if sum(len(m['content']) for m in result) > max_input_chars:
+        return tuple(messages)
     return tuple(result)
 
 

@@ -2356,6 +2356,83 @@
         "key": "distribution/olivia-images/wardrobe/fda34185bcfda6ec0bcaad8a8423042f3e3a65ff0ab869c15597aa53103d9f78/tie-shorts-01.png",
         "sha256": "fda34185bcfda6ec0bcaad8a8423042f3e3a65ff0ab869c15597aa53103d9f78",
         "size_bytes": 1577545
+      },
+      "french-09": {
+        "content_type": "image/png",
+        "filename": "french-09.png",
+        "key": "distribution/olivia-images/wardrobe/73f3856f57a8eae6a3948fc4bea18088cee63054707849a0fe89e7aff7e52c9b/french-09.png",
+        "sha256": "73f3856f57a8eae6a3948fc4bea18088cee63054707849a0fe89e7aff7e52c9b",
+        "size_bytes": 1561816
+      },
+      "dark-02": {
+        "content_type": "image/png",
+        "filename": "dark-02.png",
+        "key": "distribution/olivia-images/wardrobe/b5dc0781739c68f4dcbb74c3fa5a586dc6e82691178fe6c3ff82471a63b3e024/dark-02.png",
+        "sha256": "b5dc0781739c68f4dcbb74c3fa5a586dc6e82691178fe6c3ff82471a63b3e024",
+        "size_bytes": 1579022
+      },
+      "doll-09": {
+        "content_type": "image/png",
+        "filename": "doll-09.png",
+        "key": "distribution/olivia-images/wardrobe/a0fdb7534c2b9db48926d243086cd2fe610c759c7e0c1187c028dc8b12867e26/doll-09.png",
+        "sha256": "a0fdb7534c2b9db48926d243086cd2fe610c759c7e0c1187c028dc8b12867e26",
+        "size_bytes": 1658301
+      },
+      "doll-10": {
+        "content_type": "image/png",
+        "filename": "doll-10.png",
+        "key": "distribution/olivia-images/wardrobe/4440b4aff3598f81cedd670d0b99020246c0b60209c373bd74bb494a72dd2c09/doll-10.png",
+        "sha256": "4440b4aff3598f81cedd670d0b99020246c0b60209c373bd74bb494a72dd2c09",
+        "size_bytes": 1635429
+      },
+      "fantasy-01": {
+        "content_type": "image/png",
+        "filename": "fantasy-01.png",
+        "key": "distribution/olivia-images/wardrobe/95689c5f862a3ccc59c9c092fce7d170ded8064f12ccae0c08d2d002924173d5/fantasy-01.png",
+        "sha256": "95689c5f862a3ccc59c9c092fce7d170ded8064f12ccae0c08d2d002924173d5",
+        "size_bytes": 1684504
+      },
+      "japanese-05": {
+        "content_type": "image/png",
+        "filename": "japanese-05.png",
+        "key": "distribution/olivia-images/wardrobe/65b3b7b97611df8022dc676341ac4f7d7e490071e2b669b150f0b63370a91535/japanese-05.png",
+        "sha256": "65b3b7b97611df8022dc676341ac4f7d7e490071e2b669b150f0b63370a91535",
+        "size_bytes": 1691747
+      },
+      "japanese-06": {
+        "content_type": "image/png",
+        "filename": "japanese-06.png",
+        "key": "distribution/olivia-images/wardrobe/855f3440b2066e06ac013dd97ff7643ea10a26d10226aa75c38613ff4a64f078/japanese-06.png",
+        "sha256": "855f3440b2066e06ac013dd97ff7643ea10a26d10226aa75c38613ff4a64f078",
+        "size_bytes": 1727971
+      },
+      "fantasy-02": {
+        "content_type": "image/png",
+        "filename": "fantasy-02.png",
+        "key": "distribution/olivia-images/wardrobe/f90af08fddcee88dc2bb243da4c17019771defdbee7077655a9f01d87bee0c65/fantasy-02.png",
+        "sha256": "f90af08fddcee88dc2bb243da4c17019771defdbee7077655a9f01d87bee0c65",
+        "size_bytes": 1698397
+      },
+      "dark-03": {
+        "content_type": "image/png",
+        "filename": "dark-03.png",
+        "key": "distribution/olivia-images/wardrobe/35e920ab9251f2b19e273093521e838e5e6504cd455d93aea81dbf12aa667823/dark-03.png",
+        "sha256": "35e920ab9251f2b19e273093521e838e5e6504cd455d93aea81dbf12aa667823",
+        "size_bytes": 1776028
+      },
+      "fantasy-03": {
+        "content_type": "image/png",
+        "filename": "fantasy-03.png",
+        "key": "distribution/olivia-images/wardrobe/3e58df6947922999750d6d7b96561f77fa21512a0147b1dfa9067e533ddad602/fantasy-03.png",
+        "sha256": "3e58df6947922999750d6d7b96561f77fa21512a0147b1dfa9067e533ddad602",
+        "size_bytes": 1666806
+      },
+      "dark-04": {
+        "content_type": "image/png",
+        "filename": "dark-04.png",
+        "key": "distribution/olivia-images/wardrobe/bd6cc0c89ae7bca194d913c6f67861b247540a29d81e14690bfdf5f83bd773ea/dark-04.png",
+        "sha256": "bd6cc0c89ae7bca194d913c6f67861b247540a29d81e14690bfdf5f83bd773ea",
+        "size_bytes": 1791902
       }
     }
   },
