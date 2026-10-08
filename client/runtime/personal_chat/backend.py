@@ -358,15 +358,19 @@ async def _generate_billed(server, event, row):
     from .speech import supported as speech_supported
     speech_enabled = event.channel == 'qq' and await speech_supported(os.environ)
     row['voice_ready'] = voice_available
+    image_offered = bool(event.channel == 'qq' and row.get('image_available') and row['image_reply_settings'].get('enabled')
+                         and os.environ.get('OLIVIA_GPU_API_URL') and os.environ.get('OLIVIA_GPU_API_KEY'))
     daily_worker = getattr(server, '_daily_video_worker', None)
     if 'daily_video_candidates' not in row:
-        row['daily_video_candidates'] = (daily_worker.candidates()
+        # Her current moment is offered exactly when a photo could be: it is the
+        # same proactive share, and the photo switch is the user's media consent.
+        row['daily_video_candidates'] = ([candidate for candidate in daily_worker.candidates()
+                                          if candidate['event_kind'] != 'moment' or image_offered]
             if event.channel == 'qq' and daily_worker is not None else [])
         await persist_chat(server)
     daily_candidates = row['daily_video_candidates'] if event.channel == 'qq' else []
     semantic_kinds = ['text'] + (['audio_speech'] if voice_available else [])
-    if (event.channel == 'qq' and row.get('image_available') and row['image_reply_settings'].get('enabled')
-            and os.environ.get('OLIVIA_GPU_API_URL') and os.environ.get('OLIVIA_GPU_API_KEY')):
+    if image_offered:
         semantic_kinds.append('image')
     if daily_candidates:
         semantic_kinds.append('video_speech')
