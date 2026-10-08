@@ -32,16 +32,16 @@ def test_adopt_and_feed_with_confirmations():
           const apiBase='http://olivia-api.test/';
           const goWorld=()=>{};
           window.calls=[];
-          const breeds=[{id:'corgi',species:'dog',name:'柯基',summary:'短腿。',stages:['幼犬','半大的狗','成年狗']},
+          const breeds=[{id:'orange-tabby',species:'cat',name:'橘猫',summary:'能吃能睡。',stages:['幼猫','半大的猫','成年猫']},
                         {id:'ragdoll',species:'cat',name:'布偶猫',summary:'蓝眼睛。',stages:['幼猫','半大的猫','成年猫']}];
           let pets=[];
-          const state=extra=>({breeds,pets,foods:{cat:'猫粮',dog:'狗粮'},adopt_cents:990,food_cents:200,bag_days:7,balance_cents:2000,...extra});
+          const state=extra=>({breeds,pets,foods:{cat:'猫粮'},adopt_cents:990,food_cents:200,bag_days:7,balance_cents:2000,...extra});
           const routeRequest=async(path,body,options={})=>{
             if(path!=='/toy/world/pets')throw Error('unexpected '+path);
             if(!body)return state();
             if(options.confirmed!==true)throw Error('unconfirmed');
             window.calls.push(body);
-            if(body.action==='adopt'){pets=[{breed:body.breed,name:body.name,species:'dog',breed_name:'柯基',stage:1,stage_name:'幼犬',
+            if(body.action==='adopt'){pets=[{breed:body.breed,name:body.name,species:'cat',breed_name:'橘猫',stage:1,stage_name:'幼猫',
               fed_days:1,next_stage_at:7,food_days:6,adopted:1,room:'客厅'}];return state({charged_cents:990});}
             if(window.calls.filter(c=>c.action==='food').length===1)throw Error('GPU_REQUEST_FAILED');  // first attempt fails
             pets=[{...pets[0],food_days:13}];return state({charged_cents:200});
@@ -51,21 +51,21 @@ def test_adopt_and_feed_with_confirmations():
         adopt = page.get_by_role('button', name='领养 · ¥9.90').first
         adopt.click()
         assert page.get_by_text('先给它起个名字吧。').is_visible()
-        page.get_by_label('给柯基起名字').fill('团子')
+        page.get_by_label('给橘猫起名字').fill('团子')
         adopt.click()
         page.get_by_role('button', name='确认领养「团子」（¥9.90）').click()
         page.get_by_text('「团子」到家了！').wait_for()
-        assert page.get_by_text('狗粮还够吃 6 天。').is_visible()
-        buy = page.get_by_role('button', name='买一袋狗粮 · ¥2.00')
+        assert page.get_by_text('猫粮还够吃 6 天。').is_visible()
+        buy = page.get_by_role('button', name='买一袋猫粮 · ¥2.00')
         buy.click(); page.get_by_role('button', name='确认购买（¥2.00）').click()
         page.get_by_text('没有成功，没有扣费').wait_for()
         buy.click(); page.get_by_role('button', name='确认购买（¥2.00）').click()
-        page.get_by_text('狗粮还够吃 13 天。').wait_for()
+        page.get_by_text('猫粮还够吃 13 天。').wait_for()
         calls = page.evaluate('window.calls')
-        assert calls[0] == {'action': 'adopt', 'breed': 'corgi', 'name': '团子'}
+        assert calls[0] == {'action': 'adopt', 'breed': 'orange-tabby', 'name': '团子'}
         food = [c['request_id'] for c in calls if c['action'] == 'food']
         assert len(food) == 2 and food[0] == food[1]   # a retry reuses its request id, so it is charged once
-        assert 'pet-corgi-1' in requested and 'pet-ragdoll-1' in requested
+        assert 'pet-orange-tabby-1' in requested and 'pet-ragdoll-1' in requested
         output = Path('.evidence'); output.mkdir(exist_ok=True)
         page.screenshot(path=str(output / 'pets.png'), full_page=True)
         assert errors == []

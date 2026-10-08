@@ -4097,7 +4097,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const grid=document.createElement('section');grid.className='oi-grid';
     for(const [title,copy,path,label] of [['衣橱','给她挑每天的穿搭风格。','/world/wardrobe','打开林离的衣橱'],
         ['拍摄设备','你送她的相机，她拍照时会自己挑着用。','/world/cameras','打开林离的拍摄设备'],
-        ['宠物','领养一只猫或狗陪她，会慢慢长大，也会出现在她的照片里。','/world/pets','打开林离的宠物'],
+        ['宠物','领养一只猫陪她，会慢慢长大，也会出现在她的照片里。','/world/pets','打开林离的宠物'],
         ['日记本','她每天写给你看的日记和以前的回忆。','/world/diary','打开林离的日记本']]){
       const card=document.createElement('button');card.type='button';card.className='oi-card';card.setAttribute('aria-label',label);
       const heading=text('strong',title);if(path==='/world/diary')heading.setAttribute('data-diary-badge','');
@@ -4338,7 +4338,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const render=data=>{
       const owned=new Set(data.pets.map(pet=>pet.breed));
       const nodes=[text('p','领养一只宠物陪她：'+yuan(data.adopt_cents)+'，附一袋粮，够吃 '+data.bag_days+' 天。她每天喂它，吃满天数就会长大；'
-        +'粮吃完了它只是暂停长大，不会生病也不会饿着。她在家拍照时会带上它，狗狗出门散步时也会跟着。'
+        +'粮吃完了它只是暂停长大，不会生病也不会饿着。它在家里到处溜达，正好在她身边时会出现在她的照片里。'
         +(typeof data.balance_cents==='number'?' 账户余额 '+yuan(data.balance_cents)+'。':''),'op-note')];
       if(data.pets.length){
         nodes.push(text('h2','她的宠物'));

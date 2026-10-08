@@ -4,7 +4,7 @@ import re
 _ID = re.compile(r'^[a-z0-9-]{3,40}$')
 _REQUEST = re.compile(r'^[A-Za-z0-9_-]{8,64}$')
 _NAME = re.compile(r'^[^\x00-\x1f<>{}\[\]\\`"]{1,8}$')
-SPECIES = ('cat', 'dog')
+SPECIES = ('cat',)  # she only likes cats
 
 
 def validate_request(data):
@@ -69,6 +69,6 @@ def context(pets):
                                 'food_days_left': p['food_days'], 'adopted_on': p.get('adopted_on'),
                                 **({'usually_in_room_now': p['room']} if p.get('room') else {})} for p in pets],
             'pets_meaning': ('对方送你领养的宠物，你在家养着、每天喂它。usually_in_room_now 是它这会儿自己待着的房间（几小时前刷新），'
-                             '它也常跑来你身边；你在外面时它在家，狗狗有时跟你出门散步。'
+                             '它也常跑来你身边；你出门时它在家等你。'
                              'food_days_left 是粮还够吃几天：快吃完时可以像平常过日子那样顺口提一句，'
                              '不催对方买、不反复提，也不说它饿着或不开心——没粮时它只是长得慢一点。')}
