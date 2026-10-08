@@ -33,6 +33,14 @@ def validate_cloud_state(value):
     if not isinstance(value,dict) or value.get('catalog_version')!=DAILY_CATALOG or value.get('timezone')!='Asia/Shanghai':
         raise ValueError('WARDROBE_STATE_INVALID')
     date.fromisoformat(value['date'])
+    if 'purchases' in value:
+        purchases = value['purchases']
+        if (not isinstance(purchases,dict) or purchases.get('price_cents') != 500 or purchases.get('free_limit') != 3
+                or type(purchases.get('free_remaining')) is not int or not 0 <= purchases['free_remaining'] <= 3
+                or not isinstance(purchases.get('owned'),list)
+                or any(not isinstance(item,str) or item not in set().union(*DAILY_LOOKS.values()) for item in purchases['owned'])
+                or len(set(purchases['owned'])) != len(purchases['owned'])):
+            raise ValueError('WARDROBE_STATE_INVALID')
     preference=value['wardrobe']
     if (not isinstance(preference,dict) or set(preference)!={'style_id','preference_revision'}
             or preference['style_id'] not in DAILY_STYLES or type(preference['preference_revision']) is not int

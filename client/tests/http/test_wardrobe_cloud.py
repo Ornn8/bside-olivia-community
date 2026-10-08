@@ -17,6 +17,31 @@ def state():
             'wardrobe_styles':[{'style_id':s,'label':s,'description':s,'looks':[]} for s in DAILY_STYLES]}
 
 
+def test_purchase_proxy_preserves_explicit_price_cap_and_validates_entitlements(monkeypatch):
+    import local_server
+    calls = []
+    async def handler(request):
+        calls.append(await request.json())
+        result = state()
+        result['purchases'] = dict(price_cents=500, free_limit=3, free_remaining=2, owned=['dark-01'])
+        return web.json_response(result)
+    async def scenario():
+        app = web.Application(); app.router.add_post('/v1/wardrobe', handler)
+        async with TestServer(app) as server:
+            monkeypatch.setenv('OLIVIA_GPU_API_URL', str(server.make_url('/')))
+            monkeypatch.setenv('OLIVIA_GPU_API_KEY', 'synthetic')
+            body = dict(request_id='claim-one', look_id='dark-01', max_charge_cents=0)
+            denied = await local_server.route('POST','/toy/world/wardrobe',body,{})
+            assert denied['code'] == 403 and not calls
+            result = await local_server.route('POST','/toy/world/wardrobe',body,{},companion_confirmed=True)
+            assert result['data']['purchases']['owned'] == ['dark-01']
+            assert calls == [body]
+            api = RemoteGeneration(str(server.make_url('/')), 'synthetic')
+            with pytest.raises(CloudError):
+                await api.request('wardrobe_buy', {**body, 'max_charge_cents':50000})
+    asyncio.run(scenario())
+
+
 def test_cloud_preference_sends_only_style_and_validates_server_snapshot():
     async def scenario():
         calls=[]
