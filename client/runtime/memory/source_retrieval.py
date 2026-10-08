@@ -704,6 +704,13 @@ class SourceRetrieval:
                 db.execute('INSERT OR REPLACE INTO source_vectors VALUES (?,?,?,?,?)',
                            (user, source, model, digest, array('f', vector).tobytes()))
 
+    def vector_coverage(self, user, model):
+        """Share of exchanges holding a vector for this model (stale ones count)."""
+        with closing(self.connect()) as db:
+            total = db.execute('SELECT COUNT(DISTINCT source) FROM originals WHERE user=?', (user,)).fetchone()[0]
+            have = db.execute('SELECT COUNT(*) FROM source_vectors WHERE user=? AND model=?', (user, model)).fetchone()[0]
+        return have / total if total else 0.0
+
     def nearest_sources(self, user, model, vector, *, limit=12, exclude_source_ids=()):
         """Sources ranked by cosine similarity to a unit-length query vector."""
         from array import array
@@ -712,13 +719,21 @@ class SourceRetrieval:
         scored = []
         with closing(self.connect()) as db:
             excluded.update(row[0] for row in db.execute('SELECT source FROM forgotten WHERE user=?', (user,)))
-            for source, blob in db.execute('SELECT source,vector FROM source_vectors WHERE user=? AND model=?', (user, model)):
-                if source in excluded:
-                    continue
+            rows = [(source, blob) for source, blob in db.execute(
+                'SELECT source,vector FROM source_vectors WHERE user=? AND model=?', (user, model))
+                if source not in excluded and len(blob) == len(query) * query.itemsize]
+        try:
+            import numpy
+        except ImportError:
+            numpy = None
+        if numpy is not None and rows:
+            matrix = numpy.frombuffer(b''.join(blob for _, blob in rows), dtype=numpy.float32).reshape(len(rows), len(query))
+            scored = list(zip((matrix @ numpy.asarray(query, dtype=numpy.float32)).tolist(), (source for source, _ in rows)))
+        else:
+            for source, blob in rows:
                 stored = array('f')
                 stored.frombytes(blob)
-                if len(stored) == len(query):
-                    scored.append((sum(a * b for a, b in zip(query, stored)), source))
+                scored.append((sum(a * b for a, b in zip(query, stored)), source))
         scored.sort(reverse=True)
         result = []
         with closing(self.connect()) as db:

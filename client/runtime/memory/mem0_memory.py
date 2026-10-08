@@ -1353,11 +1353,27 @@ class Mem0ConversationMemoryAdapter:
         return embed if callable(embed) else None
 
     def index_original_vectors(self, user_id: str, *, limit: int = 32) -> int:
-        """Embed a bounded batch of exchanges that have no current vector."""
+        """Embed a bounded batch of exchanges that have no current vector.
+
+        The cloud model is filled first when the account can use it; the local
+        model keeps its own vectors as the fallback when the cloud is unusable.
+        """
+        from . import remote_embedding
+        user_id = self._normalized_user_id(user_id)
+        indexed = 0
+        if remote_embedding.available():
+            missing = self._originals.vectors_missing(user_id, remote_embedding.MODEL, limit=limit)
+            vectors = remote_embedding.embed([text for _, _, text in missing]) if missing else None
+            if vectors:
+                self._originals.put_vectors(user_id, remote_embedding.MODEL,
+                                            [(source, digest, vector) for (source, digest, _), vector in zip(missing, vectors)])
+                indexed += len(vectors)
+        return indexed + self._index_local_vectors(user_id, limit=limit)
+
+    def _index_local_vectors(self, user_id, *, limit):
         embed = self._embedder()
         if embed is None:
             return 0
-        user_id = self._normalized_user_id(user_id)
         missing = self._originals.vectors_missing(user_id, self.config.embedding_model, limit=limit)
         items = []
         for source, digest, text in missing:
@@ -1369,22 +1385,38 @@ class Mem0ConversationMemoryAdapter:
         return len(items)
 
     def _original_vector_hits(self, query, user_id, excluded):
-        """Exchanges whose meaning is close to the question, as semantic candidates."""
-        embed = self._embedder()
-        if embed is None:
-            return ()
+        """Exchanges whose meaning is close to the question, as semantic candidates.
+
+        The cloud vectors answer once they cover nearly all exchanges (a half
+        filled index would hide older ones); a slow or failed cloud read falls
+        back to the local model within the same reply.
+        """
+        from . import remote_embedding
         try:
-            self.index_original_vectors(user_id, limit=16)
-            vector = embed(query[:500], 'search')
-            norm = sum(value * value for value in vector) ** 0.5 or 1.0
-            hits = self._originals.nearest_sources(user_id, self.config.embedding_model,
-                                                   [value / norm for value in vector], limit=12,
-                                                   exclude_source_ids=excluded)
+            hits, floor = None, 0.45
+            if (remote_embedding.available()
+                    and self._originals.vector_coverage(user_id, remote_embedding.MODEL) >= 0.9):
+                vector = remote_embedding.embed_query(query)
+                if vector is not None:
+                    hits = self._originals.nearest_sources(user_id, remote_embedding.MODEL, vector, limit=12,
+                                                           exclude_source_ids=excluded)
+                    floor = remote_embedding.SCORE_FLOOR
+            if hits is None:
+                embed = self._embedder()
+                if embed is None:
+                    return ()
+                # Only the local model indexes inline: it is fast and offline.
+                self._index_local_vectors(self._normalized_user_id(user_id), limit=16)
+                vector = embed(query[:500], 'search')
+                norm = sum(value * value for value in vector) ** 0.5 or 1.0
+                hits = self._originals.nearest_sources(user_id, self.config.embedding_model,
+                                                       [value / norm for value in vector], limit=12,
+                                                       exclude_source_ids=excluded)
             return tuple(ConversationMemoryRecord(memory_id='vector:' + hashlib.sha256(source.encode()).hexdigest()[:32],
                                                   text=snippet, user_id=user_id, source_id=source,
                                                   score=max(0.0, min(1.0, float(score))),
                                                   metadata={'retrieval_route': 'semantic'})
-                         for source, score, snippet in hits if score >= 0.45)
+                         for source, score, snippet in hits if score >= floor)
         except Exception:
             return ()
 

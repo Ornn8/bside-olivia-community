@@ -191,5 +191,7 @@ def mount_relay_api(app, setup):
     app['olivia_relay_stored_key'] = stored_key
     from runtime.reply.jev_billing import configure_account
     configure_account(stored_key)
+    from runtime.memory.remote_embedding import configure as configure_embeddings
+    configure_embeddings(stored_key)
     app.router.add_post('/toy/relay/action', action)
     app.router.add_options('/toy/relay/action', options)
