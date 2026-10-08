@@ -89,6 +89,20 @@ def _stamp(row):
         return None
 
 
+def _label(value):
+    return value if isinstance(value, str) and re.fullmatch(r'[a-z_]{1,40}|[A-Z_]{1,40}', value) else None
+
+
+def _media(row):
+    """Labels only: which media the turn could carry, what the plan chose, why a video did not go out."""
+    offered = [kind for kind, present in (
+        ('image', row.get('image_available') and (row.get('image_reply_settings') or {}).get('enabled')),
+        ('video', row.get('daily_video_candidates'))) if present]
+    value = {'offered': offered, 'planned': _label(row.get('companion_delivery')),
+             'video': _label(row.get('daily_video_dropped') or row.get('daily_video_status'))}
+    return {key: item for key, item in value.items() if item}
+
+
 def pending(rows, state):
     """Delivered exchanges received after consent and after the last upload, oldest first."""
     if not state['enabled'] or not state['consent_at']:
@@ -110,7 +124,8 @@ def pending(rows, state):
             'hour': stamp.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:00Z'),
             'reply_mode': row.get('reply_mode') if isinstance(row.get('reply_mode'), str) else None,
             'delivery': row.get('requested_format') if isinstance(row.get('requested_format'), str) else None,
-            'user': anonymize(row.get('content')), 'reply': anonymize(reply)}))
+            'user': anonymize(row.get('content')), 'reply': anonymize(reply),
+            **({'media': _media(row)} if _media(row) else {})}))
     items.sort(key=lambda item: item[0])
     return items[:BATCH]
 
