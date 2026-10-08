@@ -372,6 +372,11 @@ class ReplyPipeline:
                 except Exception:
                     return None  # Optional subjective state cannot block received text.
 
+        if isinstance(generation_request, ReplyRequest) and generation_request.messages is None:
+            # Recall embeds this message through the cloud; start it now so the
+            # few seconds it takes overlap world selection instead of adding to it.
+            from runtime.memory import remote_embedding
+            remote_embedding.prefetch(generation_request.content)
         try:
             async def select_world():
                 if isinstance(generation_request, ReplyRequest) and generation_request.messages is None:
