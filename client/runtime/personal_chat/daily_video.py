@@ -15,7 +15,7 @@ import time
 from aiohttp import web
 
 LOCAL = timezone(timedelta(hours=8))
-EVENT_KINDS = {'housework', 'walk', 'bath_finished', 'shopping', 'meal', 'wake_up'}
+EVENT_KINDS = {'housework', 'walk', 'bath_finished', 'shopping', 'meal', 'wake_up', 'moment'}
 PATH = '/toy/companion/daily-video'
 RECOVER_PATH = PATH + '/recover'
 _FIELDS = {'version', 'event_id', 'target_date', 'event_at', 'event_kind',
@@ -122,6 +122,9 @@ def select_candidate(value, candidates):
 
 
 def scene_matches(scene, source):
+    if source['event_kind'] == 'moment':
+        # Announced by its own capability; public scene kinds stay legacy-only.
+        return scene['scene_id'] == 'daily_place' and bool(source.get('place') and source['place']['stage'] == 'arrived')
     if source['event_kind'] not in scene['event_kinds']:
         return False
     if scene['scene_id'] == 'daily_place':
@@ -147,6 +150,7 @@ class DailyVideoWorker:
         self.user_revision = service.user_revision
         self.last_input = time.monotonic()
         self.scenes, self.capabilities_at = [], 0
+        self.moments = False
         with sqlite3.connect(self.database) as db:
             db.execute('CREATE TABLE IF NOT EXISTS daily_video_jobs (event_id TEXT PRIMARY KEY, payload TEXT NOT NULL)')
             db.execute('CREATE TABLE IF NOT EXISTS daily_video_preparations (event_id TEXT PRIMARY KEY, payload TEXT NOT NULL)')
@@ -198,7 +202,7 @@ class DailyVideoWorker:
     async def refresh_capabilities(self):
         """Refresh outside the chat lock; failures disable new automatic spending."""
         self.capabilities_at = time.monotonic()
-        self.scenes = []
+        self.scenes, self.moments = [], False
         try:
             data = await asyncio.wait_for(self.api_factory().request('capabilities', {}), 5)
             if data.get('daily_video_enabled') is not True or 'daily_video' not in data.get('kinds', []):
@@ -216,6 +220,7 @@ class DailyVideoWorker:
                         or any(not isinstance(place, str) or not 1 <= len(place) <= 80 for place in scene['locations'])):
                     return
             self.scenes = scenes
+            self.moments = data.get('daily_video_moment') is True
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -230,7 +235,7 @@ class DailyVideoWorker:
         if store is None or not callable(getattr(store, 'daily_video_sources', None)):
             return []
         result = []
-        for source in store.daily_video_sources(now=now):
+        for source in store.daily_video_sources(now=now, moment=self.moments):
             if self.get(source['event_id']) is not None or self.preparation(source['event_id']) is not None:
                 continue
             ordered = sorted(self.scenes, key=lambda s: s['scene_id']=='daily_place')

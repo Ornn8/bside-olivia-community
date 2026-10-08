@@ -94,6 +94,7 @@ def test_custom_place_flows_from_world_to_video_and_cannot_be_rewritten(tmp_path
         place=place('公园湖畔','neighborhood')), [], activity_kind='walk', occurred_at=NOW)
     worker = DailyVideoWorker.__new__(DailyVideoWorker)
     worker.scenes = [dict(scene_id='daily_place', event_kinds=['walk'], locations=[])]
+    worker.moments = False
     worker.capabilities_at = time.monotonic()
     worker.event_store = store
     worker.get = lambda _: None
