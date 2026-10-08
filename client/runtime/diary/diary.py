@@ -235,6 +235,20 @@ class DiaryStore:
             db.execute("INSERT INTO diary_settings VALUES ('gifts',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                        (json.dumps(known, ensure_ascii=False),))
 
+    def remember_pets(self, pets, now):
+        """Keep the latest pet state from the cloud, with the day each pet first appeared."""
+        with self._db() as db:
+            row = db.execute("SELECT value FROM diary_settings WHERE key='pets'").fetchone()
+            known = {p['breed']: p for p in json.loads(row['value'])} if row else {}
+            current = [{**pet, 'adopted_on': known.get(pet['breed'], {}).get('adopted_on') or local_day(now)} for pet in pets]
+            db.execute("INSERT INTO diary_settings VALUES ('pets',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                       (json.dumps(current, ensure_ascii=False),))
+
+    def pets(self):
+        with self._db() as db:
+            row = db.execute("SELECT value FROM diary_settings WHERE key='pets'").fetchone()
+        return json.loads(row['value']) if row else []
+
     def gifts(self):
         with self._db() as db:
             row = db.execute("SELECT value FROM diary_settings WHERE key='gifts'").fetchone()
@@ -356,7 +370,9 @@ class DiaryStore:
             comments = {r['day']: r['text'] for r in db.execute(
                 'SELECT day,text FROM diary_comments ORDER BY written_at')}
         gifts = self.gifts()
-        if not recent and not facts and not gifts:
+        from runtime.pets import context as pet_context
+        pets = pet_context(self.pets())
+        if not recent and not facts and not gifts and not pets:
             return None
         entries = [{'day': r['day'], 'title': r['title'], 'body': r['body'][:CONTEXT_BODY_CHARS],
                     **({'user_comment': comments[r['day']][:200]} if r['day'] in comments else {})}
@@ -366,7 +382,8 @@ class DiaryStore:
                                       'user_comment 是对方读日记后的留言。日期以 day 和 date 为准。',
                            'recent_entries': entries, 'facts': facts[:CONTEXT_FACTS],
                            **({'gifts_from_user': gifts, 'gifts_meaning': '对方送你的相机，都在你身边，拍照时会挑着用；'
-                               'received_on 是收到的那天，那天还没道谢的话可以自然提起。'} if gifts else {})},
+                               'received_on 是收到的那天，那天还没道谢的话可以自然提起。'} if gifts else {}),
+                           **(pets or {})},
                           ensure_ascii=False, separators=(',', ':'))
 
 

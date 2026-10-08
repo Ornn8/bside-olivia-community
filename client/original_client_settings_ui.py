@@ -2839,6 +2839,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const ITEMS_ROUTE = '#/world/items';
   const DIARY_ROUTE = '#/world/diary';
   const CAMERAS_ROUTE = '#/world/cameras';
+  const PETS_ROUTE = '#/world/pets';
   const diaryState = {checkedAt: 0, unseen: 0};
   const refreshDiaryBadge = async (force=false) => {
     if(!force&&Date.now()-diaryState.checkedAt<300000)return;
@@ -4096,6 +4097,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const grid=document.createElement('section');grid.className='oi-grid';
     for(const [title,copy,path,label] of [['衣橱','给她挑每天的穿搭风格。','/world/wardrobe','打开林离的衣橱'],
         ['拍摄设备','你送她的相机，她拍照时会自己挑着用。','/world/cameras','打开林离的拍摄设备'],
+        ['宠物','领养一只猫或狗陪她，会慢慢长大，也会出现在她的照片里。','/world/pets','打开林离的宠物'],
         ['日记本','她每天写给你看的日记和以前的回忆。','/world/diary','打开林离的日记本']]){
       const card=document.createElement('button');card.type='button';card.className='oi-card';card.setAttribute('aria-label',label);
       const heading=text('strong',title);if(path==='/world/diary')heading.setAttribute('data-diary-badge','');
@@ -4302,6 +4304,96 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     void routeRequest('/toy/world/gifts').then(data=>{if(page.isConnected)render(data);})
       .catch(()=>{if(page.isConnected)main.replaceChildren(text('p','拍摄设备暂时打不开。','oc-note'),button('重试',()=>mountCamerasPage(page)));});
   };
+  const mountPetsPage = page => {
+    page.setAttribute('data-olivia-pets-page','');page.setAttribute('aria-label','林离的宠物');
+    const style=document.createElement('style');style.textContent=`
+      [data-olivia-pets-page]{width:100%;height:100%;min-height:0;color:#ded9d1;display:flex;flex-direction:column;gap:16px;-webkit-app-region:no-drag}
+      [data-olivia-pets-page] h1{font-size:30px;margin:0;font-weight:700}
+      [data-olivia-pets-page] h2{font-size:18px;margin:8px 0 12px;font-weight:700}
+      .op-main{overflow-y:auto;background:#191a1c;border-radius:12px;padding:24px;min-height:0;flex:1;box-sizing:border-box;scrollbar-width:thin}
+      .op-note{color:#acb0b4;font-size:13px;margin:0 0 16px;line-height:1.7}
+      .op-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:16px;margin-bottom:20px}
+      .op-card{border:1px solid #383a3e;border-radius:12px;background:#1f2023;padding:18px;display:flex;flex-direction:column;gap:8px}
+      .op-card img{width:100%;aspect-ratio:3/4;object-fit:cover;background:#f4f1ec;border-radius:8px}
+      .op-card strong{font-size:18px}.op-card small{color:#acb0b4}
+      .op-card p{margin:0;color:#acb0b4;font-size:14px;line-height:1.6}
+      .op-card input{border:1px solid #4a4c52;border-radius:8px;background:#151618;color:#ded9d1;padding:8px 10px;font:inherit}
+      .op-card button{align-self:flex-start;border:1px solid #686a70;border-radius:999px;background:transparent;color:#ded9d1;padding:8px 18px;font:inherit;cursor:pointer}
+      .op-card button:disabled{opacity:.6;cursor:default}
+      .op-status{color:#acb0b4;font-size:13px;min-height:20px}
+      .ow-breadcrumb{display:flex;gap:10px;align-items:center;color:#acb0b4;font-size:14px}.ow-breadcrumb a{color:#ded9d1;text-decoration:none}
+    `;
+    const header=document.createElement('header');header.append(text('h1','宠物'));
+    const main=document.createElement('section');main.className='op-main';
+    const status=document.createElement('p');status.className='op-status';status.setAttribute('role','status');
+    page.replaceChildren(style,header,itemsBreadcrumb('宠物'),main);
+    const yuan=cents=>'¥'+(cents/100).toFixed(2);
+    const picture=(breed,stage,alt)=>{
+      const image=document.createElement('img');image.alt=alt;image.loading='lazy';
+      image.src=new URL('/toy/images/ui/pet-'+breed+'-'+stage,apiBase).href;
+      image.addEventListener('error',()=>image.remove());return image;
+    };
+    const failure=error=>String(error?.message||'').includes('BALANCE')?'余额不足，请先在右上角「账户」充值。':'没有成功，没有扣费，可以重新尝试。';
+    const pendingFood={};
+    const render=data=>{
+      const owned=new Set(data.pets.map(pet=>pet.breed));
+      const nodes=[text('p','领养一只宠物陪她：'+yuan(data.adopt_cents)+'，附一袋粮，够吃 '+data.bag_days+' 天。她每天喂它，吃满天数就会长大；'
+        +'粮吃完了它只是暂停长大，不会生病也不会饿着。她在家拍照时会带上它，狗狗出门散步时也会跟着。'
+        +(typeof data.balance_cents==='number'?' 账户余额 '+yuan(data.balance_cents)+'。':''),'op-note')];
+      if(data.pets.length){
+        nodes.push(text('h2','她的宠物'));
+        const grid=document.createElement('div');grid.className='op-grid';
+        for(const pet of data.pets){
+          const card=document.createElement('article');card.className='op-card';
+          const food=data.foods[pet.species];
+          const growth=pet.next_stage_at===null?'已经长大了。':'已经吃了 '+pet.fed_days+' 天，再吃 '+(pet.next_stage_at-pet.fed_days)+' 天就长大一点。';
+          card.append(picture(pet.breed,pet.stage,pet.name),text('strong',pet.name),text('small',pet.breed_name+' · '+pet.stage_name+' · 这会儿在'+pet.room),
+            text('p',growth),text('p',pet.food_days>0?food+'还够吃 '+pet.food_days+' 天。':food+'吃完了，它会先停在现在的样子。'));
+          let armed=false;
+          const label='买一袋'+food+' · '+yuan(data.food_cents);
+          const buy=button(label,async()=>{
+            if(!armed){armed=true;buy.textContent='确认购买（'+yuan(data.food_cents)+'）';status.textContent='会从账户余额扣除，一袋够吃 '+data.bag_days+' 天。';return;}
+            buy.disabled=true;
+            pendingFood[pet.species]=pendingFood[pet.species]||'food-'+Date.now().toString(36)+Math.random().toString(36).slice(2,10);
+            try{const result=await routeRequest('/toy/world/pets',{action:'food',species:pet.species,request_id:pendingFood[pet.species]},{confirmed:true});
+              delete pendingFood[pet.species];status.textContent='买好了，她会接着每天喂它。';render(result);}
+            catch(error){buy.disabled=false;armed=false;buy.textContent=label;status.textContent=failure(error);}
+          });
+          card.append(buy);grid.append(card);
+        }
+        nodes.push(grid);
+      }
+      const available=data.breeds.filter(breed=>!owned.has(breed.id));
+      if(available.length){
+        nodes.push(text('h2','领养'));
+        const grid=document.createElement('div');grid.className='op-grid';
+        for(const breed of available){
+          const card=document.createElement('article');card.className='op-card';
+          const name=document.createElement('input');name.maxLength=8;name.placeholder='给它起个名字（8 字以内）';name.setAttribute('aria-label','给'+breed.name+'起名字');
+          card.append(picture(breed.id,1,breed.name),text('strong',breed.name),text('small',breed.stages.join(' → ')),text('p',breed.summary),name);
+          let armed=false;
+          const label='领养 · '+yuan(data.adopt_cents);
+          const adopt=button(label,async()=>{
+            const chosen=name.value.trim();
+            if(!chosen){status.textContent='先给它起个名字吧。';name.focus();return;}
+            if(!armed){armed=true;adopt.textContent='确认领养「'+chosen+'」（'+yuan(data.adopt_cents)+'）';status.textContent='会从账户余额扣除，含一袋粮。';return;}
+            adopt.disabled=true;
+            try{const result=await routeRequest('/toy/world/pets',{action:'adopt',breed:breed.id,name:chosen},{confirmed:true});
+              status.textContent='「'+chosen+'」到家了！她拍照时会带上它。';render(result);}
+            catch(error){adopt.disabled=false;armed=false;adopt.textContent=label;
+              status.textContent=String(error?.message||'').includes('GPU_REQUEST_INVALID')?'名字里不能有特殊符号，换一个试试。':failure(error);}
+          });
+          name.addEventListener('input',()=>{if(armed){armed=false;adopt.textContent=label;}});
+          card.append(adopt);grid.append(card);
+        }
+        nodes.push(grid);
+      }
+      main.replaceChildren(...nodes,status);
+    };
+    main.append(text('p','正在看看她的宠物……','op-note'));
+    void routeRequest('/toy/world/pets').then(data=>{if(page.isConnected)render(data);})
+      .catch(()=>{if(page.isConnected)main.replaceChildren(text('p','宠物暂时打不开。','op-note'),button('重试',()=>mountPetsPage(page)));});
+  };
   const installNativeDiaryRoute = () => {
     const native=window.__oliviaNativeView;
     if(!native?.router||!native.h||native.router.hasRoute('olivia-diary'))return;
@@ -4316,7 +4408,11 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     }});
     if(window.location.hash===DIARY_ROUTE)void native.router.replace('/world/diary');
     if(window.location.hash===ITEMS_ROUTE)void native.router.replace('/world/items');
+    if(!native.router.hasRoute('olivia-pets'))native.router.addRoute({path:'/world/pets',name:'olivia-pets',component:{
+      name:'OliviaPetsView',render(){return native.h('main',{class:'mx-full h-full'})},mounted(){mountPetsPage(this.$el)},
+    }});
     if(window.location.hash===CAMERAS_ROUTE)void native.router.replace('/world/cameras');
+    if(window.location.hash===PETS_ROUTE)void native.router.replace('/world/pets');
   };
   const installNativeWardrobeRoute = () => {
     const native=window.__oliviaNativeView;

@@ -3805,6 +3805,25 @@ async def _vector_index_loop() -> None:
         await asyncio.sleep(20 if indexed else 600)
 
 
+_pets_checked_at = 0.0
+
+
+async def _pets_tick() -> None:
+    """Refresh her pets every few hours so replies know their age and food without opening the page."""
+    global _pets_checked_at
+    if (diary_store is None or time.time() - _pets_checked_at < 10800
+            or not _os.environ.get('OLIVIA_GPU_API_URL') or not _os.environ.get('OLIVIA_GPU_API_KEY')):
+        return
+    _pets_checked_at = time.time()
+    from runtime.remote_generation import RemoteGeneration
+    from runtime.cloud_service import CloudError
+    try:
+        result = await RemoteGeneration(_os.environ['OLIVIA_GPU_API_URL'], _os.environ['OLIVIA_GPU_API_KEY']).request('pets_get', {})
+    except CloudError:
+        return
+    diary_store.remember_pets(result['pets'], datetime.now(timezone.utc))
+
+
 async def _diary_loop() -> None:
     await asyncio.sleep(120)
     while True:
@@ -3812,6 +3831,10 @@ async def _diary_loop() -> None:
             await _diary_tick()
         except (OSError, RuntimeError, ValueError, TypeError, sqlite3.Error):
             _safe_log('diary_check_unavailable')
+        try:
+            await _pets_tick()
+        except (OSError, RuntimeError, ValueError, TypeError, KeyError, sqlite3.Error, asyncio.TimeoutError):
+            _safe_log('pets_check_unavailable')
         await asyncio.sleep(900)
 
 
@@ -4528,6 +4551,28 @@ async def route(
         if diary_store is not None:
             try:
                 diary_store.remember_gifts([c for c in result['cameras'] if c['owned']], datetime.now(timezone.utc))
+            except (OSError, ValueError, sqlite3.Error):
+                pass
+        return ok(result)
+
+    if p == '/toy/world/pets':
+        from runtime.remote_generation import RemoteGeneration
+        from runtime.cloud_service import CloudError
+        try:
+            api = RemoteGeneration(_os.environ.get('OLIVIA_GPU_API_URL', ''), _os.environ.get('OLIVIA_GPU_API_KEY', ''))
+            if method == 'POST':
+                if not companion_confirmed:
+                    return err(403, 'COMPANION_CONFIRMATION_REQUIRED', {})
+                result = await api.request('pets_post', body)
+            elif method == 'GET':
+                result = await api.request('pets_get', {})
+            else:
+                return err(405, 'METHOD_NOT_ALLOWED', {})
+        except CloudError as exc:
+            return err(exc.status, exc.code, {'error_code': exc.code})
+        if diary_store is not None:
+            try:
+                diary_store.remember_pets(result['pets'], datetime.now(timezone.utc))
             except (OSError, ValueError, sqlite3.Error):
                 pass
         return ok(result)
