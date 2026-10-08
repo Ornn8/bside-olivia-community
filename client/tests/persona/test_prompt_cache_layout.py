@@ -96,7 +96,7 @@ def test_chat_rules_move_into_cached_prefix_with_reminder_by_input():
                                              + grounding + '<evidence_summary>\nE\n</evidence_summary>\n'},
                 {'role': 'user', 'content': '[历史消息 {}]\n早'}, {'role': 'assistant', 'content': '[历史消息 {}]\n早呀'},
                 {'role': 'system', 'content': INSTRUCTION}, {'role': 'user', 'content': '在吗'})
-    result = cache_output_rules(messages, INSTRUCTION)
+    result = cache_output_rules(messages, INSTRUCTION, max_input_chars=30000)
     prefix = result[0]['content']
     assert INSTRUCTION in prefix and grounding in prefix and '<runtime_time>' not in prefix
     # Dialogue first, then the per-turn state, then the reminder and the input.
@@ -107,7 +107,7 @@ def test_chat_rules_move_into_cached_prefix_with_reminder_by_input():
     assert result[-1] == messages[-1] and len(result) == len(messages) + 1
     # Without the clock boundary nothing is moved.
     plain = ({'role': 'system', 'content': 'P'}, {'role': 'system', 'content': INSTRUCTION}, {'role': 'user', 'content': 'x'})
-    assert cache_output_rules(plain, INSTRUCTION) == plain
+    assert cache_output_rules(plain, INSTRUCTION, max_input_chars=30000) == plain
 
 
 def test_decision_in_single_item_array_is_accepted():
