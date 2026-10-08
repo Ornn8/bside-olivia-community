@@ -4356,7 +4356,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         for(const pet of data.pets){
           const card=document.createElement('article');card.className='op-card';
           const growth=pet.next_stage_in===null?'已经长大了。':'再过 '+pet.next_stage_in+' 天就长大一点。';
-          card.append(picture('pet-'+pet.breed+'-'+pet.stage,pet.name),text('strong',pet.name),
+          card.append(picture('pet-'+(pet.image||pet.breed+'-'+pet.stage),pet.name),text('strong',pet.name),
             text('small',pet.breed_name+' · '+pet.stage_name+' · '+pet.personality_name+' · '+pet.build_name),
             text('p',growth+' 这会儿在'+pet.room+'。'));
           const left=pet.feeds_left_today;
@@ -4396,7 +4396,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         for(const breed of available){
           const card=document.createElement('article');card.className='op-card';
           const name=document.createElement('input');name.maxLength=8;name.placeholder='给它起个名字（8 字以内）';name.setAttribute('aria-label','给'+breed.name+'起名字');
-          card.append(picture('pet-'+breed.id+'-1',breed.name),text('strong',breed.name),text('small',breed.stages.join(' → ')),text('p',breed.summary),name);
+          card.append(picture('pet-'+(breed.image||breed.id+'-1'),breed.name),text('strong',breed.name),text('small',breed.stages.join(' → ')),text('p',breed.summary),name);
           let armed=false;
           const label='领养 · '+yuan(data.adopt_cents);
           const adopt=button(label,async()=>{

@@ -3,6 +3,7 @@ import re
 
 _ID = re.compile(r'^[a-z0-9-]{3,40}$')
 _NAME = re.compile(r'^[^\x00-\x1f<>{}\[\]\\`"]{1,8}$')
+BUILDS = ('slim', 'normal', 'chubby')
 PERSONALITY_TEXT = {'clingy': '很黏你，走到哪跟到哪', 'aloof': '有点高冷，喜欢远远看着你，不太让抱',
                     'playful': '调皮好动，爱钻爱扑', 'greedy': '贪吃，一听到动静就往厨房跑'}
 
@@ -28,6 +29,11 @@ def _text(value, limit):
     return isinstance(value, str) and 1 <= len(value) <= limit
 
 
+def _image(value):
+    """The preset picture id of a stage and build (optional for older services)."""
+    return value is None or isinstance(value, str) and bool(_ID.fullmatch(value))
+
+
 def _count(value, limit):
     return type(value) is int and 0 <= value <= limit
 
@@ -38,9 +44,10 @@ def validate_pets(result):
         breeds = []
         for item in result['breeds']:
             if (not _ID.fullmatch(item['id']) or not _text(item['name'], 20) or not _text(item['summary'], 120)
-                    or len(item['stages']) != 3 or any(not _text(stage, 12) for stage in item['stages'])):
+                    or not 3 <= len(item['stages']) <= 6 or any(not _text(stage, 12) for stage in item['stages'])
+                    or not _image(item.get('image'))):
                 raise ValueError()
-            breeds.append({key: item[key] for key in ('id', 'name', 'summary', 'stages')})
+            breeds.append({key: item[key] for key in ('id', 'name', 'summary', 'stages', 'image') if key in item})
         items = []
         for item in result['items']:
             if (not _ID.fullmatch(item['id']) or item['kind'] not in ('wear', 'home') or not _text(item['name'], 20)
@@ -52,15 +59,15 @@ def validate_pets(result):
         for pet in result['pets']:
             if (not _ID.fullmatch(pet['breed']) or not _NAME.fullmatch(pet['name']) or not _text(pet['breed_name'], 20)
                     or pet['personality'] not in PERSONALITY_TEXT or not _text(pet['personality_name'], 8)
-                    or pet['stage'] not in (1, 2, 3) or not _text(pet['stage_name'], 12) or not _count(pet['days'], 100000)
+                    or pet['stage'] not in range(1, 7) or not _text(pet['stage_name'], 12) or not _count(pet['days'], 100000)
                     or not (pet['next_stage_in'] is None or _count(pet['next_stage_in'], 100))
-                    or pet['build'] not in ('normal', 'chubby') or not _text(pet['build_name'], 8)
+                    or pet['build'] not in BUILDS or not _text(pet['build_name'], 8) or not _image(pet.get('image'))
                     or not _count(pet['feeds_left_today'], 10) or not isinstance(pet['adopted'], (int, float))
                     or not _text(pet['room'], 8)):
                 raise ValueError()
             pets.append({key: pet[key] for key in ('breed', 'name', 'breed_name', 'personality', 'personality_name',
                                                    'stage', 'stage_name', 'days', 'next_stage_in', 'build', 'build_name',
-                                                   'feeds_left_today', 'adopted', 'room')})
+                                                   'feeds_left_today', 'adopted', 'room', 'image') if key in pet})
         limits = [result[key] for key in ('adopt_cents', 'max_pets', 'feeds_per_day')]
         if (any(not _count(value, 10000) or not value for value in limits)
                 or len(breeds) > 30 or len(items) > 30 or len(pets) > 10):
@@ -89,5 +96,5 @@ def context(pets, items=()):
                                 **({'usually_in_room_now': p['room']} if p.get('room') else {})} for p in pets],
             **({'pet_things_from_user': list(items)} if items else {}),
             'pets_meaning': ('对方送你领养的猫，你在家养着、每天喂它们。character 是它的性格，build 是它现在的体态'
-                             '（对方常让你多喂几次就会圆滚滚）。usually_in_room_now 是它这会儿自己待着的房间（几小时前刷新），'
+                             '（成年后才看得出：对方常让你多喂几次会圆滚滚，只有你每天喂一顿、对方不喂就会偏瘦）。usually_in_room_now 是它这会儿自己待着的房间（几小时前刷新），'
                              '它也常跑来你身边；你出门时它在家等你。pet_things_from_user 是对方给猫买的东西，都在家里用着。')}

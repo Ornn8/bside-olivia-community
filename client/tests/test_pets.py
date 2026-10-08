@@ -16,6 +16,17 @@ STATE = {'breeds': [{'id': 'orange-tabby', 'name': '橘猫', 'summary': '能吃�
          'balance': {'balance_cents': 1234}, 'fed': True, 'unknown': 'dropped'}
 
 
+def test_four_stages_three_builds_and_preset_pictures_are_kept():
+    adult = {**PET, 'stage': 4, 'stage_name': '成年猫', 'next_stage_in': None, 'build': 'slim', 'build_name': '偏瘦',
+             'image': 'orange-tabby-4-slim'}
+    breed = {**STATE['breeds'][0], 'stages': ['奶猫', '幼猫', '半大的猫', '成年猫'], 'image': 'orange-tabby-4-normal'}
+    value = validate_pets({**STATE, 'breeds': [breed], 'pets': [adult]})
+    assert value['pets'][0]['image'] == 'orange-tabby-4-slim' and value['breeds'][0]['image'] == 'orange-tabby-4-normal'
+    for bad in ({**adult, 'image': '../x'}, {**adult, 'stage': 7}):
+        with pytest.raises(ValueError):
+            validate_pets({**STATE, 'pets': [bad]})
+
+
 def test_only_named_adoptions_free_feeds_and_single_items_are_sent():
     assert validate_request({'action': 'adopt', 'breed': 'orange-tabby', 'name': '团子'})['name'] == '团子'
     assert validate_request({'action': 'feed', 'breed': 'orange-tabby'})['action'] == 'feed'
