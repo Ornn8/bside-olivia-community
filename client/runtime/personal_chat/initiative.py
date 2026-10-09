@@ -100,6 +100,13 @@ class Initiative:
         if self.target is None:
             self.received(event, send)
 
+    def free(self):
+        """No user turn in flight and no send of uncertain outcome."""
+        latest_user = next((r for r in reversed(self.rows) if r.get('origin') != 'proactive' and not r.get('superseded_by')), None)
+        if latest_user and latest_user.get('delivery_status') in {'RECEIVED','GENERATING','GENERATED','MEDIA_PENDING','SENDING','DELIVERY_UNCONFIRMED'}:
+            return False
+        return not any(r.get('delivery_status') in {'SENDING', 'DELIVERY_UNCONFIRMED', 'GENERATING'} for r in self.rows)
+
     def pending_followup(self):
         latest = next((r for r in reversed(self.rows) if controls_available(r) and 'followup_at' in r
                        and r.get('origin') != 'proactive'), None)
