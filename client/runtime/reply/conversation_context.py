@@ -1,6 +1,8 @@
 """Shared delivered conversation window for every reply channel."""
 import json
 from datetime import datetime, timezone, timedelta
+from heapq import nlargest
+from itertools import islice
 
 from runtime.reply.recent_correspondence import recent_correspondence
 from runtime.reply.fact_attribution import FACT_ATTRIBUTION_BOUNDARY
@@ -10,6 +12,11 @@ LOCAL = timezone(timedelta(hours=8))
 # Chat windows start on multiples of this many exchanges, so the dialogue that
 # opens the prompt stays identical for several turns and keeps hitting the cache.
 WINDOW_STEP = 4
+# Lower bound for the mandatory JSON keys of one dialogue row (without values
+# or packet overhead). Enough candidates for any suffix that can fit, plus the
+# stable-cache alignment. Archive retrieval below still sees all originals.
+_ROW_KEYS_COST = sum(len(key) + 4 for key in ('source_id', 'channel', 'origin', 'received_at',
+                                           'sent_at', 'replied_at', 'user_letter', 'linli_reply'))
 
 
 def _time(value):
@@ -23,19 +30,29 @@ def _time(value):
 def conversation_context(rows, *, query, now, excluded_sources=(), max_chars=6000):
     from runtime.personal_chat.context import READ_WINDOW
     frozen = READ_WINDOW.get()
-    rows = list(rows if frozen is None else frozen)
+    rows = list(rows) if frozen is None else frozen
     def delivered(row):
         if row.get('read_only') or not isinstance(row.get('letter_id'), str):
             return False
         if row.get('channel') in {'qq', 'wechat'}:
             return row.get('delivery_status') == 'DELIVERED'
         return row.get('letter_status') == 'COMPLETED'
-    candidates = [r for r in rows if (delivered(r) or frozen is not None and r.get('_received_only'))
-                  if not any(s.startswith(f"reply:{r['letter_id']}:") for s in excluded_sources)]
-    rows = [r for r in rows if delivered(r)]
-    # Receive order is authoritative even if delivery or indexing completes later.
-    candidates.sort(key=lambda r: (r.get('_read_order', float(r.get('created_at', 0))),
-                                  r.get('received_sequence', 0)))
+    def eligible(row):
+        return ((delivered(row) or frozen is not None and row.get('_received_only'))
+                and not any(s.startswith(f"reply:{row['letter_id']}:") for s in excluded_sources))
+    limit = max(1, max_chars // _ROW_KEYS_COST + WINDOW_STEP)
+    if frozen is not None:
+        # Already in authoritative receive/read order. Inspect only a bounded
+        # tail, not a second full copy and sort of the archive.
+        candidates = list(islice((r for r in reversed(rows) if eligible(r)), limit))
+    else:
+        # Legacy rows can have neither timestamp nor receipt sequence. Preserve
+        # their input position as the final tie-breaker, just like stable sort.
+        chosen = nlargest(limit, ((i, r) for i, r in enumerate(rows) if eligible(r)),
+            key=lambda item: (item[1].get('_read_order', float(item[1].get('created_at', 0))),
+                              item[1].get('received_sequence', 0), item[0]))
+        candidates = [r for _, r in chosen]
+    candidates.reverse()
     packet = {'kind': 'recent_dialogue', 'current_time': now.astimezone(LOCAL).isoformat(), 'timezone': 'Asia/Shanghai',
               'meaning': '以下是按接收顺序排列的最近连续交流，信件和聊天跨渠道仍是同一个人；保留各渠道，不把聊天叫作信件。'
                          'received_at是程序接收时间，sent_at才是平台发送时间；未知时间不猜测。'
@@ -112,7 +129,8 @@ def conversation_context(rows, *, query, now, excluded_sources=(), max_chars=600
         sources.append(item['source_id'])
     shown = packet['letters']
     if frozen is not None and len(shown) > WINDOW_STEP and not shown[0].get('truncated'):
-        drop = -(len(candidates) - len(shown)) % WINDOW_STEP
+        start = candidates[-len(shown)].get('_read_order', len(candidates) - len(shown))
+        drop = -start % WINDOW_STEP
         if drop:
             gone = {item['source_id'] for item in shown[:drop]}
             packet['letters'] = shown[drop:]
@@ -123,7 +141,7 @@ def conversation_context(rows, *, query, now, excluded_sources=(), max_chars=600
         omitted = json.dumps({'kind': 'recent_dialogue', 'coverage': 'omitted_due_to_capacity',
                               'letters': []}, separators=(',', ':'))
         return (omitted if len(omitted) <= max_chars else ''), ''
-    historical = recent_correspondence(rows, query=query,
+    historical = recent_correspondence((r for r in rows if delivered(r)), query=query,
         excluded_sources=(*excluded_sources, *sources), max_chars=max_chars - len(recent))
     if historical:
         history = json.loads(historical)
