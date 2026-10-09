@@ -108,6 +108,10 @@ def _decision_context(messages, required_sources=(), recent_turns=1):
         text = original.get('reply_text' if row['role'] == 'assistant' else 'content')
         if isinstance(text, str) and text.strip():
             row.update(text=text, truncated=False)
+    # An excerpt whose original is gone is left out rather than failing the turn:
+    # a failed turn stores no decision, so the next turn would see even more old
+    # uncovered rows and fail again. Evidence for pending requirements stays strict.
+    kept = [row for row in kept if not row.get('truncated') or any(matches(row, source) for source in required)]
     # Pending originals may predate the writer's bounded read window.
     restored = []
     for source in sorted(required):

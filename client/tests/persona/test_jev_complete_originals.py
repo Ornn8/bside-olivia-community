@@ -37,9 +37,12 @@ def test_clipped_recent_turn_restores_only_its_matching_frozen_original(missing)
             return await prepare_decision(port, messages, '后来呢', source_id='reply:new:user',
                 input_revision=0, as_of=NOW.isoformat(), kinds=['text'])
         if missing:
-            with pytest.raises(RuntimeError, match='^JEV_CONTEXT_UNAVAILABLE$'):
-                asyncio.run(decide())
-            assert not port.turns
+            # The unrecoverable excerpt is left out; the turn is still decided.
+            result = asyncio.run(decide())
+            assert result is not None and len(port.turns) == 1
+            actual = port.turns[0].input['messages']
+            assert text not in [row['text'] for row in actual] and actual[-1]['text'] == '后来呢'
+            assert '[中间原文省略]' not in str(actual)
         else:
             result = asyncio.run(decide())
             assert result is not None and len(port.turns) == 1
