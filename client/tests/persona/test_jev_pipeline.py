@@ -186,10 +186,12 @@ def test_legacy_paid_decision_stays_reusable_when_daily_video_capability_appears
         arguments = dict(source_id='reply:dev:user', input_revision=3,
             as_of='2026-09-27T00:00:00+00:00', kinds=['text', 'audio_speech'])
         old = await prepare_decision(port, (), '原消息', **arguments)
+        legacy = old.record()
+        legacy.pop('input', None)
         arguments['kinds'].append('video_speech')
-        restored = await prepare_decision(port, (), '原消息', **arguments, cached=old.record(),
+        restored = await prepare_decision(port, (), '原消息', **arguments, cached=legacy,
             daily_video_experience=dict(event_ids=['day:new'], event_kinds=['meal'], max_seconds=15))
-        assert restored.record() == old.record() and len(port.turns) == 1
+        assert restored.record() == legacy and len(port.turns) == 1
     asyncio.run(scenario())
 
 

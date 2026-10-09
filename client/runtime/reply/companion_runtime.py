@@ -138,6 +138,16 @@ async def prepare_decision(port, messages, user_text, *, source_id, input_revisi
     from .companion_decision import FrozenCompanionTurn, FrozenCompanionDecision
     metadata = TURN_CONTEXT.get() or {}
     reuse = isinstance(cached, dict) and cached.get('input_revision') == input_revision
+    if reuse and 'input' in cached:
+        try:
+            frozen = FrozenCompanionTurn.from_record(cached)
+            if (type(frozen.input_revision) is not type(input_revision)
+                    or frozen.source_ids[-1][1] != source_id
+                    or frozen.input['messages'][-1]['text'] != user_text):
+                raise ValueError('stored decision belongs to another input')
+            return FrozenCompanionDecision.from_record(frozen, cached, profile=getattr(port, 'profile', 'full'))
+        except ValueError:
+            raise CompanionRuntimeError('JEV_STORED_DECISION_INVALID') from None
     if reuse:
         bedtime_offer = 'speech_offer' in cached
     sources = (*required_sources, *metadata.get('companion_context_sources', ()))

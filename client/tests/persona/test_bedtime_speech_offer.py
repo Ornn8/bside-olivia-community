@@ -141,8 +141,10 @@ def test_old_paid_decision_is_not_reclassified_when_offer_is_enabled():
     args = dict(source_id='synthetic-cache', input_revision=2, as_of='2026-10-06T22:00:00+08:00',
                 kinds=['text'], speech_enabled=True)
     old = asyncio.run(prepare_decision(port, [], '我要睡了', **args))
-    replay = asyncio.run(prepare_decision(port, [], '我要睡了', **args, cached=old.record(), bedtime_offer=True))
-    assert replay.record() == old.record() and len(port.turns) == 1
+    legacy = old.record()
+    legacy.pop('input', None)
+    replay = asyncio.run(prepare_decision(port, [], '我要睡了', **args, cached=legacy, bedtime_offer=True))
+    assert replay.record() == legacy and len(port.turns) == 1
     assert 'speech_offer' not in replay.record()
 
 

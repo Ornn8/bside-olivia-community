@@ -1089,13 +1089,19 @@ class GatewayPersonaRewriter:
                         raise RuntimeError("REWRITE_OUTPUT_INVALID")
                     break
                 if isinstance(envelope, list):
-                    # Arrays are not part of the generation envelope contract.
-                    raise RuntimeError("REWRITE_OUTPUT_INVALID")
+                    if len(envelope) != 1 or not isinstance(envelope[0], dict) or 'text' not in envelope[0]:
+                        raise RuntimeError("REWRITE_OUTPUT_INVALID")
+                    envelope = envelope[0]
+                    wrapper_depth += 1
                 if not isinstance(envelope, dict) or "text" not in envelope:
                     if wrapper_depth:
                         raise RuntimeError("REWRITE_OUTPUT_INVALID")
                     break
-                if (set(envelope) != {"text"}
+                from runtime.personal_chat.decision import NEUTRAL_METADATA, OPTIONAL_FIELDS
+                # The writer may repeat its generation envelope during a prose
+                # rewrite. Recover only text: the pipeline keeps the original
+                # controls/media and still reviews this replacement body.
+                if (set(envelope) - ({'text'} | NEUTRAL_METADATA.keys() | OPTIONAL_FIELDS)
                         or not isinstance(envelope.get("text"), str)):
                     raise RuntimeError("REWRITE_OUTPUT_INVALID")
                 rewritten = envelope["text"].strip()
