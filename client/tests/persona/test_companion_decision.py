@@ -334,13 +334,17 @@ def test_valid_unsupported_plan_is_retained_as_unexecuted_not_rewritten(sidecar)
     assert result.decision.plan['resolution']['action_executed'] is False
 
 
-def test_persisted_record_roundtrip_is_bound_without_repeating_original_text():
+def test_persisted_record_roundtrip_keeps_frozen_input_out_of_diagnostics():
     turn = FrozenCompanionTurn.create(**input_args())
     decision = FrozenCompanionDecision.from_response(turn, envelope())
     record = json.loads(json.dumps(decision.record()))
     restored = FrozenCompanionDecision.from_record(turn, record)
     assert restored == decision and restored.matches(turn)
-    assert input_args()['messages'][-1]['text'] not in json.dumps(record, ensure_ascii=False)
+    assert record['input'] == turn.input
+    from runtime.diagnostics.support_bundle import project_chat_task
+    diagnostic = project_chat_task(dict(channel='qq', companion_decision=record))
+    assert 'companion_decision' not in diagnostic and 'input' not in diagnostic
+    assert input_args()['messages'][-1]['text'].strip() not in json.dumps(diagnostic, ensure_ascii=False)
     assert record['source_id_map']['t2'] == 'qq:received:19'
     record['plan']['proposal']['moves'].clear()
     assert restored.plan['proposal']['moves']

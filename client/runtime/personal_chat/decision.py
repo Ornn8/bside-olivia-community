@@ -72,6 +72,7 @@ _RESERVED_CONTROL = re.compile(r'\[\[\s*(?:(?:chat|delivery|initiative|letter|co
                                re.IGNORECASE)
 NEUTRAL_METADATA = dict(delivery='text', listening='keep', initiative='keep', pause_until=None,
                         letter='keep', letter_until=None, followup_at=None, evidence='', skip=False)
+OPTIONAL_FIELDS = frozenset({'letter_invitation', 'sticker', 'text_reason', 'speech', 'silence', 'daily_video'})
 
 
 def _control_body(text):
@@ -175,7 +176,7 @@ def decode(raw, *, user, now, proactive=False, allow_user_silence=False, allow_s
         if isinstance(data, list) and len(data) == 1 and isinstance(data[0], dict):
             data = data[0]  # The model sometimes wraps its one decision in an array.
         required = {'text'}
-        optional = {'letter_invitation', 'sticker', 'text_reason', 'speech', 'silence', 'daily_video'}
+        optional = OPTIONAL_FIELDS
         extra_field_count = (len(data.keys() - required - NEUTRAL_METADATA.keys() - optional)
                              if isinstance(data, dict) else 0)
         if not isinstance(data, dict) or not required <= data.keys():

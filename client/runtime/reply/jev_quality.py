@@ -363,8 +363,11 @@ async def review_layers_json(port, requests, candidate, evidence_bound, adjudica
                 # A whole-reply judgment, not a span: which message does the candidate answer?
                 q(detect, layer_id, code,
                   'OFF_TURN_REPLY：整封候选回应的是current_user_input（最后一条用户消息），'
-                  '还是recent_turns里更早的一条用户消息？按rules.OFF_TURN_REPLY判断。',
-                  {'current': '回应了最后一条用户消息；或本轮本身就在接旧话题', 'earlier': '把更早一条消息的请求或话题当成本轮来答，最后一条没有得到回应'})
+                  '还是recent_turns里更早的一条用户消息？按rules.OFF_TURN_REPLY判断。'
+                  '只有能明确对应到更早的原话、且本轮未被回应时才选earlier；历史不足、指代不明或不能确定时选uncertain。',
+                  {'current': '回应了最后一条用户消息；或本轮本身就在接旧话题',
+                   'earlier': '明确把更早一条消息的请求或话题当成本轮来答，最后一条没有得到回应',
+                   'uncertain': '证据不足，无法确定是否答错了回合'})
                 continue
             q(detect, layer_id, code, code, options)
         if 'MEMORY_FABRICATION' in layer.allowed_codes:
