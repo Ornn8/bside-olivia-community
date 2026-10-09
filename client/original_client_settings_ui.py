@@ -2181,7 +2181,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       }
       if (order.state === "expired") {
         status.textContent = "付款金额已过期，请勿继续付款。";
-        orderView.append(text("p", "此付款金额已过期，请勿继续付款。已付款但未到账，请联系管理员核对。", "text-text-secondary text-body-m")); enabled(); return;
+        orderView.append(text("p", "此付款金额已过期，请勿再按它付款。还没付款：点「获取付款金额」重新生成即可。已经付款但没到账：请不要重复付款，联系管理员核对。", "text-text-secondary text-body-m")); enabled(); return;
       }
       active = order;
       select.value = String(Math.round(Number(order.credit_yuan)*100));
@@ -2194,14 +2194,22 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       qr.src = new URL('/toy/images/ui/wechat-payment', apiBase).href;
       qr.alt = "微信收款码，收款人 Ornn，请按订单显示金额付款";
       qr.style.cssText = "display:block;width:280px;max-width:100%;height:auto;margin:12px auto;border-radius:12px";
-      const paid = text("p", `请用微信扫描下方收款码，准确支付 ${amount}（含小数），请勿取整。到账余额 ¥${credit}。`, "text-text-secondary text-body-m");
+      const paid = document.createElement("ol");
+      paid.className = "text-text-secondary text-body-m";
+      paid.style.cssText = "margin:0;padding-left:1.4em;display:grid;gap:6px";
+      for (const step of [
+        "打开微信「扫一扫」，扫描下方收款码。",
+        `付款金额填 ${amount}，带小数、一分不差。这几分钱的差别是用来自动认出你的付款的，到账按 ¥${credit} 计算。`,
+        "付完留在这个页面，通常 1 分钟内自动到账，不用截图，也不用联系客服。"]) {
+        const item = document.createElement("li"); item.textContent = step; paid.append(item);
+      }
       orderView.append(pay, paid, qr, countdown);
       status.textContent = `付款金额 ${amount}，到账余额 ¥${credit}。`;
       const deadline = Date.now() + Math.max(0, order.expires_at-data.server_time)*1000;
       const tick = () => {
         if (!box.isConnected || serial !== generation) return;
         const seconds = Math.max(0, Math.ceil((deadline-Date.now())/1000));
-        countdown.textContent = `有效时间 ${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,"0")} · 正在等待微信到账通知`;
+        countdown.textContent = `请在 ${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,"0")} 内付款 · 正在等待微信到账通知`;
         if (!seconds) { pay.textContent="付款金额已过期，请勿继续付款。"; qr.remove(); paid.hidden=true; active=null; enabled(); return; }
         window.setTimeout(tick,1000);
       };

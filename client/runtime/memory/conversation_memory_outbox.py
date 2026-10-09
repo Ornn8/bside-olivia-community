@@ -264,6 +264,10 @@ class CanonicalMemoryOutbox:
             return  # Archive failures must not block canonical delivery; retry next scan.
         indexed = 0
         deliveries = []
+        # Dates the user restored in the mailbox stamp the derived recall index,
+        # so a question naming that day finds those letters. Originals stay unchanged.
+        from runtime.imports.letter_maintenance import key as maintenance_key
+        restored_dates = self._restored_dates()
         for row in rows:
             if not isinstance(row, Mapping):
                 continue
@@ -276,13 +280,16 @@ class CanonicalMemoryOutbox:
             user_text, reply = metadata.get("user_content"), metadata.get("reply_text")
             if not isinstance(source, str) or not source or not all(isinstance(v, str) for v in (user_text, reply)):
                 continue
-            stamp = _timestamp(row.get("occurred_at"))
+            edit = restored_dates.get(maintenance_key(row)) if restored_dates else None
+            restored = _timestamp(edit.get("created_at")) if isinstance(edit, Mapping) else None
+            stamp = restored or _timestamp(row.get("occurred_at"))
+            occurred = restored.isoformat() if restored else row.get("occurred_at")
             digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
             source_id = ("history:offline:" if source.startswith("offline-letter-pairs:") else "history:") + digest
             delivery = SimpleNamespace(user_id=self.user_id, source_id=source_id,
                 user_message=user_text, assistant_message=reply, occurred_at=stamp,
                 lifecycle_at=_timestamp(row.get("imported_at")) or stamp or datetime.fromtimestamp(0, timezone.utc),
-                content_hash=hashlib.sha256(json.dumps([user_text, reply, row.get("occurred_at")], ensure_ascii=False).encode("utf-8")).hexdigest())
+                content_hash=hashlib.sha256(json.dumps([user_text, reply, occurred], ensure_ascii=False).encode("utf-8")).hexdigest())
             deliveries.append(delivery)
         register = getattr(self.committer, "register_archive_sources", None)
         if callable(register):
@@ -294,6 +301,14 @@ class CanonicalMemoryOutbox:
             indexed += bool(await index(delivery))
             if indexed >= 20:
                 break
+
+    def _restored_dates(self) -> Mapping[str, object]:
+        try:
+            payload = json.loads(self.state_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return {}
+        edits = payload.get("letter_maintenance") if isinstance(payload, Mapping) else None
+        return edits if isinstance(edits, Mapping) else {}
 
     def health(self) -> dict[str, object]:
         try:
