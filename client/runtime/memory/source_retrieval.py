@@ -56,6 +56,10 @@ class SourceRetrieval:
                    'PRIMARY KEY(user,dependency_id))')
         db.execute('CREATE TABLE IF NOT EXISTS source_vectors '
                    '(user TEXT, source TEXT, model TEXT, digest TEXT, vector BLOB, PRIMARY KEY(user,source,model))')
+        db.execute('CREATE TABLE IF NOT EXISTS vector_models (user TEXT, model TEXT, PRIMARY KEY(user,model))')
+        db.execute('CREATE TABLE IF NOT EXISTS vector_pending '
+                   '(user TEXT, model TEXT, source TEXT, stamp TEXT, PRIMARY KEY(user,model,source))')
+        db.execute('CREATE INDEX IF NOT EXISTS vector_pending_order ON vector_pending(user,model,stamp DESC,source)')
         db.execute('CREATE TABLE IF NOT EXISTS source_aliases '
                    '(user TEXT, exchange_source TEXT, receipt_source TEXT, PRIMARY KEY(user,exchange_source,receipt_source))')
         db.execute('CREATE TABLE IF NOT EXISTS relationship_quotes '
@@ -85,6 +89,8 @@ class SourceRetrieval:
             db.execute('DELETE FROM originals WHERE user=? AND source=?', (user, source))
             db.execute('DELETE FROM chunks WHERE user=? AND source=?', (user, source))
             db.execute('DELETE FROM relationship_quotes WHERE user=? AND source=?', (user, source))
+            db.execute('DELETE FROM source_vectors WHERE user=? AND source=?', (user, source))
+            db.execute('DELETE FROM vector_pending WHERE user=? AND source=?', (user, source))
 
     @classmethod
     def _lineage(cls, db, user, source):
@@ -135,6 +141,7 @@ class SourceRetrieval:
             if old:
                 return True
             db.execute('INSERT INTO originals VALUES (?,?,?,?,?)', (user, source, 'user', stamp, text))
+            self._queue_vector_source(db, user, source, stamp)
             for start in range(0, len(text), 280):
                 chunk = text[start:start + 360]
                 db.execute('INSERT INTO chunks VALUES (?,?,?,?,?,?,?)', (user, source, 'user', stamp, start, chunk, ' '.join(terms(chunk))))
@@ -348,21 +355,26 @@ class SourceRetrieval:
                 # move the stamp only. Existing relationship labels still describe these words.
                 db.execute("UPDATE originals SET stamp=? WHERE user=? AND source=?", (stamp, user, source))
                 db.execute("UPDATE chunks SET stamp=? WHERE user=? AND source=?", (stamp, user, source))
+                self._queue_vector_source(db, user, source, stamp)
                 if reply_text.strip():
                     digest = _digest(json.dumps([user_text, reply_text, stamp], ensure_ascii=False))
                     db.execute('INSERT INTO relationship_quotes(user,source,digest) VALUES (?,?,?) '
                                'ON CONFLICT(user,source) DO NOTHING', (user, source, digest))
                 return
+            changed = False
             for actor, text in (("user", user_text), ("linli", reply_text)):
                 previous = db.execute("SELECT text,stamp FROM originals WHERE user=? AND source=? AND actor=?", (user, source, actor)).fetchone()
                 if previous == (text, stamp):
                     continue
+                changed = True
                 db.execute("DELETE FROM chunks WHERE user=? AND source=? AND actor=?", (user, source, actor))
                 db.execute("INSERT OR REPLACE INTO originals VALUES (?,?,?,?,?)", (user, source, actor, stamp, text))
                 # Overlap preserves sentence context; offsets retain exact provenance.
                 for start in range(0, len(text), 280):
                     chunk = text[start:start + 360]
                     db.execute("INSERT INTO chunks VALUES (?,?,?,?,?,?,?)", (user, source, actor, stamp, start, chunk, " ".join(terms(chunk))))
+            if changed:
+                self._queue_vector_source(db, user, source, stamp)
             if reply_text.strip():
                 digest = _digest(json.dumps([user_text, reply_text, stamp], ensure_ascii=False))
                 # Re-indexing old delivered originals also queues their missing
@@ -473,6 +485,8 @@ class SourceRetrieval:
                 removed += db.execute('DELETE FROM originals WHERE user=? AND source=? AND actor=?',
                                       (user, source, 'user')).rowcount
                 db.execute('DELETE FROM chunks WHERE user=? AND source=?', (user, source))
+                db.execute('DELETE FROM source_vectors WHERE user=? AND source=?', (user, source))
+                db.execute('DELETE FROM vector_pending WHERE user=? AND source=?', (user, source))
         return removed
 
     def forget(self, user, source=None):
@@ -687,35 +701,72 @@ class SourceRetrieval:
         return (user[:600] + '\n' + linli[:400]).strip()
 
     def vectors_missing(self, user, model, limit=32):
-        """Exchanges whose current text has no vector for this model, newest first."""
-        with closing(self.connect()) as db:
-            sources = [row[0] for row in db.execute(
-                'SELECT source FROM originals WHERE user=? GROUP BY source ORDER BY MAX(stamp) DESC', (user,))]
+        """Read bounded durable work, not every original on every reply.
+
+        A model's first use backfills the queue once and validates old vectors;
+        subsequent source writes invalidate and queue just the changed exchange.
+        """
+        if limit <= 0:
+            return []
+        with closing(self.connect()) as db, db:
+            db.execute('BEGIN IMMEDIATE')
+            if not db.execute('SELECT 1 FROM vector_models WHERE user=? AND model=?', (user, model)).fetchone():
+                from itertools import groupby
+                rows = db.execute('SELECT o.source,o.actor,o.text,o.stamp,v.digest FROM originals o '
+                    'LEFT JOIN source_vectors v ON v.user=o.user AND v.source=o.source AND v.model=? '
+                    'WHERE o.user=? AND NOT EXISTS (SELECT 1 FROM forgotten f WHERE f.user=o.user AND f.source=o.source) '
+                    'ORDER BY o.source,o.actor DESC', (model, user))
+                for source, items in groupby(rows, key=lambda row: row[0]):
+                    items = list(items)
+                    text = self._exchange_text([(row[1], row[2]) for row in items])
+                    if text and items[0][4] != _digest(text):
+                        db.execute('DELETE FROM source_vectors WHERE user=? AND source=? AND model=?', (user, source, model))
+                        stamp = max((row[3] for row in items if row[3] is not None), default=None)
+                        db.execute('INSERT OR IGNORE INTO vector_pending VALUES (?,?,?,?)', (user, model, source, stamp))
+                db.execute('INSERT INTO vector_models VALUES (?,?)', (user, model))
+            sources = db.execute('SELECT source FROM vector_pending WHERE user=? AND model=? '
+                                 'ORDER BY stamp DESC,source LIMIT ?', (user, model, limit)).fetchall()
             result = []
-            for source in sources:
-                if db.execute('SELECT 1 FROM forgotten WHERE user=? AND source=?', (user, source)).fetchone():
-                    continue
+            for (source,) in sources:
                 rows = db.execute('SELECT actor,text FROM originals WHERE user=? AND source=? ORDER BY actor DESC',
                                   (user, source)).fetchall()
                 text = self._exchange_text(rows)
-                if not text:
-                    continue
-                digest = _digest(text)
-                stored = db.execute('SELECT digest FROM source_vectors WHERE user=? AND source=? AND model=?',
-                                    (user, source, model)).fetchone()
-                if stored is None or stored[0] != digest:
-                    result.append((source, digest, text))
-                    if len(result) >= limit:
-                        break
+                if text:
+                    result.append((source, _digest(text), text))
+                else:
+                    db.execute('DELETE FROM vector_pending WHERE user=? AND model=? AND source=?', (user, model, source))
             return result
+
+    @classmethod
+    def _queue_vector_source(cls, db, user, source, stamp):
+        rows = db.execute('SELECT actor,text FROM originals WHERE user=? AND source=? ORDER BY actor DESC',
+                          (user, source)).fetchall()
+        digest = _digest(cls._exchange_text(rows))
+        # Stamp-only edits and changes outside the bounded embedding input must
+        # not trigger another paid embedding of identical text.
+        db.execute('DELETE FROM source_vectors WHERE user=? AND source=? AND digest!=?', (user, source, digest))
+        db.execute('DELETE FROM vector_pending WHERE user=? AND source=? AND model IN '
+                   '(SELECT model FROM source_vectors WHERE user=? AND source=? AND digest=?)',
+                   (user, source, user, source, digest))
+        db.execute('INSERT OR REPLACE INTO vector_pending '
+                   'SELECT m.user,m.model,?,? FROM vector_models m WHERE m.user=? '
+                   'AND NOT EXISTS (SELECT 1 FROM source_vectors v WHERE v.user=m.user AND v.model=m.model AND v.source=?)',
+                   (source, stamp, user, source))
 
     def put_vectors(self, user, model, items):
         """items: (source, digest, vector) with a unit-length float vector."""
         from array import array
         with closing(self.connect()) as db, db:
+            db.execute('BEGIN IMMEDIATE')
             for source, digest, vector in items:
+                rows = db.execute('SELECT actor,text FROM originals WHERE user=? AND source=? ORDER BY actor DESC',
+                                  (user, source)).fetchall()
+                text = self._exchange_text(rows)
+                if not text or _digest(text) != digest:
+                    continue  # An in-flight result cannot restore an edited/deleted original.
                 db.execute('INSERT OR REPLACE INTO source_vectors VALUES (?,?,?,?,?)',
                            (user, source, model, digest, array('f', vector).tobytes()))
+                db.execute('DELETE FROM vector_pending WHERE user=? AND model=? AND source=?', (user, model, source))
 
     def vector_coverage(self, user, model):
         """Share of exchanges holding a vector for this model (stale ones count)."""
@@ -727,30 +778,34 @@ class SourceRetrieval:
     def nearest_sources(self, user, model, vector, *, limit=12, exclude_source_ids=()):
         """Sources ranked by cosine similarity to a unit-length query vector."""
         from array import array
+        from heapq import nlargest
+        if limit <= 0:
+            return []
         excluded = set(exclude_source_ids)
         query = array('f', vector)
-        scored = []
-        with closing(self.connect()) as db:
-            excluded.update(row[0] for row in db.execute('SELECT source FROM forgotten WHERE user=?', (user,)))
-            rows = [(source, blob) for source, blob in db.execute(
-                'SELECT source,vector FROM source_vectors WHERE user=? AND model=?', (user, model))
-                if source not in excluded and len(blob) == len(query) * query.itemsize]
         try:
             import numpy
         except ImportError:
             numpy = None
-        if numpy is not None and rows:
-            matrix = numpy.frombuffer(b''.join(blob for _, blob in rows), dtype=numpy.float32).reshape(len(rows), len(query))
-            scored = list(zip((matrix @ numpy.asarray(query, dtype=numpy.float32)).tolist(), (source for source, _ in rows)))
-        else:
-            for source, blob in rows:
-                stored = array('f')
-                stored.frombytes(blob)
-                scored.append((sum(a * b for a, b in zip(query, stored)), source))
-        scored.sort(reverse=True)
         result = []
         with closing(self.connect()) as db:
-            for score, source in scored[:limit]:
+            db.execute('BEGIN')
+            cursor = db.execute('SELECT v.source,v.vector FROM source_vectors v WHERE v.user=? AND v.model=? '
+                'AND NOT EXISTS (SELECT 1 FROM forgotten f WHERE f.user=v.user AND f.source=v.source)', (user, model))
+            def scores():
+                # Exact search remains linear, but matrix and top-k storage stay
+                # bounded instead of copying/sorting all vectors at once.
+                while batch := cursor.fetchmany(256):
+                    rows = [(s, b) for s, b in batch if s not in excluded and len(b) == len(query) * query.itemsize]
+                    if numpy is not None and rows and query:
+                        matrix = numpy.frombuffer(b''.join(b for _, b in rows), dtype=numpy.float32).reshape(len(rows), len(query))
+                        yield from zip((matrix @ numpy.asarray(query, dtype=numpy.float32)).tolist(), (s for s, _ in rows))
+                    else:
+                        for source, blob in rows:
+                            stored = array('f')
+                            stored.frombytes(blob)
+                            yield sum(a * b for a, b in zip(query, stored)), source
+            for score, source in nlargest(limit, scores()):
                 row = db.execute("SELECT text FROM originals WHERE user=? AND source=? AND actor='user'", (user, source)).fetchone()                     or db.execute('SELECT text FROM originals WHERE user=? AND source=?', (user, source)).fetchone()
                 snippet = ' '.join((row[0] if row else '').split())[:200]
                 if snippet:

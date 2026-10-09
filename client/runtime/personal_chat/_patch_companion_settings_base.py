@@ -382,6 +382,28 @@ def _repair_native_letter_refresh(source: str) -> str:
     return source
 
 
+def _repair_native_mailbox_order_and_time(source: str) -> str:
+    # Polling prepends missing rows one by one, reversing a newest-first batch.
+    # Restore server order after merging, retaining loaded details and older pages.
+    source = source.replace(
+        'Ee.detailLoaded?await z(re.id):t.value[ye]=re)}}N()',
+        'Ee.detailLoaded?await z(re.id):t.value[ye]=re)}}'
+        'const oliviaMailOrder=new Map(ue.map((re,ye)=>[re.id,ye]));'
+        't.value.sort((re,ye)=>(oliviaMailOrder.get(re.id)??Infinity)-'
+        '(oliviaMailOrder.get(ye.id)??Infinity));N()',
+        1,
+    )
+    # Unknown imported dates must reach the card formatter as null, not epoch 0.
+    source = re.sub(
+        r'(timestamp:\(\([A-Za-z]+?=i\.mail\.(?:sent|received)\)==null\?void 0:[A-Za-z]+?\.timestamp\))\?\?0',
+        r'\1??null', source,
+    )
+    return source.replace(
+        'timestamp:((M=(E=x.selectedMail)==null?void 0:E.received)==null?void 0:M.timestamp)??0',
+        'timestamp:((M=(E=x.selectedMail)==null?void 0:E.received)==null?void 0:M.timestamp)??null',
+    )
+
+
 def _repair_native_silent_reply(source: str) -> str:
     """Add one terminal outcome to the supported native mailbox components."""
     source = source.replace('e[e.FAILED=5]="FAILED",e))(bt||{})',
@@ -527,6 +549,7 @@ def _repair_mailbox_write_access(root: Path) -> str:
     source = _repair_native_proactive_collection(source)
     source = _repair_native_silent_reply(source)
     source = _repair_native_reply_failure(source)
+    source = _repair_native_mailbox_order_and_time(source)
     anchor_count = source.count(MAILBOX_WRITE_ANCHOR_0627)
     replacement_count = source.count(MAILBOX_WRITE_REPLACEMENT_0627)
     if anchor_count == 1 and replacement_count == 0:
