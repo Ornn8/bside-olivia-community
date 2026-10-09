@@ -47,6 +47,7 @@ _CHARACTER_REPLY_PREFIX = "character_reply: "
 _PERSONA_NOT_READY = "PERSONA_NOT_READY"
 _TEXT_RECOVERY_CODES = frozenset({
     'JEV_UNAVAILABLE', 'JEV_TIMEOUT', 'JEV_WORLD_SELECTION_UNAVAILABLE',
+    'JEV_WORLD_SELECTION_BUDGET',
     'JEV_PROVIDER_CONNECT_FAILED', 'JEV_PROVIDER_READ_FAILED', 'JEV_PROVIDER_JSON_INVALID',
     *(f'JEV_PROVIDER_HTTP_{n}' for n in (429, 500, 502, 503, 504, 529)),
     'JEV_HTTP_429', 'JEV_HTTP_502', 'JEV_HTTP_503', 'JEV_HTTP_504',
@@ -429,6 +430,14 @@ class ReplyPipeline:
                 self.orchestrator,
                 life_fragments=life_fragments,
             )
+            if (preparation.persona_snapshot is not None and life_fragments is not None
+                    and any(f.fragment_id == 'linli.daily-life' for f in life_fragments)
+                    and preparation.adopted_world is None):
+                if not text_recovery_allowed:
+                    raise _WorldSelectionBudgetExceeded()
+                # Keep the already assembled persona and originals. Missing world
+                # evidence permits reviewed text only, never a new media authority.
+                degraded['world'] = _WorldSelectionBudgetExceeded.code
         except _PersonaNotReadyError:
             return PipelineResult(
                 request.request_id if isinstance(request, ReplyRequest) else "",
@@ -939,9 +948,6 @@ def _prepare_generation_request(
         raise _PersonaNotReadyError(_PERSONA_NOT_READY)
     messages, evidence = assemble_reply_messages(adapter, loaded.snapshot, context,
         request.content, max_input_chars=request.max_input_chars, life_fragments=life_fragments)
-    if (life_fragments is not None and any(f.fragment_id == 'linli.daily-life' for f in life_fragments)
-            and _assembled_life_projection(messages) is None):
-        raise _WorldSelectionBudgetExceeded()
     return _PreparedGeneration(replace(request, content=None, messages=messages), evidence,
                                _assembled_life_projection(messages), loaded.snapshot)
 

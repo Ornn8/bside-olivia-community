@@ -105,10 +105,11 @@ def test_letter_world_and_emotion_are_concurrent_and_joined(monkeypatch):
     asyncio.run(scenario())
 
 
-def test_unavailable_world_keeps_review_and_unknown_disclosure(monkeypatch):
+@pytest.mark.parametrize('code', ['JEV_UNAVAILABLE', 'JEV_WORLD_SELECTION_BUDGET'])
+def test_unavailable_world_keeps_review_and_unknown_disclosure(monkeypatch, code):
     monkeypatch.delenv('OLIVIA_JEV_DECISION_URL', raising=False)
     async def world(text, *, now):
-        raise WorldSelectionError('JEV_UNAVAILABLE')
+        raise WorldSelectionError(code)
     engine, reviewer = Engine('收到啦。'), Reviewer(ReviewVerdict.PASS)
     engine.gateway = SimpleNamespace(adapter=SimpleNamespace(daily_life=object(),
         prepare_daily_life_fragments=world))
@@ -117,7 +118,7 @@ def test_unavailable_world_keeps_review_and_unknown_disclosure(monkeypatch):
     result = asyncio.run(invoke(pipeline, ReplyMode.TEXT_LETTER, '午饭吃了什么？',
         request=ReplyRequest(content='午饭吃了什么？')))
     assert result.state is ReplyState.COMPLETED and len(reviewer.seen) == 1
-    assert result.degraded_stages == {'world': 'JEV_UNAVAILABLE'}
+    assert result.degraded_stages == {'world': code}
     assert '未知' in str(reviewer.seen[0][1])
 
 
@@ -157,11 +158,12 @@ def test_necessary_review_outage_still_blocks_recovered_text(monkeypatch):
 
 @pytest.mark.parametrize('mode', [ReplyMode.TEXT_LETTER, ReplyMode.FUTURE_IM])
 @pytest.mark.parametrize('kind', ['image', 'audio_speech'])
-def test_world_outage_cannot_replace_a_valid_requested_media_plan(mode, kind, monkeypatch):
+@pytest.mark.parametrize('code', ['JEV_UNAVAILABLE', 'JEV_WORLD_SELECTION_BUDGET'])
+def test_world_outage_cannot_replace_a_valid_requested_media_plan(mode, kind, monkeypatch, code):
     from tests.persona.test_jev_pipeline import plan
     monkeypatch.delenv('OLIVIA_JEV_DECISION_URL', raising=False)
     async def world(text, *, now):
-        raise WorldSelectionError('JEV_UNAVAILABLE')
+        raise WorldSelectionError(code)
     engine = Engine('不能冒充媒体完成。')
     engine.gateway = SimpleNamespace(adapter=SimpleNamespace(daily_life=object(),
         prepare_daily_life_fragments=world))
@@ -175,7 +177,7 @@ def test_world_outage_cannot_replace_a_valid_requested_media_plan(mode, kind, mo
             request=ReplyRequest(content='请发一张照片或一段语音。', max_input_chars=40000)))
     finally:
         TURN_CONTEXT.reset(token)
-    assert result.state is ReplyState.FAILED and result.error_code == 'JEV_UNAVAILABLE'
+    assert result.state is ReplyState.FAILED and result.error_code == code
     assert result.companion_decision['plan'] == plan(kind=kind)
     assert not result.text and not engine.requests
 
