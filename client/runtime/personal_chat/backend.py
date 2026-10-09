@@ -347,7 +347,8 @@ async def _proactive_contact(server, runtime, initiative):
 
 async def generate(server, event, row):
     from runtime.reply.jev_billing import billing_scope
-    with billing_scope('personal-chat:' + event.exchange_id + ':' + str(row.get('input_revision', 0))):
+    from runtime.model_routes import using
+    with billing_scope('personal-chat:' + event.exchange_id + ':' + str(row.get('input_revision', 0))), using('qq'):
         return await _generate_billed(server, event, row)
 
 

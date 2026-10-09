@@ -3764,6 +3764,11 @@ _memoir_state = {'running': False, 'done': 0, 'failed': 0, 'total': 0}
 
 
 async def _write_memoirs(months) -> None:
+    with model_use('diary'):
+        await _write_memoirs_once(months)
+
+
+async def _write_memoirs_once(months) -> None:
     from runtime.diary.diary import write_month
     from runtime.private_world.daily_life_runtime import life_persona
     _memoir_state.update(running=True, done=0, failed=0, total=len(months))
@@ -3847,11 +3852,17 @@ async def _pets_tick() -> None:
             continue  # one unavailable page never hides the others
 
 
+def model_use(use):
+    from runtime.model_routes import using
+    return using(use)
+
+
 async def _diary_loop() -> None:
     await asyncio.sleep(120)
     while True:
         try:
-            await _diary_tick()
+            with model_use('diary'):
+                await _diary_tick()
         except (OSError, RuntimeError, ValueError, TypeError, sqlite3.Error):
             _safe_log('diary_check_unavailable')
         try:
@@ -3887,7 +3898,8 @@ async def _gift_loop() -> None:
     while True:
         try:
             await cloud_events.poll(_state_root())
-            await _gift_letter_tick()
+            with model_use('letter'):
+                await _gift_letter_tick()
         except (OSError, RuntimeError, ValueError, TypeError, KeyError, GatewayError, asyncio.TimeoutError, sqlite3.Error):
             _safe_log('gift_check_unavailable')
         await asyncio.sleep(cloud_events.POLL_SECONDS)
@@ -3903,7 +3915,8 @@ async def _proactive_loop() -> None:
     await asyncio.sleep(10 if prepared else 300)
     while True:
         try:
-            await _proactive_tick()
+            with model_use('letter'):
+                await _proactive_tick()
         except (OSError, RuntimeError, ValueError, TypeError, KeyError, GatewayError, asyncio.TimeoutError, sqlite3.Error):
             _proactive_reason = 'retry_later'
             _safe_log('proactive_check_unavailable')
@@ -6661,7 +6674,8 @@ async def _run_reply_pipeline_for_letter(
 
 async def generate_reply(letter_id, content, *, idempotency_key=None):
     from runtime.reply.jev_billing import billing_scope
-    with billing_scope('letter:' + str(letter_id)):
+    from runtime.model_routes import using
+    with billing_scope('letter:' + str(letter_id)), using('letter'):
         return await _generate_reply_billed(letter_id, content, idempotency_key=idempotency_key)
 
 

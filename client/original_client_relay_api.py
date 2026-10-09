@@ -60,6 +60,8 @@ async def relay_request(base, key, method, path, payload=None):
 
 def mount_relay_api(app, setup):
     lock = asyncio.Lock()
+    from runtime import model_routes
+    model_routes.configure(setup._config_root)
     key_path = setup._config_root / 'olivia_relay_key.dpapi'
     pending_path = setup._config_root / 'olivia_relay_registration.pending'
 
@@ -93,6 +95,16 @@ def mount_relay_api(app, setup):
         origin = _authorize(request, confirm=True)
         setup.require_session(request.headers.get(SESSION_HEADER, ''))
         data = await _body(request)
+        if data.get('action') == 'select_routes':
+            if set(data) != {'action', 'routes'}:
+                raise LLMSetupError('LLM_SETUP_FIELDS_INVALID', status=400)
+            try:
+                routes = model_routes.save(data['routes'])
+            except ValueError:
+                raise LLMSetupError('LLM_SETUP_FIELDS_INVALID', status=400) from None
+            except OSError:
+                raise LLMSetupError('LLM_SETUP_SAVE_FAILED', status=503) from None
+            return web.json_response({'routes': routes}, headers=_headers(origin))
         if data.get('action') in {'models', 'select_model'}:
             operation = data['action']
             if set(data) != ({'action'} if operation == 'models' else {'action', 'model'}):
@@ -133,7 +145,7 @@ def mount_relay_api(app, setup):
                 config = setup._config()
                 selected = config.model if config.base_url.rstrip('/') == RELAY_BASE and config.model in RELAY_MODELS else RELAY_MODEL
                 return web.json_response({'models': rows, 'selected_model': selected,
-                    'baseline_model': RELAY_MULTIPLIER_BASELINE}, headers=_headers(origin))
+                    'baseline_model': RELAY_MULTIPLIER_BASELINE, 'routes': model_routes.load()}, headers=_headers(origin))
         if data.get('action') in {'claim', 'connect', 'import_key', 'account', 'export_key'}:
             operation = data['action']
             if set(data) != ({'action','key'} if operation == 'import_key' else {'action'}):

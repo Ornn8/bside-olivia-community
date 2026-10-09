@@ -28,6 +28,12 @@ async def author_share(server, candidate, row):
 
 
 async def _author(server, candidate, *, purpose, query, note, conversation=None):
+    from runtime.model_routes import using
+    with using('qq'):  # her QQ video lines
+        return await _author_once(server, candidate, purpose=purpose, query=query, note=note, conversation=conversation)
+
+
+async def _author_once(server, candidate, *, purpose, query, note, conversation=None):
     runtime = getattr(server, 'daily_life_runtime', None)
     if runtime is None:
         raise ValueError('DAILY_VIDEO_AUTHOR_UNAVAILABLE')
