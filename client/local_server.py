@@ -3201,9 +3201,9 @@ _proactive_reason = 'disabled'
 
 
 def _proactive_settings() -> dict:
-    from runtime.reply.proactive_letters import settings, read_json
+    from runtime.reply.proactive_letters import settings, load_settings
     root = _state_root()
-    return settings(read_json(root / 'proactive/settings.json') if root is not None else {})
+    return load_settings(root) if root is not None else settings({})
 
 
 def _refresh_proactive_context(*, pending_draft=None) -> dict:

@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 def preview_configured(root, environment=None):
-    """Allow the invitation before transport setup after explicit proactive opt-in.
+    """Allow the invitation before transport setup while proactive letters are on (the default).
 
     An explicit transport config still wins when supplied. Otherwise a durable
     local installation may offer the invitation once proactive letters are
@@ -23,11 +23,8 @@ def preview_configured(root, environment=None):
         return False
     if (root / 'personal-chat/config.json').is_file():
         return True
-    try:
-        prefs = json.loads((root / 'proactive/settings.json').read_text(encoding='utf-8'))
-    except (OSError, ValueError):
-        return False
-    return isinstance(prefs, dict) and prefs.get('enabled') is True
+    from runtime.reply.proactive_letters import load_settings
+    return load_settings(root)['enabled']
 
 
 def high_count(snapshot):

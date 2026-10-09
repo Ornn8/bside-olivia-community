@@ -43,5 +43,6 @@ def test_disabled_proactive_contact_does_not_open_setup_gate(tmp_path):
     settings = root / 'proactive' / 'settings.json'
     settings.parent.mkdir(parents=True)
     settings.write_text(json.dumps({'enabled': False}), encoding='utf-8')
+    (root / 'proactive' / 'letters-default-on').touch()  # turned off after letters became default
 
     assert preview_configured(root, {}) is False
