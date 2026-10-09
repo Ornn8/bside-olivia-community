@@ -30,6 +30,8 @@ def _source_reference(query: str) -> bool:
 
 
 def recent_correspondence(rows: Iterable[Mapping], *, query: str = "", excluded_sources: tuple[str, ...] = (), max_chars: int = 2800) -> str:
+    if max_chars < 128:  # Even the fixed provenance envelope cannot fit.
+        return ""
     reply_reference = _reply_reference(query)
     source_attribution = not reply_reference and _source_reference(query)
     factual = source_attribution or _fact_recall(query)

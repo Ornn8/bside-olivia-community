@@ -487,10 +487,11 @@ async def _generate_billed(server, event, row):
                                 'sticker_choices': sticker_choices,
                                 'proactive': row.get('origin') == 'proactive', **proactive_metadata})
     from .context import READ_WINDOW, freeze_read_window
+    from itertools import chain
     read_window = None
     try:
         read_window = READ_WINDOW.set(freeze_read_window(
-            [*getattr(server.store, 'letters', []), *server.store.personal_chats],
+            chain(getattr(server.store, 'letters', []), server.store.personal_chats),
             channel=event.channel, binding_id=event.binding_id, current_id=event.exchange_id))
         attempt_id = event.exchange_id + (f':input-{revision}' if revision else '') + ':' + str(row.get('generation_attempts', 1))
         request = ReplyRequest(content=content or '应用主动聊天检查：现在是否有值得和对方分享的话？没有则跳过。', request_id="personal-chat:" + attempt_id,

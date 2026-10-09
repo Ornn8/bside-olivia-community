@@ -67,7 +67,7 @@ def _decision_context(messages, required_sources=(), recent_turns=1):
     """
     from runtime.personal_chat.context import READ_WINDOW
     recent = _recent_dialogue(messages)
-    window = list(READ_WINDOW.get() or ())
+    window = READ_WINDOW.get() or ()
     required = set(required_sources)
     covered = set()
     for index in range(len(window) - 1, -1, -1):

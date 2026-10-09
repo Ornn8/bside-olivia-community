@@ -969,7 +969,9 @@ class LetterAdapter:
     def recent_letter_fragments(self, content: str = "", *, now=None) -> tuple[UntrustedFragment, ...]:
         now = self._now() if now is None else now
         from runtime.reply.conversation_context import conversation_context
-        recent, historical = conversation_context(self.recent_letters() if self.recent_letters is not None else (), query=content,
+        from runtime.personal_chat.context import READ_WINDOW
+        rows = self.recent_letters() if READ_WINDOW.get() is None and self.recent_letters is not None else ()
+        recent, historical = conversation_context(rows, query=content,
             now=now, excluded_sources=self._memory_source_exclusions())
         fragments = tuple(UntrustedFragment(name, text) for name, text in
                      (('chat.recent', recent), ('chat.historical', historical)) if text)

@@ -72,36 +72,12 @@ def finalize_reply_messages(messages, instruction, *, max_input_chars, trim_hist
                     if result[i].get('role') == 'user'), len(result))
     if instruction:
         result.insert(current, {'role': 'system', 'content': instruction})
-    evidence = '\n'.join(m.get('content', '') for m in result if m.get('role') == 'system')
-    # Late delivery/speech instructions must fit too. Keep core rules, evidence
-    # and the current input intact; evict only oldest projected dialogue frames.
-    while sum(len(str(m.get('content', ''))) for m in result) > max_input_chars:
-        current = next((i for i in range(len(result)-1, -1, -1)
-                        if result[i].get('role') == 'user'), len(result))
-        oldest = next((i for i, m in enumerate(result[:current])
-                       if m.get('role') in ('user', 'assistant')
-                       and isinstance(m.get('content'), str)
-                       and m['content'].startswith('[历史消息 ')
-                       and not _referenced_dialogue(m['content'], evidence)), None) if trim_history else None
-        if oldest is None:
+    if not trim_history:
+        if sum(len(m['content']) for m in result) > max_input_chars:
             raise ValueError('INPUT_TOO_LONG')
-        del result[oldest]
-    return tuple(result)
-
-
-def _referenced_dialogue(content, evidence):
-    """Compacted evidence must not lose the original its source/text_ref points to."""
-    header, _, _ = content.partition(']\n')
-    try:
-        meta = json.loads(header[len('[历史消息 '):])
-    except (ValueError, TypeError):
-        return False
-    if not isinstance(meta, dict):
-        return False
-    # Conservative for both plain and JSON-wrapped references; source IDs are
-    # application-owned. An extra retained original is safer than a dangling ref.
-    return any(isinstance(meta.get(key), str) and meta[key] and meta[key] in evidence
-               for key in ('source', 'event_id'))
+        return tuple(result)
+    from .context_budget import fit_reply_context
+    return fit_reply_context(result, max_input_chars=max_input_chars)
 
 
 _RELATIONSHIP_RULE = re.compile(r'<relationship_grounding>\n.*?\n</relationship_grounding>\n', re.S)
