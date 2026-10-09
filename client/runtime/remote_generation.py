@@ -201,6 +201,9 @@ class RemoteGeneration:
                     validate_daily_outfit(plan['daily_outfit'])
                     if plan['photo_type']=='snapshot' and plan['daily_outfit'] is not None:
                         raise ValueError()
+            shared=result.get('share_video')
+            if shared is not None and (not isinstance(shared,str) or not re.fullmatch(r'[A-Za-z0-9._:-]{1,128}',shared)):
+                raise ValueError()
             speech=result.get('speech')
             if speech is not None:
                 if (not isinstance(speech,dict) or speech.get('format')!='mp3' or speech.get('channels')!=2
@@ -209,7 +212,8 @@ class RemoteGeneration:
                     raise ValueError()
             return {'task_id': result['task_id'], 'status': result['status'], 'outputs': cleaned,
                     'stage': result.get('stage', ''), **({'media_plan':plan} if plan is not None else {}),
-                    **({'speech':speech} if speech is not None else {})}
+                    **({'speech':speech} if speech is not None else {}),
+                    **({'share_video':shared} if shared is not None else {})}
         except (ClientError, TimeoutError) as exc:
             raise connection_error(exc) from None
         except (ValueError, TypeError, KeyError, AttributeError, UnicodeError):

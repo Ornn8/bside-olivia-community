@@ -2122,7 +2122,52 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         row.append(radio, detail, ratios); list.append(row);
       }
       status.textContent = rows.length ? "选择后点击「使用所选模型」，下一次发送生效。" : "暂无可用模型，请稍后重新打开账户页面。";
+      if (rows.length) mountModelRoutes(box, rows, data.routes || {});
     }).catch(() => { status.textContent = "模型列表读取失败，请稍后重新打开账户页面。"; });
+  };
+
+  const mountModelRoutes = (box, rows, saved) => {
+    const section = document.createElement("section");
+    section.setAttribute("data-olivia-model-routes", "");
+    section.style.cssText = "display:grid;gap:12px;margin-top:12px;min-width:0";
+    const title = text("h3", "按用途选择模型", "text-text-title text-title-m");
+    const description = text("p", "QQ 聊天、写信、写日记可以分别用不同的模型，按各自模型的价格计费。选「跟随回信模型」就用上面选中的模型。", "text-text-secondary text-body-m");
+    const status = text("p", "", "text-text-secondary text-body-m");
+    status.setAttribute("role", "status");
+    const uses = [["qq", "QQ 聊天"], ["letter", "写信（回信和主动来信）"], ["diary", "日记和回忆录"]];
+    const selects = {};
+    const grid = document.createElement("div");
+    grid.style.cssText = "display:grid;grid-template-columns:minmax(0,1fr);gap:10px;min-width:0";
+    for (const [use, label] of uses) {
+      const row = document.createElement("label");
+      row.style.cssText = "display:grid;gap:6px;min-width:0";
+      const select = document.createElement("select");
+      select.className = "rounded-3 border border-grey-5 bg-transparent px-4 py-2.5 text-text-body text-body-m";
+      select.setAttribute("aria-label", label);
+      select.append(new Option("跟随回信模型", ""));
+      for (const item of rows) select.append(new Option(item.display_name, item.id));
+      select.value = typeof saved[use] === "string" && rows.some(item => item.id === saved[use]) ? saved[use] : "";
+      selects[use] = select;
+      row.append(text("span", label, "text-text-title text-body-m"), select);
+      grid.append(row);
+    }
+    const controls = actions();
+    let busy = false;
+    const save = button("保存用途设置", async () => {
+      if (busy) return;
+      busy = true; save.disabled = true; status.textContent = "正在保存…";
+      const routes = {};
+      for (const [use] of uses) routes[use] = selects[use].value || null;
+      try {
+        await requestSetup("/toy/relay/action", {action:"select_routes", routes});
+        status.textContent = "已保存，下一次发送生效。";
+      } catch (_) {
+        status.textContent = "保存失败，仍使用原来的设置。请稍后重试。";
+      } finally { busy = false; save.disabled = false; }
+    });
+    controls.append(save);
+    section.append(title, description, grid, controls, status);
+    box.append(section);
   };
 
   const mountRelayBalance = (panel) => {

@@ -248,6 +248,24 @@ class DailyVideoWorker:
                     **({'event_status': 'preparing'} if source.get('event_status') == 'preparing' else {})))
         return result
 
+    async def share(self, candidate, author):
+        """A short video of her current moment chosen in place of a photo: author once, then queue."""
+        existing = self.get(candidate['event_id'])
+        if existing is not None:
+            return existing
+        if not self.scenes or time.monotonic() - self.capabilities_at > 120:
+            await self.refresh_capabilities()
+        if not any(scene['scene_id'] == candidate['scene_id'] and scene_matches(scene, candidate)
+                   for scene in self.scenes):
+            raise ValueError('DAILY_VIDEO_SCENE_UNAVAILABLE')
+        value = validate_input(await author(dict(candidate)))
+        if any(value[key] != candidate[key] for key in _FIELDS - {'spoken_text'}):
+            raise ValueError('DAILY_VIDEO_SOURCE_UNAVAILABLE')
+        store = self.event_store() if callable(self.event_store) else self.event_store
+        if store is None or not store.daily_video_can_prepare(value, now=self.clock()):
+            raise ValueError('DAILY_VIDEO_SOURCE_UNAVAILABLE')
+        return await self.enqueue(value)
+
     async def intake_preparations(self):
         """Author real bath starts independently of new messages or the chat lock."""
         if self.closed or self.author_candidate is None:

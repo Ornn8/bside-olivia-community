@@ -830,12 +830,23 @@ class OpenAICompatibleAdapter(Gateway):
         *,
         key_resolver: Callable[[], str | None] | None = None,
     ) -> None:
-        self.config = replace(config, base_url=canonical_api_base(config.base_url))
+        self._config = replace(config, base_url=canonical_api_base(config.base_url))
         self.stream_enabled = bool(config.stream)
         self._key_resolver = key_resolver
         # One runtime connection serves this owner's conversation across turns.
         # Independent adapters and setup probes must not share routing identity.
         self._provider_session_id = str(uuid.uuid4())
+
+    @property
+    def config(self) -> GatewayConfig:
+        """The saved settings, with the model the user chose for this call's use (QQ, letters, diary)."""
+        from runtime.model_routes import routed_model
+        model = routed_model(self._config.base_url, self._config.model)
+        return self._config if model == self._config.model else replace(self._config, model=model)
+
+    @config.setter
+    def config(self, value: GatewayConfig) -> None:
+        self._config = value
 
     def _key(self) -> str | None:
         if self._key_resolver is not None:
