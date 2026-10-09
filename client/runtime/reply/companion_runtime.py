@@ -96,6 +96,18 @@ def _decision_context(messages, required_sources=(), recent_turns=1):
     kept = [row for row in recent if row['source'] in latest
             or any(matches(row, source) for source in required)
             or row['role'] == 'user' and not any(row['source'].startswith('reply:' + key + ':') for key in covered)]
+    # A writer excerpt can be short while the matching frozen original is still
+    # available. Restore exact source/revision/role; never call an excerpt whole.
+    for row in kept:
+        if not row.get('truncated'):
+            continue
+        original = next((item for item in reversed(window)
+                         if row['source'] == f"reply:{item.get('letter_id')}:{item.get('reply_revision', 1)}"), None)
+        if original is None or row['role'] == 'assistant' and original.get('_received_only'):
+            continue
+        text = original.get('reply_text' if row['role'] == 'assistant' else 'content')
+        if isinstance(text, str) and text.strip():
+            row.update(text=text, truncated=False)
     # Pending originals may predate the writer's bounded read window.
     restored = []
     for source in sorted(required):
