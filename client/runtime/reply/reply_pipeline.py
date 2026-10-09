@@ -615,7 +615,7 @@ class ReplyPipeline:
                     try:
                         # A selected instant video needs its scene just as the writer
                         # needs its output rules. Reserve both, trimming old dialogue
-                        # first; unselected offers must not displace chat history.
+                        # first; unselected offers must not displace recent dialogue.
                         with_candidates = finalize_reply_messages(messages, note,
                             max_input_chars=original_budget-len(generation_note),
                             trim_history=companion_delivery == 'video_speech')
