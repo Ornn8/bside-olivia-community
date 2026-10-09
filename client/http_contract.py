@@ -266,6 +266,9 @@ ROUTES: dict[str, dict[str, Any]] = {
         read_only=True,
         evidence="local-extension",
     ),
+    "/toy/diagnostics/save": _route(
+        ["POST"], "support.diagnostics", evidence="local-extension"
+    ),
     "/toy/companion/private-world/life/diagnostic": _route(
         ["POST"], "support.diagnostics", evidence="local-extension"
     ),
