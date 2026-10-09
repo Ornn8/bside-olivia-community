@@ -449,7 +449,9 @@ def test_settings_ui_exposes_download_only_diagnostics_action() -> None:
 
     assert 'const DIAGNOSTIC_EXPORT_PATH = "/toy/diagnostics/export";' in script
     assert "response.blob()" in script
-    assert 'download = "olivia-diagnostic-bundle.zip"' in script
+    assert 'suggestedName: "olivia-diagnostic-bundle.zip"' in script
+    assert 'const DIAGNOSTIC_SAVE_PATH = "/toy/diagnostics/save";' in script
+    assert "download.click()" not in script.split("const mountDiagnosticExport", 1)[1].split("const mountImproveSetting", 1)[0]
     assert "诊断与反馈" in script
     assert "requestMutation(DIAGNOSTIC_EXPORT_PATH" not in script
 
@@ -588,3 +590,36 @@ def test_request_lines_do_not_push_failure_records_out_of_the_export_ring():
     records = local_server.runtime_diagnostic_event_snapshot()
     assert records[0] == {"event": "history_relationship_failed", "status": "FAILED", "error_code": "HISTORY_RELATIONSHIP_FAILED"}
     assert len(records) <= 200 and sum(r["event"] == "request" for r in records) == 40
+
+
+def test_diagnostics_save_writes_into_the_folder_and_reveals_it(tmp_path, monkeypatch) -> None:
+    import original_client_diagnostics_api as api
+    revealed = []
+    monkeypatch.setattr(api, "_reveal", revealed.append)
+
+    async def scenario() -> None:
+        app = web.Application()
+        mount_original_client_diagnostics_api(app, _source, folder=lambda: tmp_path / "Downloads")
+        client = await _client(app)
+        try:
+            forbidden = await client.post("/toy/diagnostics/save",
+                                          headers={"Host": "localhost", "Origin": "https://evil.example"})
+            assert forbidden.status == 403
+            names = []
+            for _ in range(2):
+                response = await client.post("/toy/diagnostics/save",
+                                             headers={"Host": "localhost", "Origin": "http://localhost:3000"})
+                assert response.status == 200
+                payload = await response.json()
+                assert payload["status"] == "SAVED"
+                names.append(payload["file_name"])
+            assert len(set(names)) == 2                       # a second export never overwrites the first
+            for name in names:
+                with zipfile.ZipFile(tmp_path / "Downloads" / name) as archive:
+                    assert "manifest.json" in archive.namelist()
+            assert [path.name for path in revealed] == names
+            assert not list((tmp_path / "Downloads").glob("*.partial"))
+        finally:
+            await client.close()
+
+    asyncio.run(scenario())

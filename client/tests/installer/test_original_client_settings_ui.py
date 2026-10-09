@@ -218,7 +218,7 @@ def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
     ):
         assert BOOTSTRAP_JAVASCRIPT.count(declaration) == 1
     assert BOOTSTRAP_JAVASCRIPT.count('method: "GET"') == 2
-    assert BOOTSTRAP_JAVASCRIPT.count('method: "POST"') == 4
+    assert BOOTSTRAP_JAVASCRIPT.count('method: "POST"') == 5
     assert "page: view.page, limit: 20" in BOOTSTRAP_JAVASCRIPT
     assert "input.maxLength = 500" in BOOTSTRAP_JAVASCRIPT
     assert "const LETTER_CHARACTER_LIMIT = 1200;" in BOOTSTRAP_JAVASCRIPT

@@ -64,6 +64,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const VIDEO_CAPABILITY_PATH = "/toy/capabilities/video";
   const VIDEO_CAPABILITY_ACTION_PATH = "/toy/capabilities/video/action";
   const DIAGNOSTIC_EXPORT_PATH = "/toy/diagnostics/export";
+  const DIAGNOSTIC_SAVE_PATH = "/toy/diagnostics/save";
   const LOCAL_LETTER_IMPORT_PATH = "/toy/letter/legacy/local-import";
   const OFFICIAL_IMPORT_CONFIRM_ATTR = "data-olivia-companion-official-import-confirm";
   const MEMORY_CORRECT_PATH = "/toy/companion/memory/correct";
@@ -547,6 +548,27 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         throw error;
       }
       return blob;
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  };
+
+  // The app writes the file itself: some webviews leave blob downloads as unnamed .tmp files.
+  const requestDiagnosticSave = async () => {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 20000);
+    try {
+      const response = await fetch(new URL(DIAGNOSTIC_SAVE_PATH, apiBase), {
+        method: "POST", cache: "no-store", credentials: "omit", signal: controller.signal,
+      });
+      let payload = null;
+      try { payload = await response.json(); } catch (_error) { payload = null; }
+      if (!response.ok || !payload || payload.status !== "SAVED" || typeof payload.file_name !== "string") {
+        const error = new Error("diagnostic-save-unavailable");
+        error.code = payload && typeof payload.error_code === "string" ? payload.error_code : "DIAGNOSTIC_EXPORT_UNAVAILABLE";
+        throw error;
+      }
+      return payload;
     } finally {
       window.clearTimeout(timeout);
     }
@@ -4604,17 +4626,27 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       setButtonsBusy([exportButton], true);
       state.textContent = "正在生成诊断包…";
       try {
-        const blob = await requestDiagnosticExport();
-        const url = URL.createObjectURL(blob);
-        const download = document.createElement("a");
-        download.href = url;
-        download.download = "olivia-diagnostic-bundle.zip";
-        download.style.display = "none";
-        document.body.append(download);
-        download.click();
-        download.remove();
-        window.setTimeout(() => URL.revokeObjectURL(url), 0);
-        state.textContent = "诊断包已保存到本地下载位置。";
+        // Ask where to save first, while the click still counts as a user action.
+        let handle = null;
+        if (typeof window.showSaveFilePicker === "function") {
+          try {
+            handle = await window.showSaveFilePicker({suggestedName: "olivia-diagnostic-bundle.zip",
+              types: [{description: "诊断包", accept: {"application/zip": [".zip"]}}]});
+          } catch (error) {
+            if (error && error.name === "AbortError") { state.textContent = "已取消导出。"; return; }
+            handle = null;  // No picker here: the app saves to Downloads below.
+          }
+        }
+        if (handle) {
+          const blob = await requestDiagnosticExport();
+          const writable = await handle.createWritable();
+          await writable.write(blob);
+          await writable.close();
+          state.textContent = `诊断包已保存为「${handle.name}」。`;
+        } else {
+          const saved = await requestDiagnosticSave();
+          state.textContent = `诊断包已保存到「下载」文件夹：${saved.file_name}，已为你打开所在位置。`;
+        }
       } catch (error) {
         const code = error && typeof error.code === "string"
           ? error.code
