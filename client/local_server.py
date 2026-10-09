@@ -3197,13 +3197,14 @@ def _recent_active_duplicate(
 
 _proactive_busy = False
 _proactive_task = None
+_gift_task = None
 _proactive_reason = 'disabled'
 
 
 def _proactive_settings() -> dict:
-    from runtime.reply.proactive_letters import settings, read_json
+    from runtime.reply.proactive_letters import settings, load_settings
     root = _state_root()
-    return settings(read_json(root / 'proactive/settings.json') if root is not None else {})
+    return load_settings(root) if root is not None else settings({})
 
 
 def _refresh_proactive_context(*, pending_draft=None) -> dict:
@@ -3327,6 +3328,10 @@ def _proactive_instruction(intent, *, planning, mode='text'):
         task += ('\n今天是她日记里记下的日子：opportunity.remembered 写明了是什么事。'
                  '纪念日就自然地提起并表达心意；对方今天要考试、体检或出行，就关心一句；约好的事就主动提起。'
                  '只说这件记下的事本身，不编造当时的细节。')
+    if intent.get('kind') == 'gift':
+        from runtime.cloud_events import instruction
+        task += '\n' + instruction(intent, photo=intent.get('photo') is True
+                                    and video_reply_settings_store.image_snapshot().get('enabled') is True)
     if intent.get('kind') == 'contact_invitation':
         task += ('\n本次关系资格已由应用确认。自然地提出交换联系方式，并明确询问用户想要QQ还是微信；'
                  '不要提分数、解锁、系统门槛，不声称已经添加或用户已经同意，不编造账号或二维码。'
@@ -3357,6 +3362,8 @@ async def _prepare_proactive_turn(intent: dict, *, now: datetime) -> dict:
     source = next((row for row in sources
                    if f"reply:{row.get('letter_id')}:{row.get('reply_revision', 1)}" == source_id), None)
     life_opportunity = development and intent.get('kind') in {'life_share', 'affection_checkin'}
+    if intent.get('kind') == 'gift':
+        life_opportunity = source is None  # A first top-up may come before any letter.
     if source is None and not life_opportunity:
         raise ValueError('PROACTIVE_SOURCE_UNAVAILABLE')
     source = source or {}
@@ -3457,6 +3464,9 @@ def _proactive_opportunity_current(intent, *, pending_draft=None):
         return False
     if not _proactive_settings()['enabled'] or _active_undelivered_letter(exclude_letter=pending_draft):
         return False
+    if intent.get('kind') == 'gift':
+        # Answered regardless of unread letters or the daily letter budget.
+        return True
     from runtime.reply.proactive_runtime import enabled, live_state
     if enabled():
         try:
@@ -3578,6 +3588,11 @@ async def _publish_proactive(intent: dict, plan: dict, *, turn: dict) -> None:
         store_expression_context(letter, snapshot, body)
         _persist_store_state()
         _commit_private_world_letter(letter)
+        if intent.get('kind') == 'gift' and intent.get('photo') is True:
+            letter.update(gift_id=intent['gift_id'], gift_photo=True,
+                          image_reply_settings=video_reply_settings_store.image_snapshot())
+            from runtime.image_reply import schedule as schedule_image
+            schedule_image(sys.modules[__name__], letter)
         if letter.get('reply_audio_url') and letter.get('media_status') == 'COMPLETED':
             root = _local_data_root()
             if root is not None:
@@ -3844,6 +3859,38 @@ async def _diary_loop() -> None:
         except (OSError, RuntimeError, ValueError, TypeError, KeyError, sqlite3.Error, asyncio.TimeoutError):
             _safe_log('pets_check_unavailable')
         await asyncio.sleep(900)
+
+
+async def _gift_letter_tick() -> None:
+    """A gift QQ did not take becomes a letter; one attempt each."""
+    from runtime import cloud_events
+    root = _state_root()
+    gifts = cloud_events.pending(root, time.time(), settled=cloud_events.QQ_HEAD_START)
+    if not gifts or not _proactive_ready():
+        return
+    gift = gifts[0]
+    rows = [*store.letters, *store.personal_chats]
+    latest = max((row for row in rows if row.get('origin') != 'proactive' and row.get('content')
+                  and (row.get('letter_status') == 'COMPLETED' or row.get('delivery_status') == 'DELIVERED')),
+                 key=lambda row: float(row.get('created_at') or 0), default=None)
+    intent = {'id': hashlib.sha256(gift['id'].encode()).hexdigest()[:32], 'kind': 'gift',
+              'gift_id': gift['id'], 'brief': gift['brief'], 'photo': gift['photo'],
+              'source_id': f"reply:{latest['letter_id']}:{latest.get('reply_revision', 1)}" if latest else 'gift:first'}
+    cloud_events.mark(root, gift['id'], 'letter')  # before any paid call
+    turn = await _prepare_proactive_turn(intent, now=datetime.now(timezone.utc))
+    await _publish_proactive(intent, {'decision': 'send', 'format': 'text', 'title': '收到啦'}, turn=turn)
+
+
+async def _gift_loop() -> None:
+    from runtime import cloud_events
+    await asyncio.sleep(30)
+    while True:
+        try:
+            await cloud_events.poll(_state_root())
+            await _gift_letter_tick()
+        except (OSError, RuntimeError, ValueError, TypeError, KeyError, GatewayError, asyncio.TimeoutError, sqlite3.Error):
+            _safe_log('gift_check_unavailable')
+        await asyncio.sleep(cloud_events.POLL_SECONDS)
 
 
 async def _proactive_loop() -> None:
@@ -6109,7 +6156,7 @@ async def _refresh_daily_life_periodically() -> None:
 
 
 async def _start_reply_tasks(_app: web.Application) -> None:
-    global _proactive_task
+    global _proactive_task, _gift_task
     if _refresh_contact_relationship_projection():
         try:
             _persist_store_state()
@@ -6124,6 +6171,7 @@ async def _start_reply_tasks(_app: web.Application) -> None:
         except (OSError, ValueError, RuntimeError):
             _safe_log('proactive_login_start_unavailable')
     _proactive_task = asyncio.create_task(_proactive_loop())
+    _gift_task = asyncio.create_task(_gift_loop())
     _schedule_pending_reply_jobs()
     _schedule_pending_media_jobs()
     from runtime.image_reply import schedule as schedule_image
@@ -6234,7 +6282,7 @@ def _start_conversation_memory_initialization(loop: asyncio.AbstractEventLoop) -
 
 
 async def _stop_reply_tasks(_app: web.Application) -> None:
-    global _proactive_task, _history_relationship_task, _history_relationship_queue
+    global _proactive_task, _gift_task, _history_relationship_task, _history_relationship_queue
     if _history_relationship_task is not None:
         _history_relationship_task.cancel()
         await asyncio.gather(_history_relationship_task, return_exceptions=True)
@@ -6244,6 +6292,10 @@ async def _stop_reply_tasks(_app: web.Application) -> None:
         _proactive_task.cancel()
         await asyncio.gather(_proactive_task, return_exceptions=True)
         _proactive_task = None
+    if _gift_task is not None:
+        _gift_task.cancel()
+        await asyncio.gather(_gift_task, return_exceptions=True)
+        _gift_task = None
     _refresh_proactive_context()
     tasks = tuple(reply_tasks | media_tasks | private_world_candidate_tasks | set(daily_life_tasks.values()))
     for task in tasks:

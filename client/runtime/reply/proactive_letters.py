@@ -11,13 +11,30 @@ import time
 
 from runtime.personal_chat.initiative_profile import InitiativeProfile, profile_from_rows
 
-DEFAULTS = {'enabled': False, 'allow_voice': True, 'login_check_enabled': False}
+DEFAULTS = {'enabled': True, 'allow_voice': True, 'login_check_enabled': False}
 DAY = 86400
 
 
 def settings(value: dict) -> dict:
     return {key: value.get(key) if type(value.get(key)) is bool else default
             for key, default in DEFAULTS.items()}
+
+
+def load_settings(data_root: Path) -> dict:
+    """Letters are on by default since 2.2.7; a stored 'off' from before came from the old default."""
+    path = data_root / 'proactive' / 'settings.json'
+    value = read_json(path)
+    marker = data_root / 'proactive' / 'letters-default-on'
+    try:
+        if not marker.exists():
+            if value.get('enabled') is False:
+                value = {**value, 'enabled': True}
+                write_json(path, settings(value))
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.touch()
+    except OSError:
+        pass
+    return settings(value)
 
 
 def read_json(path: Path) -> dict:
@@ -149,7 +166,7 @@ def scan_pending(data_root: Path, *, now: float | None = None,
                  excluded_ids: set[str] | None = None) -> dict:
     now = time.time() if now is None else now
     root = data_root / 'proactive'
-    prefs = settings(read_json(root / 'settings.json'))
+    prefs = load_settings(data_root)
     context = read_json(root / 'context.json')
     old = read_json(root / 'pending.json')
     selected = {}

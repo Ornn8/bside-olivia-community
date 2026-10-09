@@ -186,3 +186,26 @@ def test_proactive_skip_never_sends_or_commits_and_delivery_has_no_fake_user():
         await service.proactive(PersonalMessage('qq', 'bot', 'owner', 'stale', ''), send, lambda: False)
         assert len(rows) == 2
     asyncio.run(run())
+
+
+def test_reconnected_channel_restores_initiative_after_one_interval():
+    now = [datetime(2026, 9, 13, 12, tzinfo=LOCAL).timestamp()]
+    rows = [dict(letter_id='old', delivery_status='DELIVERED', content='晚安', created_at=now[0] - 86400)]
+    policy = Initiative(rows, clock=lambda: now[0], interval=lambda: 1200)
+    first = PersonalMessage('qq', 'bot', 'owner', 'reconnected-1', '')
+    policy.restore(first, 'sender')
+    assert not policy.ready()  # no startup backlog: a full interval from the reconnect
+    now[0] += 1201
+    assert policy.ready() and policy.target == (first, 'sender')
+    policy.restore(PersonalMessage('qq', 'bot', 'owner', 'reconnected-2', ''), 'other')
+    assert policy.target == (first, 'sender')  # a live target is never replaced by a reconnect
+
+
+def test_failed_turn_quiets_initiative_for_hours_not_until_the_user_writes():
+    now = datetime(2026, 9, 19, 12, tzinfo=LOCAL).timestamp()
+    rows = [dict(letter_id='asked', delivery_status='FAILED', generation_attempts=2, created_at=now - 60)]
+    policy = Initiative(rows, clock=lambda: now, interval=lambda: 0)
+    policy.received(PersonalMessage('qq', 'bot', 'owner', 'asked', 'hi'), None)
+    assert not policy.ready()  # she does not change the subject right after a failed request
+    rows[0]['created_at'] = now - 7 * 3600
+    assert policy.ready()      # hours later the failure no longer silences her

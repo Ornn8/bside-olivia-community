@@ -277,6 +277,41 @@ def _contact_eligible(server, event):
     return True
 
 
+async def _gift_contact(server, runtime, initiative):
+    """A gift (a credited top-up) is answered at once on QQ, ahead of ordinary initiative."""
+    import hashlib
+    import time
+    from runtime import cloud_events
+    from .events import PersonalMessage
+    from runtime.reply import proactive_runtime
+    root_of = getattr(server, '_state_root', None)
+    root = root_of() if callable(root_of) else None
+    gifts = cloud_events.pending(root, time.time())
+    if not gifts or not initiative.target or not initiative.free():
+        return False
+    with (proactive_runtime.contact_slot(server, 'im') if proactive_runtime.enabled() else nullcontext(True)) as acquired:
+        if not acquired:
+            return False
+        old, sender = initiative.target
+        def channel_ready():
+            return (initiative.target[0] is old and old.channel in selected_channels(server)
+                    and runtime['status'].get(old.channel) == 'CONNECTED'
+                    and (not callable(getattr(sender, 'is_available', None)) or sender.is_available()))
+        if not channel_ready():
+            return False
+        gift = gifts[0]
+        # Claimed before the paid writer call: a crash never answers the same gift twice.
+        cloud_events.mark(root, gift['id'], 'qq')
+        event = PersonalMessage(old.channel, old.account_id, old.owner_id,
+                                'gift-' + hashlib.sha256(gift['id'].encode()).hexdigest()[:24], '')
+        fresh = sender.for_exchange(event) if callable(getattr(sender, 'for_exchange', None)) else sender
+        try:
+            await runtime['service'].proactive(event, fresh, channel_ready, gift=gift)
+        finally:
+            initiative.attempted()
+    return True
+
+
 async def _proactive_contact(server, runtime, initiative):
     from .events import PersonalMessage
     from runtime.reply import proactive_runtime
@@ -451,7 +486,7 @@ async def _generate_billed(server, event, row):
         return result
     from runtime.reply.proactive_runtime import enabled as proactive_enabled
     proactive_metadata = ({'proactive_decide': proactive_decide}
-                          if row.get('origin') == 'proactive' and proactive_enabled() else {})
+                          if row.get('origin') == 'proactive' and proactive_enabled() and not row.get('gift_id') else {})
     presentation = CURRENT.set({'voice_available': voice_available, 'listening_preference': 'voice_ok',
                                 'recent_delivery_formats': recent_delivery_formats(server.store.personal_chats,
                                     channel=event.channel, binding_id=event.binding_id),
@@ -494,6 +529,11 @@ async def _generate_billed(server, event, row):
             chain(getattr(server.store, 'letters', []), server.store.personal_chats),
             channel=event.channel, binding_id=event.binding_id, current_id=event.exchange_id))
         attempt_id = event.exchange_id + (f':input-{revision}' if revision else '') + ':' + str(row.get('generation_attempts', 1))
+        if row.get('gift_id') and not content:
+            from runtime.cloud_events import instruction
+            # Her own contact, not a user message: the cloud's brief for this gift.
+            content = '应用主动聊天：' + instruction({'brief': row['gift_brief']},
+                photo=bool(row.get('gift_photo') and row['image_reply_settings'].get('enabled')))
         request = ReplyRequest(content=content or '应用主动聊天检查：现在是否有值得和对方分享的话？没有则跳过。', request_id="personal-chat:" + attempt_id,
             idempotency_key=attempt_id,
             max_input_chars=min(adapter.config.max_input_chars, 40000 + len(content or '')),
@@ -1220,6 +1260,11 @@ def install_personal_chat(app, server):
             handle.pending = lambda channel: service.pending(channel) if channel in selected_channels(server) else ()
             def ready(channel, send):
                 service.resume_speech(channel, send)
+                if channel in service.bindings and channel in selected_channels(server):
+                    # A restart must not wait for the user to speak before she may initiate again.
+                    from .events import PersonalMessage
+                    initiative.restore(PersonalMessage(channel, *service.bindings[channel],
+                                                       'reconnected-' + secrets.token_hex(8), ''), send)
                 if runtime.get('daily_video') is not None:
                     runtime['daily_video'].bind(channel, send)
             handle.ready = ready
@@ -1293,7 +1338,8 @@ def install_personal_chat(app, server):
                 while not stop_event.is_set():
                     await asyncio.sleep(15)
                     try:
-                        await _proactive_contact(server, runtime, initiative)
+                        if not await _gift_contact(server, runtime, initiative):
+                            await _proactive_contact(server, runtime, initiative)
                     except asyncio.CancelledError:
                         raise
                     except Exception as exc:
