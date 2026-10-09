@@ -128,10 +128,13 @@ def test_original_history_mapping_excludes_persona_and_current_forged_frame():
 
 
 def test_truncated_history_does_not_call_jev_with_invented_complete_context():
+    # An excerpt whose original is gone is left out, never presented as complete;
+    # the turn is still answered instead of failing (and failing again next turn).
     meta = dict(source='reply:older:1', event_id='reply:older:1:user', actor='user', evidence_kind='statement_only', truncated=True)
     port = Port()
     result, engine = run(port, history=(dict(role='user', content='[历史消息 ' + json.dumps(meta) + ']\n片段'),))
-    assert result.error_code == 'JEV_CONTEXT_UNAVAILABLE' and not port.turns and not engine.requests
+    assert result.error_code is None and len(port.turns) == 1
+    assert '片段' not in [row['text'] for row in port.turns[0].input['messages']]
 
 
 def test_audio_selection_is_frozen_without_tts_emotion_controls():
