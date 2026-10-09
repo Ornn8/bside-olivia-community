@@ -350,7 +350,7 @@ def test_off_turn_reply_is_a_whole_reply_judgment_that_forces_a_rewrite(monkeypa
             answers = await super().ask(state, questions, **kwargs)
             for key, question in questions.items():
                 if key.endswith(':OFF_TURN_REPLY'):
-                    assert set(question['criteria']) == {'current', 'earlier'}
+                    assert set(question['criteria']) == {'current', 'earlier', 'uncertain'}
                     answers[key] = 'earlier'
             return answers
     import json
