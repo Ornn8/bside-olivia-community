@@ -759,6 +759,29 @@ async def commit(server, row):
         raise failures[0]
 
 
+async def share_moment_video(server, row):
+    """The cloud planner chose a short video of her current moment instead of a photo."""
+    worker = getattr(server, '_daily_video_worker', None)
+    candidate = next((item for item in row.get('daily_video_candidates') or []
+                      if item.get('event_id') == row['share_video_event']), None)
+    if worker is None or candidate is None:
+        row['share_video_status'] = 'DAILY_VIDEO_SOURCE_UNAVAILABLE'
+        await persist_chat(server)
+        return
+    from .daily_video_author import author_share
+    # Durable before the paid writer call: a crash leaves AUTHORING and never authors twice.
+    row['share_video_status'] = 'SHARE_AUTHORING'
+    await persist_chat(server)
+    try:
+        await worker.share(candidate, lambda value: author_share(server, value, row))
+        row['share_video_status'] = 'SHARE_QUEUED'
+    except ValueError as exc:
+        row['share_video_status'] = str(exc) if re.fullmatch(r'[A-Z_]{1,40}', str(exc)) else 'SHARE_FAILED'
+    except Exception:
+        row['share_video_status'] = 'SHARE_FAILED'
+    await persist_chat(server)
+
+
 async def prepare_chat_photo(server, row, send):
     from runtime.image_reply import prepare
     await prepare(server, row, row.get('content', ''), row['reply_text'], channel='qq')
@@ -772,6 +795,8 @@ async def deliver_photo(server, row, send):
     if row.get('delivery_status') != ('MEDIA_PENDING' if primary_image else 'DELIVERED'):
         return
     await prepare_chat_photo(server, row, send)
+    if row.get('share_video_event') and not row.get('share_video_status'):
+        await share_moment_video(server, row)
     if row.get('image_status') != 'COMPLETED' or not row.get('prepared_image'):
         return
     if callable(getattr(send, 'is_available', None)) and not send.is_available():
