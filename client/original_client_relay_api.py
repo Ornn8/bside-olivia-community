@@ -13,7 +13,7 @@ RELAY_MODEL = 'claude-sonnet-5-5'
 RELAY_MULTIPLIER_BASELINE = 'claude-sonnet-5-5'
 RELAY_MODELS = frozenset({RELAY_MODEL, 'gemini-3.8-flash', 'qwen3.7-flash', 'claude-opus-5-5',
     'claude-sonnet-5-5', 'claude-opus-4-6', 'qwen3.8-max', 'claude-fable-5-1',
-    'gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-luna'})
+    'gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-luna', 'claude-haiku-5-5'})
 
 
 async def relay_request(base, key, method, path, payload=None):
