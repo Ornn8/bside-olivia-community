@@ -1195,6 +1195,11 @@ def install_personal_chat(app, server):
             handle.pending = lambda channel: service.pending(channel) if channel in selected_channels(server) else ()
             def ready(channel, send):
                 service.resume_speech(channel, send)
+                if channel in service.bindings and channel in selected_channels(server):
+                    # A restart must not wait for the user to speak before she may initiate again.
+                    from .events import PersonalMessage
+                    initiative.restore(PersonalMessage(channel, *service.bindings[channel],
+                                                       'reconnected-' + secrets.token_hex(8), ''), send)
                 if runtime.get('daily_video') is not None:
                     runtime['daily_video'].bind(channel, send)
             handle.ready = ready

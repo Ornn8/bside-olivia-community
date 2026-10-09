@@ -41,6 +41,16 @@ def _usual_user_gap(rows):
     return median(gaps) if gaps else None
 
 
+FAILED_TURN_QUIET = 6 * 3600
+
+
+def _retry_pending(row, now):
+    # She does not change the subject over a request that just failed, but a
+    # failure must not silence her until the user happens to write again.
+    created = row.get('created_at')
+    return created is None or now - float(created) < FAILED_TURN_QUIET
+
+
 class Initiative:
     def __init__(self, rows, clock=time.time, interval=None, *, profile_provider=None):
         self.rows, self.clock = rows, clock
@@ -85,6 +95,11 @@ class Initiative:
         self.target = (event, send)
         self.due = self.clock() + self._next_interval()
 
+    def restore(self, event, send):
+        """A reconnected owner channel after a restart: one full interval, no startup backlog."""
+        if self.target is None:
+            self.received(event, send)
+
     def pending_followup(self):
         latest = next((r for r in reversed(self.rows) if controls_available(r) and 'followup_at' in r
                        and r.get('origin') != 'proactive'), None)
@@ -105,7 +120,8 @@ class Initiative:
         if (latest_user and latest_user.get('companion_timing') == 'wait_user'
                 and latest_user.get('silence_reason') == 'USER_REQUESTED_WAIT' and not scheduled):
             return False  # Ordinary initiative waits; a validated due appointment remains eligible.
-        if latest_user and latest_user.get('delivery_status') in {'RECEIVED','FAILED','GENERATING','GENERATED','MEDIA_PENDING','SENDING','DELIVERY_UNCONFIRMED'}:
+        if latest_user and (latest_user.get('delivery_status') in {'RECEIVED','GENERATING','GENERATED','MEDIA_PENDING','SENDING','DELIVERY_UNCONFIRMED'}
+                            or latest_user.get('delivery_status') == 'FAILED' and _retry_pending(latest_user, now)):
             return False  # Do not initiate over an unresolved user request (possibly a cancellation).
         if not self.target:
             return False
