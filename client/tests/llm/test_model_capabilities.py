@@ -3,7 +3,7 @@ from runtime.reply.model_capabilities import model_capabilities
 
 
 @pytest.mark.parametrize('model,forced', [
-    ('claude-fable-5-1', False), ('gpt-6.1-sol', True), ('gpt-6-astra', True), ('gpt-6-luna', True),
+    ('claude-fable-5-1', False), ('gpt-6.1-sol', True), ('gpt-6-astra', True), ('gpt-6-luna', True), ('claude-haiku-5-5', False),
 ])
 def test_new_relay_models_preserve_tools_and_usage(model, forced):
     caps = model_capabilities('https://proxy.test/v1', model)
