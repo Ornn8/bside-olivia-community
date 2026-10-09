@@ -96,3 +96,23 @@ def test_late_budget_trimming_keeps_original_referenced_by_compacted_evidence():
         max_input_chars=sum(len(m['content']) for m in messages)-500)
     assert original in result and removable not in result
     assert result[-1] == messages[-1]
+
+
+def test_long_chat_drops_oldest_cited_originals_before_failing_the_reply():
+    # QQ users with long histories: evidence cited every old turn, so nothing
+    # uncited was left to drop and the reply failed with JEV_CONTEXT_BUDGET_EXCEEDED.
+    from runtime.reply.fact_attribution import finalize_reply_messages
+    def cited(n):
+        return dict(role='assistant', content='[历史消息 ' + json.dumps(dict(
+            source=f'reply:old{n}', event_id=f'reply:old{n}:linli', actor='linli')) + ']\n' + '原话' * 300)
+    frames = [cited(n) for n in range(3)]
+    wrapper = json.dumps({'text': json.dumps({'previous_observations': [
+        {'text_ref': f'reply:old{n}:linli', 'evidence_kind': 'character_statement'} for n in range(3)]})})
+    messages = (dict(role='system', content='<evidence_summary>' + wrapper + '</evidence_summary>'),
+                *frames, dict(role='user', content='现在呢'))
+    budget = sum(len(m['content']) for m in messages) - 500
+    result = finalize_reply_messages(messages, '本轮规则', max_input_chars=budget)
+    assert frames[0] not in result and frames[1] in result and frames[2] in result
+    assert result[-1] == messages[-1] and sum(len(m['content']) for m in result) <= budget
+    with pytest.raises(ValueError):
+        finalize_reply_messages((messages[0], messages[-1]), '本轮规则', max_input_chars=len(messages[-1]['content']))

@@ -74,15 +74,18 @@ def finalize_reply_messages(messages, instruction, *, max_input_chars, trim_hist
         result.insert(current, {'role': 'system', 'content': instruction})
     evidence = '\n'.join(m.get('content', '') for m in result if m.get('role') == 'system')
     # Late delivery/speech instructions must fit too. Keep core rules, evidence
-    # and the current input intact; evict only oldest projected dialogue frames.
+    # and the current input intact; evict the oldest projected dialogue frames,
+    # first those no evidence points to. A long chat whose evidence cites many
+    # old turns then loses its oldest cited originals rather than the whole reply.
     while sum(len(str(m.get('content', ''))) for m in result) > max_input_chars:
         current = next((i for i in range(len(result)-1, -1, -1)
                         if result[i].get('role') == 'user'), len(result))
-        oldest = next((i for i, m in enumerate(result[:current])
-                       if m.get('role') in ('user', 'assistant')
-                       and isinstance(m.get('content'), str)
-                       and m['content'].startswith('[历史消息 ')
-                       and not _referenced_dialogue(m['content'], evidence)), None) if trim_history else None
+        frames = [i for i, m in enumerate(result[:current])
+                  if m.get('role') in ('user', 'assistant')
+                  and isinstance(m.get('content'), str)
+                  and m['content'].startswith('[历史消息 ')] if trim_history else []
+        oldest = next((i for i in frames if not _referenced_dialogue(result[i]['content'], evidence)),
+                      frames[0] if frames else None)
         if oldest is None:
             raise ValueError('INPUT_TOO_LONG')
         del result[oldest]
