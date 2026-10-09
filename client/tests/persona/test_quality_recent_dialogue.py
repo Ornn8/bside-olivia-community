@@ -81,16 +81,18 @@ def test_plain_text_punctuation_is_not_envelope(monkeypatch, response):
         '行，你眯吧。', _context(), (), messages()) == response
 
 
-@pytest.mark.parametrize('response', ['{"text":"醒啦","delivery":"voice"}', '{"text":"醒啦","analysis":"x"}'])
-def test_rewrite_never_publishes_generation_json_contract(monkeypatch, response):
+def test_rewrite_rejects_unknown_envelope_fields(monkeypatch):
+    response = '{"text":"醒啦","analysis":"x"}'
     monkeypatch.setattr(quality, '_complete_text', lambda *a, **k: response)
     with pytest.raises(RuntimeError, match='REWRITE_OUTPUT_INVALID'):
         quality.GatewayPersonaRewriter(SimpleNamespace(), ROOT / 'missing.json', 2).rewrite_with_messages(
             '行，你眯吧。', _context(), (), messages())
 
 
-@pytest.mark.parametrize('response', ['{"text":"醒啦"}', '```json\n{"text":"醒啦"}\n```'])
-def test_rewrite_unwraps_pure_text_wrapper(monkeypatch, response):
+@pytest.mark.parametrize('response', [
+    '{"text":"醒啦"}', '```json\n{"text":"醒啦"}\n```', '{"text":"醒啦","delivery":"voice"}',
+])
+def test_rewrite_unwraps_known_envelope_to_text_only(monkeypatch, response):
     monkeypatch.setattr(quality, '_complete_text', lambda *a, **k: response)
     assert quality.GatewayPersonaRewriter(SimpleNamespace(), ROOT / 'missing.json', 2).rewrite_with_messages(
         '行，你眯吧。', _context(), (), messages()) == '醒啦'
