@@ -680,6 +680,10 @@ async def _generate_billed(server, event, row):
         store_expression_context(row, getattr(result, 'expression_context', None), text)
         speech_intent = (row.get('companion_decision') or {}).get('speech_request')
         script = decision.get('speech')
+        if speech_intent and not script and event.channel == 'qq':
+            # Requested long audio the writer left out: the reply still goes out, recorded for diagnosis.
+            row['speech_status'] = 'WRITER_OMITTED'
+            server._safe_log('personal_chat_speech_omitted', mode=speech_intent.get('mode'))
         if getattr(result, 'reviewed_content', None) is not None:
             row['content_review'] = dict(version=1, hashes=result.reviewed_content)
         if script:

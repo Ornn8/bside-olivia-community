@@ -635,7 +635,10 @@ class ReplyPipeline:
         speech_request = None if degraded or reconsidered_silence else (companion_decision or {}).get('speech_request')
         speech_note = None
         if speech_request and (chat_metadata or {}).get('channel') == 'qq':
-            speech_note = '<speech_request>' + json.dumps(speech_request, ensure_ascii=False) + '</speech_request>'
+            from runtime.personal_chat.speech import SPEECH_WRITER_INSTRUCTION
+            # The writer must know the output contract; a bare request was answered as an ordinary reply.
+            speech_note = (SPEECH_WRITER_INSTRUCTION + '\n<speech_request>' + json.dumps(speech_request, ensure_ascii=False)
+                           + '</speech_request>')
             if speech_request['continuation']:
                 from .fact_attribution import story_evidence
                 speech_note += '\n' + story_evidence((chat_metadata or {}).get('story_continuation'))

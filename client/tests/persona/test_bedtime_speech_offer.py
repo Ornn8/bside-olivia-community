@@ -86,6 +86,8 @@ def test_confirmed_speech_uses_existing_generation_path_without_another_offer():
     assert result.state is ReplyState.COMPLETED
     assert len(port.turns) == len(engine.requests) == 1
     assert any('<speech_request>' in m['content'] for m in engine.requests[0].messages)
+    # The writer is told how to return the script, not only that audio was requested.
+    assert any('<long_audio_task>' in m['content'] and '"spoken_text"' in m['content'] for m in engine.requests[0].messages)
     assert not any('<bedtime_audio_offer>' in m['content'] for m in engine.requests[0].messages)
     assert json.loads(result.text)['speech'] == script
 
