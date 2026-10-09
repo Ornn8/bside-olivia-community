@@ -313,3 +313,25 @@ def test_daily_video_candidates_that_do_not_fit_are_dropped_not_fatal():
     assert result.state is ReplyState.COMPLETED, result.error_code
     assert '<daily_video_candidates>' not in str(engine.requests[0].messages)
     assert sum(len(str(m.get('content', ''))) for m in engine.requests[0].messages) <= 40000
+
+
+def test_selected_instant_video_keeps_candidate_by_trimming_old_dialogue():
+    from tests.http.test_daily_video import payload
+    candidate = {**payload(), 'detail': '刚整理好桌面。' * 40, 'location': '住处'}
+    history = tuple(dict(role='user' if i % 2 == 0 else 'assistant',
+        content='[历史消息 ' + json.dumps(dict(source=f'reply:old{i}', event_id=f'old{i}',
+            actor='user' if i % 2 == 0 else 'linli', truncated=False)) + ']\n' + '旧' * 4000)
+        for i in range(8))
+    port = Port(plan(kind='video_speech'))
+    result, engine = run(port, mode=ReplyMode.FUTURE_IM, daily=[candidate], history=history,
+        daily_selection=dict(event_id=candidate['event_id'], spoken_text='整理好了。'),
+        kinds=['text', 'video_speech'])
+    assert result.state is ReplyState.COMPLETED, result.error_code
+    messages = engine.requests[0].messages
+    assert '<daily_video_candidates>' in str(messages)
+    assert json.loads(result.text)['daily_video']['event_id'] == candidate['event_id']
+    assert result.companion_delivery == 'video_speech'
+    assert len(port.turns) == len(engine.requests) == 1
+    assert messages[-1] == dict(role='user', content='我醒了，不是要睡觉')
+    assert history[-1] in messages and history[0] not in messages
+    assert sum(len(m['content']) for m in messages) <= 40000

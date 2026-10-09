@@ -72,6 +72,7 @@ def finalize_reply_messages(messages, instruction, *, max_input_chars, trim_hist
                     if result[i].get('role') == 'user'), len(result))
     if instruction:
         result.insert(current, {'role': 'system', 'content': instruction})
+    evidence = '\n'.join(m.get('content', '') for m in result if m.get('role') == 'system')
     # Late delivery/speech instructions must fit too. Keep core rules, evidence
     # and the current input intact; evict only oldest projected dialogue frames.
     while sum(len(str(m.get('content', ''))) for m in result) > max_input_chars:
@@ -80,11 +81,27 @@ def finalize_reply_messages(messages, instruction, *, max_input_chars, trim_hist
         oldest = next((i for i, m in enumerate(result[:current])
                        if m.get('role') in ('user', 'assistant')
                        and isinstance(m.get('content'), str)
-                       and m['content'].startswith('[历史消息 ')), None) if trim_history else None
+                       and m['content'].startswith('[历史消息 ')
+                       and not _referenced_dialogue(m['content'], evidence)), None) if trim_history else None
         if oldest is None:
             raise ValueError('INPUT_TOO_LONG')
         del result[oldest]
     return tuple(result)
+
+
+def _referenced_dialogue(content, evidence):
+    """Compacted evidence must not lose the original its source/text_ref points to."""
+    header, _, _ = content.partition(']\n')
+    try:
+        meta = json.loads(header[len('[历史消息 '):])
+    except (ValueError, TypeError):
+        return False
+    if not isinstance(meta, dict):
+        return False
+    # Conservative for both plain and JSON-wrapped references; source IDs are
+    # application-owned. An extra retained original is safer than a dangling ref.
+    return any(isinstance(meta.get(key), str) and meta[key] and meta[key] in evidence
+               for key in ('source', 'event_id'))
 
 
 _RELATIONSHIP_RULE = re.compile(r'<relationship_grounding>\n.*?\n</relationship_grounding>\n', re.S)
@@ -234,8 +251,8 @@ def compact_evidence(messages):
 def prepare_dialogue_messages(messages, *, max_input_chars):
     """Move the frozen recent tail to native roles, without duplicating its text.
 
-    Older retrieval stays in the source-bearing evidence blocks. Preserve the
-    original request intact if projection would exceed its configured capacity.
+    Older retrieval stays in the source-bearing evidence blocks. Trim oldest
+    unreferenced dialogue when native-role metadata needs additional capacity.
     """
     original = tuple(messages)
     note = (FACT_ATTRIBUTION_BOUNDARY + _DIALOGUE_CONTINUITY
@@ -243,7 +260,10 @@ def prepare_dialogue_messages(messages, *, max_input_chars):
             + _input_evidence())
     if any(m.get('role') == 'system' and m.get('content') == note for m in original):
         compacted = compact_evidence(original)
-        return compacted if sum(len(m.get('content', '')) for m in compacted) <= max_input_chars else original
+        try:
+            return finalize_reply_messages(compacted, '', max_input_chars=max_input_chars)
+        except ValueError:
+            return original
     result = [dict(message) for message in original]
     dialogue = []
     def project(match):
@@ -304,6 +324,7 @@ def prepare_dialogue_messages(messages, *, max_input_chars):
     # and evidence, rather than burying it before a long dialogue window.
     result.insert(current + len(dialogue), {'role': 'system', 'content': note})
     result = compact_evidence(result)
-    if sum(len(m.get('content', '')) for m in result) > max_input_chars:
+    try:
+        return finalize_reply_messages(result, '', max_input_chars=max_input_chars)
+    except ValueError:
         return original
-    return tuple(result)

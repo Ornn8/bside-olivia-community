@@ -613,10 +613,12 @@ class ReplyPipeline:
                     note = '<daily_video_candidates>' + json.dumps(daily_candidates,
                         ensure_ascii=False, separators=(',', ':')).replace('<', r'\u003c') + '</daily_video_candidates>'
                     try:
-                        # The context was sized before these candidates existed. An optional
-                        # video offer must never cost the reply: drop it when it does not fit.
-                        with_candidates = finalize_reply_messages(messages, note, max_input_chars=original_budget, trim_history=False)
-                        finalize_reply_messages(with_candidates, generation_note, max_input_chars=original_budget, trim_history=False)
+                        # A selected instant video needs its scene just as the writer
+                        # needs its output rules. Reserve both, trimming old dialogue
+                        # first; unselected offers must not displace recent dialogue.
+                        with_candidates = finalize_reply_messages(messages, note,
+                            max_input_chars=original_budget-len(generation_note),
+                            trim_history=companion_delivery == 'video_speech')
                         messages = with_candidates
                     except ValueError:
                         daily_candidates = []
