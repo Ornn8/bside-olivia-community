@@ -543,6 +543,12 @@ async def _server_photo(server, row, content, text, api, photo_id, settings, pro
         from runtime.wardrobe import CLOUD_CATALOG_PROTOCOL
         reference['wardrobe']={'mode':'daily','catalog_version':CLOUD_CATALOG_PROTOCOL}
     reference['requested_image'] = is_companion_image(row)
+    if channel == 'qq' and not reference['requested_image'] and row.get('daily_video_candidates'):
+        # Her current moments: the cloud planner may share one as a short video instead.
+        moments = [{key: item[key][:200] for key in ('event_id', 'event_kind', 'detail', 'location')
+                    if isinstance(item.get(key), str) and item[key]} for item in row['daily_video_candidates'][:6]]
+        if moments:
+            reference['video_moments'] = moments
     request = {'incoming':content,'reply':text,'reference':reference}
     row.setdefault('image_server_request', request)
     if row['image_server_request']['incoming'] != content or row['image_server_request']['reply'] != text:
@@ -581,6 +587,10 @@ async def _server_photo(server, row, content, text, api, photo_id, settings, pro
             row['image_receipt_required']=True
     if task.get('stage')=='skipped':
         row['image_status']='SKIPPED'
+        shared = task.get('share_video')
+        if shared and any(item.get('event_id') == shared for item in row.get('daily_video_candidates') or []):
+            row['share_video_event'] = shared
+        server._persist_store_state()
         return
     plan=task.get('media_plan')
     if (not isinstance(plan,dict) or plan['photo_type'] not in PHOTO_TYPES or plan['room'] not in ROOMS

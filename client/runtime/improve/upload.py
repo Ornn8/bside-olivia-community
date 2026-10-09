@@ -99,7 +99,7 @@ def _media(row):
         ('image', row.get('image_available') and (row.get('image_reply_settings') or {}).get('enabled')),
         ('video', row.get('daily_video_candidates'))) if present]
     value = {'offered': offered, 'planned': _label(row.get('companion_delivery')),
-             'video': _label(row.get('daily_video_dropped') or row.get('daily_video_status'))}
+             'video': _label(row.get('daily_video_dropped') or row.get('daily_video_status') or row.get('share_video_status'))}
     return {key: item for key, item in value.items() if item}
 
 
