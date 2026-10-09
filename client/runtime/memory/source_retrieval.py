@@ -340,6 +340,19 @@ class SourceRetrieval:
         with closing(self.connect()) as db, db:
             if db.execute("SELECT 1 FROM forgotten WHERE user=? AND source=?", (user, source)).fetchone():
                 return
+            previous = [db.execute("SELECT text,stamp FROM originals WHERE user=? AND source=? AND actor=?",
+                                   (user, source, actor)).fetchone() for actor in ("user", "linli")]
+            if (None not in previous and [row[0] for row in previous] == [user_text, reply_text]
+                    and any(row[1] != stamp for row in previous)):
+                # Same words with a new date (a date the user restored in the mailbox):
+                # move the stamp only. Existing relationship labels still describe these words.
+                db.execute("UPDATE originals SET stamp=? WHERE user=? AND source=?", (stamp, user, source))
+                db.execute("UPDATE chunks SET stamp=? WHERE user=? AND source=?", (stamp, user, source))
+                if reply_text.strip():
+                    digest = _digest(json.dumps([user_text, reply_text, stamp], ensure_ascii=False))
+                    db.execute('INSERT INTO relationship_quotes(user,source,digest) VALUES (?,?,?) '
+                               'ON CONFLICT(user,source) DO NOTHING', (user, source, digest))
+                return
             for actor, text in (("user", user_text), ("linli", reply_text)):
                 previous = db.execute("SELECT text,stamp FROM originals WHERE user=? AND source=? AND actor=?", (user, source, actor)).fetchone()
                 if previous == (text, stamp):

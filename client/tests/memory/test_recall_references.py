@@ -84,3 +84,22 @@ def test_named_day_and_diary_day_lead_recall(tmp_path):
     recall = builder.collect_at('你查了海边潮汐表那次还记得吗', as_of=NOW)
     assert source_id(recall.records[0]) == 'reply:sea:1'
     assert recall.records[0].metadata['retrieval_route'] == 'diary'
+
+
+def test_restored_date_moves_the_stamp_without_relabelling(tmp_path):
+    # Imported official letters carry only an ordering stamp near 1970. When the
+    # user restores the real date in the mailbox, a named day must find them, and
+    # relationship labels for the same words must not be bought again.
+    index = SourceRetrieval(tmp_path / 'index.sqlite3')
+    placeholder = datetime(1970, 1, 1, 0, 2, tzinfo=timezone.utc)
+    index.put('u', 'history:offline:a', '今天就当我们的生日，草莓蓝莓蛋糕', '生日快乐', placeholder)
+    with index.connect() as db:
+        db.execute("UPDATE relationship_quotes SET categories='[\"promise\"]', attempts=1 WHERE source='history:offline:a'")
+        before = db.execute("SELECT digest, categories, attempts FROM relationship_quotes").fetchall()
+    restored = datetime(2026, 8, 26, 12, tzinfo=ZONE)
+    index.put('u', 'history:offline:a', '今天就当我们的生日，草莓蓝莓蛋糕', '生日快乐', restored)
+    start = datetime(2026, 8, 26, tzinfo=ZONE)
+    assert {r.source_id for r in index.sources_in_range('u', start, start + timedelta(days=1), '生日')} == {'history:offline:a'}
+    with index.connect() as db:
+        assert db.execute("SELECT digest, categories, attempts FROM relationship_quotes").fetchall() == before
+        assert {row[0] for row in db.execute("SELECT stamp FROM chunks WHERE source='history:offline:a'")} == {restored.isoformat()}
