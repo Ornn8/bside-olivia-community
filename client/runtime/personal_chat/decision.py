@@ -52,7 +52,7 @@ INSTRUCTION += ('\n优先回应本轮用户的新内容；recent_dialogue里的�
                 '接住用户这一句的意思再回应，不把用户的玩笑或亲近的话理解成与上文无关的新情况。\n')
 
 
-HISTORY_HEADER = re.compile(r'\[历史消息\s*\{.*?\}\s*\]\s*', re.DOTALL)
+PROVENANCE_HEADER = re.compile(r'\[(?:历史消息|当前消息)\s*\{.*?\}\s*\]\s*', re.DOTALL)
 
 
 def repeats_recent(text, rows, *, channel, binding_id, limit=6):
@@ -195,9 +195,9 @@ def decode(raw, *, user, now, proactive=False, allow_user_silence=False, allow_s
         if not isinstance(data['text'], str) or type(data['skip']) is not bool:
             raise ValueError("TEXT_OR_SKIP_TYPE")
         data['text'] = _reply_body(data['text'])
-        # The model sometimes copies the provenance header of an earlier message.
+        # The model sometimes copies a message's provenance header into its reply.
         # It is metadata, never something she says; an echo with nothing else is no reply.
-        data['text'] = HISTORY_HEADER.sub('', data['text']) if isinstance(data['text'], str) else data['text']
+        data['text'] = PROVENANCE_HEADER.sub('', data['text'])
         # Incoming platform placeholders must not reach either QQ text or TTS.
         for marker in ('[QQ表情]', '(QQ表情)', '（QQ表情）', '【QQ表情】'):
             data['text'] = data['text'].replace(marker, '')
