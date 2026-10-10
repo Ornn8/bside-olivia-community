@@ -54,11 +54,10 @@ def _references(text):
 
 _FIXED_TAGS = frozenset({
     'constitution', 'forbidden', 'persona_profile', 'mode_constraints', 'mode_style',
-    'public_canon', 'community_soft_canon', 'inferred', 'uncertainty',
-    'character_participation', 'runtime_time', 'chat_delivery', 'private_behavior',
+    'character_participation', 'runtime_time', 'chat_delivery',
     'evidence_use', 'grounding', 'relationship_grounding', 'companion_decision',
     'chat_output_rules', 'speech_request', 'bedtime_audio_offer', 'daily_video_candidates',
-    'reply_delivery_plan', 'life_rhythm',
+    'reply_delivery_plan',
 })
 
 
@@ -82,6 +81,7 @@ class _Unit:
     identities: set
     position: int
     native: bool = False
+    keep_last: bool = False
 
 
 def fit_reply_context(messages, *, max_input_chars, max_input_bytes=None):
@@ -95,9 +95,9 @@ def fit_reply_context(messages, *, max_input_chars, max_input_bytes=None):
     current = next((i for i in range(len(messages)-1, -1, -1)
                     if messages[i].get('role') == 'user'), len(messages))
 
-    def unit(value, position, native=False):
+    def unit(value, position, native=False, keep_last=False):
         key = len(units)
-        units.append(_Unit(_identities(value), position, native))
+        units.append(_Unit(_identities(value), position, native, keep_last))
         return key
 
     def block(match, position):
@@ -135,9 +135,11 @@ def fit_reply_context(messages, *, max_input_chars, max_input_bytes=None):
                 observations = packet['previous_observations']
                 keys = [unit(item, position) for item in observations]
                 base = {**packet, 'previous_observations': []}
-                protected.append(_encode(tag, {**wrapper, 'text': json.dumps(base, ensure_ascii=False)}))
+                base_key = unit(base, position, keep_last=True)
 
                 def render(removed):
+                    if base_key in removed:
+                        return ''
                     if not any(k in removed for k in keys):
                         return original
                     kept = [item for k, item in zip(keys, observations) if k not in removed]
@@ -208,7 +210,8 @@ def fit_reply_context(messages, *, max_input_chars, max_input_bytes=None):
     latest = max((u.position for u in units if u.native), default=-1)
     def priority(group):
         native = [units[i].position for i in group if units[i].native]
-        return (2 if latest in native else 1 if any(not units[i].native for i in group) else 0,
+        return (3 if any(units[i].keep_last for i in group) else
+                2 if latest in native else 1 if any(not units[i].native for i in group) else 0,
                 min(native, default=min(units[i].position for i in group)))
     choices = sorted((g for k, g in groups.items() if k not in pinned), key=priority)
     def pack(count):

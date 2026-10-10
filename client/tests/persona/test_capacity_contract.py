@@ -111,3 +111,34 @@ def test_final_gateway_guard_runs_before_transport_and_keeps_sizes(stream):
     safe = exception_context(raised.value)
     assert safe['failure_stage'] == 'writer_context'
     assert safe['input_bytes'] > 90000 and safe['input_chars'] == 91000
+
+
+def test_optional_world_and_canon_share_the_final_capacity():
+    world = block('evidence_summary', {'current': {'event_id': 'world-1', 'detail': 'x' * 5000},
+                                      'previous_observations': []}, fragment_id='linli.daily-life')
+    messages = [dict(role='system', content='<constitution>core</constitution>' +
+        '<public_canon>' + 'x' * 5000 + '</public_canon>' + world), dict(role='user', content='hello')]
+    result = fit_reply_context(messages, max_input_chars=500)
+    assert 'core' in str(result) and result[-1] == messages[-1]
+    assert 'world-1' not in str(result) and '<public_canon>' not in str(result)
+
+
+def test_selected_world_dependency_remains_fixed():
+    world = block('evidence_summary', {'current': {'event_id': 'world-1', 'detail': 'x' * 500},
+                                      'previous_observations': []}, fragment_id='linli.daily-life')
+    contract = '<reply_delivery_plan>{"event_id":"world-1"}</reply_delivery_plan>'
+    with pytest.raises(ContextCapacityError):
+        fit_reply_context([dict(role='system', content=world + contract),
+                           dict(role='user', content='hello')], max_input_chars=200)
+
+
+def test_initial_assembly_failure_keeps_only_budget_counts():
+    from runtime.reply.prompt_budget import PromptBudgetItem, PromptSection, plan_prompt_budget, PromptBudgetExceeded
+    from runtime.reply.reply_pipeline import _assembly_capacity_failure
+    with pytest.raises(PromptBudgetExceeded) as raised:
+        plan_prompt_budget((PromptBudgetItem('private-id', PromptSection.CORE_PERSONA, 400),
+                            PromptBudgetItem('optional-id', PromptSection.WORLD_FACT, 200)), max_units=300)
+    safe = _assembly_capacity_failure(raised.value)
+    assert safe['fixed_chars'] == 400 and safe['optional_chars'] == 200
+    assert safe['input_chars'] == 600 and safe['packed_chars'] == 400
+    assert 'private-id' not in str(safe)

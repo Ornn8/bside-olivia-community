@@ -457,10 +457,12 @@ class ReplyPipeline:
             return PipelineResult(
                 request.request_id if isinstance(request, ReplyRequest) else '',
                 ReplyState.FAILED, error_code=error.code, retryable=False,
+                failure_context=_assembly_capacity_failure(error.__cause__),
             )
-        except PromptBudgetExceeded:
+        except PromptBudgetExceeded as error:
             return PipelineResult(getattr(request, 'request_id', ''), ReplyState.FAILED,
-                error_code='JEV_CONTEXT_BUDGET_EXCEEDED' if companion_enabled else 'INPUT_TOO_LONG', retryable=False)
+                error_code='JEV_CONTEXT_BUDGET_EXCEEDED' if companion_enabled else 'INPUT_TOO_LONG',
+                retryable=False, failure_context=_assembly_capacity_failure(error))
         prepared = preparation.request
         if not parallel_preparation:
             tasks = [asyncio.create_task(measure('interpretation', interpret_safely())),
@@ -1012,6 +1014,18 @@ def assemble_reply_messages(adapter, snapshot, context, content, *, max_input_ch
     messages, evidence, assembly_limit = _assemble_reply_evidence(adapter, snapshot, context, content,
         max_input_chars=max_input_chars, user_input=user_input, life_fragments=life_fragments)
     return prepare_dialogue_messages(messages, max_input_chars=assembly_limit), evidence
+
+
+
+def _assembly_capacity_failure(error):
+    report = getattr(error, 'report', None)
+    if report is None:
+        return {}
+    return dict(failure_stage='writer_context', failure_detail='final_rules_budget',
+                input_chars=report.input_units, max_input_chars=report.max_units,
+                fixed_chars=report.required_units,
+                optional_chars=max(0, report.input_units-report.required_units),
+                packed_chars=report.used_units)
 
 
 def _assemble_reply_evidence(adapter, snapshot, context, content, *, max_input_chars, user_input=None, life_fragments=None):
