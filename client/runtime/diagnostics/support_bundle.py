@@ -130,7 +130,7 @@ def _project_summary(value: object) -> dict[str, object]:
         item = source[name]
         if not isinstance(item, str) or not _TOKEN_RE.fullmatch(item):
             raise _invalid()
-        if name == "running_version" and not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?", item):
+        if name == "running_version" and not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:\.[0-9]+)?(?:[-+][0-9A-Za-z.-]+)?", item):
             raise _invalid()
         result[name] = item
     return result

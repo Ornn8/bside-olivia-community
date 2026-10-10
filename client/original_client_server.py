@@ -688,7 +688,7 @@ def _diagnostic_source(
         }
         from original_client_update_api import running_component_version
         version = running_component_version().get("version")
-        if isinstance(version, str) and re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?", version):
+        if isinstance(version, str) and re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:\.[0-9]+)?(?:[-+][0-9A-Za-z.-]+)?", version):
             summary["running_version"] = version
         if video_capability_installer is not None:
             # status() may start runtime preparation. Export only a nonblocking

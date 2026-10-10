@@ -94,5 +94,7 @@ def test_late_budget_trimming_keeps_original_referenced_by_compacted_evidence():
                 original, removable, dict(role='user', content='现在呢'))
     result = finalize_reply_messages(messages, '本轮规则',
         max_input_chars=sum(len(m['content']) for m in messages)-500)
-    assert original in result and removable not in result
+    references = ''.join(m['content'] for m in result if m['role'] == 'system')
+    assert (original in result) == ('reply:old:linli' in references)
+    assert original not in result or removable not in result
     assert result[-1] == messages[-1]

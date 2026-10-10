@@ -491,7 +491,13 @@ async def _generate_billed(server, event, row):
     from runtime.reply.proactive_runtime import enabled as proactive_enabled
     proactive_metadata = ({'proactive_decide': proactive_decide}
                           if row.get('origin') == 'proactive' and proactive_enabled() and not row.get('gift_id') else {})
-    presentation = CURRENT.set({'voice_available': voice_available, 'listening_preference': 'voice_ok',
+    async def save_writer_checkpoint(key, fingerprint):
+        row['writer_checkpoint'] = dict(key=key, fingerprint=fingerprint,
+                                      input_revision=revision,
+                                      attempt_id=row.get('generation_attempt_id'))
+        await persist_chat(server)
+
+    presentation = CURRENT.set({'save_writer_checkpoint': save_writer_checkpoint, 'voice_available': voice_available, 'listening_preference': 'voice_ok',
                                 'recent_delivery_formats': recent_delivery_formats(server.store.personal_chats,
                                     channel=event.channel, binding_id=event.binding_id),
                                 'structured': True, 'raw_user_text': event.text,
@@ -540,7 +546,7 @@ async def _generate_billed(server, event, row):
                 photo=bool(row.get('gift_photo') and row['image_reply_settings'].get('enabled')))
         request = ReplyRequest(content=content or '应用主动聊天检查：现在是否有值得和对方分享的话？没有则跳过。', request_id="personal-chat:" + attempt_id,
             idempotency_key=attempt_id,
-            max_input_chars=min(adapter.config.max_input_chars, 40000 + len(content or '')),
+            max_input_chars=adapter.config.max_input_chars,
             gateway_scope=(server.GatewayRequestScope.PERSONAL_CHAT_JSON
                            if server.supports_scoped_reasoning(adapter.config) else None))
         try:
@@ -593,6 +599,9 @@ async def _generate_billed(server, event, row):
             if (result.error_code in CODES | {'INPUT_TOO_LONG', 'IDEMPOTENCY_CONFLICT'}
                     or (getattr(result, 'failure_context', {}) or {}).get('failure_stage') in {'decision_context', 'writer_context'}):
                 exc.retryable = result.retryable
+            if result.error_code in {'JEV_CONTEXT_BUDGET_EXCEEDED', 'INPUT_TOO_LONG',
+                                      'RECALL_CONTEXT_BUDGET_EXCEEDED'}:
+                exc.retryable = False
             exc.failure_context = provider_failure_context(getattr(result, 'failure_context', {}))
             raise exc
         if contact is not None and contact['decision']['action'] == 'defer':
@@ -1126,13 +1135,25 @@ def install_personal_chat(app, server):
                 except Exception:
                     return False
             from runtime.image_assets import ensure_image
+            def inspect_writer(row):
+                checkpoint = row.get('writer_checkpoint')
+                store = getattr(getattr(server, 'reply_pipeline', None), '_writer_store', None)
+                if (not isinstance(checkpoint, dict) or store is None
+                        or checkpoint.get('input_revision') != row.get('input_revision', 0)
+                        or checkpoint.get('attempt_id') != row.get('generation_attempt_id')):
+                    return False
+                key, fingerprint = checkpoint.get('key'), checkpoint.get('fingerprint')
+                return (isinstance(key, str) and isinstance(fingerprint, str)
+                        and store.load(key, fingerprint) is not None)
+
             service = PersonalChatService(server.store.personal_chats, lambda: persist_chat(server),
                 lambda event, row: generate(server, event, row), lambda row: recoverable_commit(server, row), bindings,
                 sticker_allowed=sticker_allowed,
                 sticker_asset=lambda key: ensure_image(server._local_data_root(), 'stickers', key),
                 photo=lambda row, send: deliver_photo(server, row, send),
                 prepare_photo=lambda row, send: prepare_chat_photo(server, row, send),
-                speech=lambda row, send: deliver_speech(server,row,send))
+                speech=lambda row, send: deliver_speech(server,row,send), inspect_writer=inspect_writer)
+            await service.recover()
             from .probe import ProbeJournal
             journal = ProbeJournal(server._state_root() / "personal-chat-diagnostics")
             runtime = {"stop": stop_event, "tasks": [], "service": service, "status": {},

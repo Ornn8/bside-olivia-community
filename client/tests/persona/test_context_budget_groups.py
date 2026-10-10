@@ -109,8 +109,10 @@ def test_full_qq_pipeline_repacks_cited_history_with_one_decision_and_one_genera
     assert '约好了周末一起读书，今天先休息。' in str(sent)
 
 
-def test_unknown_reference_container_pins_its_original_instead_of_orphaning_it():
+def test_unknown_container_and_its_dependency_are_omitted_together():
     original = frame('private-source', 'linli', '这句话必须保留')
     fixed = {'role': 'system', 'content': '<future_evidence>{"text_ref":"private-source:linli"}</future_evidence>'}
-    with pytest.raises(ValueError, match='INPUT_TOO_LONG'):
-        finalize_reply_messages((fixed, original, {'role': 'user', 'content': '这次问题'}), '', max_input_chars=50)
+    current = {'role': 'user', 'content': '这次问题'}
+    result = finalize_reply_messages((fixed, original, current), '', max_input_chars=100)
+    assert current in result and original not in result
+    assert 'private-source' not in str(result)

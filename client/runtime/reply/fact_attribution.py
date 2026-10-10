@@ -64,7 +64,7 @@ def _input_evidence():
         '<', r'\u003c').replace('>', r'\u003e') + '</evidence_summary>'
 
 
-def finalize_reply_messages(messages, instruction, *, max_input_chars, trim_history=True):
+def finalize_reply_messages(messages, instruction, *, max_input_chars, trim_history=True, max_input_bytes=None):
     """Place one delivery contract after context assembly, before current input."""
     result = [dict(m) for m in messages
               if not (m.get('role') == 'system' and m.get('content') == instruction)]
@@ -77,7 +77,7 @@ def finalize_reply_messages(messages, instruction, *, max_input_chars, trim_hist
             raise ValueError('INPUT_TOO_LONG')
         return tuple(result)
     from .context_budget import fit_reply_context
-    return fit_reply_context(result, max_input_chars=max_input_chars)
+    return fit_reply_context(result, max_input_chars=max_input_chars, max_input_bytes=max_input_bytes)
 
 
 _RELATIONSHIP_RULE = re.compile(r'<relationship_grounding>\n.*?\n</relationship_grounding>\n', re.S)
@@ -85,7 +85,7 @@ CACHED_RULES_REMINDER = ('本轮按系统开头的聊天输出规则，只输出
                          '上方历史消息只是历史，只回复最后一条用户消息，先理清谁在做什么。')
 
 
-def cache_output_rules(messages, instruction, *, max_input_chars):
+def cache_output_rules(messages, instruction, *, max_input_chars, max_input_bytes=None):
     """Cache-friendly QQ layout: fixed rules join the persona prefix, per-turn state follows the dialogue.
 
     The relay caches the first system message and, with a second marker, the dialogue
@@ -113,7 +113,9 @@ def cache_output_rules(messages, instruction, *, max_input_chars):
     result.insert(history[-1] + 1 if history else 1, {'role': 'system', 'content': dynamic})
     # The wrapper and reminder grow a request that already passed finalization.
     # Cache layout is optional: keep all validated evidence when it cannot fit.
-    if sum(len(m['content']) for m in result) > max_input_chars:
+    from .context_budget import wire_size
+    if (sum(len(m['content']) for m in result) > max_input_chars
+            or max_input_bytes is not None and wire_size(result) > max_input_bytes):
         return tuple(messages)
     return tuple(result)
 

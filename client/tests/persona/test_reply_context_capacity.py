@@ -39,7 +39,7 @@ def test_final_speech_rules_take_priority_over_optional_emotion(monkeypatch):
         self.gateway = SimpleNamespace(adapter=SimpleNamespace(prepare_character_emotion=emotion))
 
     monkeypatch.setattr(Engine, '__init__', init)
-    history = ({'role': 'system', 'content': '合' * padding},)
+    history = ({'role': 'system', 'content': 'x' * padding},)
     result, engine, port = run_turn(user='你好', history=history, offer='none', budget=40002)
     assert result.state is ReplyState.COMPLETED, result.error_code
     assert len(port.turns) == len(engine.requests) == 1

@@ -164,7 +164,7 @@ def test_backend_generate_uses_real_pipeline_persona_memory_and_world(tmp_path, 
         assert request.content == event.text + CURRENT.get()['incoming_observation_context']
         if failure_code == 'outer_timeout':
             raise TimeoutError()
-        assert request.max_input_chars == 40000 + len(request.content)
+        assert request.max_input_chars == adapter.config.max_input_chars == 100000
         assert request.content.startswith(event.text + '\n[系统图片观察，非用户原话]')
         assert json.loads(request.content.split('\n', 2)[2].split('\n[系统媒体观察')[0])['current_turn_has_images'] is False
         if envelope_variant == 'native_media':

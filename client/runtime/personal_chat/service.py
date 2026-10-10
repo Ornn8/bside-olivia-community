@@ -2,6 +2,8 @@
 import asyncio
 import re
 import inspect
+import uuid
+import hashlib
 from contextvars import ContextVar
 from datetime import datetime, timezone
 
@@ -38,7 +40,9 @@ def _clear_draft(row):
                 'voice_prepare_seconds', 'voice_prepare_status', 'voice_prepare_timeout_seconds',
                 'generation_retryable', 'generation_failure_context', 'generation_failures',
                 'silence_reason', 'skip_reason', 'user_controls_applied',
-                'daily_video_request', 'daily_video_status', 'daily_video_error_code', 'daily_video_candidates'):
+                'daily_video_request', 'daily_video_status', 'daily_video_error_code', 'daily_video_candidates',
+                'writer_checkpoint', 'generation_run_id', 'generation_attempt_id', 'generation_recovery',
+                'send_attempt_id', 'send_input_revision', 'delivery_receipt'):
         row.pop(key, None)
 
 
@@ -71,10 +75,12 @@ async def delivery_notice(row, send, persist, key, text):
 
 
 class PersonalChatService:
-    def __init__(self, rows, persist, generate, commit, bindings, *, sticker_allowed=lambda key: True, sticker_asset=None, photo=None, prepare_photo=None, speech=None):
+    def __init__(self, rows, persist, generate, commit, bindings, *, sticker_allowed=lambda key: True, sticker_asset=None, photo=None, prepare_photo=None, speech=None, inspect_writer=None):
         self.rows, self.persist = rows, persist
         self.generate, self.commit = generate, commit
         self.bindings = dict(bindings)
+        self.run_id = uuid.uuid4().hex
+        self.inspect_writer = inspect_writer
         self.sticker_allowed = sticker_allowed
         self.sticker_asset = sticker_asset
         self.photo = photo
@@ -413,7 +419,8 @@ class PersonalChatService:
                 row.pop('decision_warning_codes', None)
                 row.pop('decision_dropped_media', None)
                 row.pop('decision_dropped_controls', None)
-                row.update(delivery_status="GENERATING", letter_status="PROCESSING")
+                row.update(delivery_status="GENERATING", letter_status="PROCESSING",
+                           generation_run_id=self.run_id, generation_attempt_id=uuid.uuid4().hex)
                 await persist_state(self.persist)
                 try:
                     row['voice_available'] = callable(getattr(send, 'audio', None))
@@ -562,6 +569,8 @@ class PersonalChatService:
                     await persist_state(self.persist)
                     return
                 row["delivery_status"] = "SENDING"
+                row['send_attempt_id'] = row.get('generation_attempt_id')
+                row['send_input_revision'] = row.get('input_revision', 0)
                 await persist_state(self.persist)
             if proactive and (proactive_revision != self.user_revision
                               or callable(proactive_eligible) and not proactive_eligible()):
@@ -595,6 +604,10 @@ class PersonalChatService:
                                error_code='PERSONAL_CHAT_DELIVERY_UNCONFIRMED')
                     await persist_state(self.persist)
                     return
+            import hashlib
+            row['delivery_receipt'] = dict(
+                attempt_id=row.get('generation_attempt_id'), input_revision=row.get('input_revision', 0),
+                confirmed=True, text_sha256=hashlib.sha256(row['reply_text'].encode()).hexdigest())
             previous_revision = row.get('reply_revision')
             row.update(delivery_status="DELIVERED", letter_status="COMPLETED", reply_revision=1,
                        private_world_status="PENDING", daily_life_status="PENDING",
@@ -637,9 +650,11 @@ class PersonalChatService:
             await asyncio.sleep(0)
 
     def _schedule_commit(self, row):
-        key = row['letter_id']
+        key = row.get('letter_id')
+        if row.get('delivery_status') != 'DELIVERED' or not isinstance(key, str) or not key:
+            return
         pending = self.consumer_tasks.get(key)
-        if row.get('delivery_status') != 'DELIVERED' or pending is not None and not pending.done():
+        if pending is not None and not pending.done():
             return
         async def consume():
             try:
@@ -743,6 +758,34 @@ class PersonalChatService:
     async def recover(self):
         """Recover local consumers only; never initiate an outbound resend."""
         for row in list(self.rows):
+            if row.get('delivery_status') == 'GENERATING' and row.get('generation_run_id') != self.run_id:
+                receipt = row.get('delivery_receipt')
+                receipt = receipt if isinstance(receipt, dict) else {}
+                attempt = row.get('generation_attempt_id')
+                matched = (attempt and receipt.get('attempt_id') == attempt
+                           and receipt.get('input_revision') == row.get('input_revision', 0))
+                text = row.get('reply_text')
+                confirmed = (matched and receipt.get('confirmed') is True and isinstance(text, str)
+                             and isinstance(row.get('letter_id'), str)
+                             and receipt.get('text_sha256') == hashlib.sha256(text.encode()).hexdigest())
+                if confirmed:
+                    row.update(delivery_status='DELIVERED', letter_status='COMPLETED', reply_revision=1,
+                               private_world_status='PENDING', daily_life_status='PENDING',
+                               private_world_delivery_id=row['letter_id'] + ':1',
+                               private_world_occurred_at=datetime.now(timezone.utc).isoformat(),
+                               private_world_reply_sha256=receipt['text_sha256'],
+                               private_world_semantic_key='canonical.' + hashlib.sha256(row['letter_id'].encode()).hexdigest())
+                    row.pop('error_code', None)
+                elif attempt and row.get('send_attempt_id') == attempt:
+                    row.update(delivery_status='DELIVERY_UNCONFIRMED', letter_status='PROCESSING',
+                               error_code='PERSONAL_CHAT_DELIVERY_UNCONFIRMED')
+                else:
+                    retained = bool(self.inspect_writer(row)) if callable(self.inspect_writer) else False
+                    row.update(delivery_status='FAILED', letter_status='FAILED',
+                               error_code='PERSONAL_CHAT_GENERATION_INTERRUPTED', generation_retryable=False,
+                               generation_interrupted=True,
+                               generation_recovery='CANDIDATE_RETAINED' if retained else 'NO_CANDIDATE')
+                await persist_state(self.persist)
             self._schedule_commit(row)
             # Let a waiting message proceed between recovered exchanges.
             await asyncio.sleep(0)

@@ -981,6 +981,16 @@ class OpenAICompatibleAdapter(Gateway):
         )
         from runtime.model_policy import encode_chat
         body = encode_chat(body, endpoint or self._url())
+        if request_id.startswith('personal-chat:'):
+            encoded_size = len(json.dumps(body, ensure_ascii=False, separators=(',', ':')).encode('utf-8'))
+            from runtime.reply.context_budget import PERSONAL_CHAT_MAX_INPUT_BYTES
+            if encoded_size > PERSONAL_CHAT_MAX_INPUT_BYTES:
+                error = InvalidGatewayInput('INPUT_TOO_LONG')
+                error.failure_context = dict(failure_stage='writer_context', failure_detail='final_rules_budget',
+                    input_bytes=encoded_size, max_input_bytes=PERSONAL_CHAT_MAX_INPUT_BYTES,
+                    input_chars=sum(len(m.get('content', '')) for m in body.get('messages', []) if isinstance(m.get('content'), str)),
+                    max_input_chars=self.config.max_input_chars)
+                raise error
         for attempt in range(self.config.max_retries + 1):
             diagnostic_stage = "request"
             response = None
@@ -1361,6 +1371,16 @@ class OpenAICompatibleAdapter(Gateway):
         )
         from runtime.model_policy import encode_chat
         body = encode_chat(body, self._url())
+        if request.startswith('personal-chat:'):
+            encoded_size = len(json.dumps(body, ensure_ascii=False, separators=(',', ':')).encode('utf-8'))
+            from runtime.reply.context_budget import PERSONAL_CHAT_MAX_INPUT_BYTES
+            if encoded_size > PERSONAL_CHAT_MAX_INPUT_BYTES:
+                error = InvalidGatewayInput('INPUT_TOO_LONG')
+                error.failure_context = dict(failure_stage='writer_context', failure_detail='final_rules_budget',
+                    input_bytes=encoded_size, max_input_bytes=PERSONAL_CHAT_MAX_INPUT_BYTES,
+                    input_chars=sum(len(m.get('content', '')) for m in body.get('messages', []) if isinstance(m.get('content'), str)),
+                    max_input_chars=self.config.max_input_chars)
+                raise error
         for attempt in range(self.config.max_retries + 1):
             usage = None
             response = None

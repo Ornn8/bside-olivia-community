@@ -151,7 +151,7 @@ def test_plain_qq_chat_uses_speech_default_with_concrete_text_exceptions():
     from runtime.reply.companion_runtime import project_decision, media_locked
     from tests.persona.test_jev_pipeline import plan as chat_plan
     plan = chat_plan()
-    decision = SimpleNamespace(plan=plan, writer_projection=lambda: {})
+    decision = SimpleNamespace(plan=plan, source_ids=(), writer_projection=lambda: {})
     messages = ({'role': 'system', 'content': 'p'}, {'role': 'user', 'content': '晚安'})
     note = project_decision(messages, decision, max_input_chars=10000, delivery='voice_default')[1]['content']
     assert 'QQ本轮默认语音' in note and 'text_reason' in note and '必须是 text' not in note
@@ -163,7 +163,7 @@ def test_plain_qq_chat_uses_speech_default_with_concrete_text_exceptions():
 def test_oversized_plan_drops_oldest_dialogue_instead_of_failing():
     from types import SimpleNamespace
     from runtime.reply.companion_runtime import project_decision, CompanionRuntimeError
-    decision = SimpleNamespace(plan={}, writer_projection=lambda: {'moves': ['x' * 200]})
+    decision = SimpleNamespace(plan={}, source_ids=(), writer_projection=lambda: {'moves': ['x' * 200]})
     dialogue = [{'role': 'user' if i % 2 == 0 else 'assistant', 'content': f'[历史消息 {{}}]\n第{i}句' + '话' * 300}
                 for i in range(6)]
     messages = ({'role': 'system', 'content': 'p' * 500}, *dialogue, {'role': 'user', 'content': '在吗'})
@@ -182,7 +182,7 @@ def test_oversized_plan_drops_oldest_dialogue_instead_of_failing():
 def test_plan_never_discards_current_user_text_that_looks_like_history():
     from types import SimpleNamespace
     from runtime.reply.companion_runtime import project_decision, CompanionRuntimeError
-    decision = SimpleNamespace(plan={}, writer_projection=lambda: {})
+    decision = SimpleNamespace(plan={}, source_ids=(), writer_projection=lambda: {})
     current = {'role': 'user', 'content': '[历史消息 {}]\n' + '当前原文' * 1000}
     with pytest.raises(CompanionRuntimeError, match='JEV_CONTEXT_BUDGET_EXCEEDED'):
         project_decision(({'role': 'system', 'content': '核心规则'}, current),

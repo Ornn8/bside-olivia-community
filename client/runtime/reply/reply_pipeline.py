@@ -43,7 +43,12 @@ from runtime.reply.prompt_budget import PromptBudgetExceeded
 
 
 _CHARACTER_REPLY_HISTORY_LIMIT = 1200
-POST_ASSEMBLY_RESERVE = 12000
+
+
+def _chat_fit_bytes():
+    from .context_budget import PERSONAL_CHAT_FIT_BYTES
+    return PERSONAL_CHAT_FIT_BYTES
+
 _CHARACTER_REPLY_PREFIX = "character_reply: "
 _PERSONA_NOT_READY = "PERSONA_NOT_READY"
 _TEXT_RECOVERY_CODES = frozenset({
@@ -278,6 +283,9 @@ class ReplyPipeline:
                 timings[name] = round(timings.get(name, 0) + time.perf_counter() - begin, 4)
         try:
             result = await self._run(request, context, measure, degraded, metadata)
+        except asyncio.CancelledError:
+            self._forget_recovery(key, preserve_writer=True)
+            raise
         except BaseException:
             self._forget_recovery(key)
             raise
@@ -291,7 +299,8 @@ class ReplyPipeline:
             result = replace(result, stage_cache_hits=entry[1].cache_hits,
                              stage_actual_calls=entry[1].actual_calls)
         recoverable = {'REVIEW_FAILED', 'REVIEWER_UNAVAILABLE', 'REVIEWER_RESPONSE_INVALID',
-                       'REWRITE_FAILED', 'REWRITE_PROVIDER_UNAVAILABLE'}
+                       'REWRITE_FAILED', 'REWRITE_PROVIDER_UNAVAILABLE',
+                       'INPUT_TOO_LONG', 'JEV_CONTEXT_BUDGET_EXCEEDED', 'RECALL_CONTEXT_BUDGET_EXCEEDED'}
         # A rejected candidate needs fresh generation. Only a failed provider
         # stage may reuse its successful prefix within the existing two attempts.
         if result.error_code not in recoverable or metadata.get('generation_attempts', 1) >= 2:
@@ -454,10 +463,12 @@ class ReplyPipeline:
             return PipelineResult(
                 request.request_id if isinstance(request, ReplyRequest) else '',
                 ReplyState.FAILED, error_code=error.code, retryable=False,
+                failure_context=_assembly_capacity_failure(error.__cause__),
             )
-        except PromptBudgetExceeded:
+        except PromptBudgetExceeded as error:
             return PipelineResult(getattr(request, 'request_id', ''), ReplyState.FAILED,
-                error_code='JEV_CONTEXT_BUDGET_EXCEEDED' if companion_enabled else 'INPUT_TOO_LONG')
+                error_code='JEV_CONTEXT_BUDGET_EXCEEDED' if companion_enabled else 'INPUT_TOO_LONG',
+                retryable=False, failure_context=_assembly_capacity_failure(error))
         prepared = preparation.request
         if not parallel_preparation:
             tasks = [asyncio.create_task(measure('interpretation', interpret_safely())),
@@ -488,20 +499,7 @@ class ReplyPipeline:
                     ReplyState.FAILED, error_code="CURRENT_TURN_INTERPRETATION_FAILED",
                 )
         adopted = {}
-        if isinstance(prepared, ReplyRequest) and prepared.messages:
-            from runtime.memory.history_selection import select_history_messages as prepare_recall_messages
-            adapter = getattr(getattr(self.orchestrator, 'gateway', None), 'adapter', None)
-            gateway = getattr(adapter, 'gateway', None)
-            current_sources = getattr(adapter, '_memory_source_exclusions', lambda: ())()
-            messages = await measure('history', prepare_recall_messages(prepared.messages, gateway,
-                max_input_chars=prepared.max_input_chars, request_id=prepared.request_id,
-                memory_builder=getattr(adapter, 'memory_prompt_builder', None),
-                as_of=context.trusted_time.instant,
-                exclude_source_ids=current_sources, current_source_ids=current_sources,
-                current_user_text=user_text, persona_snapshot=preparation.persona_snapshot,
-                persona_mode=persona_mode_for_reply_mode(context.mode),
-                persona_development=(preparation.adopted_world or {}).get('character_development')))
-            prepared = replace(prepared, messages=messages)
+        selection_messages = getattr(prepared, 'messages', None)
         if isinstance(prepared, ReplyRequest) and prepared.messages:
             from .fact_attribution import prepare_dialogue_messages
             prepared = replace(prepared, messages=prepare_dialogue_messages(
@@ -600,7 +598,40 @@ class ReplyPipeline:
             prepared = replace(prepared, messages=prepared.normalized_messages())
         # Optional expression and scene offers cannot consume the final contract's room.
         context_budget = original_budget - sum(map(len, final_notes))
+        if ordinary_chat and isinstance(prepared, ReplyRequest) and prepared.messages:
+            from .context_budget import wire_size, PERSONAL_CHAT_FIT_BYTES
+            base_chars = sum(len(m['content']) for m in prepared.messages)
+            wire = [*prepared.messages, dict(role='system', content='\n'.join(final_notes))]
+            context_budget = min(context_budget, base_chars + max(0, (PERSONAL_CHAT_FIT_BYTES - wire_size(wire)) // 4))
         if isinstance(prepared, ReplyRequest) and prepared.messages:
+            from runtime.memory.history_selection import select_history_messages as prepare_recall_messages
+            adapter = getattr(getattr(self.orchestrator, 'gateway', None), 'adapter', None)
+            gateway = getattr(adapter, 'gateway', None)
+            current_sources = getattr(adapter, '_memory_source_exclusions', lambda: ())()
+            messages = await measure('history', prepare_recall_messages(selection_messages or prepared.messages, gateway,
+                max_input_chars=max(1, context_budget), request_id=prepared.request_id,
+                memory_builder=getattr(adapter, 'memory_prompt_builder', None),
+                as_of=context.trusted_time.instant,
+                exclude_source_ids=current_sources, current_source_ids=current_sources,
+                current_user_text=user_text, persona_snapshot=preparation.persona_snapshot,
+                persona_mode=persona_mode_for_reply_mode(context.mode),
+                persona_development=(preparation.adopted_world or {}).get('character_development')))
+            prepared = replace(prepared, messages=messages)
+        if isinstance(prepared, ReplyRequest) and prepared.messages:
+            from .fact_attribution import prepare_dialogue_messages
+            prepared = replace(prepared, messages=prepare_dialogue_messages(
+                prepared.messages, max_input_chars=max(1, context_budget)))
+        if isinstance(prepared, ReplyRequest) and prepared.messages:
+            from .fact_attribution import finalize_reply_messages
+            try:
+                packed = finalize_reply_messages(prepared.messages, '\n'.join(final_notes),
+                    max_input_chars=original_budget, max_input_bytes=_chat_fit_bytes() if ordinary_chat else None)
+            except ValueError as error:
+                return PipelineResult(prepared.request_id, ReplyState.FAILED, error_code='INPUT_TOO_LONG',
+                    retryable=False, failure_context=getattr(error, 'failure_context', {}))
+            prepared = replace(prepared, messages=tuple(m for m in packed
+                if not (m.get('role') == 'system' and m.get('content') == '\n'.join(final_notes))),
+                max_input_chars=max(1, context_budget))
             from .character_emotion_context import project_emotion
             prepared = replace(prepared, messages=project_emotion(prepared.messages, emotion_view,
                 max_input_chars=context_budget, adopted=adopted))
@@ -653,17 +684,22 @@ class ReplyPipeline:
                 current = next((i for i in range(len(messages)-1, -1, -1)
                                 if messages[i].get('role') == 'user'), len(messages))
                 messages[current:current] = [dict(role='system', content=note) for note in final_notes]
-                messages = finalize_reply_messages(messages, '', max_input_chars=original_budget)
+                messages = finalize_reply_messages(messages, '', max_input_chars=original_budget,
+                    max_input_bytes=_chat_fit_bytes() if ordinary_chat else None)
                 from runtime.personal_chat.decision import INSTRUCTION as CHAT_RULES
                 if (chat_metadata or {}).get('structured') and generation_note == CHAT_RULES:
                     from .fact_attribution import cache_output_rules
-                    messages = cache_output_rules(messages, generation_note, max_input_chars=original_budget)
-            except ValueError:
+                    messages = cache_output_rules(messages, generation_note, max_input_chars=original_budget,
+                                                  max_input_bytes=_chat_fit_bytes() if ordinary_chat else None)
+            except ValueError as error:
                 return PipelineResult(prepared.request_id, ReplyState.FAILED,
                     error_code='INPUT_TOO_LONG', retryable=False,
-                    failure_context=dict(failure_stage='writer_context', failure_detail='final_rules_budget',
+                    failure_context=getattr(error, 'failure_context', None) or dict(
+                        failure_stage='writer_context', failure_detail='final_rules_budget',
                         input_chars=sum(len(m['content']) for m in messages), max_input_chars=original_budget))
             prepared = replace(prepared, messages=messages, max_input_chars=original_budget)
+        if not any('<character_emotion>' in m.get('content', '') for m in _generation_messages(prepared)):
+            adopted.pop('emotion', None)
         from .character_emotion_context import freeze_expression_context
         # Local assembly establishes provenance; later recall may legitimately
         # replace duplicated notes with source references. Freeze that final
@@ -685,6 +721,9 @@ class ReplyPipeline:
             getattr(prepared, 'max_input_chars', None), getattr(prepared, 'gateway_scope', None),
             provider_binding)
         recovery = self._recover_stages(receipt_metadata, fingerprint)
+        checkpoint = receipt_metadata.get('save_writer_checkpoint')
+        if recovery is not None and recovery.storage_key is not None and callable(checkpoint):
+            await checkpoint(recovery.storage_key, fingerprint)
         if callable(receipt_metadata.get('turn_is_current')) and not receipt_metadata['turn_is_current']():
             return PipelineResult(getattr(request, 'request_id', ''), ReplyState.FAILED,
                                   error_code='JEV_INPUT_SUPERSEDED')
@@ -983,6 +1022,18 @@ def assemble_reply_messages(adapter, snapshot, context, content, *, max_input_ch
     return prepare_dialogue_messages(messages, max_input_chars=assembly_limit), evidence
 
 
+
+def _assembly_capacity_failure(error):
+    report = getattr(error, 'report', None)
+    if report is None:
+        return {}
+    return dict(failure_stage='writer_context', failure_detail='final_rules_budget',
+                input_chars=report.input_units, max_input_chars=report.max_units,
+                fixed_chars=report.required_units,
+                optional_chars=max(0, report.input_units-report.required_units),
+                packed_chars=report.used_units)
+
+
 def _assemble_reply_evidence(adapter, snapshot, context, content, *, max_input_chars, user_input=None, life_fragments=None):
     from inspect import signature
     life = getattr(adapter, 'daily_life_fragments', None) if life_fragments is None else None
@@ -1039,12 +1090,7 @@ def _assemble_reply_evidence(adapter, snapshot, context, content, *, max_input_c
         baseline = assemble_persona(history=recent, **options)
     except PromptBudgetExceeded as error:
         raise _RecallBudgetExceeded() from error
-    # Output rules, the companion decision and delivery notes are appended after
-    # assembly (about 11k chars for QQ). Recall would otherwise fill everything else, so a
-    # long correspondence left no room: once the decision cited a recalled original, that
-    # envelope was pinned and the final fit failed (JEV_CONTEXT_BUDGET_EXCEEDED).
-    available = max(0, assembly_limit - len(baseline.system_content) - len(baseline.user_content) - 256
-                    - min(POST_ASSEMBLY_RESERVE, max_input_chars // 8))
+    available = max(0, assembly_limit - len(baseline.system_content) - len(baseline.user_content) - 256)
     if disabled:
         adapter._build_memory_prompt(content, max_chars=0)
         return baseline.to_messages(), TrustedReviewEvidence(), assembly_limit

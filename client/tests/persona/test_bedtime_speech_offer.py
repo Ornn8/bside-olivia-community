@@ -103,7 +103,13 @@ def test_offer_cannot_authorize_writer_to_generate_unsolicited_audio():
 def test_offer_respects_final_writer_input_budget():
     _, engine, _ = run_turn()
     budget = sum(len(m['content']) for m in engine.requests[0].messages) - 1
-    result, engine, _ = run_turn(budget=budget)
+    result, engine, port = run_turn(budget=budget)
+    assert result.state is ReplyState.COMPLETED
+    assert len(engine.requests) == len(port.turns) == 1
+    messages = engine.requests[0].messages
+    assert sum(len(m['content']) for m in messages) <= budget
+    assert '<bedtime_audio_offer>' in str(messages)
+    result, engine, _ = run_turn(budget=100)
     assert result.state is ReplyState.FAILED and result.error_code == 'INPUT_TOO_LONG'
     assert not engine.requests
 
