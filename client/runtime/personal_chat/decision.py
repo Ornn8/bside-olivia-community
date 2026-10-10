@@ -195,7 +195,7 @@ def decode(raw, *, user, now, proactive=False, allow_user_silence=False, allow_s
         if not isinstance(data['text'], str) or type(data['skip']) is not bool:
             raise ValueError("TEXT_OR_SKIP_TYPE")
         data['text'] = _reply_body(data['text'])
-        # The model sometimes copies a current or historical message's provenance header.
+        # The model sometimes copies a message's provenance header into its reply.
         # It is metadata, never something she says; an echo with nothing else is no reply.
         data['text'] = PROVENANCE_HEADER.sub('', data['text'])
         # Incoming platform placeholders must not reach either QQ text or TTS.
