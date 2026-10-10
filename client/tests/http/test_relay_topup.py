@@ -10,7 +10,7 @@ def test_recharge_route_uses_saved_credentials_and_requires_session(tmp_path, mo
     monkeypatch.setattr(relay, 'RELAY_BASE', 'https://relay.example/v1')
     calls = []
     async def remote(base, key, method, path, payload=None):
-        if path == '/telemetry/events':
+        if path.split('?')[0] == '/telemetry/events':
             return {'accepted':[e['event_id'] for e in payload['events']]}
         calls.append((base,key,method,path,payload))
         return {'order':{'amount_cents':999,'credit_yuan':'10.00000000','state':'pending'}}

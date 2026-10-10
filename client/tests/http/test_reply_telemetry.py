@@ -129,7 +129,7 @@ def test_local_configuration_requires_session_and_collects_by_default(tmp_path, 
         async with TestClient(TestServer(app)) as client:
             result=await client.post('/toy/telemetry/action',headers=headers,json={'action':'status'})
             assert (await result.json())['enabled'] is True
-            assert all(call[3]=='/telemetry/events' for call in calls)
+            assert all(call[3]=='/telemetry/events?schemas=1,2' for call in calls)
             denied=await client.post('/toy/telemetry/action',json={'action':'set_enabled','enabled':True})
             assert denied.status==403
             invalid=await client.post('/toy/telemetry/action',headers=headers,json={'action':'set_enabled','enabled':'true'})

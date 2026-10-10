@@ -62,6 +62,20 @@ def _failure_code(exc: BaseException) -> str:
     return "PERSONAL_CHAT_SETUP_UNAVAILABLE"
 
 
+def _napcat_diagnostic(server, *, status, reason):
+    from runtime.diagnostics.reply_telemetry import emit
+    emit('transport', 'auth_required' if status == 'AWAITING_QQ_LOGIN' else
+         'closed' if status == 'FAILED' else 'connecting', channel='qq',
+         transport=dict(napcat_state=status, napcat_reason=reason, in_flight='none'))
+    logger = getattr(server, '_safe_log', None)
+    if callable(logger):
+        try:
+            logger('personal_chat_napcat_state', channel='qq', status=status.lower(),
+                   reason=reason, recorded_at_ms=int(time.time() * 1000))
+        except Exception:
+            pass
+
+
 def _origin_allowed(server, origin: str) -> bool:
     if not origin:
         return True
@@ -253,6 +267,8 @@ def _public_status(request: web.Request, server) -> dict[str, object]:
     if _QQ_ID.fullmatch(owner):
         qq["owner_masked"] = "*" * (len(owner) - 4) + owner[-4:]
     qq['can_reuse_owner'] = _can_reuse_qq(config.get('qq'))
+    from .backfill import status as backfill_status
+    qq['backfill'] = backfill_status(config.get('qq', {}))
     return {
         "contact_state": str(_contact_access(server).get("state", "locked")),
         "selected_channels": sorted(selected),
@@ -360,7 +376,7 @@ async def _wechat_login(server, runtime: dict[str, object]) -> None:
 
 async def _qq_probe(url: str, token: str, expected_account: str | None = None) -> str:
     timeout = aiohttp.ClientTimeout(total=15)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
+    async with asyncio.timeout(15), aiohttp.ClientSession(timeout=timeout) as session:
         async with session.ws_connect(
             checked_url(url, local=True),
             headers={"Authorization": "Bearer " + token},
@@ -392,7 +408,7 @@ async def _qq_probe(url: str, token: str, expected_account: str | None = None) -
 async def _qq_online(url: str, token: str) -> bool:
     """NapCat's own view of whether the logged-in account is still online."""
     timeout = aiohttp.ClientTimeout(total=10)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
+    async with asyncio.timeout(10), aiohttp.ClientSession(timeout=timeout) as session:
         async with session.ws_connect(
             checked_url(url, local=True),
             headers={"Authorization": "Bearer " + token},
@@ -407,7 +423,9 @@ async def _qq_online(url: str, token: str) -> bool:
                 if raw.get("echo") != "olivia-status":
                     continue
                 data = raw.get("data")
-                if raw.get("status") != "ok" or not isinstance(data, dict) or not isinstance(data.get("online"), bool):
+                if (raw.get("status") != "ok" or type(raw.get("retcode")) is not int
+                        or raw['retcode'] != 0 or not isinstance(data, dict)
+                        or not isinstance(data.get("online"), bool)):
                     raise RuntimeError("QQ_STATUS_UNAVAILABLE")
                 return data["online"]
     raise RuntimeError("QQ_STATUS_UNAVAILABLE")
@@ -466,7 +484,7 @@ def install_setup_routes(app: web.Application, server) -> None:
     app[_SETUP] = runtime
     napcat_start_lock = asyncio.Lock()
 
-    async def refresh_managed_napcat_state() -> str:
+    async def probe_managed_napcat_state() -> str:
         from . import napcat_installer
 
         root = _root(server)
@@ -494,6 +512,13 @@ def install_setup_routes(app: web.Application, server) -> None:
         runtime["napcat_state"] = state
         return state
 
+    async def refresh_managed_napcat_state() -> str:
+        state = await probe_managed_napcat_state()
+        if runtime.get('napcat_observed_state') != state:
+            runtime['napcat_observed_state'] = state
+            _napcat_diagnostic(server, status=state, reason='probe')
+        return state
+
     async def relogin_if_offline(process) -> None:
         from . import napcat_installer
 
@@ -505,7 +530,14 @@ def install_setup_routes(app: web.Application, server) -> None:
             url, token = await asyncio.to_thread(napcat_installer.managed_connection, _root(server))
             online = await asyncio.wait_for(_qq_online(url, token), 15)
         except Exception:
+            runtime["napcat_offline_checks"] = 0
+            # Logged once per failing stretch: a status call that keeps failing every
+            # minute would otherwise crowd the bounded diagnostic tail.
+            if not runtime.get("napcat_status_probe_failed"):
+                runtime["napcat_status_probe_failed"] = True
+                _napcat_diagnostic(server, status='UNKNOWN', reason='status_probe_failed')
             return  # An unanswered probe is not proof of a logout.
+        runtime.pop("napcat_status_probe_failed", None)
         # Two offline answers in a row: a moment of network loss recovers on its own.
         runtime["napcat_offline_checks"] = 0 if online else int(runtime.get("napcat_offline_checks") or 0) + 1
         if runtime["napcat_offline_checks"] < 2:
@@ -515,6 +547,7 @@ def install_setup_routes(app: web.Application, server) -> None:
         runtime["napcat_relogin_at"] = now
         runtime["napcat_offline_checks"] = 0
         runtime["napcat_state"] = "STARTING"
+        _napcat_diagnostic(server, status='STARTING', reason='confirmed_offline_restart')
         await asyncio.to_thread(napcat_installer.stop_shell, _root(server), process)
         runtime["napcat_shell_process"] = await asyncio.to_thread(napcat_installer.ensure_shell, _root(server))
         await refresh_managed_napcat_state()
@@ -535,10 +568,12 @@ def install_setup_routes(app: web.Application, server) -> None:
                 if state == "ONEBOT_READY":
                     await relogin_if_offline(process)
                     continue
+                runtime["napcat_offline_checks"] = 0
                 if state != "STARTING":
                     continue
                 if alive:
                     continue
+                _napcat_diagnostic(server, status='STARTING', reason='process_exit_restart')
                 process = await asyncio.to_thread(napcat_installer.ensure_shell, _root(server))
                 runtime["napcat_shell_process"] = process
                 await refresh_managed_napcat_state()
@@ -548,6 +583,7 @@ def install_setup_routes(app: web.Application, server) -> None:
             except Exception as exc:
                 runtime["napcat_state"] = "FAILED"
                 runtime["napcat_error"] = _failure_code(exc)
+                _napcat_diagnostic(server, status='FAILED', reason='watchdog_failed')
 
     async def start_managed_napcat(_application: web.Application) -> None:
         # aiohttp only serves after every startup hook returns; launching QQ and
@@ -712,6 +748,8 @@ def install_setup_routes(app: web.Application, server) -> None:
             return web.json_response({"error": "QQ_SETUP_INVALID"}, status=400)
         if not isinstance(body, dict):
             return web.json_response({"error": "QQ_SETUP_INVALID"}, status=400)
+        if type(body.get('backfill_enabled', False)) is not bool:
+            return web.json_response({'error': 'QQ_BACKFILL_CONFIG_INVALID'}, status=400)
         managed = body.get("managed") is True
         owner = str(body.get("owner", "")).strip()
         saved = None
@@ -771,6 +809,7 @@ def install_setup_routes(app: web.Application, server) -> None:
                 "owner": owner,
                 "credentials_file": str(secret),
                 "managed": managed,
+                "backfill_enabled": body.get('backfill_enabled', False),
             }
             _write_config(server, config)
             from .backend import ACTIVATE_SAVED_CONFIG

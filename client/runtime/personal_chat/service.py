@@ -86,6 +86,7 @@ class PersonalChatService:
         self.photo = photo
         self.prepare_photo = prepare_photo
         self.photo_tasks = {}
+        self.photo_slots = asyncio.Semaphore(2)
         self.speech = speech
         self.speech_tasks = {}
         self.consumer_tasks = {}
@@ -151,14 +152,19 @@ class PersonalChatService:
             await persist_state(self.persist)
 
     def pending(self, channel):
-        """Only never-started receipts can be resumed automatically on reconnect."""
+        """Resume receipts and finished drafts that have no send reservation."""
         binding = self.bindings.get(channel)
         if binding is None:
             return ()
         account_id, owner_id = binding
         binding_id = PersonalMessage(channel, account_id, owner_id, '', '').binding_id
         rows = [row for row in self.rows if row.get('channel') == channel
-                and row.get('binding_id') == binding_id and row.get('delivery_status') == 'RECEIVED'
+                and row.get('binding_id') == binding_id
+                and (row.get('delivery_status') == 'RECEIVED'
+                     or channel == 'qq' and row.get('delivery_status') == 'GENERATED'
+                     and isinstance(row.get('reply_text'), str)
+                     and row['reply_text'].strip() and len(row['reply_text']) <= 10000)
+                and not row.get('send_attempt_id') and not row.get('delivery_receipt')
                 and row.get('source_messages') and not row.get('superseded_by')]
         rows.sort(key=lambda row: (row.get('received_sequence', 0), float(row.get('created_at', 0))))
         return tuple(self._stored_event(row, channel, account_id, owner_id) for row in rows)
@@ -685,10 +691,11 @@ class PersonalChatService:
         if (not secondary_photo_allowed(row) or row.get('proactive_decision') is not None
                 or not callable(self.photo) or row.get('channel') != 'qq' or not callable(getattr(send, 'image', None))
                 or key in self.photo_tasks or row.get('image_delivery_status') in {'SENDING', 'UNKNOWN', 'DELIVERED'}
-                or row.get('image_status') in {'FAILED', 'SKIPPED'}):
+                or row.get('image_status') in {'FAILED', 'SKIPPED'} and not primary_image):
             return
         async def deliver():
             try:
+                await persist_state(self.persist)
                 if callable(self.prepare_photo):
                     await self.prepare_photo(row, send)
                 await self.photo(row, send)
@@ -721,9 +728,35 @@ class PersonalChatService:
                 if primary_image and row.get('image_delivery_status') != 'DELIVERED':
                     await photo_notice(row, send, self.persist, 'failure',
                         '照片没能确认发送成功，先告诉你一声。')
+        async def scheduled():
+            try:
+                async with self.photo_slots:
+                    await deliver()
             finally:
                 self.photo_tasks.pop(key, None)
-        self.photo_tasks[key] = asyncio.create_task(deliver())
+        self.photo_tasks[key] = asyncio.create_task(scheduled())
+
+    def resume_media(self, channel, send):
+        if channel != 'qq' or channel not in self.bindings:
+            return
+        account, owner = self.bindings[channel]
+        binding = PersonalMessage(channel, account, owner, '', '').binding_id
+        from runtime.image_reply import is_companion_image
+        for row in self.rows:
+            if (row.get('channel') != channel or row.get('binding_id') != binding
+                    or row.get('delivery_status') != 'MEDIA_PENDING' or row.get('superseded_by')
+                    or not is_companion_image(row) or row.get('letter_id') in self.photo_tasks
+                    or row.get('image_delivery_status') in {'SENDING', 'UNKNOWN', 'DELIVERED'}):
+                continue
+            if row.get('image_status') in {'PLANNING', 'GENERATING', 'RETRY_PENDING'}:
+                row['image_recovery_required'] = True
+            if (row.get('image_generation_binding') or row.get('image_status') == 'GENERATING') and row.get('image_status') != 'COMPLETED':
+                row['image_receipt_required'] = True
+            sources = row.get('source_messages') or {}
+            event = PersonalMessage(channel, account, owner, next(iter(sources), row['letter_id']),
+                                    row.get('content', ''), tuple(sources.items()))
+            correlated = send.for_exchange(event) if callable(getattr(send, 'for_exchange', None)) else send
+            self._schedule_photo(row, correlated)
 
     def _schedule_speech(self,row,send):
         key=row['letter_id']

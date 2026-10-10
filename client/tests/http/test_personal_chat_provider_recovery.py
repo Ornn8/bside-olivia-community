@@ -76,6 +76,7 @@ def _fixture(tmp_path, monkeypatch, failures):
         reviewer=NullReviewer(), rewriter=UnavailableRewriter())
     server = SimpleNamespace(letters_adapter=adapter, reply_pipeline=pipeline,
         _llm_runtime_ready=lambda config: True, daily_life_runtime=object(),
+        _voice_reply_configured=lambda environ: False,
         _official_history_private_world_available=lambda: True,
         MEMORY_READY_REPLY_TIMEOUT_SECONDS=.1, _conversation_memory_ready_for_reply=lambda: True,
         _CURRENT_LETTER_MEMORY_SOURCE=ContextVar("provider_recovery_source", default=None),
@@ -94,6 +95,9 @@ def _fixture(tmp_path, monkeypatch, failures):
         committed.append(row["letter_id"])
 
     async def listen(url, token, account, owner, handler, stop, **kwargs):
+        send.is_available = lambda: not stop.is_set()
+        send.for_exchange = lambda event: send
+        handler.ready('qq', send)
         captured["handler"] = handler
         kwargs["state_callback"]("CONNECTED")
         await stop.wait()

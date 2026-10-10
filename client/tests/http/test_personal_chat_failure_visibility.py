@@ -60,6 +60,10 @@ def test_exhausted_generation_notifies_once_across_restart_and_keeps_next_messag
         committed.append(row['letter_id'])
     async def listen(*args, **kwargs):
         handler, stop = args[-2:]
+        if channel == 'qq':
+            send.is_available = lambda: not stop.is_set()
+            send.for_exchange = lambda event: send
+            handler.ready('qq', send)
         captured['handler'] = handler
         kwargs['state_callback']('CONNECTED')
         await stop.wait()

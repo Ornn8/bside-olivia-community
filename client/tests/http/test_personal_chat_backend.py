@@ -482,6 +482,9 @@ def test_two_channel_lifecycle_uses_one_service_and_stops_owned_tasks(tmp_path, 
             finally:
                 stopped.append("wechat")
         async def run_qq(url, token, account, owner, handler, stop, **kwargs):
+            sender.is_available = lambda: not stop.is_set()
+            sender.for_exchange = lambda event: sender
+            handler.ready('qq', sender)
             kwargs.get("state_callback", lambda _state: None)("CONNECTED")
             try:
                 await handler(PersonalMessage("qq", account, owner, "probe", "/连接测试"), sender)
