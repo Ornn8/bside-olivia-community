@@ -1,5 +1,5 @@
 @echo off
-setlocal enabledelayedexpansion
+setlocal disabledelayedexpansion
 
 rem ============================================================
 rem  Launcher for olivia_memory.py
@@ -23,7 +23,7 @@ rem    5) otherwise: ask the user to drag the Olivia folder in
 rem
 rem  Step 3 checks two folder levels, because the install is often
 rem  nested:  X:\SomeFolder\OliviaSomething\runtime\python-*\python.exe
-rem  A one-level scan of X:\*Olivia* cannot see that layout.
+rem  Keep recursive discovery below each matched candidate root.
 rem ============================================================
 
 rem ---- 0) olivia_memory.py must sit next to this .bat ----
@@ -46,12 +46,8 @@ set "PY="
 set "REMEMBER=%~dp0python_path.txt"
 
 rem ---- reuse the Python that worked last time ----
-if exist "%REMEMBER%" (
-  set "OLD="
-  set /p OLD=<"%REMEMBER%"
-  set "OLD=!OLD:"=!"
-  if defined OLD call :try "!OLD!"
-)
+if exist "%REMEMBER%" call :remember
+if defined PY goto :run
 
 rem ---- 1) python / python3 on PATH (WindowsApps skipped) ----
 for /f "delims=" %%P in ('where python 2^>nul ^| find /i /v "WindowsApps"') do call :try "%%~P"
@@ -59,10 +55,12 @@ if not defined PY for /f "delims=" %%P in ('where python3 2^>nul ^| find /i /v "
 
 rem ---- 2) the py launcher ----
 if not defined PY for /f "delims=" %%P in ('where py 2^>nul') do call :try "%%~P"
+if defined PY goto :run
 
 rem ---- 3) the Python shipped with Olivia ----
 rem   level 1:  X:\*Olivia*
 for %%D in (C D E F G H I J K L M N) do if exist "%%D:\" for /d %%R in ("%%D:\*Olivia*") do call :check "%%~fR"
+if defined PY goto :run
 rem   level 2:  X:\*\*Olivia*
 for %%D in (C D E F G H I J K L M N) do if exist "%%D:\" for /d %%A in ("%%D:\*") do for /d %%R in ("%%~fA\*Olivia*") do call :check "%%~fR"
 rem   and under the user profile
@@ -89,9 +87,9 @@ call :check "%OLIV%"
 if defined PY goto :run
 echo.
 echo   Still nothing under that folder. These were tried:
-echo     %OLIV%\python.exe
-echo     %OLIV%\runtime\python-*\python.exe
-echo     %OLIV%\python-*\python.exe
+echo     "%OLIV%\python.exe"
+echo     "%OLIV%\runtime\python-*\python.exe"
+echo     "%OLIV%\python-*\python.exe"
 echo.
 goto :giveup
 
@@ -133,7 +131,7 @@ for /d %%F in ("%~1\runtime\python-*") do if not defined PY call :try "%%~fF\pyt
 if defined PY exit /b 0
 for /d %%F in ("%~1\python-*") do if not defined PY call :try "%%~fF\python.exe"
 if defined PY exit /b 0
-for /f "delims=" %%P in ('dir /s /b "%~1\runtime\python.exe" 2^>nul') do if not defined PY call :try "%%~P"
+for /f "delims=" %%P in ('dir /s /b "%~1\python.exe" 2^>nul ^| find /i "python-"') do if not defined PY call :try "%%~P"
 exit /b 0
 
 rem ------------------------------------------------------------
@@ -146,4 +144,12 @@ rem ------------------------------------------------------------
 if defined PY exit /b 0
 "%~1" -c "import sqlite3, json" >nul 2>&1
 if not errorlevel 1 set "PY=%~1"
+exit /b 0
+
+rem  Read the cache outside a block, without expanding literal exclamation marks.
+:remember
+set "OLD="
+set /p OLD=<"%REMEMBER%"
+set "OLD=%OLD:"=%"
+if defined OLD call :try "%OLD%"
 exit /b 0
