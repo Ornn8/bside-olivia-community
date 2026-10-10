@@ -25,8 +25,6 @@ def _identities(value):
     for key, item in value.items():
         if key in _IDENTITIES:
             result.update(v for v in (item if isinstance(item, list) else [item]) if isinstance(v, str) and v)
-        if key == 'text' and isinstance(item, str):
-            result.update(_references(item))
     for v in value.values():
         if isinstance(v, (dict, list)):
             result.update(_identities(v))
@@ -48,6 +46,13 @@ def _references(text):
             at = start + 1
         else:
             result.update(_identities(value))
+            if isinstance(value, dict) and set(value) <= {'fragment_id', 'untrusted', 'text'}:
+                try:
+                    packet = json.loads(value.get('text', ''))
+                except (ValueError, TypeError):
+                    pass
+                else:
+                    result.update(_identities(packet))
             at = start + used
     return result
 

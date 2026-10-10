@@ -142,3 +142,15 @@ def test_initial_assembly_failure_keeps_only_budget_counts():
     assert safe['fixed_chars'] == 400 and safe['optional_chars'] == 200
     assert safe['input_chars'] == 600 and safe['packed_chars'] == 400
     assert 'private-id' not in str(safe)
+
+
+def test_json_inside_original_prose_is_not_a_source_dependency():
+    records = [
+        json.dumps([dict(source_id='source-0', text='x' * 100)]),
+        json.dumps([dict(source_id='source-1', text=json.dumps(
+            dict(source_id='source-0', text='x' * 2000)))])]
+    recall = block('untrusted_history', '[ORIGINAL_CORRESPONDENCE_UNTRUSTED]\n' + '\n'.join(records))
+    contract = '<companion_decision>{"source_ids":["source-0"]}</companion_decision>'
+    result = fit_reply_context([dict(role='system', content=recall + contract),
+                               dict(role='user', content='hello')], max_input_chars=1000)
+    assert 'source-0' in str(result) and 'source-1' not in str(result)
