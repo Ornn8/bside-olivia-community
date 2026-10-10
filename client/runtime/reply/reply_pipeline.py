@@ -595,7 +595,8 @@ class ReplyPipeline:
             from runtime.personal_chat.speech import BEDTIME_OFFER_INSTRUCTION
             speech_note = BEDTIME_OFFER_INSTRUCTION[(companion_decision or {})['speech_offer']]
         final_notes = tuple(note for note in (decision_note, generation_note, speech_note) if note)
-        if final_notes and isinstance(prepared, ReplyRequest) and prepared.messages is None:
+        # Content-only legacy requests keep their adapter-owned assembly path.
+        if decision_note and isinstance(prepared, ReplyRequest) and prepared.messages is None:
             prepared = replace(prepared, messages=prepared.normalized_messages())
         # Optional expression and scene offers cannot consume the final contract's room.
         context_budget = original_budget - sum(map(len, final_notes))
