@@ -234,7 +234,7 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
 
     def refill():
         # The durable store is the backlog. A full response queue must not make
-        # intake wait for generation. Only RECEIVED entries belong in this hook;
+        # intake wait for generation. Unsent drafts may also resume through this hook;
         # ambiguous or already reserved sends must never be returned for replay.
         if not durable_intake or not callable(pending_messages):
             return

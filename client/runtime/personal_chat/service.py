@@ -151,14 +151,19 @@ class PersonalChatService:
             await persist_state(self.persist)
 
     def pending(self, channel):
-        """Only never-started receipts can be resumed automatically on reconnect."""
+        """Resume receipts and finished drafts that have no send reservation."""
         binding = self.bindings.get(channel)
         if binding is None:
             return ()
         account_id, owner_id = binding
         binding_id = PersonalMessage(channel, account_id, owner_id, '', '').binding_id
         rows = [row for row in self.rows if row.get('channel') == channel
-                and row.get('binding_id') == binding_id and row.get('delivery_status') == 'RECEIVED'
+                and row.get('binding_id') == binding_id
+                and (row.get('delivery_status') == 'RECEIVED'
+                     or channel == 'qq' and row.get('delivery_status') == 'GENERATED'
+                     and isinstance(row.get('reply_text'), str)
+                     and row['reply_text'].strip() and len(row['reply_text']) <= 10000)
+                and not row.get('send_attempt_id') and not row.get('delivery_receipt')
                 and row.get('source_messages') and not row.get('superseded_by')]
         rows.sort(key=lambda row: (row.get('received_sequence', 0), float(row.get('created_at', 0))))
         return tuple(self._stored_event(row, channel, account_id, owner_id) for row in rows)
