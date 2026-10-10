@@ -311,6 +311,7 @@ def test_backfill_batches_originals_and_persists_skips_across_restart(tmp_path, 
 
 
 def test_backfill_request_keeps_whole_originals_within_wire_capacity(tmp_path, monkeypatch):
+    import threading
     from runtime.reply.jev_questions import JevQuestionsPort, SEMANTIC_REQUEST_MAX_BYTES
     class SizedDecisions:
         calls = []
