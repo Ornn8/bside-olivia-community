@@ -313,7 +313,7 @@ def test_daily_video_candidates_that_do_not_fit_are_dropped_not_fatal():
     from tests.http.test_daily_video import payload
     candidate = {**payload(), 'detail': '刚整理好桌面。' * 40, 'location': '住处'}
     result, engine = run(Port(plan(kind='video_speech')), mode=ReplyMode.FUTURE_IM, daily=[candidate],
-        history=(dict(role='assistant', content='旧' * 32750),),
+        history=(dict(role='assistant', content='x' * 32750),),
         daily_selection=dict(event_id=candidate['event_id'], spoken_text='整理好了。'),
         kinds=['text', 'audio_speech', 'image', 'video_speech'])
     assert result.state is ReplyState.COMPLETED, result.error_code

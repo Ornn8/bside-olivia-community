@@ -82,7 +82,10 @@ DETAILS |= {'required_source_invalid', 'required_source_missing', 'required_orig
             'required_excerpt_incomplete', 'current_input_invalid', 'decision_input_invalid',
             'decision_message_budget', 'decision_wire_budget', 'stored_decision_invalid', 'final_rules_budget'}
 _CONTEXT_SIZES = ('input_chars', 'max_input_chars', 'input_bytes', 'max_input_bytes',
-                  'message_count', 'largest_message_chars', 'max_message_chars')
+                  'message_count', 'largest_message_chars', 'max_message_chars',
+                  'fixed_chars', 'optional_chars', 'current_input_chars', 'contract_chars',
+                  'dialogue_chars', 'recall_chars', 'world_chars', 'emotion_chars',
+                  'core_chars', 'other_chars', 'packed_chars')
 
 
 import re
@@ -164,6 +167,9 @@ def project_failure_context(source):
 
 
 def exception_context(exc, stage="request"):
+    local = provider_failure_context(getattr(exc, 'failure_context', None))
+    if local.get('failure_stage') in {'writer_context', 'decision_context'}:
+        return local
     if type(exc).__name__ == "InvalidGatewayInput":
         stage = "configuration"
     code = getattr(exc, "code", None)

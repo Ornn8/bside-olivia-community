@@ -283,6 +283,9 @@ def media_locked(plan):
 
 def decision_instruction(decision, *, delivery):
     payload = decision.writer_projection()
+    from .context_budget import _identities
+    sources = dict(decision.source_ids)
+    payload['source_ids'] = sorted({sources[key] for key in _identities(payload) if key in sources})
     ordinary_silent_fallback = payload.get('timing') in {'wait_user', 'defer', 'no_reply'} and delivery in {'text', 'voice_default'}
     if ordinary_silent_fallback:
         payload['pending_requirements'] = [dict(fulfillment='pending', kinds=sorted({
