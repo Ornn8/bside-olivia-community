@@ -1046,8 +1046,8 @@ def _assemble_reply_evidence(adapter, snapshot, context, content, *, max_input_c
     except PromptBudgetExceeded as error:
         raise _RecallBudgetExceeded() from error
     # Output rules, the companion decision and delivery notes are appended after
-    # assembly (about 11k chars for QQ). Recall used to fill everything else, so a
-    # long history left no room: once the decision cited a recalled original, that
+    # assembly (about 11k chars for QQ). Recall would otherwise fill everything else, so a
+    # long correspondence left no room: once the decision cited a recalled original, that
     # envelope was pinned and the final fit failed (JEV_CONTEXT_BUDGET_EXCEEDED).
     available = max(0, assembly_limit - len(baseline.system_content) - len(baseline.user_content) - 256
                     - min(POST_ASSEMBLY_RESERVE, max_input_chars // 8))
