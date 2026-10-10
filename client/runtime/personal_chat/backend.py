@@ -590,7 +590,8 @@ async def _generate_billed(server, event, row):
             exc = RuntimeError(_generation_failure_code(result.error_code))
             # Keep provider submission semantics across the result/exception
             # boundary. Review and format repair retain their bounded retry.
-            if result.error_code in CODES | {'INPUT_TOO_LONG', 'IDEMPOTENCY_CONFLICT'}:
+            if (result.error_code in CODES | {'INPUT_TOO_LONG', 'IDEMPOTENCY_CONFLICT'}
+                    or (getattr(result, 'failure_context', {}) or {}).get('failure_stage') in {'decision_context', 'writer_context'}):
                 exc.retryable = result.retryable
             exc.failure_context = provider_failure_context(getattr(result, 'failure_context', {}))
             raise exc

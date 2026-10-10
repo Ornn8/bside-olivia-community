@@ -10,7 +10,11 @@ TURN_CONTEXT = ContextVar('companion_decision_turn', default=None)
 
 
 class CompanionRuntimeError(RuntimeError):
-    pass
+    def __init__(self, code, *, detail=None, **sizes):
+        super().__init__(code)
+        from runtime.diagnostics.failure_context import project_failure_context
+        self.failure_context = (project_failure_context(dict(failure_stage='decision_context',
+            failure_detail=detail, **sizes)) if detail else {})
 
 
 def configured_port():
@@ -86,7 +90,7 @@ def _decision_context(messages, required_sources=(), recent_turns=1):
         break
 
     if any(not isinstance(source, str) or not source for source in required):
-        raise CompanionRuntimeError('JEV_CONTEXT_UNAVAILABLE')
+        raise CompanionRuntimeError('JEV_CONTEXT_UNAVAILABLE', detail='required_source_invalid')
 
     def matches(row, source):
         base = source.rsplit(':', 1)[0] if source.endswith((':user', ':linli')) else source
@@ -120,22 +124,23 @@ def _decision_context(messages, required_sources=(), recent_turns=1):
         original = next(((index, row) for index, row in enumerate(window)
                          if source.startswith('reply:' + str(row.get('letter_id')) + ':')), None)
         if original is None:
-            raise CompanionRuntimeError('JEV_CONTEXT_UNAVAILABLE')
+            raise CompanionRuntimeError('JEV_CONTEXT_UNAVAILABLE', detail='required_source_missing')
         index, original = original
         assistant = source.endswith(':linli')
         text = original.get('reply_text' if assistant else 'content')
         if not isinstance(text, str) or not text.strip() or assistant and original.get('_received_only'):
-            raise CompanionRuntimeError('JEV_CONTEXT_UNAVAILABLE')
+            raise CompanionRuntimeError('JEV_CONTEXT_UNAVAILABLE', detail='required_original_missing')
         restored.append((index, dict(source=source, event_id=source,
             role='assistant' if assistant else 'user', text=text,
             image_delivery_confirmed=assistant and original.get('image_delivery_status') == 'DELIVERED')))
-    return [row for _, row in sorted(restored, key=lambda item: item[0])] + kept
+    result = [row for _, row in sorted(restored, key=lambda item: item[0])] + kept
+    return [{**row, 'required': any(matches(row, source) for source in required)} for row in result]
 
 
 async def prepare_decision(port, messages, user_text, *, source_id, input_revision, as_of, kinds, cached=None,
                            required_sources=(), speech_enabled=False, bedtime_offer=False,
                            daily_video_experience=None):
-    from .companion_decision import FrozenCompanionTurn, FrozenCompanionDecision
+    from .companion_decision import FrozenCompanionTurn, FrozenCompanionDecision, MAX_MESSAGE_CHARS
     metadata = TURN_CONTEXT.get() or {}
     reuse = isinstance(cached, dict) and cached.get('input_revision') == input_revision
     if reuse and 'input' in cached:
@@ -147,14 +152,16 @@ async def prepare_decision(port, messages, user_text, *, source_id, input_revisi
                 raise ValueError('stored decision belongs to another input')
             return FrozenCompanionDecision.from_record(frozen, cached, profile=getattr(port, 'profile', 'full'))
         except ValueError:
-            raise CompanionRuntimeError('JEV_STORED_DECISION_INVALID') from None
+            raise CompanionRuntimeError('JEV_STORED_DECISION_INVALID', detail='stored_decision_invalid') from None
     if reuse:
         bedtime_offer = 'speech_offer' in cached
     sources = (*required_sources, *metadata.get('companion_context_sources', ()))
     recent = (_decision_context(messages, sources, 4) if bedtime_offer
               else _decision_context(messages, sources))
-    if not isinstance(user_text, str) or not user_text.strip() or any(row.get('truncated') for row in recent):
-        raise CompanionRuntimeError('JEV_CONTEXT_UNAVAILABLE')
+    if not isinstance(user_text, str) or not user_text.strip():
+        raise CompanionRuntimeError('JEV_CONTEXT_UNAVAILABLE', detail='current_input_invalid')
+    if any(row.get('truncated') for row in recent):
+        raise CompanionRuntimeError('JEV_CONTEXT_UNAVAILABLE', detail='required_excerpt_incomplete')
     # These are the native prior-turn frames from our frozen assembly, not
     # retrieved summaries, incoming image interpretations, or writer drafts.
     turns = [dict(source_id=row['event_id'], role=row['role'], text=row['text']) for row in recent]
@@ -178,8 +185,16 @@ async def prepare_decision(port, messages, user_text, *, source_id, input_revisi
         if daily_video_experience is None:
             kinds = [kind for kind in kinds if kind != 'video_speech']
     from .companion_decision import CompanionDecisionError
-    protected = set(required_sources)
+    protected = {row['event_id'] for row in recent if row.get('required')} | set(sources)
+    if any(not isinstance(turn['text'], str) for turn in turns):
+        raise CompanionRuntimeError('JEV_CONTEXT_UNAVAILABLE', detail='decision_input_invalid')
     while True:
+        # Never relabel a clipped original as complete. Capacity-only failures
+        # use the reviewed text lane without granting media/control authority.
+        largest = max(len(turn['text']) for turn in turns)
+        if largest > MAX_MESSAGE_CHARS:
+            raise CompanionRuntimeError('JEV_CONTEXT_BUDGET_EXCEEDED', detail='decision_message_budget',
+                largest_message_chars=largest, max_message_chars=MAX_MESSAGE_CHARS, message_count=len(turns))
         try:
             frozen = FrozenCompanionTurn.create(messages=turns, current_source_id=source_id,
                 capabilities=dict(kinds=list(kinds), synchronize=False, playback_events=False,
@@ -194,17 +209,23 @@ async def prepare_decision(port, messages, user_text, *, source_id, input_revisi
             # the oldest turns, never the current message, its three predecessors
             # or required originals; a genuinely invalid input still fails below.
             droppable = [i for i, turn in enumerate(turns[:-4]) if turn['source_id'] not in protected]
-            if exc.code not in {'JEV_INPUT_TOO_LARGE', 'JEV_INPUT_INVALID'} or not droppable:
-                raise CompanionRuntimeError('JEV_CONTEXT_UNAVAILABLE') from None
+            capacity = exc.code == 'JEV_INPUT_TOO_LARGE' or len(turns) > 32
+            if not capacity:
+                raise CompanionRuntimeError('JEV_CONTEXT_UNAVAILABLE', detail='decision_input_invalid') from None
+            if not droppable:
+                from .jev_limits import JEV_MAX_INPUT_BYTES
+                raise CompanionRuntimeError('JEV_CONTEXT_BUDGET_EXCEEDED', detail='decision_wire_budget',
+                    message_count=len(turns), largest_message_chars=largest,
+                    max_input_bytes=JEV_MAX_INPUT_BYTES) from None
             del turns[droppable[0]]
         except ValueError:
-            raise CompanionRuntimeError('JEV_CONTEXT_UNAVAILABLE') from None
+            raise CompanionRuntimeError('JEV_CONTEXT_UNAVAILABLE', detail='decision_input_invalid') from None
     if reuse:
         try:
             return FrozenCompanionDecision.from_record(frozen, cached, profile=getattr(port, 'profile', 'full'))
         except ValueError:
             # An altered decision must not silently become a newly paid request.
-            raise CompanionRuntimeError('JEV_STORED_DECISION_INVALID') from None
+            raise CompanionRuntimeError('JEV_STORED_DECISION_INVALID', detail='stored_decision_invalid') from None
     result = await port.decide(frozen)
     if result.decision is None:
         error = CompanionRuntimeError(result.error_code or 'JEV_UNAVAILABLE')
@@ -260,7 +281,7 @@ def media_locked(plan):
         return True  # Unknown shape: keep JEV's chosen medium.
 
 
-def project_decision(messages, decision, *, max_input_chars, delivery):
+def decision_instruction(decision, *, delivery):
     payload = decision.writer_projection()
     ordinary_silent_fallback = payload.get('timing') in {'wait_user', 'defer', 'no_reply'} and delivery in {'text', 'voice_default'}
     if ordinary_silent_fallback:
@@ -310,8 +331,13 @@ def project_decision(messages, decision, *, max_input_chars, delivery):
                  '该正文不会作为聊天文字发出；描述符合当前请求的画面，不声称照片已生成或已发送。'
                  '这张照片一定会发出：只描述画面，不推辞、不说拍不了、没带手机、不给看或下次再拍。')
     note += '\n<companion_decision>\n' + encoded + '\n</companion_decision>'
+    return note
+
+
+def project_decision(messages, decision, *, max_input_chars, delivery):
     from .fact_attribution import finalize_reply_messages
     try:
-        return finalize_reply_messages(messages, note, max_input_chars=max_input_chars)
+        return finalize_reply_messages(messages, decision_instruction(decision, delivery=delivery),
+                                       max_input_chars=max_input_chars)
     except ValueError:
         raise CompanionRuntimeError('JEV_CONTEXT_BUDGET_EXCEEDED') from None

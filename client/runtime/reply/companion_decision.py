@@ -71,6 +71,7 @@ from runtime.reply.jev_limits import JEV_MAX_INPUT_BYTES as _MAX_INPUT_BYTES
 _MAX_RESPONSE_BYTES = 262144
 _SCHEMA = json.loads(Path(__file__).with_name('companion_decision_schema.json').read_text('utf-8'))
 _INPUT = Draft202012Validator(_SCHEMA['input'])
+MAX_MESSAGE_CHARS = _SCHEMA['input']['properties']['messages']['items']['properties']['text']['maxLength']
 _OUTPUT = Draft202012Validator(_SCHEMA['output'])
 _OPERATIONS = _SCHEMA['control_operations']
 

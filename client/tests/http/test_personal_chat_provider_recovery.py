@@ -234,6 +234,39 @@ def test_malformed_failure_metadata_cannot_export_private_payload():
     assert "private-" not in exported and "synthetic-token" not in exported
 
 
+def test_local_context_failure_is_not_retried_and_keeps_safe_diagnostic(tmp_path, monkeypatch):
+    from runtime.reply import companion_runtime
+    from tests.persona.test_jev_pipeline import Port
+    server, calls, sent, committed, persisted, captured, send, boot = _fixture(tmp_path, monkeypatch, [])
+    server.reply_pipeline.companion_decision_port = Port()
+    context_calls = []
+    original = companion_runtime._decision_context
+
+    def missing_source(messages, required=(), recent_turns=1):
+        context_calls.append(True)
+        return original(messages, ['reply:private-missing:user'], recent_turns)
+
+    monkeypatch.setattr(companion_runtime, '_decision_context', missing_source)
+
+    async def scenario():
+        event = PersonalMessage('qq', '100', '200', 'missing-context', 'private-user-message')
+        for _ in range(2):
+            _, runner = await boot()
+            try:
+                await captured['handler'](event, send)
+            finally:
+                await runner.cleanup()
+
+    asyncio.run(scenario())
+    assert len(context_calls) == 1 and not calls and not committed and len(sent) == 1
+    exported = project_chat_task(json.loads(json.dumps(persisted[-1][0])))
+    assert exported['generation_attempts'] == 1 and exported['generation_retryable'] is False
+    assert persisted[-1][0]['error_code'] == 'JEV_CONTEXT_UNAVAILABLE'
+    assert exported['generation_failure_context'] == dict(failure_stage='decision_context',
+                                                          failure_detail='required_source_missing')
+    assert 'private-' not in json.dumps(exported)
+
+
 def test_usage_pending_loopback_gateway_is_not_resubmitted_by_chat_loop(tmp_path, monkeypatch):
     from llm_gateway import OpenAICompatibleAdapter
     server, calls, sent, committed, persisted, captured, send, boot = _fixture(tmp_path, monkeypatch, [])
