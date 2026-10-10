@@ -1153,7 +1153,8 @@ def install_personal_chat(app, server):
                 photo=lambda row, send: deliver_photo(server, row, send),
                 prepare_photo=lambda row, send: prepare_chat_photo(server, row, send),
                 speech=lambda row, send: deliver_speech(server,row,send), inspect_writer=inspect_writer)
-            await service.recover()
+            # Recovery runs in _recover_chat_loop right after startup; awaiting it here
+            # kept the backend from becoming ready for users with hundreds of chats.
             from .probe import ProbeJournal
             journal = ProbeJournal(server._state_root() / "personal-chat-diagnostics")
             runtime = {"stop": stop_event, "tasks": [], "service": service, "status": {},
