@@ -322,7 +322,10 @@ def test_backfill_request_keeps_whole_originals_within_wire_capacity(tmp_path, m
             self.calls.append(originals)
             return dict.fromkeys(questions, 'skip')
     decisions, adapter = SizedDecisions(), memory(tmp_path)
-    monkeypatch.setattr(jev_questions, 'configured_questions', lambda: decisions)
+    # Synchronous refresh only; late workers from other fixtures must not add calls.
+    owner = threading.current_thread()
+    monkeypatch.setattr(jev_questions, 'configured_questions',
+                        lambda: decisions if threading.current_thread() is owner else None)
     for i in range(10):
         index(adapter, source=f'reply:capacity{i}:1', user='用户。' * 600,
             reply='回复。' * 600 + str(i), stamp=NOW + timedelta(minutes=i))
