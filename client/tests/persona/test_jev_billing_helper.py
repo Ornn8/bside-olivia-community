@@ -179,7 +179,7 @@ def test_qq_real_generate_wrapper_carries_revision_and_cleans_context(configured
         seen.append(billing.billing_headers())
         return 'synthetic'
     monkeypatch.setattr(backend, '_generate_billed', generated)
-    value = asyncio.run(backend.generate(None, SimpleNamespace(exchange_id='qq-synthetic'), {'input_revision':3}))
+    value = asyncio.run(backend.generate(None, SimpleNamespace(exchange_id='qq-synthetic', channel='qq'), {'input_revision':3}))
     assert value == 'synthetic'
     assert seen[0]['X-Olivia-Turn-Id'] == 'personal-chat:qq-synthetic:3'
     assert seen[0]['X-Olivia-Account-Digest'] == hashlib.sha256(KEY.encode()).hexdigest()
@@ -195,7 +195,8 @@ def test_actual_letter_wrapper_carries_id_without_initializing_user_server(confi
     async def generated(letter_id, content, *, idempotency_key=None):
         seen.append((billing.billing_headers(), idempotency_key))
         return True
-    namespace = {'_generate_reply_billed':generated}
+    namespace = {'_generate_reply_billed':generated,
+                 'store':SimpleNamespace(letters=[{'letter_id':'synthetic-letter'}])}
     exec(compile(ast.Module(body=[wrapper], type_ignores=[]), str(source), 'exec'), namespace)
     assert asyncio.run(namespace['generate_reply']('synthetic-letter','hello',idempotency_key='retry-id'))
     assert seen[0][0]['X-Olivia-Turn-Id'] == 'letter:synthetic-letter'

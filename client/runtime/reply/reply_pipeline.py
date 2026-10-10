@@ -270,6 +270,9 @@ class ReplyPipeline:
         async def measure(name, work):
             begin = time.perf_counter()
             try:
+                if name in {'writer', 'quality'}:
+                    from runtime.diagnostics.reply_telemetry import measure as telemetry_measure
+                    return await telemetry_measure('generation' if name == 'writer' else 'validation', work)
                 return await work
             finally:
                 timings[name] = round(timings.get(name, 0) + time.perf_counter() - begin, 4)

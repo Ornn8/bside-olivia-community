@@ -1436,6 +1436,8 @@ def _write_store_snapshot(root, payload):
         _store_state_error_code = StoreStateUnavailable.code
         raise
     _store_state_error_code = None
+    from runtime.diagnostics.reply_telemetry import observe_rows
+    observe_rows([*payload.get('letters', []), *payload.get('personal_chats', [])])
     try:
         _atomic_write_store_file(root / "state.json.bak", serialized)
     except StoreStateUnavailable:
@@ -6675,7 +6677,11 @@ async def _run_reply_pipeline_for_letter(
 async def generate_reply(letter_id, content, *, idempotency_key=None):
     from runtime.reply.jev_billing import billing_scope
     from runtime.model_routes import using
-    with billing_scope('letter:' + str(letter_id)), using('letter'):
+    from runtime.diagnostics.reply_telemetry import scope, selected_model
+    row = next((r for r in store.letters if r['letter_id'] == letter_id), {})
+    row['diagnostic_attempt'] = row.get('diagnostic_attempt', 0) + 1
+    with billing_scope('letter:' + str(letter_id)), using('letter'), scope(letter_id, 'letter', row['diagnostic_attempt']):
+        row['diagnostic_model'] = selected_model()
         return await _generate_reply_billed(letter_id, content, idempotency_key=idempotency_key)
 
 
