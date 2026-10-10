@@ -43,6 +43,7 @@ from runtime.reply.prompt_budget import PromptBudgetExceeded
 
 
 _CHARACTER_REPLY_HISTORY_LIMIT = 1200
+POST_ASSEMBLY_RESERVE = 12000
 _CHARACTER_REPLY_PREFIX = "character_reply: "
 _PERSONA_NOT_READY = "PERSONA_NOT_READY"
 _TEXT_RECOVERY_CODES = frozenset({
@@ -1044,7 +1045,12 @@ def _assemble_reply_evidence(adapter, snapshot, context, content, *, max_input_c
         baseline = assemble_persona(history=recent, **options)
     except PromptBudgetExceeded as error:
         raise _RecallBudgetExceeded() from error
-    available = max(0, assembly_limit - len(baseline.system_content) - len(baseline.user_content) - 256)
+    # Output rules, the companion decision and delivery notes are appended after
+    # assembly (about 11k chars for QQ). Recall would otherwise fill everything else, so a
+    # long correspondence left no room: once the decision cited a recalled original, that
+    # envelope was pinned and the final fit failed (JEV_CONTEXT_BUDGET_EXCEEDED).
+    available = max(0, assembly_limit - len(baseline.system_content) - len(baseline.user_content) - 256
+                    - min(POST_ASSEMBLY_RESERVE, max_input_chars // 8))
     if disabled:
         adapter._build_memory_prompt(content, max_chars=0)
         return baseline.to_messages(), TrustedReviewEvidence(), assembly_limit

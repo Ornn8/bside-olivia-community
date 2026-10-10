@@ -137,3 +137,40 @@ def test_song_lyrics_use_same_world_and_original_context(tmp_path):
     for i in range(len(topics)):
         assert f'更正标记{i}' in messages[0]['content']
     assert sum(len(m['content']) for m in messages) <= adapter.config.max_input_chars
+
+
+def test_long_history_leaves_room_for_the_decision_and_output_rules(tmp_path):
+    # Core users' recall filled the whole budget; a decision citing one recalled
+    # original pinned the envelope and the final fit raised (JEV_CONTEXT_BUDGET_EXCEEDED).
+    import json
+    from types import SimpleNamespace
+    from local_server import LetterAdapter
+    from llm_gateway import GatewayConfig
+    from reply_context import ReplyMode
+    from reply_orchestrator import ReplyRequest
+    from runtime.reply.reply_pipeline import _prepare_generation_request
+    from runtime.reply.fact_attribution import finalize_reply_messages
+    from runtime.personal_chat.decision import INSTRUCTION as CHAT_RULES
+
+    def recall(query, max_chars):
+        # A long history: originals fill every character recall is offered.
+        groups, text = [], '[ORIGINAL_CORRESPONDENCE_UNTRUSTED]\n'
+        while True:
+            line = json.dumps([{'source_record_id': f'history:long{len(groups)}', 'speaker': 'user',
+                                'text': '那天说起钢琴和晚饭。' * 20}], ensure_ascii=False)
+            if len(text) + len(line) + 1 > max_chars * 0.9:
+                return SimpleNamespace(text=text, references=(), recall_result=None)
+            groups.append(line)
+            text += line + '\n'
+
+    adapter = LetterAdapter(GatewayConfig(provider='mock'), memory_port=NullMemoryPort())
+    adapter._build_memory_prompt = recall
+    context = adapter.build_reply_context(ReplyMode.FUTURE_IM, future_im_enabled=True)
+    request = ReplyRequest(content='还记得钢琴和晚饭吗')
+    prepared = _prepare_generation_request(request, context, SimpleNamespace(gateway=SimpleNamespace(adapter=adapter)))
+    messages = prepared.request.messages
+    assert 'history:long0' in messages[0]['content']
+    decision_note = '<companion_decision>{"source":"history:long0"}' + '决策说明。' * 800 + '</companion_decision>'
+    limit = request.max_input_chars
+    messages = finalize_reply_messages(messages, decision_note, max_input_chars=limit - len(CHAT_RULES) - 2)
+    assert 'history:long0' in finalize_reply_messages(messages, CHAT_RULES, max_input_chars=limit)[0]['content']

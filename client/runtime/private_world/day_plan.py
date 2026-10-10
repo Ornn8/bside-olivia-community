@@ -143,7 +143,12 @@ def validate(value):
     return plan
 
 
-async def ensure(store, gateway, *, now, persona, weather=None, schedule=None, timeout_seconds=60):
+# A reasoning draft takes 100-240 s on the relay; at 60 s the client gave up on a third of
+# them while the relay still finished and charged. Stay just under the relay's 300 s limit.
+PLAN_TIMEOUT_SECONDS = 280
+
+
+async def ensure(store, gateway, *, now, persona, weather=None, schedule=None, timeout_seconds=PLAN_TIMEOUT_SECONDS):
     """Return today's plan, drafting it once. Any failure returns None (catalog fallback)."""
     existing = load(store, now)
     if existing is not None:
