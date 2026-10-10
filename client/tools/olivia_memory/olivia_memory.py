@@ -1237,7 +1237,7 @@ def _launcher_failure_since(install: Path, since: float):
         raw = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return None
-    for line in reversed(raw.splitlines()[-80:]):
+    for line in reversed(raw.splitlines()[-400:]):
         try:
             item = json.loads(line)
         except Exception:
@@ -1292,7 +1292,6 @@ def wait_yueli_ready(install: Path, expect_version: str = "", timeout: float = 1
     log("  ⚠ 等了 %d 秒还没就绪 —— 这不等于失败，月离有时起得慢。" % int(timeout))
     log("    设置页能打开就是起来了；打不开就看 launcher.jsonl 的最后几行。")
     return 1
-
 
 
 def start_yueli(install: Path):
