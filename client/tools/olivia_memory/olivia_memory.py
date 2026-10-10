@@ -18,6 +18,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import urllib.request
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1185,22 +1186,112 @@ def procs_under(prefix: Path):
 
 
 def stop_yueli(install: Path):
-    pids = procs_under(install)
-    if pids:
-        log("  停掉月离进程：%s" % ", ".join(map(str, pids)))
-        for pid in pids:
-            subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True)
+    """先杀启动器，再杀月离。
+
+    月离的 START.vbs 在等 START.cmd（也就是启动器）退出，退出码非 0 就弹一个
+    「Olivia 启动失败（错误码 N）」的框。先杀月离的话，它拿到非 0 就把框弹出来，
+    而那个框紧接着又会被下面这一步杀掉，看着就是闪一下就没了。
+    先杀启动器，就没人去看那个退出码了。
+    """
     # 只杀命令行里指向【本安装目录】的那个，/IM wscript.exe /F 会带走别人所有脚本。
     needle = str(install / "install" / "START.vbs").lower()
     for pid, name, _, cmd in _ps_processes():
         if name == "wscript.exe" and needle in cmd.lower():
             log("  停掉启动器 wscript.exe (pid %s)" % pid)
             subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True)
+    pids = procs_under(install)
+    if pids:
+        log("  停掉月离进程：%s" % ", ".join(map(str, pids)))
+        for pid in pids:
+            subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True)
     time.sleep(4)
     left = procs_under(install)
     if left:
         raise SystemExit("  仍有 %d 个进程没关掉，请手动关闭月离后重试" % len(left))
     log("  月离已关闭 ✓")
+
+
+def _health_probe(port=8899, timeout=2.0):
+    """探一次月离的 /health?profile=core。
+
+    返回 (status, backend_id)；没答上来就 (None, None)。
+    后端【忙】的时候这个请求会超时 —— 那是"还没回话"，不是"没起来"，
+    所以单次结果不能当结论，要看的是轮询到什么时候。
+    """
+    try:
+        with urllib.request.urlopen(
+                "http://127.0.0.1:%d/health?profile=core" % port, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None, None
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict):
+        return None, None
+    return data.get("status"), data.get("backend_id")
+
+
+def _launcher_failure_since(install: Path, since: float):
+    """月离的 launcher.jsonl 里，since 之后有没有 startup_failed；有就返回那一条。"""
+    path = install / "install" / "data" / "logs" / "launcher.jsonl"
+    try:
+        raw = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    for line in reversed(raw.splitlines()[-400:]):
+        try:
+            item = json.loads(line)
+        except Exception:
+            continue
+        if item.get("event") != "startup_failed":
+            continue
+        stamp = item.get("timestamp")
+        if isinstance(stamp, (int, float)) and stamp >= since:
+            return item
+        return None
+    return None
+
+
+def wait_yueli_ready(install: Path, expect_version: str = "", timeout: float = 120.0) -> int:
+    """发完启动指令之后，等月离真的就绪。只读，不改任何东西。
+
+    慢不等于失败：超时只报"还没就绪"，并且提示去看日志；
+    真失败（日志里出现了新的 startup_failed）才报失败码。
+    非交互（脚本、管道）时不干等，免得把自动化挂住。
+    """
+    try:
+        if not sys.stdout.isatty():
+            return 0
+    except Exception:
+        return 0
+    log()
+    log("  等月离起来（最多 %d 秒，只读探活）…" % int(timeout))
+    began = time.time()
+    deadline = began + timeout
+    noted = 0.0
+    while time.time() < deadline:
+        status, backend_id = _health_probe()
+        if status == "HEALTHY":
+            version = (backend_id or "?").split("-", 1)[0]
+            log("  ✓ 月离已就绪：%s（等了 %d 秒）" % (version, int(time.time() - began)))
+            if expect_version and version != expect_version:
+                log("    ⚠ 但跑的是 %s，不是你选的 %s —— 去设置里再看一眼。"
+                    % (version, expect_version))
+            return 0
+        failure = _launcher_failure_since(install, began)
+        if failure is not None:
+            log("  ✗ 月离启动失败：%s（退出码 %s）"
+                % (failure.get("code", "?"), failure.get("exit_code", "-")))
+            log("    启动日志是 launcher.jsonl（在月离 data 目录下的 logs 里），")
+            log("    拿它找帮忙的人看。想马上能用：再跑一次菜单 7 就回到原版本。")
+            return 1
+        waited = time.time() - began
+        if waited - noted >= 15:
+            noted = waited
+            log("    还在启动中（已等 %d 秒）…" % int(waited))
+        time.sleep(3)
+    log("  ⚠ 等了 %d 秒还没就绪 —— 这不等于失败，月离有时起得慢。" % int(timeout))
+    log("    设置页能打开就是起来了；打不开就看 launcher.jsonl 的最后几行。")
+    return 1
 
 
 def start_yueli(install: Path):
@@ -3077,7 +3168,7 @@ def cmd_rollback(install_arg, yes=False, to=None) -> int:
     log()
     start_yueli(home)
     log()
-    return 0
+    return wait_yueli_ready(home, pick["comp"]["version"])
 
 
 # 社区工具导进 state.json 的信打这个标记藏起来（填哨兵值，那个真 id 我们算不到）。
