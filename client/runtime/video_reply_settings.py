@@ -33,7 +33,17 @@ def image_model_capability(capabilities):
                 or len(set(item['resolutions'])) != len(item['resolutions'])):
             return {'models': []}
         seen.add(item['id'])
-        models.append({key: deepcopy(item[key]) for key in ('id', 'display_name', 'resolutions')})
+        model = {key: deepcopy(item[key]) for key in ('id', 'display_name', 'resolutions')}
+        if 'price_ranges_cents' in item:
+            prices = item['price_ranges_cents']
+            if (not isinstance(prices, dict) or set(prices) != set(item['resolutions'])
+                    or any(not isinstance(value, list) or len(value) != 2
+                           or any(type(amount) is not int for amount in value)
+                           or not 0 <= value[0] <= value[1] <= 2**53 - 1
+                           for value in prices.values())):
+                return {'models': []}
+            model['price_ranges_cents'] = deepcopy(prices)
+        models.append(model)
     result = {'models': models}
     if isinstance(image.get('default_model'), str) and image['default_model'] in seen:
         result['default_model'] = image['default_model']

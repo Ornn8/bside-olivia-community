@@ -3901,7 +3901,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     imageSizes.addEventListener('change',()=>{imageResolution=imageSizes.value;void persist();});
     const imageModelLabel=document.createElement('label');imageModelLabel.append(text('span','图片模型'));
     const imageModels=document.createElement('select');imageModels.setAttribute('aria-label','图片模型');imageModelLabel.append(imageModels);
-    const modelResolutions=()=>imageCapability?.models?.find(item=>item.id===(imageModel||imageCapability.default_model))?.resolutions||['1K','2K','4K'];
+    const selectedImageModel=()=>imageCapability?.models?.find(item=>item.id===(imageModel||imageCapability.default_model));
+    const modelResolutions=()=>selectedImageModel()?.resolutions||['1K','2K','4K'];
+    const imagePriceLabel=range=>range[0]===range[1]?`¥${(range[0]/100).toFixed(2)}`:`¥${(range[0]/100).toFixed(2)}–¥${(range[1]/100).toFixed(2)}`;
     const fillOptions=(select,items,value)=>{
       select.textContent='';
       for(const item of items){const option=document.createElement('option');option.value=item.id;option.textContent=item.label;option.disabled=item.disabled===true;select.append(option);}
@@ -3913,7 +3915,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       void persist();
     });
     imageControls.append(imageToggle,imageModelLabel,imageSizes);
-    const imageHelp=text('p','图片仅云端生成，可随文字或语音回信，也适用于 QQ，每次最多 1 张。费用按模型和分辨率确定，每单小幅随机浮动。提交时锁定并预留本单报价，重试不变价，失败释放预留。用于记忆的图片识别另按中转用量计费。实际像素随构图变化。','text-text-secondary text-caption-m');
+    const imageHelp=text('p','','text-text-secondary text-caption-m');
     const nodes = {};
     const detail = text("p", "", "text-text-secondary text-body-m font-regular");
     const status = text("p", "正在读取设置…", "text-text-secondary text-caption-m font-regular"); status.setAttribute("role", "status");
@@ -3924,9 +3926,13 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       const options=[{id:'',label:'服务默认'},...models.map(item=>({id:item.id,label:item.display_name}))];
       if(imageModel&&!models.some(item=>item.id===imageModel))options.push({id:imageModel,label:'当前模型暂不可用',disabled:true});
       fillOptions(imageModels,options,imageModel);
-      const resolutions=modelResolutions(),sizes=resolutions.map(id=>({id,label:id}));
+      const prices=selectedImageModel()?.price_ranges_cents;
+      const resolutions=modelResolutions(),sizes=resolutions.map(id=>({id,label:prices?.[id]?`${id} · ${imagePriceLabel(prices[id])}${prices[id][0]===prices[id][1]?'（固定）':''}`:id}));
       if(!resolutions.includes(imageResolution))sizes.push({id:imageResolution,label:imageResolution+'（当前模型不可用）',disabled:true});
       fillOptions(imageSizes,sizes,imageResolution);
+      const range=prices?.[imageResolution];
+      const imagePriceHelp=range?(range[0]===range[1]?`当前分辨率固定价 ${imagePriceLabel(range)} / 张，无随机浮动。`:`当前分辨率每张 ${imagePriceLabel(range)}，每单小幅随机浮动。`):'费用按模型和分辨率确定，每单小幅随机浮动。';
+      imageHelp.textContent='图片仅云端生成，可随文字或语音回信，也适用于 QQ，每次最多 1 张。'+imagePriceHelp+'提交时锁定并预留本单报价，重试不变价，失败释放预留。用于记忆的图片识别另按中转用量计费。实际像素随构图变化。';
       imageSizes.hidden=!imageEnabled;imageSizes.disabled=busy||selected===null;imageHelp.hidden=!imageEnabled;
       Object.entries(nodes).forEach(([key,node])=>{
         node.disabled=busy || selected===null; node.setAttribute("aria-checked",String(selected===key));

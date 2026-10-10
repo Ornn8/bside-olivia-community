@@ -61,6 +61,33 @@ const videoReplyRequestId=()=> 'video_reply_setting:ui';
  assert.deepEqual(sizes.children.map(n=>n.value),['1K','2K','4K']);
  sizes.value='2K';sizes.handlers.change();await new Promise(setImmediate);
  assert.deepEqual(requests.at(-1).image,{enabled:true,resolution:'2K'});
+  state.image_capability={models:[
+   {id:'small-photo',display_name:'Small Photo',resolutions:['1K','2K']},
+   {id:'local-image',display_name:'本地模型',resolutions:['1K','2K'],price_ranges_cents:{'1K':[10,20],'2K':[27,37]}},
+   {id:'fixed-photo',display_name:'Fixed Photo',resolutions:['1K'],price_ranges_cents:{'1K':[15,15]}}
+  ],default_model:'small-photo'};
+  await refreshVideoReplySetting();
+  assert.equal(models.value,'');
+  assert.deepEqual(sizes.children.map(n=>n.textContent),['1K','2K']);
+  const help=elements.find(n=>n.tag==='p'&&n.textContent?.startsWith('图片仅云端生成'));
+  assert.ok(help.textContent.includes('每单小幅随机浮动'));
+  assert.equal(models.children.find(n=>n.value==='local-image').textContent,'本地模型');
+  models.value='local-image';models.handlers.change();await new Promise(setImmediate);
+  assert.deepEqual(requests.at(-1).image,{enabled:true,resolution:'2K',model:'local-image'});
+  assert.deepEqual(sizes.children.map(n=>n.textContent),['1K · ¥0.10–¥0.20','2K · ¥0.27–¥0.37']);
+  assert.ok(help.textContent.includes('每张 ¥0.27–¥0.37，每单小幅随机浮动'));
+  assert.ok(!help.textContent.includes('固定价'));
+  sizes.value='1K';sizes.handlers.change();await new Promise(setImmediate);
+  assert.ok(help.textContent.includes('每张 ¥0.10–¥0.20，每单小幅随机浮动'));
+  assert.deepEqual(requests.at(-1).image,{enabled:true,resolution:'1K',model:'local-image'});
+  models.value='fixed-photo';models.handlers.change();await new Promise(setImmediate);
+  assert.deepEqual(sizes.children.map(n=>n.textContent),['1K · ¥0.15（固定）']);
+  assert.ok(help.textContent.includes('固定价 ¥0.15 / 张'));
+  assert.ok(!help.textContent.includes('小幅随机浮动'));
+  models.value='';models.handlers.change();await new Promise(setImmediate);
+  assert.equal(models.value,'');
+  assert.deepEqual(sizes.children.map(n=>n.textContent),['1K','2K']);
+  assert.ok(help.textContent.includes('费用按模型和分辨率确定，每单小幅随机浮动'));
 })().catch(error=>{console.error(error);process.exitCode=1;});
 '''
     path = tmp_path / 'image-model-ui.cjs'

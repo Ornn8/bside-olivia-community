@@ -166,7 +166,8 @@ def test_settings_only_accept_models_and_resolutions_advertised_by_cloud(tmp_pat
     monkeypatch.setattr(server, 'video_reply_settings_store', settings)
     monkeypatch.setattr(server, '_route_readiness', lambda: {})
     caps = {'kinds': ['image'], 'shared_assets': [], 'image': {'models': [
-        {'id': 'approved-photo', 'display_name': 'Approved photo', 'resolutions': ['2K']}
+        {'id': 'approved-photo', 'display_name': 'Approved photo', 'resolutions': ['2K'],
+         'price_ranges_cents': {'2K': [32, 32]}}
     ], 'default_model': 'approved-photo'}}
     class Cloud:
         def __init__(self, *args): self.url, self.token = 'synthetic', 'synthetic'
@@ -240,3 +241,32 @@ def test_image_model_contract_preserves_legacy_and_rejects_unusable_ids():
     assert image_model_capability({'image': {'resolutions': {}}}) is None
     assert image_model_capability({'image': {'models': [], 'default_model': {'malformed': True}}}) == {'models': []}
     assert image_model_capability({'image': {'models': [{'id': 'local-photo', 'display_name': 'Photo', 'resolutions': ['8K']}]}}) == {'models': []}
+
+
+def test_image_model_catalog_preserves_prices_and_existing_default():
+    from runtime.video_reply_settings import image_model_capability, require_image_model
+    catalog = {'default_model': 'approved-photo', 'models': [
+        {'id': 'approved-photo', 'display_name': 'Approved photo', 'resolutions': ['1K']},
+        {'id': 'local-image', 'display_name': '本地模型', 'resolutions': ['1K', '2K'],
+         'price_ranges_cents': {'1K': [10, 20], '2K': [27, 37]}},
+        {'id': 'ranged-photo', 'display_name': 'Ranged photo', 'resolutions': ['1K'],
+         'price_ranges_cents': {'1K': [10, 14]}}
+    ]}
+    result = image_model_capability({'image': catalog})
+    assert result == catalog
+    require_image_model({'model': 'local-image', 'resolution': '2K'}, {'image': catalog})
+    result['models'][1]['price_ranges_cents']['1K'][0] = 99
+    assert catalog['models'][1]['price_ranges_cents']['1K'] == [10, 20]
+
+
+@pytest.mark.parametrize('prices', [
+    None, {}, {'2K': [15, 15]}, {'1K': [15]}, {'1K': [15, 15, 15]},
+    {'1K': [True, 15]}, {'1K': [15, '15']}, {'1K': [-1, 15]},
+    {'1K': [16, 15]}, {'1K': [15, 15.0]}, {'1K': [15, 2**53]},
+])
+def test_image_model_catalog_rejects_invalid_prices(prices):
+    from runtime.video_reply_settings import image_model_capability
+    assert image_model_capability({'image': {'models': [
+        {'id': 'local-image', 'display_name': '本地模型', 'resolutions': ['1K'],
+         'price_ranges_cents': prices}
+    ]}}) == {'models': []}
