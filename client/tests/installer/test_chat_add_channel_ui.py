@@ -7,7 +7,7 @@ import pytest
 from runtime.personal_chat.setup_ui import PERSONAL_CHAT_SETUP_JAVASCRIPT as SOURCE
 
 
-def test_selected_channel_keeps_other_channel_add_action(tmp_path):
+def test_settings_offer_only_qq_without_mutating_existing_wechat_binding(tmp_path):
     node = shutil.which('node')
     if node is None:
         pytest.skip('Node required for settings interaction test')
@@ -34,22 +34,22 @@ async function request(path,options){
 }
 ''' + choice + refresh + r'''
 (async()=>{
-  for(const [selected,label,expectedPosts] of [
-    [['wechat'],'添加 QQ',[['choice',{choice:'qq'}]]],
-    [['qq'],'添加微信',[['choice',{choice:'wechat'}],['wechat-start',{}]]],
-  ]){
+  for(const selected of [[],['wechat'],['qq'],['qq','wechat']]){
     state={selected_channels:selected,contact_state:selected[0],configured:{wechat:true}};
+    const before=JSON.stringify(state);
     actions=[];posts=[];
     await refresh();
-    assert.deepEqual(actions.map(a=>a.label),[label]);
-    assert.equal(rendered.children[0].text,selected[0]+'-card');
-    await actions[0].callback();
-    assert.deepEqual(posts,expectedPosts);
+    assert.equal(JSON.stringify(state),before);
+    assert.ok(!JSON.stringify(rendered).includes('wechat-card'));
+    if(selected.includes('qq')){
+      assert.equal(rendered.children[0].text,'qq-card');
+      assert.equal(actions.length,0);
+    }else{
+      assert.deepEqual(actions.map(a=>a.label),['QQ']);
+      await actions[0].callback();
+      assert.deepEqual(posts,[['choice',{choice:'qq'}]]);
+    }
   }
-  state={selected_channels:['qq','wechat'],contact_state:'both'};actions=[];
-  await refresh();assert.equal(actions.length,0);
-  state={selected_channels:[],contact_state:'invited'};actions=[];
-  await refresh();assert.deepEqual(actions.map(a=>a.label),['微信','QQ','两个都要']);
 })().catch(error=>{console.error(error);process.exitCode=1});
 '''
     path = tmp_path / 'channel-ui.cjs'
