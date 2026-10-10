@@ -2311,6 +2311,15 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     recharge.style.marginTop="12px";
     box.append(title,metrics,balance,usage,unifiedHistory,recharge,controls,orderView,status);
     panel.append(box);
+    let telemetryPageRecorded = false;
+    const recordRechargePage = () => {
+      if (!box.isConnected || telemetryPageRecorded) return;
+      if (!document.hidden && box.getClientRects?.().length) {
+        telemetryPageRecorded = true;
+        void requestSetup('/toy/telemetry/action',{action:'recharge_page'}).catch(()=>{});
+      } else window.setTimeout(recordRechargePage,1000);
+    };
+    recordRechargePage();
     void run(async()=>{await readBalance();drawOrder(await call({action:"order_status"}));});
     const refreshVisibleBalance = async () => {
       if (!box.isConnected) return;
@@ -5075,7 +5084,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     mountVideoReplySetting(reply);
     if (window.__oliviaNativeView) mountProactiveSetting(reply);
     mountStickerPacks(reply);
-    const chat = settingsGroup("chat", "QQ / 微信", "绑定后可以在 QQ 或微信里和林离聊天");
+    const chat = settingsGroup("chat", "QQ", "绑定后可以在 QQ 里和林离聊天");
     const letters = settingsGroup("letters", "信件与记忆", "备份信件与聊天，查看长期记忆");
     const memoryRow = document.createElement("div");
     memoryRow.className = "olivia-group-row";

@@ -201,6 +201,9 @@ def mount_relay_api(app, setup):
         return web.Response(status=204, headers=_headers(_authorize(request, confirm=False), preflight=True))
     # Backend-only accessor: reuse the encrypted account key without exposing it to the page.
     app['olivia_relay_stored_key'] = stored_key
+    from runtime.diagnostics.telemetry_api import mount as mount_telemetry
+    mount_telemetry(app, setup, stored_key,
+                    lambda key, payload: relay_request(RELAY_BASE, key, 'POST', '/telemetry/events', payload))
     from runtime.reply.jev_billing import configure_account
     configure_account(stored_key)
     from runtime.memory.remote_embedding import configure as configure_embeddings

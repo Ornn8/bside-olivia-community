@@ -348,7 +348,10 @@ async def _proactive_contact(server, runtime, initiative):
 async def generate(server, event, row):
     from runtime.reply.jev_billing import billing_scope
     from runtime.model_routes import using
-    with billing_scope('personal-chat:' + event.exchange_id + ':' + str(row.get('input_revision', 0))), using('qq'):
+    from runtime.diagnostics.reply_telemetry import scope, selected_model
+    with billing_scope('personal-chat:' + event.exchange_id + ':' + str(row.get('input_revision', 0))), using('qq'), scope(
+            event.exchange_id, 'proactive' if row.get('origin') == 'proactive' else event.channel, row.get('generation_attempts', 0)):
+        row['diagnostic_model'] = selected_model()
         return await _generate_billed(server, event, row)
 
 
@@ -1288,6 +1291,9 @@ def install_personal_chat(app, server):
                         }:
                             runtime['errors'].pop(name, None)
                     if state != previous:
+                        if state == 'CONNECTED':
+                            from runtime.diagnostics.reply_telemetry import emit
+                            emit('binding', 'ok', channel=name)
                         error = runtime['errors'].get(name)
                         server._safe_log('personal_chat_transport_state', channel=name, status=state.lower(),
                                          recorded_at_ms=int(datetime.now(LOCAL).timestamp() * 1000),
