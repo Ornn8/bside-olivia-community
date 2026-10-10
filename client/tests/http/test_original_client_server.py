@@ -267,7 +267,8 @@ def test_production_setup_completion_waits_for_live_memory(tmp_path, monkeypatch
     original = original_client_server.LLMSetupService
     def capture(*args, **kwargs):
         service = original(*args, **kwargs)
-        monkeypatch.setattr(service, '_config', lambda: SimpleNamespace(requires_api_key=False))
+        monkeypatch.setattr(service, '_config', lambda: SimpleNamespace(
+            requires_api_key=False, base_url='http://local.example/v1', model='synthetic'))
         created.append(service)
         return service
     monkeypatch.setattr(original_client_server, 'LLMSetupService', capture)

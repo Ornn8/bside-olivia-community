@@ -15,7 +15,7 @@ def mount(app, setup, stored_key, remote):
         if not collector.account(stored_key()): collector.emit('app', 'ok')
         from runtime.model_routes import routed_model
         collector.model = lambda: routed_model(setup._config().base_url, setup._config().model)
-    except (OSError, ValueError, sqlite3.Error):
+    except (LLMSetupError, OSError, ValueError, sqlite3.Error):
         collector = None
     reply_telemetry.configure(collector)
 

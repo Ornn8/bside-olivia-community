@@ -206,3 +206,17 @@ def test_generation_failure_is_not_mislabeled_as_validation(tmp_path, monkeypatc
             await telemetry.measure('validation',rejected())
     asyncio.run(quality())
     assert c.batch()[-1]['status']=='failed' and c.batch()[-1]['error']=='validation'
+
+
+def test_unreadable_account_key_does_not_block_application_startup(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from aiohttp import web
+    from original_client_setup_api import LLMSetupError
+    from runtime.diagnostics import reply_telemetry as telemetry
+    from runtime.diagnostics.telemetry_api import mount
+    monkeypatch.setattr(telemetry,'_collector',None)
+    def stored_key(): raise LLMSetupError('LLM_SETUP_KEY_UNAVAILABLE',status=503)
+    app=web.Application()
+    mount(app,SimpleNamespace(_config_root=tmp_path),stored_key,None)
+    assert telemetry._collector is None
+    assert app.cleanup_ctx
