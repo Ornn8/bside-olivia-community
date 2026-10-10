@@ -6868,10 +6868,10 @@ async def _generate_reply_billed(letter_id, content, *, idempotency_key=None):
     else:
         for field in ('companion_decision', 'companion_timing', 'companion_delivery'):
             letter.pop(field, None)
-    # A copied provenance header from an earlier message is metadata, never part of her letter.
+    # Copied source headers are metadata, never part of her letter.
     from dataclasses import replace as _replace_result
-    from runtime.personal_chat.decision import HISTORY_HEADER
-    cleaned = HISTORY_HEADER.sub('', result.text or '').strip()
+    from runtime.personal_chat.decision import PROVENANCE_HEADER
+    cleaned = PROVENANCE_HEADER.sub('', result.text or '').strip()
     if cleaned != (result.text or '').strip():
         if not cleaned:
             letter["letter_status"] = "FAILED"
