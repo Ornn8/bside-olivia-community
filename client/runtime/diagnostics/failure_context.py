@@ -60,6 +60,7 @@ def daily_life_failure(exc, stage, *, endpoint='daily_life', http_status=None):
 
 STAGES = {"configuration", "request", "http_response", "response_json", "tool_parse", "route_validation", "internal",
           "structured_completion", "structured_validation", "tool_completion"}
+STAGES |= {'decision_context', 'writer_context'}
 CODES = {"PROVIDER_QUOTA_EXHAUSTED", "PROVIDER_TIMEOUT", "PROVIDER_PROTOCOL", "PROVIDER_UNAVAILABLE", "PROVIDER_RETRYABLE", "PROVIDER_REJECTED", "GATEWAY_OTHER"}
 CODES |= {'PROVIDER_USAGE_PENDING', 'PROVIDER_REQUEST_DUPLICATE', 'PROVIDER_AUTH_FAILED', 'PROVIDER_BUSY'}
 KINDS = {"TimeoutError", "TypeError", "ValueError", "AttributeError", "RuntimeError", "ClientConnectorError", "ClientConnectorCertificateError", "ClientConnectorSSLError", "ServerDisconnectedError", "ClientPayloadError", "OTHER"}
@@ -77,6 +78,11 @@ DETAILS |= {
     "route_music_context", "route_text_constraints", "route_voice_constraints",
     "route_music_constraints",
 }
+DETAILS |= {'required_source_invalid', 'required_source_missing', 'required_original_missing',
+            'required_excerpt_incomplete', 'current_input_invalid', 'decision_input_invalid',
+            'decision_message_budget', 'decision_wire_budget', 'stored_decision_invalid', 'final_rules_budget'}
+_CONTEXT_SIZES = ('input_chars', 'max_input_chars', 'input_bytes', 'max_input_bytes',
+                  'message_count', 'largest_message_chars', 'max_message_chars')
 
 
 import re
@@ -149,6 +155,11 @@ def project_failure_context(source):
     count = source.get("route_extra_field_count")
     if type(count) is int and 0 <= count <= 1000:
         result["route_extra_field_count"] = count
+    if result.get('failure_stage') in {'decision_context', 'writer_context'}:
+        for key in _CONTEXT_SIZES:
+            value = source.get(key)
+            if type(value) is int and 0 <= value <= 100_000_000:
+                result[key] = value
     return result
 
 
@@ -168,12 +179,12 @@ def exception_context(exc, stage="request"):
 
 
 def provider_failure_context(source):
-    """Only provider metadata belongs to a durable chat failure receipt."""
+    """Allowlisted provider/local failure metadata, never prompt text or source IDs."""
     if not isinstance(source, Mapping):
         return {}
     return project_failure_context({key: source[key] for key in (
         'failure_stage', 'failure_detail', 'provider_code', 'exception_type',
-        'http_status', 'provider_request_id') if key in source})
+        'http_status', 'provider_request_id', *_CONTEXT_SIZES) if key in source})
 
 
 def record_failure(exc):

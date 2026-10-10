@@ -48,7 +48,7 @@ _CHARACTER_REPLY_PREFIX = "character_reply: "
 _PERSONA_NOT_READY = "PERSONA_NOT_READY"
 _TEXT_RECOVERY_CODES = frozenset({
     'JEV_UNAVAILABLE', 'JEV_TIMEOUT', 'JEV_WORLD_SELECTION_UNAVAILABLE',
-    'JEV_WORLD_SELECTION_BUDGET',
+    'JEV_WORLD_SELECTION_BUDGET', 'JEV_CONTEXT_BUDGET_EXCEEDED',
     'JEV_PROVIDER_CONNECT_FAILED', 'JEV_PROVIDER_READ_FAILED', 'JEV_PROVIDER_JSON_INVALID',
     *(f'JEV_PROVIDER_HTTP_{n}' for n in (429, 500, 502, 503, 504, 529)),
     'JEV_HTTP_429', 'JEV_HTTP_502', 'JEV_HTTP_503', 'JEV_HTTP_504',
@@ -362,6 +362,7 @@ class ReplyPipeline:
                          and (chat_metadata or {}).get('structured')
                          and not (chat_metadata or {}).get('proactive'))
         companion_decision = companion_timing = companion_delivery = None
+        decision_note = ''
         proactive_decision = None
         silence_authorized = False
         reconsidered_silence = False
@@ -506,7 +507,7 @@ class ReplyPipeline:
             prepared = replace(prepared, messages=prepare_dialogue_messages(
                 prepared.messages, max_input_chars=prepared.max_input_chars))
         if use_companion:
-            from .companion_runtime import (prepare_decision, delivery_for, project_decision, CompanionRuntimeError,
+            from .companion_runtime import (prepare_decision, delivery_for, decision_instruction, CompanionRuntimeError,
                                             TURN_CONTEXT, media_locked)
             metadata = chat_metadata if chat_metadata is not None else (TURN_CONTEXT.get() or {})
             kinds = metadata.get('semantic_kinds', ['text'])
@@ -553,8 +554,7 @@ class ReplyPipeline:
                     # a pending media requirement or a new media permission.
                     companion_timing, companion_delivery = 'now', 'text'
                     reconsidered_silence = True
-                prepared = replace(prepared, messages=project_decision(_generation_messages(prepared), decision,
-                    max_input_chars=original_budget-len(generation_note)-2,
+                decision_note = decision_instruction(decision,
                     delivery=('letter_image' if context.mode is ReplyMode.TEXT_LETTER
                               and companion_delivery == 'image' else
                               # Apply the QQ speech default without changing requested media.
@@ -562,8 +562,7 @@ class ReplyPipeline:
                                                   and (chat_metadata or {}).get('structured')
                                                   and (chat_metadata or {}).get('channel') == 'qq'
                                                   and 'audio_speech' in kinds and not media_locked(decision.plan))
-                              else companion_delivery)),
-                    max_input_chars=original_budget-len(generation_note)-2)
+                               else companion_delivery))
             except CompanionRuntimeError as error:
                 unsupported = str(error) == 'JEV_PLAN_UNSUPPORTED'
                 if (not text_recovery_allowed or str(error) not in _TEXT_RECOVERY_CODES and not unsupported
@@ -576,21 +575,34 @@ class ReplyPipeline:
             # This is an application-owned text/clarification lane, not a fabricated
             # Jev decision. Unknown media/control requirements gain no authority.
             companion_timing, companion_delivery = 'now', 'text'
-            from .fact_attribution import finalize_reply_messages
-            try:
-                prepared = replace(prepared, messages=finalize_reply_messages(
-                    _generation_messages(prepared),
-                    _UNSUPPORTED_MEDIA_NOTE if degraded.get('decision') == 'JEV_PLAN_UNSUPPORTED' else _TEXT_RECOVERY_NOTE,
-                    max_input_chars=original_budget-len(generation_note)-len(_TEXT_RECOVERY_OUTPUT)-2))
-            except ValueError:
-                return PipelineResult(getattr(request, 'request_id', ''), ReplyState.FAILED,
-                                      error_code='INPUT_TOO_LONG')
+            decision_note = (_UNSUPPORTED_MEDIA_NOTE if degraded.get('decision') == 'JEV_PLAN_UNSUPPORTED'
+                             else _TEXT_RECOVERY_NOTE)
             if ordinary_chat:
                 generation_note += _TEXT_RECOVERY_OUTPUT
+        speech_request = None if degraded or reconsidered_silence else (companion_decision or {}).get('speech_request')
+        speech_note = ''
+        if speech_request and (chat_metadata or {}).get('channel') == 'qq':
+            from runtime.personal_chat.speech import SPEECH_WRITER_INSTRUCTION
+            speech_note = (SPEECH_WRITER_INSTRUCTION + '\n<speech_request>' + json.dumps(speech_request, ensure_ascii=False)
+                           + '</speech_request>')
+            if speech_request['continuation']:
+                from .fact_attribution import story_evidence
+                speech_note += '\n' + story_evidence((chat_metadata or {}).get('story_continuation'))
+        elif (not degraded and context.mode is ReplyMode.FUTURE_IM and (chat_metadata or {}).get('structured')
+              and chat_metadata.get('channel') == 'qq' and chat_metadata.get('speech_enabled') is True
+              and not chat_metadata.get('proactive')
+              and (companion_decision or {}).get('speech_offer') in {'none', 'bedtime', 'clarify'}):
+            from runtime.personal_chat.speech import BEDTIME_OFFER_INSTRUCTION
+            speech_note = BEDTIME_OFFER_INSTRUCTION[(companion_decision or {})['speech_offer']]
+        final_notes = tuple(note for note in (decision_note, generation_note, speech_note) if note)
+        if final_notes and isinstance(prepared, ReplyRequest) and prepared.messages is None:
+            prepared = replace(prepared, messages=prepared.normalized_messages())
+        # Optional expression and scene offers cannot consume the final contract's room.
+        context_budget = original_budget - sum(map(len, final_notes))
         if isinstance(prepared, ReplyRequest) and prepared.messages:
             from .character_emotion_context import project_emotion
             prepared = replace(prepared, messages=project_emotion(prepared.messages, emotion_view,
-                max_input_chars=prepared.max_input_chars, adopted=adopted))
+                max_input_chars=context_budget, adopted=adopted))
         proactive_decide = (chat_metadata or {}).get('proactive_decide')
         if (chat_metadata or {}).get('proactive') and callable(proactive_decide):
             from .proactive_runtime import project_decision, record_decision
@@ -610,7 +622,7 @@ class ReplyPipeline:
                 return PipelineResult(getattr(request, 'request_id', ''), ReplyState.FAILED,
                                       error_code=str(error), proactive_decision=proactive_decision)
         daily_candidates = []
-        if generation_note and isinstance(prepared, ReplyRequest) and prepared.messages:
+        if final_notes and isinstance(prepared, ReplyRequest) and prepared.messages:
             daily_candidates = ((chat_metadata or {}).get('daily_video_candidates') or []
                 if (chat_metadata or {}).get('channel') == 'qq' else [])
             if companion_decision is not None:
@@ -630,46 +642,27 @@ class ReplyPipeline:
                         # needs its output rules. Reserve both, trimming old dialogue
                         # first; unselected offers must not displace recent dialogue.
                         with_candidates = finalize_reply_messages(messages, note,
-                            max_input_chars=original_budget-len(generation_note),
+                            max_input_chars=context_budget,
                             trim_history=companion_delivery == 'video_speech')
                         messages = with_candidates
                     except ValueError:
                         daily_candidates = []
-                messages = finalize_reply_messages(messages, generation_note,
-                                                   max_input_chars=original_budget)
+                messages = [dict(m) for m in messages
+                            if not (m.get('role') == 'system' and m.get('content') in final_notes)]
+                current = next((i for i in range(len(messages)-1, -1, -1)
+                                if messages[i].get('role') == 'user'), len(messages))
+                messages[current:current] = [dict(role='system', content=note) for note in final_notes]
+                messages = finalize_reply_messages(messages, '', max_input_chars=original_budget)
                 from runtime.personal_chat.decision import INSTRUCTION as CHAT_RULES
                 if (chat_metadata or {}).get('structured') and generation_note == CHAT_RULES:
                     from .fact_attribution import cache_output_rules
                     messages = cache_output_rules(messages, generation_note, max_input_chars=original_budget)
             except ValueError:
                 return PipelineResult(prepared.request_id, ReplyState.FAILED,
-                                      error_code='INPUT_TOO_LONG', retryable=False)
+                    error_code='INPUT_TOO_LONG', retryable=False,
+                    failure_context=dict(failure_stage='writer_context', failure_detail='final_rules_budget',
+                        input_chars=sum(len(m['content']) for m in messages), max_input_chars=original_budget))
             prepared = replace(prepared, messages=messages, max_input_chars=original_budget)
-        speech_request = None if degraded or reconsidered_silence else (companion_decision or {}).get('speech_request')
-        speech_note = None
-        if speech_request and (chat_metadata or {}).get('channel') == 'qq':
-            from runtime.personal_chat.speech import SPEECH_WRITER_INSTRUCTION
-            # The writer must know the output contract; a bare request was answered as an ordinary reply.
-            speech_note = (SPEECH_WRITER_INSTRUCTION + '\n<speech_request>' + json.dumps(speech_request, ensure_ascii=False)
-                           + '</speech_request>')
-            if speech_request['continuation']:
-                from .fact_attribution import story_evidence
-                speech_note += '\n' + story_evidence((chat_metadata or {}).get('story_continuation'))
-        elif (not degraded and context.mode is ReplyMode.FUTURE_IM and (chat_metadata or {}).get('structured')
-              and chat_metadata.get('channel') == 'qq' and chat_metadata.get('speech_enabled') is True
-              and not chat_metadata.get('proactive')
-              and (companion_decision or {}).get('speech_offer') in {'none', 'bedtime', 'clarify'}):
-            from runtime.personal_chat.speech import BEDTIME_OFFER_INSTRUCTION
-            speech_note = BEDTIME_OFFER_INSTRUCTION[(companion_decision or {})['speech_offer']]
-        if speech_note:
-            from .fact_attribution import finalize_reply_messages
-            try:
-                messages = finalize_reply_messages(_generation_messages(prepared), speech_note,
-                                                   max_input_chars=original_budget)
-            except ValueError:
-                return PipelineResult(prepared.request_id, ReplyState.FAILED,
-                                      error_code='INPUT_TOO_LONG', retryable=False)
-            prepared = replace(prepared,messages=messages)
         from .character_emotion_context import freeze_expression_context
         # Local assembly establishes provenance; later recall may legitimately
         # replace duplicated notes with source references. Freeze that final

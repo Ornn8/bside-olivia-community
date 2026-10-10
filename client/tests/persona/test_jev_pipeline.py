@@ -301,7 +301,8 @@ def test_jev_uses_actual_projection_cost_with_real_persona_assembly():
 def test_actual_projection_overflow_does_not_trim_core_or_call_writer():
     port = Port()
     result, engine = run(port, raw='当前原话' * 20, budget=150)
-    assert result.error_code == 'JEV_CONTEXT_BUDGET_EXCEEDED'
+    assert result.error_code == 'INPUT_TOO_LONG'
+    assert result.failure_context['failure_detail'] == 'final_rules_budget'
     assert len(port.turns) == 1 and not engine.requests
     assert port.turns[0].input['messages'][-1]['text'] == '当前原话' * 20
 
