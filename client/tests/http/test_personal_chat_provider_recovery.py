@@ -357,3 +357,26 @@ def test_full_chat_context_reaches_writer_without_losing_recall(tmp_path, monkey
     assert sum(m['content'].count(INSTRUCTION) for m in after) == 1
     assert [m for m in after if m['role'] == 'assistant'] == [m for m in before if m['role'] == 'assistant']
     assert '<chat_output_rules>' in after[0]['content']
+
+
+def test_startup_does_not_wait_for_chat_recovery(tmp_path, monkeypatch):
+    # Users with hundreds of chats spent minutes in recovery during startup and the
+    # launcher reported startup_timeout; recovery runs in the background loop instead.
+    from runtime.personal_chat import service as chat_service
+    fixture = _fixture(tmp_path, monkeypatch, [])
+    server, calls, sent, committed, persisted, captured, send, boot = fixture
+    started = []
+
+    async def slow_recover(self):
+        started.append(True)
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(chat_service.PersonalChatService, 'recover', slow_recover)
+
+    async def scenario():
+        app, runner = await asyncio.wait_for(boot(), timeout=10)
+        try:
+            assert 'handler' in captured
+        finally:
+            await runner.cleanup()
+    asyncio.run(scenario())
