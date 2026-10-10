@@ -14,6 +14,17 @@ import sqlite3
 import threading
 import time
 import uuid
+from .telemetry_codes import ERROR_CODES
+
+TRANSPORT_STATUSES = frozenset({'connecting', 'connected', 'reconnecting', 'closed', 'auth_required'})
+TRANSPORT_ERRORS = frozenset({'NONE', 'TIMEOUT', 'CONNECTION', 'CLIENT', 'OTHER'})
+IN_FLIGHT = frozenset({'none', 'queued', 'generation', 'media', 'send', 'unknown'})
+NAPCAT_STATES = frozenset({'IDLE', 'DOWNLOADING', 'READY', 'STARTING', 'AWAITING_QQ_LOGIN',
+                         'ONEBOT_PROBING', 'ONEBOT_CONFIG_PENDING', 'ONEBOT_READY', 'FAILED', 'UNKNOWN'})
+NAPCAT_REASONS = frozenset({'probe', 'status_probe_failed', 'confirmed_offline_restart',
+                          'process_exit_restart', 'watchdog_failed'})
+V2_DEFAULTS = dict(error_code='UNKNOWN', close_code=None, transport_error=None,
+                   in_flight=None, napcat_state=None, napcat_reason=None)
 
 STAGES = frozenset({'app', 'binding', 'recharge_page', 'received', 'generation',
                     'validation', 'media', 'send', 'reply'})
@@ -50,6 +61,7 @@ class Collector:
         self.version = version if re.fullmatch(r'\d+\.\d+\.\d+(?:[+.-][a-zA-Z0-9.-]{1,40})?', version) else 'unknown'
         self.lock = threading.RLock()
         self.last_error = None
+        self.schema = 1
         self.model = lambda: 'unknown'
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._db() as db:
@@ -99,6 +111,7 @@ class Collector:
                 db.execute('DELETE FROM queue')
                 db.execute('DELETE FROM observed')
             self.owner, self.since, self.salt = digest, since, salt
+            self.schema = 1
             if digest: self.emit('app', 'ok')
             return True
 
@@ -124,17 +137,30 @@ class Collector:
         return hmac.new(self.salt.encode(), str(source).encode(), hashlib.sha256).hexdigest()
 
     def _event(self, stage, status, *, source='', channel='client', attempt=0, duration_ms=None,
-               error=None, model=None):
-        if not self.enabled or not self.owner or stage not in STAGES or status not in STATUSES: return None
+               error=None, model=None, transport=None):
+        valid = status in TRANSPORT_STATUSES if stage == 'transport' else stage in STAGES and status in STATUSES
+        if stage == 'transport' and channel != 'qq':
+            return None
+        if not self.enabled or not self.owner or not valid: return None
         if model is None:
             try: model = self.model()
             except Exception: model = 'unknown'
+        extra = dict(V2_DEFAULTS, error_code='NONE' if not error else
+                     error if isinstance(error, str) and error in ERROR_CODES else 'UNKNOWN')
+        if stage == 'transport':
+            fields = transport if isinstance(transport, dict) else {}
+            code = fields.get('close_code')
+            extra['close_code'] = code if type(code) is int and 1000 <= code <= 4999 else None
+            for key, allowed in [('transport_error', TRANSPORT_ERRORS), ('in_flight', IN_FLIGHT),
+                                 ('napcat_state', NAPCAT_STATES), ('napcat_reason', NAPCAT_REASONS)]:
+                value = fields.get(key)
+                extra[key] = value if isinstance(value, str) and value in allowed else None
         return dict(event_id=uuid.uuid4().hex, trace_id=self.trace(source or uuid.uuid4().hex),
             at=int(self.clock() * 1000), stage=stage, status=status,
             channel=channel if channel in CHANNELS else 'client',
             attempt=attempt if type(attempt) is int and 0 <= attempt <= 100 else 0,
             duration_ms=duration_ms if type(duration_ms) is int and 0 <= duration_ms <= 86400000 else None,
-            error=error_group(error), model=model if model in MODELS else 'unknown', version=self.version)
+            error=error_group(error), model=model if model in MODELS else 'unknown', version=self.version, **extra)
 
     def _insert(self, db, event):
         if event:
@@ -205,11 +231,22 @@ class Collector:
         except (OSError, sqlite3.Error, ValueError, TypeError):
             self.last_error = 'TELEMETRY_WRITE_FAILED'
 
-    def batch(self):
+    def batch(self, schema=1):
         with self.lock, self._db() as db:
             self._prune(db)
-            return [dict(json.loads(row[1]), seq=row[0]) for row in
+            events = [dict(json.loads(row[1]), seq=row[0]) for row in
                     db.execute('SELECT seq,payload FROM queue ORDER BY seq LIMIT 100')] if self.enabled else []
+            for event in events:
+                if schema == 2:
+                    for key, value in V2_DEFAULTS.items():
+                        event.setdefault(key, value)
+                else:
+                    for key in V2_DEFAULTS:
+                        event.pop(key, None)
+                    if event['stage'] == 'transport':
+                        event['stage'] = 'binding'
+                        event['status'] = 'ok' if event['status'] == 'connected' else 'unknown'
+            return events
 
     def ack(self, ids):
         with self.lock, self._db() as db:
@@ -217,14 +254,21 @@ class Collector:
 
     async def upload(self, send):
         try:
-            events = self.batch()
+            events = self.batch(self.schema)
             if not events: return
             result = await send(events)
             expected = [e['event_id'] for e in events]
-            if result != {'accepted': expected}: raise ValueError('bad acknowledgment')
+            if (not isinstance(result, dict) or set(result) not in ({'accepted'}, {'accepted', 'supported_schemas'})
+                    or result.get('accepted') != expected):
+                raise ValueError('bad acknowledgment')
+            supported = result.get('supported_schemas', [])
+            if (not isinstance(supported, list) or any(type(value) is not int for value in supported)):
+                raise ValueError('bad capabilities')
             self.ack(expected)
+            self.schema = 2 if 2 in supported else 1
             self.last_error = None
         except (OSError, sqlite3.Error, ValueError, RuntimeError, TimeoutError):
+            self.schema = 1
             self.last_error = 'TELEMETRY_UPLOAD_FAILED'
 
 

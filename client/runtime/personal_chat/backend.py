@@ -1120,10 +1120,19 @@ def install_personal_chat(app, server):
                 if len(token) < 16:
                     raise ValueError("PERSONAL_CHAT_QQ_TOKEN_REQUIRED")
                 bindings["qq"] = (str(qq["account"]), str(qq["owner"]))
+                def transport_closed(**fields):
+                    from runtime.diagnostics.reply_telemetry import emit
+                    runner = runtime.get('qq_runner')
+                    emit('transport', 'closed', channel='qq', transport=dict(
+                        close_code=fields.get('close_code'), transport_error=fields.get('transport_error'),
+                        in_flight='send' if fields.get('pending_actions') else
+                        'generation' if fields.get('processing') or runner and runner.tasks else
+                        'media' if service.photo_tasks else 'queued' if fields.get('intake_queue') else 'none'))
+                    server._safe_log('personal_chat_transport_closed', channel='qq',
+                        recorded_at_ms=int(datetime.now(LOCAL).timestamp() * 1000), **fields)
                 jobs.append(("qq", lambda handler, on_state: run_qq(
                     qq["url"], token, *bindings["qq"], handler, stop_event, state_callback=on_state,
-                    diagnostic_callback=lambda **fields: server._safe_log('personal_chat_transport_closed',
-                        channel='qq', recorded_at_ms=int(datetime.now(LOCAL).timestamp() * 1000), **fields))))
+                    diagnostic_callback=transport_closed)))
             def sticker_allowed(key):
                 from reply_context import ReplyMode
                 from runtime.letter_stickers.selection import allowed_stickers
@@ -1171,6 +1180,11 @@ def install_personal_chat(app, server):
                     author_candidate=lambda candidate: author_preparation(server, candidate))
                 server._daily_video_worker = runtime['daily_video']
             if 'qq' in config:
+                from .backfill import status as backfill_status
+                runtime['qq_backfill'] = backfill_status(config['qq'])
+                if runtime['qq_backfill']['enabled']:
+                    server._safe_log('personal_chat_backfill', status='unavailable',
+                                     error_code='QQ_BACKFILL_UNAVAILABLE')
                 from .setup import _qq_binding_fingerprint
                 runtime['qq_binding_fingerprint'] = _qq_binding_fingerprint(config['qq'], token)
             runtime['status'].update({name: 'SETUP_REQUIRED' for name in missing})
@@ -1291,6 +1305,7 @@ def install_personal_chat(app, server):
             handle.pending = lambda channel: service.pending(channel) if channel in selected_channels(server) else ()
             def ready(channel, send):
                 service.resume_speech(channel, send)
+                service.resume_media(channel, send)
                 if channel in service.bindings and channel in selected_channels(server):
                     # A restart must not wait for the user to speak before she may initiate again.
                     from .events import PersonalMessage
@@ -1299,6 +1314,8 @@ def install_personal_chat(app, server):
                 if runtime.get('daily_video') is not None:
                     runtime['daily_video'].bind(channel, send)
             handle.ready = ready
+            from .exchange_runner import ExchangeRunner
+            runtime['qq_runner'] = ExchangeRunner(handle)
 
             async def run(name, factory):
                 def on_state(state):
@@ -1314,6 +1331,11 @@ def install_personal_chat(app, server):
                         }:
                             runtime['errors'].pop(name, None)
                     if state != previous:
+                        if name == 'qq':
+                            from runtime.diagnostics.reply_telemetry import emit
+                            in_flight = ('generation' if runtime['qq_runner'].tasks else
+                                         'media' if service.photo_tasks else 'unknown')
+                            emit('transport', state.lower(), channel='qq', transport=dict(in_flight=in_flight))
                         if state == 'CONNECTED':
                             from runtime.diagnostics.reply_telemetry import emit
                             emit('binding', 'ok', channel=name)
@@ -1326,7 +1348,7 @@ def install_personal_chat(app, server):
                 while not stop_event.is_set():
                     try:
                         on_state("CONNECTING")
-                        await factory(handle, on_state)
+                        await factory(runtime['qq_runner'] if name == 'qq' else handle, on_state)
                         if stop_event.is_set():
                             break
                     except asyncio.CancelledError:
@@ -1395,6 +1417,8 @@ def install_personal_chat(app, server):
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        if runtime.get('qq_runner') is not None:
+            await runtime['qq_runner'].close()
         if runtime.get('daily_video') is not None:
             await runtime['daily_video'].close()
             if getattr(server, '_daily_video_worker', None) is runtime['daily_video']:

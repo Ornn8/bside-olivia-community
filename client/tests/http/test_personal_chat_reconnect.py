@@ -103,7 +103,7 @@ def test_generation_cancellation_is_durable_and_does_not_send_or_commit():
     asyncio.run(scenario())
 
 
-def test_real_onebot_reconnect_keeps_interrupted_turn_and_answers_new_message(tmp_path, monkeypatch):
+def test_real_onebot_reconnect_finishes_owned_turn_and_answers_new_message(tmp_path, monkeypatch):
     import local_server
     from aiohttp.test_utils import TestServer
     from runtime.personal_chat import backend, qq
@@ -122,12 +122,12 @@ def test_real_onebot_reconnect_keeps_interrupted_turn_and_answers_new_message(tm
     monkeypatch.setattr(backend, 'commit', commit)
 
     async def scenario():
-        started, new_reply = asyncio.Event(), asyncio.Event()
+        started, new_reply, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
         async def generate(_server, event, row):
             generated.append(event.message_id)
             if event.message_id == '1':
                 started.set()
-                await asyncio.Event().wait()
+                await release.wait()
             return 'synthetic new reply'
         monkeypatch.setattr(backend, 'generate', generate)
         connections = []
@@ -138,15 +138,20 @@ def test_real_onebot_reconnect_keeps_interrupted_turn_and_answers_new_message(tm
             await ws.send_json(dict(echo=login['echo'], status='ok', retcode=0, data={'user_id': 10000}))
             connections.append(1)
             message_id = len(connections)
-            await ws.send_json(dict(post_type='message', message_type='private', self_id=10000, user_id=20000,
-                                    message_id=message_id, message=[{'type': 'text', 'data': {'text': 'synthetic'}}]))
             if message_id == 1:
+                await ws.send_json(dict(post_type='message', message_type='private', self_id=10000, user_id=20000,
+                                        message_id=1, message=[{'type': 'text', 'data': {'text': 'synthetic'}}]))
                 await asyncio.wait_for(started.wait(), 2)
                 await ws.close(code=4001)
             else:
-                outgoing = await ws.receive_json()
-                sends.append(outgoing['params']['message'])
-                await ws.send_json(dict(echo=outgoing['echo'], status='ok', retcode=0, data={'message_id': 300}))
+                release.set()
+                for index in range(2):
+                    outgoing = await ws.receive_json()
+                    sends.append(outgoing['params']['message'])
+                    await ws.send_json(dict(echo=outgoing['echo'], status='ok', retcode=0, data={'message_id': 300 + index}))
+                    if index == 0:
+                        await ws.send_json(dict(post_type='message', message_type='private', self_id=10000, user_id=20000,
+                                                message_id=2, message=[{'type': 'text', 'data': {'text': 'synthetic'}}]))
                 new_reply.set()
                 async for _ in ws:
                     pass
@@ -168,14 +173,13 @@ def test_real_onebot_reconnect_keeps_interrupted_turn_and_answers_new_message(tm
                     while server.store.personal_chats[-1]['delivery_status'] != 'DELIVERED':
                         await asyncio.sleep(.01)
                 old, new = server.store.personal_chats
-                assert old['error_code'] == 'PERSONAL_CHAT_GENERATION_INTERRUPTED'
-                assert old['delivery_status'] == 'FAILED' and old['generation_attempts'] == 1
+                assert old['delivery_status'] == 'DELIVERED' and old['generation_attempts'] == 1
                 assert new['delivery_status'] == 'DELIVERED' and new['generation_attempts'] == 1
-                assert generated == ['1', '2'] and len(sends) == 1 and len(connections) == 2
+                assert generated == ['1', '2'] and len(sends) == 2 and len(connections) == 2
                 assert backend.reply_errors(server, app[backend._RUNTIME]) == {}
                 closed = [row for row in logs if row['event'] == 'personal_chat_transport_closed']
                 assert len(closed) == 1 and closed[0]['processing'] is True and closed[0]['close_code'] == 4001
-                assert any(row['event'] == 'personal_chat_exchange_cancelled' for row in logs)
+                assert not any(row['event'] == 'personal_chat_exchange_cancelled' for row in logs)
             finally:
                 await runner.cleanup()
     asyncio.run(scenario())

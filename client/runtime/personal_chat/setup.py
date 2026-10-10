@@ -63,6 +63,10 @@ def _failure_code(exc: BaseException) -> str:
 
 
 def _napcat_diagnostic(server, *, status, reason):
+    from runtime.diagnostics.reply_telemetry import emit
+    emit('transport', 'auth_required' if status == 'AWAITING_QQ_LOGIN' else
+         'closed' if status == 'FAILED' else 'connecting', channel='qq',
+         transport=dict(napcat_state=status, napcat_reason=reason, in_flight='none'))
     logger = getattr(server, '_safe_log', None)
     if callable(logger):
         try:
@@ -263,6 +267,8 @@ def _public_status(request: web.Request, server) -> dict[str, object]:
     if _QQ_ID.fullmatch(owner):
         qq["owner_masked"] = "*" * (len(owner) - 4) + owner[-4:]
     qq['can_reuse_owner'] = _can_reuse_qq(config.get('qq'))
+    from .backfill import status as backfill_status
+    qq['backfill'] = backfill_status(config.get('qq', {}))
     return {
         "contact_state": str(_contact_access(server).get("state", "locked")),
         "selected_channels": sorted(selected),
@@ -742,6 +748,8 @@ def install_setup_routes(app: web.Application, server) -> None:
             return web.json_response({"error": "QQ_SETUP_INVALID"}, status=400)
         if not isinstance(body, dict):
             return web.json_response({"error": "QQ_SETUP_INVALID"}, status=400)
+        if type(body.get('backfill_enabled', False)) is not bool:
+            return web.json_response({'error': 'QQ_BACKFILL_CONFIG_INVALID'}, status=400)
         managed = body.get("managed") is True
         owner = str(body.get("owner", "")).strip()
         saved = None
@@ -801,6 +809,7 @@ def install_setup_routes(app: web.Application, server) -> None:
                 "owner": owner,
                 "credentials_file": str(secret),
                 "managed": managed,
+                "backfill_enabled": body.get('backfill_enabled', False),
             }
             _write_config(server, config)
             from .backend import ACTIVATE_SAVED_CONFIG

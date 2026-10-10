@@ -14,6 +14,12 @@ from .qq_faces import FACE_IDS
 log = logging.getLogger(__name__)
 
 
+def transport_error(exc):
+    return ('NONE' if exc is None else 'TIMEOUT' if isinstance(exc, TimeoutError)
+            else 'CONNECTION' if isinstance(exc, ConnectionError)
+            else 'CLIENT' if isinstance(exc, aiohttp.ClientError) else 'OTHER')
+
+
 class QQAuthRequired(ValueError):
     pass
 
@@ -348,9 +354,7 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
         if reader_task.done():
             if not stop_event.is_set() and callable(diagnostic_callback):
                 exc = ws.exception()
-                kind = ('NONE' if exc is None else 'TIMEOUT' if isinstance(exc, TimeoutError)
-                        else 'CONNECTION' if isinstance(exc, ConnectionError)
-                        else 'CLIENT' if isinstance(exc, aiohttp.ClientError) else 'OTHER')
+                kind = transport_error(exc)
                 fields = dict(processing=processing, pending_actions=len(pending),
                               response_queue=queue.qsize(), intake_queue=intake_queue.qsize(),
                               control_queue=control_queue.qsize(), transport_error=kind)
@@ -364,6 +368,12 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
             if not stop_event.is_set() and (processing or not queue.empty() or not intake_queue.empty() or not control_queue.empty()):
                 raise RuntimeError("QQ_CONNECTION_LOST_DURING_EXCHANGE")
     finally:
+        disconnected = getattr(handle_message, 'disconnected', None)
+        if callable(disconnected):
+            disconnected(send)
+        for future in pending.values():
+            if not future.done():
+                future.set_exception(ConnectionError('QQ_TRANSPORT_DISCONNECTED'))
         for task in (reader_task, worker_task, control_task, intake_task, stop_task):
             task.cancel()
         await asyncio.gather(reader_task, worker_task, control_task, intake_task, stop_task, return_exceptions=True)
@@ -402,7 +412,13 @@ async def run_qq(url, token, account_id, owner_id, handle_message, stop_event,
                     await _connection(ws, account_id, owner_id, handle_message, stop_event, ack_timeout, merge_seconds,
                                       state_callback=publish, media_ack_timeout=media_ack_timeout,
                                       diagnostic_callback=diagnostic_callback)
-            except (aiohttp.ClientError, ConnectionError, TimeoutError):
+            except (aiohttp.ClientError, ConnectionError, TimeoutError) as exc:
+                if callable(diagnostic_callback):
+                    try:
+                        diagnostic_callback(transport_error=transport_error(exc), processing=False,
+                                            pending_actions=0, response_queue=0, intake_queue=0, control_queue=0)
+                    except Exception:
+                        log.warning('QQ_DIAGNOSTIC_RECORD_FAILED')
                 log.warning("QQ_TRANSPORT_DISCONNECTED")
             if stop_event.is_set():
                 break

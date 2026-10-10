@@ -375,6 +375,11 @@ async def _prepare_once(server, row, content, text, *, channel='letter', on_read
         return
     if row.get('image_status') in ('COMPLETED', 'SKIPPED', 'FAILED'):
         return
+    if ((row.get('image_recovery_required') or row.get('image_receipt_required') and row.get('image_generation_binding'))
+            and not row.get('image_plan') and not row.get('image_server_request')):
+        row.update(image_status='FAILED', image_error_code='IMAGE_RECOVERY_CONTEXT_MISSING')
+        server._persist_store_state()
+        return
     if not settings.get('enabled') or channel not in ('letter', 'qq') or not text.strip() or text.strip() == '[[skip]]':
         row['image_status'] = 'SKIPPED'
         server._persist_store_state()
@@ -418,7 +423,8 @@ async def _prepare_once(server, row, content, text, *, channel='letter', on_read
             if receipt is None or not receipt.is_file():
                 from runtime.video_reply_settings import require_image_model
                 require_image_model(settings, caps)
-        if caps.get('server_media_planning') is True and ('image_plan' not in row or row.get('image_server_planned')):
+        if (row.get('image_server_request') or caps.get('server_media_planning') is True
+                and ('image_plan' not in row or row.get('image_server_planned'))):
             from runtime.wardrobe import style_for, DEFAULT_STYLE
             style = style_for(settings)
             supported = caps.get('wardrobe_styles')

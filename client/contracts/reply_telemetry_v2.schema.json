@@ -1,0 +1,445 @@
+{
+  "title": "Client runtime telemetry batch v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "events"
+  ],
+  "properties": {
+    "schema": {
+      "const": 2
+    },
+    "events": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 100,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "event_id",
+          "trace_id",
+          "seq",
+          "at",
+          "attempt",
+          "duration_ms",
+          "version",
+          "stage",
+          "status",
+          "channel",
+          "model",
+          "error",
+          "error_code",
+          "close_code",
+          "transport_error",
+          "in_flight",
+          "napcat_state",
+          "napcat_reason"
+        ],
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{32}$"
+          },
+          "trace_id": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740992
+          },
+          "at": {
+            "type": "integer"
+          },
+          "attempt": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100
+          },
+          "duration_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 86400000
+          },
+          "version": {
+            "type": "string",
+            "pattern": "^(unknown|[0-9]+\\.[0-9]+\\.[0-9]+([+.-][a-zA-Z0-9.-]{1,40})?)$"
+          },
+          "stage": {
+            "enum": [
+              "app",
+              "binding",
+              "generation",
+              "media",
+              "received",
+              "recharge_page",
+              "reply",
+              "send",
+              "validation",
+              "transport"
+            ]
+          },
+          "status": {
+            "enum": [
+              "failed",
+              "ok",
+              "skipped",
+              "started",
+              "unknown",
+              "connecting",
+              "connected",
+              "reconnecting",
+              "closed",
+              "auth_required"
+            ]
+          },
+          "channel": {
+            "enum": [
+              "client",
+              "letter",
+              "proactive",
+              "qq",
+              "wechat"
+            ]
+          },
+          "model": {
+            "enum": [
+              "claude-fable-5-1",
+              "claude-haiku-5-5",
+              "claude-opus-4-6",
+              "claude-opus-5-5",
+              "claude-sonnet-5-5",
+              "gemini-3.8-flash",
+              "gpt-6-astra",
+              "gpt-6-luna",
+              "gpt-6.1-sol",
+              "qwen3.7-flash",
+              "qwen3.8-max",
+              "unknown"
+            ]
+          },
+          "error": {
+            "enum": [
+              "balance",
+              "media",
+              "none",
+              "other",
+              "provider",
+              "send",
+              "timeout",
+              "validation"
+            ]
+          },
+          "error_code": {
+            "enum": [
+              "NONE",
+              "UNKNOWN",
+              "JEV_AFFECT_INCONSISTENT",
+              "JEV_BALANCE_INSUFFICIENT",
+              "JEV_BILLING_ACCOUNT_UNAVAILABLE",
+              "JEV_BILLING_HTTP_401",
+              "JEV_BILLING_HTTP_402",
+              "JEV_BILLING_HTTP_403",
+              "JEV_BILLING_HTTP_409",
+              "JEV_BILLING_HTTP_429",
+              "JEV_BILLING_HTTP_502",
+              "JEV_BILLING_HTTP_503",
+              "JEV_BILLING_HTTP_504",
+              "JEV_BILLING_RECEIPT_INVALID",
+              "JEV_BILLING_RESPONSE_INVALID",
+              "JEV_BILLING_TURN_INVALID",
+              "JEV_BILLING_UNAVAILABLE",
+              "JEV_CONFIGURATION_INVALID",
+              "JEV_CONFIG_INVALID",
+              "JEV_CONTEXT_BUDGET_EXCEEDED",
+              "JEV_CONTEXT_UNAVAILABLE",
+              "JEV_DECISION_NOT_SAVED",
+              "JEV_HTTP_400",
+              "JEV_HTTP_401",
+              "JEV_HTTP_404",
+              "JEV_HTTP_413",
+              "JEV_HTTP_429",
+              "JEV_HTTP_502",
+              "JEV_HTTP_503",
+              "JEV_HTTP_504",
+              "JEV_HTTP_ERROR",
+              "JEV_INPUT_INVALID",
+              "JEV_INPUT_SUPERSEDED",
+              "JEV_INPUT_TOO_LARGE",
+              "JEV_MEDIA_PLAN_INCONSISTENT",
+              "JEV_PLAN_ASSET_INVALID",
+              "JEV_PLAN_COMPOSITION_INVALID",
+              "JEV_PLAN_CONTRACT_INVALID",
+              "JEV_PLAN_GROUP_INVALID",
+              "JEV_PLAN_INTENT_CAPACITY",
+              "JEV_PLAN_NEED_CAPACITY",
+              "JEV_PLAN_UNSUPPORTED",
+              "JEV_PROVIDER_CONNECT_FAILED",
+              "JEV_PROVIDER_HTTP_400",
+              "JEV_PROVIDER_HTTP_401",
+              "JEV_PROVIDER_HTTP_403",
+              "JEV_PROVIDER_HTTP_404",
+              "JEV_PROVIDER_HTTP_413",
+              "JEV_PROVIDER_HTTP_422",
+              "JEV_PROVIDER_HTTP_429",
+              "JEV_PROVIDER_HTTP_500",
+              "JEV_PROVIDER_HTTP_502",
+              "JEV_PROVIDER_HTTP_503",
+              "JEV_PROVIDER_HTTP_504",
+              "JEV_PROVIDER_HTTP_529",
+              "JEV_PROVIDER_JSON_INVALID",
+              "JEV_PROVIDER_READ_FAILED",
+              "JEV_PROVIDER_USAGE_INVALID",
+              "JEV_REFERENCE_UNAVAILABLE",
+              "JEV_RESPONSE_INVALID",
+              "JEV_SERVICE_UNAVAILABLE",
+              "JEV_STORED_DECISION_INVALID",
+              "JEV_TIMEOUT",
+              "JEV_UNAVAILABLE",
+              "JEV_WORLD_SELECTION_BUDGET",
+              "JEV_WORLD_SELECTION_CAPACITY",
+              "JEV_WORLD_SELECTION_INVALID",
+              "JEV_WORLD_SELECTION_UNAVAILABLE",
+              "LLM_INTERNAL",
+              "LLM_TIMEOUT",
+              "PERSONAL_CHAT_AUDIO_UPLOAD_UNAVAILABLE",
+              "PERSONAL_CHAT_AUDIO_WORLD_UNAVAILABLE",
+              "PERSONAL_CHAT_BATCH_TOO_LARGE",
+              "PERSONAL_CHAT_CANDIDATE_UNAVAILABLE",
+              "PERSONAL_CHAT_CHANNEL_CHOICE_INVALID",
+              "PERSONAL_CHAT_CHANNEL_DISCONNECTED",
+              "PERSONAL_CHAT_CHANNEL_INVALID",
+              "PERSONAL_CHAT_CONFIG_INVALID",
+              "PERSONAL_CHAT_CONFIG_UNAVAILABLE",
+              "PERSONAL_CHAT_CONFIRM_REQUIRED",
+              "PERSONAL_CHAT_CONNECTION_TEST_CODE_MISMATCH",
+              "PERSONAL_CHAT_CONSUMER_TIMEOUT",
+              "PERSONAL_CHAT_CONSUMER_UNAVAILABLE",
+              "PERSONAL_CHAT_CONTACT_NOT_ACCEPTED",
+              "PERSONAL_CHAT_CONTACT_SUPERSEDED",
+              "PERSONAL_CHAT_CURRENT_TURN_INTERPRETATION_FAILED",
+              "PERSONAL_CHAT_DAILY_LIFE_UNAVAILABLE",
+              "PERSONAL_CHAT_DECISION_INVALID",
+              "PERSONAL_CHAT_DELIVERY_REQUIRES_ATTENTION",
+              "PERSONAL_CHAT_DELIVERY_UNCONFIRMED",
+              "PERSONAL_CHAT_DELIVERY_UNKNOWN",
+              "PERSONAL_CHAT_DUPLICATE_CONTENT",
+              "PERSONAL_CHAT_DURABLE_STATE_REQUIRED",
+              "PERSONAL_CHAT_FRESH_INTIMACY_CLAIMS_REQUIRED",
+              "PERSONAL_CHAT_GATEWAY_OTHER",
+              "PERSONAL_CHAT_GENERATION_FAILED",
+              "PERSONAL_CHAT_GENERATION_INTERRUPTED",
+              "PERSONAL_CHAT_GENERATION_RETRY_EXHAUSTED",
+              "PERSONAL_CHAT_GENERATION_TIMEOUT",
+              "PERSONAL_CHAT_IDEMPOTENCY_CONFLICT",
+              "PERSONAL_CHAT_ID_CONFLICT",
+              "PERSONAL_CHAT_IMAGE_UNAVAILABLE",
+              "PERSONAL_CHAT_INPUT_BATCH_TOO_LARGE",
+              "PERSONAL_CHAT_INPUT_INVALID",
+              "PERSONAL_CHAT_INPUT_TOO_LONG",
+              "PERSONAL_CHAT_INTIMACY_CLAIM_SOURCE_CONFLICT",
+              "PERSONAL_CHAT_INTIMACY_REQUEST_INCONSISTENT",
+              "PERSONAL_CHAT_INVITATION_REQUIRED",
+              "PERSONAL_CHAT_MARKER",
+              "PERSONAL_CHAT_MEMORY_UNAVAILABLE",
+              "PERSONAL_CHAT_MERGE_OWNER_MISMATCH",
+              "PERSONAL_CHAT_MESSAGE_REQUIRED",
+              "PERSONAL_CHAT_ORIGIN_FORBIDDEN",
+              "PERSONAL_CHAT_OWNER_MISMATCH",
+              "PERSONAL_CHAT_OWNER_REQUIRED",
+              "PERSONAL_CHAT_PATH_INVALID",
+              "PERSONAL_CHAT_PERSONA_NOT_READY",
+              "PERSONAL_CHAT_PERSONA_UNAVAILABLE",
+              "PERSONAL_CHAT_PROVIDER_AUTH_FAILED",
+              "PERSONAL_CHAT_PROVIDER_BUSY",
+              "PERSONAL_CHAT_PROVIDER_PROTOCOL",
+              "PERSONAL_CHAT_PROVIDER_QUOTA_EXHAUSTED",
+              "PERSONAL_CHAT_PROVIDER_REJECTED",
+              "PERSONAL_CHAT_PROVIDER_REQUEST_DUPLICATE",
+              "PERSONAL_CHAT_PROVIDER_RETRYABLE",
+              "PERSONAL_CHAT_PROVIDER_TIMEOUT",
+              "PERSONAL_CHAT_PROVIDER_UNAVAILABLE",
+              "PERSONAL_CHAT_PROVIDER_USAGE_PENDING",
+              "PERSONAL_CHAT_QQ_TOKEN_REQUIRED",
+              "PERSONAL_CHAT_RECALL_CONTEXT_BUDGET_EXCEEDED",
+              "PERSONAL_CHAT_REPLY_INVALID",
+              "PERSONAL_CHAT_REPLY_QUALITY_BLOCKED",
+              "PERSONAL_CHAT_REVIEWER_DISABLED",
+              "PERSONAL_CHAT_REVIEWER_RESPONSE_INVALID",
+              "PERSONAL_CHAT_REVIEWER_UNAVAILABLE",
+              "PERSONAL_CHAT_REVIEW_FAILED",
+              "PERSONAL_CHAT_REWRITE_BUDGET_EXHAUSTED",
+              "PERSONAL_CHAT_REWRITE_EVIDENCE_INVALID",
+              "PERSONAL_CHAT_REWRITE_FAILED",
+              "PERSONAL_CHAT_REWRITE_INPUT_TOO_LARGE",
+              "PERSONAL_CHAT_REWRITE_OUTPUT_EMPTY",
+              "PERSONAL_CHAT_REWRITE_OUTPUT_INVALID",
+              "PERSONAL_CHAT_REWRITE_PROVIDER_UNAVAILABLE",
+              "PERSONAL_CHAT_SCHEMA_VERSION",
+              "PERSONAL_CHAT_SETUP_JAVASCRIPT",
+              "PERSONAL_CHAT_SETUP_UNAVAILABLE",
+              "PERSONAL_CHAT_STALE_REPLY",
+              "PERSONAL_CHAT_STATUS_WRITE_FAILED",
+              "PERSONAL_CHAT_TTS_TIMEOUT",
+              "PERSONAL_CHAT_TTS_TIMEOUT_INVALID",
+              "PERSONAL_CHAT_TTS_UNAVAILABLE",
+              "PERSONAL_CHAT_UNAVAILABLE",
+              "PERSONAL_CHAT_USER_PRIORITY",
+              "PERSONAL_CHAT_WORLD_COMMIT_UNAVAILABLE",
+              "PERSONAL_CHAT_WORLD_UNAVAILABLE",
+              "QQ_ACCOUNT_MISMATCH",
+              "QQ_ACCOUNT_OWNER_INVALID",
+              "QQ_ACTION_UNCONFIRMED",
+              "QQ_AUTH_REQUIRED",
+              "QQ_BACKFILL_CONFIG_INVALID",
+              "QQ_BACKFILL_UNAVAILABLE",
+              "QQ_BOT_AND_OWNER_MUST_DIFFER",
+              "QQ_CONFIGURE_PATH",
+              "QQ_CONNECTION_LOST_DURING_EXCHANGE",
+              "QQ_DEFAULT_VOICE",
+              "QQ_DIAGNOSTIC_RECORD_FAILED",
+              "QQ_FILE_ACK_INVALID",
+              "QQ_FILE_ACK_UNCONFIRMED",
+              "QQ_FILE_INVALID",
+              "QQ_FILE_REJECTED",
+              "QQ_LOGIN_DISCONNECTED",
+              "QQ_LOGIN_UNAVAILABLE",
+              "QQ_MEDIA_REFERENCE_INVALID",
+              "QQ_MESSAGE_HANDLER_FAILED",
+              "QQ_OWNER_QUEUE_FULL",
+              "QQ_OWNER_REQUIRED",
+              "QQ_OWNER_ROUNDTRIP_PASSED",
+              "QQ_OWNER_TEST_READY",
+              "QQ_PENDING_OWNER_MISMATCH",
+              "QQ_REPLY_INVALID",
+              "QQ_REPLY_OWNER_MISMATCH",
+              "QQ_SEND_UNCONFIRMED",
+              "QQ_SETUP_INVALID",
+              "QQ_STATUS_UNAVAILABLE",
+              "QQ_TIMEOUT_INVALID",
+              "QQ_TOKEN_INVALID",
+              "QQ_TRANSPORT_DISCONNECTED",
+              "QQ_VIDEO_CAPTION_INVALID",
+              "QQ_VIDEO_DEFERRED"
+            ]
+          },
+          "close_code": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1000,
+            "maximum": 4999
+          },
+          "transport_error": {
+            "enum": [
+              null,
+              "CLIENT",
+              "CONNECTION",
+              "NONE",
+              "OTHER",
+              "TIMEOUT"
+            ]
+          },
+          "in_flight": {
+            "enum": [
+              null,
+              "generation",
+              "media",
+              "none",
+              "queued",
+              "send",
+              "unknown"
+            ]
+          },
+          "napcat_state": {
+            "enum": [
+              null,
+              "AWAITING_QQ_LOGIN",
+              "DOWNLOADING",
+              "FAILED",
+              "IDLE",
+              "ONEBOT_CONFIG_PENDING",
+              "ONEBOT_PROBING",
+              "ONEBOT_READY",
+              "READY",
+              "STARTING",
+              "UNKNOWN"
+            ]
+          },
+          "napcat_reason": {
+            "enum": [
+              null,
+              "confirmed_offline_restart",
+              "probe",
+              "process_exit_restart",
+              "status_probe_failed",
+              "watchdog_failed"
+            ]
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "stage": {
+                  "const": "transport"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "status": {
+                  "enum": [
+                    "connecting",
+                    "connected",
+                    "reconnecting",
+                    "closed",
+                    "auth_required"
+                  ]
+                },
+                "channel": {
+                  "const": "qq"
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "status": {
+                  "enum": [
+                    "started",
+                    "ok",
+                    "failed",
+                    "unknown",
+                    "skipped"
+                  ]
+                },
+                "close_code": {
+                  "const": null
+                },
+                "transport_error": {
+                  "const": null
+                },
+                "in_flight": {
+                  "const": null
+                },
+                "napcat_state": {
+                  "const": null
+                },
+                "napcat_reason": {
+                  "const": null
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}
