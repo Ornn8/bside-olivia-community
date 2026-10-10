@@ -17,6 +17,7 @@ import subprocess
 import sys
 import threading
 import tempfile
+from installer.uninstall_safety import native_path
 import time
 from typing import Any
 import uuid
@@ -3160,12 +3161,13 @@ class VideoCapabilityInstaller:
     ) -> None:
         # pip moves wheel contents (including deeper __pycache__ files) into
         # this staging tree. Extended paths work even with LongPathsEnabled=0.
-        target = os.path.abspath(site_packages)
-        if os.name == "nt" and not target.startswith("\\\\?\\"):
-            target = "\\\\?\\UNC\\" + target[2:] if target.startswith("\\\\") else "\\\\?\\" + target
+        target = native_path(site_packages)
         environment = dict(os.environ)
         for key in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV", "CONDA_PREFIX"):
             environment.pop(key, None)
+        if os.name == "nt":
+            temporary = native_path(tempfile.gettempdir())
+            environment.update(TEMP=temporary, TMP=temporary, TMPDIR=temporary)
         environment.update(
             PIP_DISABLE_PIP_VERSION_CHECK="1",
             PIP_NO_INPUT="1",
@@ -3177,8 +3179,7 @@ class VideoCapabilityInstaller:
             completed = subprocess.run(
                 [
                     sys.executable,
-                    "-m",
-                    "pip",
+                    native_path(Path(__file__).resolve().parent / "installer/pip_runtime.py"),
                     "--isolated",
                     "install",
                     "--no-index",
@@ -3186,11 +3187,11 @@ class VideoCapabilityInstaller:
                     "--no-deps",
                     "--only-binary=:all:",
                     "--find-links",
-                    str(python_path.parent.parent / "wheels"),
+                    native_path(python_path.parent.parent / "wheels"),
                     "--target",
                     target,
                     "--requirement",
-                    str(requirements),
+                    native_path(requirements),
                 ],
                 stdin=subprocess.DEVNULL,
                 capture_output=True,

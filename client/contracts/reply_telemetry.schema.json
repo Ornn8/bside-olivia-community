@@ -1,0 +1,131 @@
+{
+  "title": "Client runtime telemetry batch v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "events"
+  ],
+  "properties": {
+    "schema": {
+      "const": 1
+    },
+    "events": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 100,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "event_id",
+          "trace_id",
+          "seq",
+          "at",
+          "attempt",
+          "duration_ms",
+          "version",
+          "stage",
+          "status",
+          "channel",
+          "model",
+          "error"
+        ],
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{32}$"
+          },
+          "trace_id": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740992
+          },
+          "at": {
+            "type": "integer"
+          },
+          "attempt": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100
+          },
+          "duration_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 86400000
+          },
+          "version": {
+            "type": "string",
+            "pattern": "^(unknown|[0-9]+\\.[0-9]+\\.[0-9]+([+.-][a-zA-Z0-9.-]{1,40})?)$"
+          },
+          "stage": {
+            "enum": [
+              "app",
+              "binding",
+              "generation",
+              "media",
+              "received",
+              "recharge_page",
+              "reply",
+              "send",
+              "validation"
+            ]
+          },
+          "status": {
+            "enum": [
+              "failed",
+              "ok",
+              "skipped",
+              "started",
+              "unknown"
+            ]
+          },
+          "channel": {
+            "enum": [
+              "client",
+              "letter",
+              "proactive",
+              "qq",
+              "wechat"
+            ]
+          },
+          "model": {
+            "enum": [
+              "claude-fable-5-1",
+              "claude-haiku-5-5",
+              "claude-opus-4-6",
+              "claude-opus-5-5",
+              "claude-sonnet-5-5",
+              "gemini-3.8-flash",
+              "gpt-6-astra",
+              "gpt-6-luna",
+              "gpt-6.1-sol",
+              "qwen3.7-flash",
+              "qwen3.8-max",
+              "unknown"
+            ]
+          },
+          "error": {
+            "enum": [
+              "balance",
+              "media",
+              "none",
+              "other",
+              "provider",
+              "send",
+              "timeout",
+              "validation"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

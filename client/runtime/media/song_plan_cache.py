@@ -27,17 +27,19 @@ def _safe(path: Path) -> bool:
     return True
 
 
-def _restore(value, duration, style=""):
-    if not isinstance(style,str) or len(style)>1000 or "\x00" in style: raise ValueError("SONG_STYLE_INVALID")
+def _restore(value, duration, style="", *, style_max_chars=1000):
+    if not isinstance(style,str) or len(style)>style_max_chars or "\x00" in style: raise ValueError("SONG_STYLE_INVALID")
     semantic = parse_song_semantic_plan(json.dumps(value, ensure_ascii=False), duration)
     return SongContentPlan(semantic.emotion_arc.value, semantic.lyrics,
                            render_minimax_caption(semantic), duration, semantic_plan=semantic, suno_style=style)
 
 
-def cached_song_plan(path: Path, content: str, reply: str, duration: int, planner, *, expression_context=None):
+def cached_song_plan(path: Path, content: str, reply: str, duration: int, planner, *, expression_context=None, style_max_chars=1000):
     inputs = [content, reply, duration]
     if expression_context is not None:
         inputs.append(expression_context)
+    if style_max_chars != 1000:
+        inputs.append({'style_max_chars': style_max_chars})
     identity = hashlib.sha256(json.dumps(inputs,
         ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
     expected = {"schema_version": _SCHEMA, "planner_version": 3 if duration == 110 else 2 if duration == 240 else _PLANNER_VERSION,
@@ -51,17 +53,19 @@ def cached_song_plan(path: Path, content: str, reply: str, duration: int, planne
                 if (isinstance(payload, dict) and set(payload) in ({*expected, "semantic_plan"}, {*expected, "semantic_plan", "suno_style"})
                         and all(type(payload[key]) is type(value) and payload[key] == value
                                 for key, value in expected.items())):
-                    return _restore(payload["semantic_plan"], duration, payload.get("suno_style", ""))
+                    return _restore(payload["semantic_plan"], duration, payload.get("suno_style", ""), style_max_chars=style_max_chars)
     except (OSError, ValueError, TypeError, RecursionError):
         pass
     # Never hide a real planning failure or try another provider here.
     result = planner()
     if not isinstance(result, SongContentPlan) or not isinstance(result.semantic_plan, SongSemanticPlan):
         return result
+    if not isinstance(result.suno_style, str) or len(result.suno_style) > style_max_chars:
+        raise ValueError('SONG_STYLE_INVALID')
     semantic = result.semantic_plan.to_dict()
     semantic.pop("duration_seconds")
     try:
-        restored = _restore(semantic, duration, result.suno_style)
+        restored = _restore(semantic, duration, result.suno_style, style_max_chars=style_max_chars)
         if restored != result or result.semantic_plan.duration_seconds != duration:
             return result
         raw = json.dumps({**expected, "semantic_plan": semantic, "suno_style": result.suno_style}, ensure_ascii=False,

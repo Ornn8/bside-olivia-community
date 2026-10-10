@@ -152,11 +152,12 @@ _LAYER_SPECS = {
             "二十一、语气与回复原则",
             "二十二、疲劳与低带宽状态",
         ),
-        "codes": ("GENERIC_COUNSELOR", "STYLE_DRIFT"),
+        "codes": ("GENERIC_COUNSELOR", "STYLE_DRIFT", "OFF_TURN_REPLY"),
         "question": (
             "Does the reply directly engage one or two live emotional cores "
             "of the current input, rather than exhaustively recap, make a "
-            "checklist, give generic counselling, or force resolution?"
+            "checklist, give generic counselling, or force resolution? "
+            "It must answer the last user message, not an earlier one."
         ),
     },
     "continuity_memory": {
@@ -213,6 +214,14 @@ _LAYER_SPECS = {
             "or compliant mirror? Do not require invented daily-life detail."
         ),
     },
+}
+
+# These layers only contribute expression preferences, never fact/identity,
+# permission, intimacy or text-integrity evidence. Their own unavailability
+# must not discard the independently completed required checks.
+_OPTIONAL_LAYER_WARNINGS = {
+    'focus_response': 'FOCUS_REVIEW_UNAVAILABLE',
+    'autonomy_life': 'AUTONOMY_REVIEW_UNAVAILABLE',
 }
 
 
@@ -482,6 +491,8 @@ class _LayerResult:
     # Internal only: validated decisions from the same JEV evaluation, never
     # accepted from a model-authored layer result or used as factual evidence.
     preadjudicated: tuple[_AdjudicationDecision, ...] | None = None
+    # Host-authored receipt only; never parsed from model output.
+    optional_failure: ReviewFailureDiagnostic | None = None
 
     @property
     def passed(self) -> bool:
@@ -548,7 +559,7 @@ class GatewayReviewTransport:
     ) -> object:
         self._confirmed_rewrite_evidence.set(None)
         try:
-            result = self._review_json(request, timeout_seconds=timeout_seconds)
+            result, optional_failures = self._review_json(request, timeout_seconds=timeout_seconds)
         except _ReviewDiagnosticsError as exc:
             self._confirmed_rewrite_evidence.set(None)
             self._publish_failure_diagnostics(exc.diagnostics)
@@ -561,7 +572,7 @@ class GatewayReviewTransport:
             )
             self._publish_failure_diagnostics(failure.diagnostics)
             raise RuntimeError("quality model unavailable") from None
-        self._publish_failure_diagnostics(())
+        self._publish_failure_diagnostics(optional_failures)
         return result
 
     def consume_confirmed_rewrite_evidence(
@@ -585,7 +596,7 @@ class GatewayReviewTransport:
         request: dict[str, object],
         *,
         timeout_seconds: float,
-    ) -> object:
+    ) -> tuple[dict[str, object], tuple[ReviewFailureDiagnostic, ...]]:
         mode = str(request.get("mode", ""))
         evidence_bound = mode in {item.value for item in ReplyMode}
         reasoning_scope = (
@@ -700,7 +711,8 @@ class GatewayReviewTransport:
                     )),
                 )
             )
-        return aggregate
+        return aggregate, tuple(item.optional_failure for item in results
+                                if item.optional_failure is not None)
 
 
 class GatewayPersonaReviewer:
@@ -937,6 +949,15 @@ class GatewayPersonaRewriter:
             if delivery_length_contract is not None
             else ""
         )
+        off_turn_repair = (
+            " OFF_TURN_REPLY means the candidate answered an earlier message instead of "
+            "the last user message. Write a fresh reply to the last user message itself; "
+            "bring up the earlier topic only if that message refers to it. "
+            "候选回应的是更早的消息，不是最后一条用户消息：重写为对最后一条消息本身的回应，"
+            "最后一条没有提到的旧话题不要接。"
+            if "OFF_TURN_REPLY" in violation_codes
+            else ""
+        )
         text_letter_repair = (
             " In text_letter, do not add a question just to create a closing; "
             "preserve genuine curiosity about what the user shared, even when "
@@ -974,6 +995,7 @@ class GatewayPersonaRewriter:
                     "Did I explain why I chose to say it this way? "
                     "Did I include more than one reminder or piece of advice? "
                     "Revise as needed without outputting the checklist."
+                    f"{off_turn_repair}"
                     f"{text_letter_repair}"
                     f"{evidence_repair}"
                     f"{delivery_length_repair}"
@@ -1038,13 +1060,56 @@ class GatewayPersonaRewriter:
         if not rewritten:
             raise RuntimeError("REWRITE_OUTPUT_EMPTY")
         if not fact_sentences:
-            try:
-                envelope = json.loads(rewritten)
-            except ValueError:
-                envelope = None
-            if (isinstance(envelope, dict) and "text" in envelope
-                    or re.fullmatch(r"```(?:json)?\s*\n.*\n```", rewritten, re.S)):
+            wrapper_depth = 0
+            for _ in range(3):
+                if rewritten.startswith("```"):
+                    # One complete, supported code block only: the body may not
+                    # contain another fence, so two adjacent blocks cannot be
+                    # spliced into one accepted payload.
+                    fenced = re.fullmatch(
+                        r"```(?:json)?[ \t]*\n(?P<body>(?:(?!```).)*)\n```[ \t]*",
+                        rewritten,
+                        re.S,
+                    )
+                    if fenced is None:
+                        raise RuntimeError("REWRITE_OUTPUT_INVALID")
+                    rewritten = fenced.group("body").strip()
+                    wrapper_depth += 1
+                    continue
+                if not rewritten.startswith(("{", "[")):
+                    break
+                try:
+                    envelope = json.loads(rewritten)
+                except ValueError:
+                    # Looks like a JSON wrapper but is not valid JSON: statement
+                    # text merely bracketed by the author is left alone, while a
+                    # truncated wrapper fails closed.
+                    if (rewritten.startswith("{")
+                            or re.match(r'\[\s*(?:[\[{"0-9-]|true\b|false\b|null\b)', rewritten)):
+                        raise RuntimeError("REWRITE_OUTPUT_INVALID")
+                    break
+                if isinstance(envelope, list):
+                    if len(envelope) != 1 or not isinstance(envelope[0], dict) or 'text' not in envelope[0]:
+                        raise RuntimeError("REWRITE_OUTPUT_INVALID")
+                    envelope = envelope[0]
+                    wrapper_depth += 1
+                if not isinstance(envelope, dict) or "text" not in envelope:
+                    if wrapper_depth:
+                        raise RuntimeError("REWRITE_OUTPUT_INVALID")
+                    break
+                from runtime.personal_chat.decision import NEUTRAL_METADATA, OPTIONAL_FIELDS
+                # The writer may repeat its generation envelope during a prose
+                # rewrite. Recover only text: the pipeline keeps the original
+                # controls/media and still reviews this replacement body.
+                if (set(envelope) - ({'text'} | NEUTRAL_METADATA.keys() | OPTIONAL_FIELDS)
+                        or not isinstance(envelope.get("text"), str)):
+                    raise RuntimeError("REWRITE_OUTPUT_INVALID")
+                rewritten = envelope["text"].strip()
+                wrapper_depth += 1
+            else:
                 raise RuntimeError("REWRITE_OUTPUT_INVALID")
+            if not rewritten:
+                raise RuntimeError("REWRITE_OUTPUT_EMPTY")
         if fact_sentences:
             try:
                 return _apply_fact_sentence_edits(candidate, fact_sentences, rewritten)
@@ -1747,6 +1812,9 @@ def _complete_layer_reviews(
     selected_persona_facts: str = "",
     output_constraints: Mapping[str, object] | None = None,
 ) -> tuple[_LayerResult, ...]:
+    def optional_result(layer, diagnostic):
+        return _LayerResult(layer.name, 1, (), False, optional_failure=diagnostic)
+
     async def invoke(
         requests: Sequence[
             tuple[_LayerAuthority, tuple[dict[str, str], dict[str, str]]]
@@ -1789,11 +1857,21 @@ def _complete_layer_reviews(
                     break
             if reviewed is None:
                 raise ValueError('JEV_INPUT_TOO_LARGE')
-            return tuple(replace(
-                _parse_layer_result(layer, text, candidate=candidate, evidence_bound=evidence_bound),
-                preadjudicated=tuple(_AdjudicationDecision(**item) for item in decisions[layer.name]))
-                for group, texts, decisions in reviewed
-                for (layer, _), text in zip(group, texts, strict=True))
+            completed = []
+            for group, texts, decisions in reviewed:
+                for (layer, _), text in zip(group, texts, strict=True):
+                    try:
+                        result = _parse_layer_result(layer, text, candidate=candidate,
+                                                     evidence_bound=evidence_bound)
+                    except _ReviewContractFailure as exc:
+                        if layer.name not in _OPTIONAL_LAYER_WARNINGS:
+                            raise _diagnostic_error(ReviewFailureStage.LAYER, exc.reason,
+                                                    layer.name) from exc
+                        result = optional_result(layer, ReviewFailureDiagnostic(
+                            ReviewFailureStage.LAYER, exc.reason, layer.name))
+                    completed.append(replace(result, preadjudicated=tuple(
+                        _AdjudicationDecision(**item) for item in decisions[layer.name])))
+            return tuple(completed)
         max_parallel = (
             2
             if (gateway_scope is GatewayRequestScope.JSON_MAX_REASONING
@@ -1877,22 +1955,28 @@ def _complete_layer_reviews(
         )
         diagnostics: list[ReviewFailureDiagnostic] = []
         completed: list[_LayerResult] = []
+        required_failure = False
         for (layer, _), outcome in zip(requests, outcomes, strict=True):
             if isinstance(outcome, _ReviewDiagnosticsError):
                 diagnostics.extend(outcome.diagnostics)
+                if layer.name in _OPTIONAL_LAYER_WARNINGS:
+                    completed.append(optional_result(layer, outcome.diagnostics[0]))
+                else:
+                    required_failure = True
             elif isinstance(outcome, Exception):
-                diagnostics.append(
-                    ReviewFailureDiagnostic(
-                        ReviewFailureStage.LAYER,
-                        ReviewFailureReason.INTERNAL,
-                        layer.name,
-                    )
+                diagnostic = ReviewFailureDiagnostic(
+                    ReviewFailureStage.LAYER, ReviewFailureReason.INTERNAL, layer.name,
                 )
+                diagnostics.append(diagnostic)
+                if layer.name in _OPTIONAL_LAYER_WARNINGS:
+                    completed.append(optional_result(layer, diagnostic))
+                else:
+                    required_failure = True
             elif isinstance(outcome, BaseException):
                 raise outcome
             else:
                 completed.append(outcome)
-        if diagnostics:
+        if required_failure:
             raise _ReviewDiagnosticsError(tuple(diagnostics))
         return tuple(completed)
 
@@ -2316,7 +2400,11 @@ def _aggregate_layer_results(
     for name in failed:
         item = by_name[name]
         entries: list[tuple[str, str, _HardReviewEvidence | None]] = []
-        if evidence_bound and name in _EVIDENCE_BOUND_LAYERS:
+        if item.optional_failure is not None:
+            if name not in _OPTIONAL_LAYER_WARNINGS:
+                raise RuntimeError('LAYER_REVIEW_INCOMPLETE')
+            entries.append((_OPTIONAL_LAYER_WARNINGS[name], 'soft', None))
+        elif evidence_bound and name in _EVIDENCE_BOUND_LAYERS:
             entries.extend(
                 (evidence.code, evidence_severity(evidence.code, evidence.claim_kind), evidence)
                 for evidence in item.hard_evidence
@@ -2333,7 +2421,9 @@ def _aggregate_layer_results(
             # fact, permission and text-integrity evidence belongs to its own layer.
             severity = ('soft' if name in {'focus_response', 'autonomy_life'}
                         else 'hard' if item.hard_violations or item.score == 0 else 'soft')
-            entries.extend((code, severity, None) for code in codes)
+            # Answering an earlier message instead of this one is not a preference:
+            # the user's message went unanswered, so it is rewritten.
+            entries.extend((code, 'hard' if code == 'OFF_TURN_REPLY' else severity, None) for code in codes)
         for code, severity, evidence in entries:
             start = evidence.start if evidence is not None else 0
             end = evidence.end if evidence is not None else len(candidate)

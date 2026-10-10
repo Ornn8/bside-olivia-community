@@ -69,6 +69,8 @@ def secondary_photo_allowed(row):
     When JEV planned the medium the user asked for, that plan owns delivery. On a
     plain turn (no media requested) the photo planner decides, as before 2.0.
     """
+    if row.get('degraded_stages'):
+        return False  # Auxiliary recovery grants only a reviewed text response.
     record = row.get('companion_decision')
     if not record or is_companion_image(row):
         return True
@@ -127,7 +129,9 @@ def _photo_reference(row, text):
     """Project only visible hints from this body's saved view, never live state."""
     from runtime.reply.character_emotion_context import checked_expression_context
     view = checked_expression_context(row) if row.get('reply_text') == text else None
-    reference = {'reply_as_of': None, 'world_current_location': None, 'expression_options': []}
+    from runtime.wardrobe import photo_reference
+    reference = {'reply_as_of': None, 'world_current_location': None, 'expression_options': [],
+                 **photo_reference(row.get('image_reply_settings', {}))}
     if view is None:
         return reference
     reference['reply_as_of'] = view['as_of']
@@ -406,12 +410,27 @@ async def _prepare_once(server, row, content, text, *, channel='letter', on_read
         if identity == 'None': raise ValueError('IMAGE_ID_INVALID')
         photo_id = hashlib.sha256((channel+':'+identity).encode()).hexdigest()[:32]
         caps = await api.request('capabilities', {})
+        # A delisted model must not create new work, but a frozen receipt must
+        # remain recoverable without turning an existing task into a new charge.
+        if 'model' in settings and not row.get('image_receipt_required'):
+            media_root = server._media_root() if callable(getattr(server, '_media_root', None)) else server._state_root() / 'media'
+            receipt = (media_root / ('photo-' + photo_id + '.png')).with_suffix('.task.json') if media_root is not None else None
+            if receipt is None or not receipt.is_file():
+                from runtime.video_reply_settings import require_image_model
+                require_image_model(settings, caps)
         if caps.get('server_media_planning') is True and ('image_plan' not in row or row.get('image_server_planned')):
+            from runtime.wardrobe import style_for, DEFAULT_STYLE
+            style = style_for(settings)
+            supported = caps.get('wardrobe_styles')
+            if style != DEFAULT_STYLE and not caps.get('wardrobe_daily') and (not isinstance(supported, list) or style not in supported):
+                raise ValueError('IMAGE_WARDROBE_UNAVAILABLE')
+            if caps.get('wardrobe_daily') and 'image_server_request' not in row:
+                row['image_wardrobe_protocol']='daily'
             await _server_photo(server, row, content, text, api, photo_id, settings, progress, channel, on_ready)
             return
         if 'image_plan' not in row:
             reference = _photo_reference(row, text)
-            reference['requested_image'] = is_companion_image(row)
+            reference['requested_image'] = is_companion_image(row) or row.get('gift_photo') is True
             current_location = reference['world_current_location']
             from runtime.reply.jev_questions import configured_questions
             questions_port = configured_questions()
@@ -436,6 +455,8 @@ async def _prepare_once(server, row, content, text, *, channel='letter', on_read
                 row.update(image_status='SKIPPED', image_skip_reason='SCENE_CONFLICT')
                 server._persist_store_state()
                 return
+            from runtime.wardrobe import dress_photo
+            plan = dress_photo(plan, settings)
             row['image_plan'] = plan; server._persist_store_state()
         plan = row['image_plan']
         if not plan['attach']:
@@ -451,6 +472,7 @@ async def _prepare_once(server, row, content, text, *, channel='letter', on_read
         row['image_dependency_available'] = True
         payload = {k:v for k,v in plan.items() if k != 'attach'}
         payload['resolution'] = settings['resolution']
+        if 'model' in settings: payload['model'] = settings['model']
         name = 'photo-' + photo_id + '.png'
         media_root = server._media_root() if callable(getattr(server, '_media_root', None)) else server._state_root() / 'media'
         if media_root is None: raise ValueError('IMAGE_STORAGE_UNAVAILABLE')
@@ -517,18 +539,33 @@ async def _server_photo(server, row, content, text, api, photo_id, settings, pro
     """Submit frozen facts, download the photo, and commit only local delivery state."""
     from PIL import Image
     reference = _photo_reference(row,text)
-    reference['requested_image'] = is_companion_image(row)
+    if row.get('image_wardrobe_protocol')=='daily':
+        from runtime.wardrobe import CLOUD_CATALOG_PROTOCOL
+        reference['wardrobe']={'mode':'daily','catalog_version':CLOUD_CATALOG_PROTOCOL}
+    reference['requested_image'] = is_companion_image(row) or row.get('gift_photo') is True
+    if channel == 'qq' and not reference['requested_image'] and row.get('daily_video_candidates'):
+        # Her current moments: the cloud planner may share one as a short video instead.
+        moments = [{key: item[key][:200] for key in ('event_id', 'event_kind', 'detail', 'location')
+                    if isinstance(item.get(key), str) and item[key]} for item in row['daily_video_candidates'][:6]]
+        if moments:
+            reference['video_moments'] = moments
     request = {'incoming':content,'reply':text,'reference':reference}
     row.setdefault('image_server_request', request)
     if row['image_server_request']['incoming'] != content or row['image_server_request']['reply'] != text:
         raise ValueError('IMAGE_GENERATION_BINDING_CHANGED')
     payload = {'media_request':row['image_server_request'],'resolution':settings['resolution']}
+    if 'model' in settings: payload['model'] = settings['model']
     name = 'photo-'+photo_id+'.png'
     media_root = server._media_root() if callable(getattr(server,'_media_root',None)) else server._state_root()/'media'
     if media_root is None:
         raise ValueError('IMAGE_STORAGE_UNAVAILABLE')
     path = media_root/name
     receipt = path.with_suffix('.task.json')
+    fingerprint = hashlib.sha256(json.dumps([api.url, hashlib.sha256(api.token.encode()).hexdigest(),
+                                'image', payload, {}], sort_keys=True).encode()).hexdigest()
+    if row.setdefault('image_generation_binding', fingerprint) != fingerprint:
+        raise ValueError('IMAGE_GENERATION_BINDING_CHANGED')
+    _check_receipt(receipt, fingerprint, payload, row.get('image_receipt_required', False))
     row['image_server_planned'] = True
     server._persist_store_state()
     def validate(output):
@@ -550,11 +587,29 @@ async def _server_photo(server, row, content, text, api, photo_id, settings, pro
             row['image_receipt_required']=True
     if task.get('stage')=='skipped':
         row['image_status']='SKIPPED'
+        shared = task.get('share_video')
+        if shared and any(item.get('event_id') == shared for item in row.get('daily_video_candidates') or []):
+            row['share_video_event'] = shared
+        server._persist_store_state()
         return
     plan=task.get('media_plan')
     if (not isinstance(plan,dict) or plan['photo_type'] not in PHOTO_TYPES or plan['room'] not in ROOMS
             or plan['time_of_day'] not in ('morning','noon','dusk','night')):
         raise ValueError('IMAGE_PLAN_INVALID')
+    from runtime.wardrobe import style_for, DEFAULT_STYLE
+    style = style_for(settings)
+    if row.get('image_wardrobe_protocol')=='daily':
+        from runtime.wardrobe import validate_daily_outfit
+        if 'daily_outfit' not in plan:
+            raise ValueError('IMAGE_WARDROBE_NOT_APPLIED')
+        outfit=validate_daily_outfit(plan['daily_outfit'])
+        if plan['photo_type']=='snapshot' and outfit is not None:
+            raise ValueError('IMAGE_WARDROBE_NOT_APPLIED')
+        if 'daily_outfit' in row and row['daily_outfit']!=outfit:
+            raise ValueError('IMAGE_GENERATION_BINDING_CHANGED')
+        row['daily_outfit']=outfit
+    elif style != DEFAULT_STYLE and plan['photo_type']!='snapshot' and plan.get('wardrobe_style') != style:
+        raise ValueError('IMAGE_WARDROBE_NOT_APPLIED')
     row['image_plan']={'attach':True,**plan}
     from runtime.image_understanding import describe_image
     try:

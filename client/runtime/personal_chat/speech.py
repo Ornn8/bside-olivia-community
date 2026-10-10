@@ -7,6 +7,27 @@ import time
 
 _capabilities = {}
 
+BEDTIME_OFFER_INSTRUCTION = {
+    'bedtime': """<bedtime_audio_offer>
+本轮冻结JEV决定是bedtime：用户本人现在准备睡觉，本次睡前对话尚未邀请且没有拒绝。先自然回应，然后必须用一句直接问句询问想听睡前故事还是轻声ASMR陪伴。不能只说晚安或“想听的话告诉我”，不再判断是否需要邀请。午睡也在此刻询问，不能推迟成“醒了/以后想听再告诉我”。问句要让对方听出这是她录给对方的一段语音，可以自然表达为“要不要我录一段给你听？讲个睡前故事，还是小声哄你睡？”只问内容选择，不问几分钟；时长由应用采用默认值。沿用当前人格与关系，不编造近况，不复述用户原话当作自己的经历。本轮需要回应，skip=false，省略silence字段。这是询问，speech=null，不承诺制作或发送，不创建followup。继续输出原聊天JSON。
+</bedtime_audio_offer>""",
+    'clarify': """<bedtime_audio_offer>
+本轮冻结JEV决定是clarify：用户答应了故事和ASMR两个选项的邀请，但尚未选择。简短直接问是想听她讲个睡前故事，还是小声哄睡陪着，不替用户选择，不问时长。本轮需要回应，skip=false，省略silence字段。这一步speech=null，不承诺制作，不创建followup。继续输出原聊天JSON。
+</bedtime_audio_offer>""",
+    'none': """<bedtime_audio_offer>
+本轮冻结JEV决定是none：当前无需睡前音频邀请或选择澄清。按普通聊天回应最后一条用户消息，不主动邀请故事或ASMR，不复述历史邀请，speech=null，不新增followup。尊重拒绝和不用回复；silence.evidence从当前原话逐字摘抄，不改写。你的近况不是用户的经历。继续输出原聊天JSON。
+</bedtime_audio_offer>"""
+}
+
+
+SPEECH_WRITER_INSTRUCTION = """<long_audio_task>
+本轮JEV已确认用户现在要一段长音频，见speech_request：mode=story是正常声音讲故事，asmr是在耳边轻声陪伴、哄睡而不讲故事，asmr_story是耳语讲故事；target_seconds是目标时长（秒）。
+必须在同一个JSON里额外输出speech={"title":"音频标题，20字内","spoken_text":"将被录成音频的完整正文","continuation_summary":"故事梗概，供以后续讲，200字内；asmr填空字符串"}。
+text只写一两句简短接话，比如答应下来、让对方躺好等一会儿；故事或陪伴的正文只写在speech.spoken_text里，text不重复正文，也不声称已经录好或发出。
+spoken_text按target_seconds写够长度，字数不算标点：正常讲故事每秒约4.5个字，耳语每秒约3.5个字（例如180秒的故事约810字，600秒的耳语约2100字）。宁可写长一些，太短会录得比约定的短。只写她要说出口的话，用自然口语和标点表现停顿；不写（轻声）（停顿）[耳语]【动作】这类括号提示、音效或旁白说明，不以{、[或```开头。
+故事是虚构的，不当成她现实里发生的事；ASMR是她贴近耳边、慢慢地、温柔地陪对方放松入睡的话，可以有呼吸般的停顿和重复，不讲完整故事。沿用当前人格和关系，不编造双方的现实经历。
+</long_audio_task>"""
+
 
 async def supported(environment):
     """Cache server readiness; older deployments keep ordinary chat working."""

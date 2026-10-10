@@ -18,9 +18,14 @@ import sys
 from threading import Event, Thread
 import time
 from urllib.error import HTTPError, URLError
-from urllib.request import urlopen
+from urllib.request import ProxyHandler, build_opener
+
+# These requests target our loopback backend, never the user's system proxy.
+# Keep the callable alias so tests can substitute HTTP responses without a server.
+urlopen = build_opener(ProxyHandler({})).open
 
 from llm_gateway import ManagedLLMConfig
+from runtime.official_endpoints import canonical_api_base, migrate_saved_api_url, LEGACY_API_BASE
 
 from patch_companion_settings import (
     CompanionSettingsPatchError,
@@ -29,6 +34,7 @@ from patch_companion_settings import (
 from patch_feapp import repair_web_player_event_ids
 from patch_webplayer import WebPlayerPatchError, patch_webplayer
 from installer.native_window_layout import LayoutStatus, guard_native_window_layout
+from installer.patch_local_login import LocalLoginPatchError, apply as apply_local_login
 from installer.patch_native_navigation import (
     COMPATIBILITY_MANIFEST_NAME,
     NativeNavigationPatchError,
@@ -190,8 +196,14 @@ def _load_llm_environment(
 
     from original_client_relay_api import RELAY_BASE, RELAY_MODEL
 
+    migrate_saved_api_url(data_root / "config" / "llm.json")
     _adopt_saved_account_key(data_root / "config")
     values = environment.copy()
+    for name in ('OLIVIA_LLM_BASE_URL', 'OLIVIA_MEMORY_LLM_BASE_URL', 'OLIVIA_MEMORY_LLM_DEFAULT_BASE_URL'):
+        if name in values:
+            values[name] = canonical_api_base(values[name])
+    if values.get('OLIVIA_JEV_DECISION_URL') == LEGACY_API_BASE + '/companion/decide':
+        values['OLIVIA_JEV_DECISION_URL'] = RELAY_BASE + '/companion/decide'
     base_url = RELAY_BASE
     model = RELAY_MODEL
     provider = "openai_compatible"
@@ -235,6 +247,8 @@ def _load_llm_environment(
                 managed_key_absent = True
             else:
                 raise ValueError("missing key binding")
+        elif payload.get("schema_version") == 1:
+            saved_key_binding = key_path.is_file()
     except FileNotFoundError:
         pass
     except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
@@ -304,9 +318,10 @@ def _port_is_bindable(port: int) -> bool:
     return True
 
 
-def _health(port: int) -> str:
+def _probe_health(port: int) -> tuple[str, str | None]:
+    """Read readiness and identity together; transient failures are retryable."""
     try:
-        with urlopen(f"http://127.0.0.1:{port}/health?profile=core", timeout=1.5) as response:
+        with urlopen(f"http://127.0.0.1:{port}/health?profile=core&probe=startup", timeout=1.5) as response:
             payload = json.loads(response.read().decode("utf-8"))
         data = payload.get("data") if isinstance(payload, dict) else None
         required_checks = data.get("required_checks") if isinstance(data, dict) else None
@@ -334,12 +349,21 @@ def _health(port: int) -> str:
             and (data["status"] == "HEALTHY") == required_checks_available
         )
         if not contract_matches:
-            return "PORT_CONFLICT"
-        return "READY" if data["status"] == "HEALTHY" else "UNAVAILABLE"
-    except HTTPError:
-        return "PORT_CONFLICT"
+            return "PORT_CONFLICT", None
+        identity = data.get("backend_id")
+        if not isinstance(identity, str) or not _BACKEND_ID_RE.fullmatch(identity):
+            identity = None
+        return ("READY" if data["status"] == "HEALTHY" else "UNAVAILABLE"), identity
+    except HTTPError as exc:
+        return ("RETRYABLE" if exc.code in {408, 429} or 500 <= exc.code <= 599 else "PORT_CONFLICT"), None
     except Exception:
-        return "UNAVAILABLE" if _port_is_bindable(port) else "PORT_CONFLICT"
+        return ("UNAVAILABLE" if _port_is_bindable(port) else "RETRYABLE"), None
+
+
+def _health(port: int) -> str:
+    state, _identity = _probe_health(port)
+    # Retain the public CLI's three-state schema while the waiter can retry.
+    return "UNAVAILABLE" if state == "RETRYABLE" else state
 
 
 def _backend_id(backend: Path, root: Path) -> str:
@@ -364,24 +388,7 @@ def _backend_id(backend: Path, root: Path) -> str:
 def _server_backend_id(port: int) -> str | None:
     """Read the path-free identity published by the backend on this port."""
 
-    try:
-        with urlopen(
-            f"http://127.0.0.1:{port}/health?profile=core",
-            timeout=1.5,
-        ) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-        data = payload.get("data") if isinstance(payload, dict) else None
-        backend_id = data.get("backend_id") if isinstance(data, dict) else None
-        if (
-            response.status == 200
-            and payload.get("code") == 0
-            and isinstance(backend_id, str)
-            and _BACKEND_ID_RE.fullmatch(backend_id)
-        ):
-            return backend_id
-    except Exception:
-        pass
-    return None
+    return _probe_health(port)[1]
 
 
 def _stop_backend_server(server: object) -> None:
@@ -545,11 +552,11 @@ def _frontend_patcher_digest() -> str:
     files = [source / name for name in (
         "installer/start_local.py", "patch_feapp.py", "patch_webplayer.py",
         "patch_companion_settings.py", "original_client_settings_ui.py",
-        "installer/patch_letter_stickers.py", "installer/assets/wechat-payment.jpeg",
+        "installer/patch_letter_stickers.py",
     )]
     files.extend((source / "runtime/personal_chat").glob("*.py"))
     files.extend(path for path in (source / "runtime/letter_stickers").iterdir()
-                 if path.suffix in {".png", ".gif", ".json", ".js"})
+                 if path.suffix in {".json", ".js"})
     digest = hashlib.sha256()
     for path in sorted(files):
         digest.update(path.relative_to(source).as_posix().encode("utf-8") + b"\0")
@@ -637,6 +644,12 @@ def _client_command(client: Path, local: Path) -> list[str]:
     """Match the first-party launcher's only client argument."""
 
     return [str(client), f'--user-data-dir={local / "cef"}']
+
+
+def _repair_local_login(root: Path) -> str:
+    if _client_executable(root).parent != root / "app" / "0.0.9.627":
+        raise LocalLoginPatchError("LOCAL_LOGIN_UNSUPPORTED_CLIENT")
+    return apply_local_login(root)
 
 
 def _client_environment(environment: dict[str, str], roaming: Path, local: Path) -> dict[str, str]:
@@ -845,6 +858,28 @@ def _memory_write_timeout(environment: dict[str, str]) -> str:
     return format(min(300.0, max(0.1, value)), "g")
 
 
+def _wait_owned_backend(server: object, port: int, expected_backend_id: str,
+                        timeout_seconds: float) -> tuple[str, str]:
+    """Wait through transient failures until the owned backend reports readiness."""
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if server.poll() is not None:
+            return "UNAVAILABLE", "backend_exited"
+        health, identity = _probe_health(port)
+        if server.poll() is not None:
+            return "UNAVAILABLE", "backend_exited"
+        if health == "PORT_CONFLICT":
+            return health, "foreign_backend"
+        if health == "READY":
+            if identity != expected_backend_id:
+                return "PORT_CONFLICT", "foreign_backend"
+            return "READY", "ready"
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            time.sleep(min(0.25, remaining))
+    return "UNAVAILABLE", "startup_timeout"
+
+
 def _start_backend_server(
     *,
     backend: Path,
@@ -870,30 +905,15 @@ def _start_backend_server(
         stderr=subprocess.DEVNULL,
         creationflags=creationflags,
     )
-    deadline = time.monotonic() + _BACKEND_START_TIMEOUT_SECONDS
-    while time.monotonic() < deadline:
-        if server.poll() is not None:
-            break
-        if (
-            _health(port) == "READY"
-            and _server_backend_id(port) == expected_backend_id
-        ):
-            break
-        time.sleep(0.25)
-    health = _health(port)
-    if (
-        server.poll() is None
-        and health == "READY"
-        and _server_backend_id(port) == expected_backend_id
-    ):
+    health, reason = _wait_owned_backend(server, port, expected_backend_id, _BACKEND_START_TIMEOUT_SECONDS)
+    if health == "READY":
         _append_launcher_event(data_root, "backend_ready")
     else:
-        if health == "READY":
-            health = "UNAVAILABLE"
         _append_launcher_event(
             data_root,
             "backend_unavailable",
             health=health,
+            reason=reason,
             exit_code=server.poll(),
         )
     return server, health
@@ -1037,22 +1057,35 @@ def _launch(args: argparse.Namespace, root: Path, backend: Path, entrypoint: Pat
             *, startup_player: object | None = None) -> int:
     """Prepare the backend and native client while the startup animation plays."""
 
-    health = _health(args.port)
+    health, identity = _probe_health(args.port)
+    # An occupied, temporarily unresponsive endpoint is not a verified conflict.
+    # Wait without starting a second backend or terminating an unknown listener.
+    if health == "RETRYABLE" or (health == "UNAVAILABLE" and not _port_is_bindable(args.port)):
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            time.sleep(min(0.25, max(0, deadline - time.monotonic())))
+            health, identity = _probe_health(args.port)
+            if health in {"READY", "PORT_CONFLICT"} or (health == "UNAVAILABLE" and identity is None and _port_is_bindable(args.port)):
+                break
+        if health not in {"READY", "PORT_CONFLICT"} and not _port_is_bindable(args.port):
+            _append_launcher_event(data_root, "startup_failed", code="LOCAL_SERVER_UNRESPONSIVE")
+            print("LOCAL_SERVER_UNRESPONSIVE")
+            return 2
     if health == "PORT_CONFLICT":
         print("PORT_CONFLICT")
         return 2
     expected_backend_id = _backend_id(backend, root)
-    if health == "READY" and _server_backend_id(args.port) != expected_backend_id:
+    if health == "READY" and identity != expected_backend_id:
         if not _stop_stale_backend(args.port, root):
             print("STALE_BACKEND_RUNNING")
             return 2
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
             health = _health(args.port)
-            if health == "UNAVAILABLE":
+            if health == "UNAVAILABLE" and _port_is_bindable(args.port):
                 break
             time.sleep(0.1)
-        if health != "UNAVAILABLE":
+        if health != "UNAVAILABLE" or not _port_is_bindable(args.port):
             print("STALE_BACKEND_RUNNING")
             return 2
     from installer.repair_image_dependency import ensure_bundled_image_dependency
@@ -1124,6 +1157,12 @@ def _launch(args: argparse.Namespace, root: Path, backend: Path, entrypoint: Pat
             print("ISOLATED_CLIENT_NOT_FOUND")
             return 2
         try:
+            _repair_local_login(root)
+        except LocalLoginPatchError as exc:
+            _append_launcher_event(data_root, "startup_failed", code=str(exc))
+            print("CLIENT_LOCAL_LOGIN_REPAIR_FAILED")
+            return 2
+        try:
             _repair_native_navigation(root)
         except (NativeNavigationPatchError, OSError):
             print("CLIENT_NATIVE_NAVIGATION_REPAIR_FAILED")
@@ -1138,28 +1177,24 @@ def _launch(args: argparse.Namespace, root: Path, backend: Path, entrypoint: Pat
                                    exception_type=type(exc).__name__)
             print("CLIENT_FRONTEND_REPAIR_FAILED")
             return 2
-        owned_ready = (
-            server is not None
-            and server.poll() is None
-            and _health(args.port) == "READY"
-            and _server_backend_id(args.port) == expected_backend_id
-        )
         # A backend that is still running may simply be busy right after start
         # (recovering letters and media). Give it time before replacing it.
-        deadline = time.monotonic() + 15
-        while not owned_ready and server is not None and server.poll() is None and time.monotonic() < deadline:
-            time.sleep(0.5)
-            owned_ready = _health(args.port) == "READY" and _server_backend_id(args.port) == expected_backend_id
+        owned_health, owned_reason = ("UNAVAILABLE", "not_started") if server is None else _wait_owned_backend(
+            server, args.port, expected_backend_id, 15)
+        owned_ready = owned_health == "READY"
         if not owned_ready:
             _append_launcher_event(
                 data_root, "backend_replaced",
-                reason=("not_started" if server is None else "exited" if server.poll() is not None
-                        else "unresponsive" if _health(args.port) != "READY" else "foreign_backend"),
+                reason=("not_started" if server is None else "exited" if owned_reason == "backend_exited"
+                        else "foreign_backend" if owned_reason == "foreign_backend" else "unresponsive"),
                 **({"exit_code": server.poll()} if server is not None and server.poll() is not None else {}))
             if server is not None:
                 _stop_backend_server(server)
                 server = None
-            health = _health(args.port)
+            health, _identity = _probe_health(args.port)
+            if health == "RETRYABLE":
+                print("LOCAL_SERVER_UNRESPONSIVE")
+                return 2
             if health == "PORT_CONFLICT":
                 print("PORT_CONFLICT")
                 return 2
@@ -1170,10 +1205,10 @@ def _launch(args: argparse.Namespace, root: Path, backend: Path, entrypoint: Pat
                 deadline = time.monotonic() + 5
                 while time.monotonic() < deadline:
                     health = _health(args.port)
-                    if health == "UNAVAILABLE":
+                    if health == "UNAVAILABLE" and _port_is_bindable(args.port):
                         break
                     time.sleep(0.1)
-                if health != "UNAVAILABLE":
+                if health != "UNAVAILABLE" or not _port_is_bindable(args.port):
                     print("STALE_BACKEND_RUNNING")
                     return 2
             server, health = _start_backend_server(

@@ -134,7 +134,8 @@ def test_repacking_does_not_search_again():
     assert second.references
 
 
-def test_real_letter_adapter_world_and_prompt_share_one_recent_snapshot():
+@pytest.mark.parametrize('include_relationship', [False, True])
+def test_real_letter_adapter_world_and_prompt_share_one_recent_snapshot(include_relationship):
     from local_server import LetterAdapter
     from llm_gateway import GatewayConfig
     from persona_assembly import UntrustedFragment
@@ -142,9 +143,14 @@ def test_real_letter_adapter_world_and_prompt_share_one_recent_snapshot():
     reads, world_related = [], []
     def recent(content):
         reads.append(content)
-        return (UntrustedFragment('letters.recent', json.dumps({'letters': [
+        fragments = (UntrustedFragment('letters.recent', json.dumps({'letters': [
             {'user_letter': f'frozen-recent-{len(reads)}', 'linli_reply': 'recorded response'}
         ]})),)
+        if include_relationship:
+            fragments += (UntrustedFragment('chat.relationship', json.dumps({
+                'kind': 'relationship_history', 'records': [
+                    {'speaker': 'linli', 'text': 'recorded agreement'}]})),)
+        return fragments
     def world_context(content, *, now, related_text):
         world_related.append(related_text)
         return json.dumps({'kind': 'character_life_reference', 'related': related_text})

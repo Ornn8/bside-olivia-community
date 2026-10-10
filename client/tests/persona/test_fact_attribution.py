@@ -64,3 +64,37 @@ def test_old_retrieval_is_not_promoted_to_recent_native_dialogue():
     assert [m['role'] for m in prepared] == ['system', 'system', 'user']
     assert prepared[-1] == messages[-1]
     assert old in prepared[0]['content']
+
+
+def test_native_projection_keeps_recent_turns_when_wrapper_already_fills_budget():
+    from runtime.reply.fact_attribution import prepare_dialogue_messages, finalize_reply_messages
+    rows = [dict(source_id=f'reply:old{i}', user_letter='用户' * 200,
+                 linli_reply='回复' * 200, channel='qq') for i in range(8)]
+    wrapper = json.dumps({'text': json.dumps({'kind': 'recent_dialogue', 'letters': rows},
+                                           ensure_ascii=False)}, ensure_ascii=False)
+    messages = (dict(role='system', content='核心规则<untrusted_history>' + wrapper + '</untrusted_history>'),
+                dict(role='user', content='现在呢'))
+    budget = sum(len(m['content']) for m in messages)
+    projected = prepare_dialogue_messages(messages, max_input_chars=budget)
+    assert any(m['content'].startswith('[历史消息 ') for m in projected)
+    final = finalize_reply_messages(projected, '本轮视频指令' * 100, max_input_chars=budget)
+    assert final[-1] == messages[-1] and '核心规则' in final[0]['content']
+    assert 'reply:old7' in str(final)
+    assert sum(len(m['content']) for m in final) <= budget
+
+
+def test_late_budget_trimming_keeps_original_referenced_by_compacted_evidence():
+    from runtime.reply.fact_attribution import finalize_reply_messages
+    original = dict(role='assistant', content='[历史消息 ' + json.dumps(dict(
+        source='reply:old', event_id='reply:old:linli', actor='linli')) + ']\n' + '原话' * 300)
+    removable = dict(role='assistant', content='[历史消息 {}]\n' + '过时闲聊' * 300)
+    wrapper = json.dumps({'text': json.dumps({'previous_observations': [
+        {'text_ref': 'reply:old:linli', 'evidence_kind': 'character_statement'}]})})
+    messages = (dict(role='system', content='<evidence_summary>' + wrapper + '</evidence_summary>'),
+                original, removable, dict(role='user', content='现在呢'))
+    result = finalize_reply_messages(messages, '本轮规则',
+        max_input_chars=sum(len(m['content']) for m in messages)-500)
+    references = ''.join(m['content'] for m in result if m['role'] == 'system')
+    assert (original in result) == ('reply:old:linli' in references)
+    assert original not in result or removable not in result
+    assert result[-1] == messages[-1]

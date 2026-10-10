@@ -37,6 +37,38 @@ def validate(value):
 def from_environment(environment):
     return validate(json.loads(environment.get('OLIVIA_ORIGINAL_MUSIC_OPTIONS','{}')))
 
+def input_limits(capabilities):
+    value = capabilities.get('original_music_input_limits')
+    if value is None:
+        return None
+    if (not isinstance(value, dict) or set(value) != {'lyrics', 'style', 'duration_control'}
+            or type(value['lyrics']) is not int or not 1 <= value['lyrics'] <= 3000
+            or type(value['style']) is not int or not 1 <= value['style'] <= 1000
+            or type(value['duration_control']) is not bool):
+        raise ValueError('MUSIC_CAPABILITIES_INVALID')
+    return dict(value)
+
+
+def retail_price(capabilities):
+    value = capabilities.get('original_music_retail_price')
+    if value is None:
+        return None
+    if (not isinstance(value, dict) or set(value) != {'version', 'min_cents', 'max_cents'}
+            or not isinstance(value['version'], str) or not 1 <= len(value['version']) <= 96
+            or type(value['min_cents']) is not int or type(value['max_cents']) is not int
+            or not 1 <= value['min_cents'] <= value['max_cents'] <= 300):
+        raise ValueError('MUSIC_CAPABILITIES_INVALID')
+    return dict(value)
+
+
+def require_input_limits(options, limits):
+    if limits is not None:
+        if len(options['caption']) > limits['style']:
+            raise ValueError('MUSIC_STYLE_TOO_LONG')
+        if not limits['duration_control'] and options['duration'] is not None:
+            raise ValueError('MUSIC_DURATION_UNSUPPORTED')
+
+
 def generation_parameters(value, default_caption):
     options=validate(value)
     for name in ('title','duration','negative_tags','style_weight','weirdness_constraint'): options.pop(name)

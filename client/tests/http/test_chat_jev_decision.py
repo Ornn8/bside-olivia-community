@@ -119,6 +119,20 @@ def ordinary_chat_result(**values):
     return result
 
 
+@pytest.mark.parametrize('record', [False, True])
+def test_auxiliary_recovery_remains_text_with_voice_and_extra_photos_enabled(monkeypatch, tmp_path, record):
+    from runtime.image_reply import secondary_photo_allowed
+    result = ordinary_chat_result(delivery='text', text_reason=None, sticker=None)
+    if not record:
+        result.companion_decision = None
+    result.degraded_stages = {'world' if record else 'decision': 'JEV_UNAVAILABLE'}
+    server, row, _, _, audio = server_fixture(monkeypatch, tmp_path, result)
+    assert asyncio.run(backend.generate(server, PersonalMessage('qq', 'b', 'u', '1', '今天怎么样？'), row))
+    assert row['requested_format'] == 'text' and not audio
+    assert row['degraded_stages'] == result.degraded_stages
+    assert not secondary_photo_allowed(row)
+
+
 @pytest.mark.parametrize('listening', ['voice_ok', 'text_only'])
 def test_qq_default_speech_does_not_depend_on_writer_opting_in_or_old_listening_preference(
         monkeypatch, tmp_path, listening):
@@ -375,15 +389,15 @@ def test_pre_writer_save_rejects_obsolete_turn(monkeypatch, tmp_path, supersessi
     assert 'companion_decision' not in row
 
 
-def test_jev_voice_render_failure_does_not_fall_back_to_text(monkeypatch, tmp_path):
+def test_jev_voice_render_failure_delivers_the_written_text(monkeypatch, tmp_path):
+    # A paid, reviewed reply is never dropped because its speech could not be made.
     server, row, _, _, _ = server_fixture(monkeypatch, tmp_path, pipeline_result(delivery='audio_speech'))
     async def unavailable(*a, **kwargs): raise RuntimeError('synthetic TTS failure')
     monkeypatch.setattr(backend, 'prepare_chat_audio', unavailable)
-    async def scenario():
-        with pytest.raises(RuntimeError, match='JEV_PLAN_UNSUPPORTED'):
-            await backend.generate(server, PersonalMessage('qq', 'b', 'u', '1', 'Hello'), row)
-    asyncio.run(scenario())
-    assert 'prepared_audio' not in row and row['companion_decision'] == RECORD
+    text = asyncio.run(backend.generate(server, PersonalMessage('qq', 'b', 'u', '1', 'Hello'), row))
+    assert text and 'prepared_audio' not in row and row['companion_decision'] == RECORD
+    assert row['delivery_basis'] == 'VOICE_RENDER_FAILED'
+    assert row['voice_fallback'] == 'PERSONAL_CHAT_TTS_UNAVAILABLE'
 
 
 def test_failed_writer_result_retains_pre_writer_decision(monkeypatch, tmp_path):

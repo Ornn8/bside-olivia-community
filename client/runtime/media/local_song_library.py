@@ -61,7 +61,15 @@ class LocalSongLibrary:
 
     def songs(self):
         with _LOCK:
-            return self._read()
+            rows = self._read()
+            changed = False
+            for row in rows:
+                if not row.get('native_id'):
+                    row['native_id'] = self._native_id(row['id'], rows)
+                    changed = True
+            if changed:
+                self._write(rows)
+            return rows
 
     def media_path(self, song_id):
         if not isinstance(song_id, str) or not _ID.fullmatch(song_id):
@@ -103,12 +111,59 @@ class LocalSongLibrary:
                 raise LocalSongError('LOCAL_SONG_NOT_FOUND')
             # Resolve the owned file before changing the catalog; never delete sources.
             path = self.media_path(song_id)
+            retired = next((x.get('native_id') for x in rows if x['id'] == song_id), None)
+            if retired:
+                self._retire(song_id, retired)
             self._write([x for x in rows if x['id'] != song_id])
             try:
                 path.unlink()
             except OSError:
                 self._write(rows)
                 raise LocalSongError('LOCAL_SONG_FILE_IN_USE') from None
+
+    def _retired(self):
+        """Return content-id -> native-id pairs whose song was deleted."""
+        path = self.root / 'native-ids.json'
+        if not path.exists():
+            return {}
+        try:
+            data = json.loads(path.read_text(encoding='utf-8'))
+            rows = data['retired']
+            if data['schema_version'] != 1 or not isinstance(rows, dict):
+                raise ValueError()
+            if any(not _ID.fullmatch(key) or not isinstance(value, str) or not value.isascii()
+                   or not value.isdecimal() or not NATIVE_SONG_ID_BASE <= int(value) < NATIVE_SONG_ID_BASE + NATIVE_SONG_ID_SPAN
+                   for key, value in rows.items()) or len(set(rows.values())) != len(rows):
+                raise ValueError()
+            return rows
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise LocalSongError('LOCAL_SONG_ID_LEDGER_INVALID') from exc
+
+    def _native_id(self, song_id, rows):
+        retired = self._retired()
+        taken = {row['native_id'] for row in rows if row.get('native_id') and row['id'] != song_id}
+        owned = retired.get(song_id)
+        if owned is not None:
+            if owned in taken:
+                raise LocalSongError('LOCAL_SONG_NATIVE_ID_CONFLICT')
+            return owned
+        return _assign_native_id(song_id, taken | set(retired.values()))
+
+    def _retire(self, song_id, native_id):
+        """Keep a deleted song's native id owned by its content for good."""
+        retired = self._retired()
+        if song_id in retired and retired[song_id] != native_id:
+            raise LocalSongError('LOCAL_SONG_NATIVE_ID_CONFLICT')
+        retired[str(song_id)] = str(native_id)
+        fd, name = tempfile.mkstemp(dir=self.root, suffix='.json.tmp')
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+                json.dump({'schema_version': 1, 'retired': retired}, stream, ensure_ascii=False)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(name, self.root / 'native-ids.json')
+        finally:
+            Path(name).unlink(missing_ok=True)
 
     def _prepare(self, source, output):
         try:
@@ -195,7 +250,8 @@ class LocalSongLibrary:
             try:
                 shutil.copyfile(source, temporary)
                 os.replace(temporary, destination)
-                self._write([*rows, {'id': song_id, 'name': title.strip(), 'duration': duration, 'media_type': 'audio'}])
+                self._write([*rows, {'id': song_id, 'name': title.strip(), 'duration': duration,
+                                     'media_type': 'audio', 'native_id': self._native_id(song_id, rows)}])
             except Exception:
                 destination.unlink(missing_ok=True)
                 raise
@@ -278,7 +334,8 @@ class LocalSongLibrary:
                     target = self.root / (song_id + '.mp4')
                     temporary.replace(target)
                     try:
-                        self._write([*rows, {'id': song_id, 'name': title[:120], 'duration': duration}])
+                        self._write([*rows, {'id': song_id, 'name': title[:120], 'duration': duration,
+                                             'native_id': self._native_id(song_id, rows)}])
                     except Exception:
                         target.unlink(missing_ok=True)
                         raise
@@ -314,3 +371,48 @@ class LocalSongLibrary:
                 if temporary is not None:
                     temporary.unlink(missing_ok=True)
         return report
+
+# The native player's eventId is a bounded integer: scaling a SHA256 prefix to
+# 1e15 overflows it. Derive a stable numeric identifier instead, and keep the
+# SHA256 as the content identifier for media URLs and de-duplication.
+#
+# native_id contract:
+#   type     decimal string. The bridge hands numbers to id/itemId/eventId, and a
+#            string keeps full precision on the wire and in the catalog.
+#   range    [NATIVE_SONG_ID_BASE, NATIVE_SONG_ID_BASE + NATIVE_SONG_ID_SPAN),
+#            i.e. inside the signed 32-bit range and clear of the low ids the
+#            bundled songs occupy.
+#   migrate  catalog.json stores one native_id per song. A catalog written before
+#            this change is backfilled by songs() on first read, then written back.
+#   retire   deleting a song moves its id into native-ids.json so the number stays
+#            owned by that content; probes never hand it to different content.
+NATIVE_SONG_ID_BASE = 1000000000
+NATIVE_SONG_ID_SPAN = 1000000000
+
+
+def native_song_id(song_id):
+    """Return the deterministic candidate native id for a song content id."""
+    if not isinstance(song_id, str) or not _ID.fullmatch(song_id):
+        raise LocalSongError('LOCAL_SONG_ID_INVALID')
+    return str(_native_id_candidate(song_id))
+
+
+def _native_id_candidate(song_id):
+    return NATIVE_SONG_ID_BASE + (int(song_id[:16], 16) % NATIVE_SONG_ID_SPAN)
+
+
+def _assign_native_id(song_id, taken):
+    """Return a unique native id for song_id, avoiding the given taken ids.
+
+    Starts from the deterministic candidate and probes forward, wrapping within
+    [NATIVE_SONG_ID_BASE, NATIVE_SONG_ID_BASE + NATIVE_SONG_ID_SPAN). ``taken``
+    is a set of already-assigned native ids (strings).
+    """
+    candidate = _native_id_candidate(song_id)
+    for _ in range(NATIVE_SONG_ID_SPAN):
+        if str(candidate) not in taken:
+            return str(candidate)
+        candidate += 1
+        if candidate >= NATIVE_SONG_ID_BASE + NATIVE_SONG_ID_SPAN:
+            candidate = NATIVE_SONG_ID_BASE
+    raise LocalSongError('LOCAL_SONG_ID_SPACE_EXHAUSTED')

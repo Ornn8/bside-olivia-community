@@ -48,6 +48,7 @@ class Decisions:
                 value = next((k for k, v in state['claim_kinds'].items() if v == 'relationship' and k in question['criteria']), next(iter(question['criteria'])))
             elif key.startswith('support'): value = next(k for k, v in state['support_sources'].items() if v == 'none')
             elif key.startswith('confirm:'): value = 'CONFIRM' if self.confirm else 'REJECT'
+            elif key == 'OFF_TURN_REPLY': value = 'current'
             elif key == 'STAGE_DRIFT:s0': value = 'yes'
             elif key == 'STAGE_DRIFT': value = 's0'
             else: value = 'none' if 'layers' in state else 'no'
@@ -223,8 +224,12 @@ def test_jev_confirmation_cannot_reintroduce_full_policy_or_history(monkeypatch)
     assert all('UNRELATED_OLD_HISTORY' not in json.dumps(call_state) for call_state, _ in port.calls)
     state, _ = confirm_call(port)
     def unpack(refs): return {k:state['catalog'][v] for k,v in refs.items()}
-    for layer in ('voice_style', 'focus_response'):
-        assert set(unpack(state['layers'][layer]['input_refs'])) <= {'mode','current_user_input','candidate_reply','output_constraints'}
+    assert set(unpack(state['layers']['voice_style']['input_refs'])) <= {'mode','current_user_input','candidate_reply','output_constraints'}
+    # The off-turn check sees only the frozen turn window, shared with continuity (no second copy).
+    assert set(unpack(state['layers']['focus_response']['input_refs'])) <= {
+        'mode','current_user_input','candidate_reply','output_constraints','recent_turns'}
+    assert (state['layers']['focus_response']['input_refs']['recent_turns']
+            == state['layers']['continuity_memory']['input_refs']['recent_turns'])
     continuity = unpack(state['layers']['continuity_memory']['input_refs'])
     assert continuity['recent_turns'] == turns
     confirmed = unpack(state['adjudication_contexts']['continuity_fact'])
@@ -262,6 +267,9 @@ def test_purpose_packets_keep_only_scoped_fields_and_frozen_turn_window():
         if name == 'continuity_memory':
             assert state['input']['recent_turns'] == turns
             assert '不是全部历史' in state['input']['history_coverage']
+        elif name == 'focus_response':
+            assert state['input']['recent_turns'] == turns  # to tell the last message from earlier ones
+            assert 'history_coverage' not in state['input'] and 'selected_memory' not in state['input']
         else:
             assert 'recent_turns' not in state['input']
         if name == 'focus_response':
@@ -284,7 +292,7 @@ def test_detection_size_does_not_grow_with_confirmations(monkeypatch):
     detect_state, detect = port.calls[0]
     assert len(detect_state['spans']) == 20
     assert not any(key[0] == 'c' and key[1:2].isdigit() for key in detect)
-    assert len(detect) < 48  # One support check per span; confirmations remain demand-only.
+    assert len(detect) < 49  # One support check per span plus the off-turn check; confirmations remain demand-only.
     assert len([key for key in detect if ':fact:' in key]) == 20
     assert len(_json(dict(state=detect_state, questions=detect, purpose='quality-review')).encode()) < JEV_MAX_INPUT_BYTES
     state, questions = confirm_call(port)
@@ -308,3 +316,44 @@ def test_memory_fabrication_rule_covers_misattributed_speakers():
     rule = json.dumps(_CODE_RULES['MEMORY_FABRICATION'], ensure_ascii=False)
     assert '安到错误的人身上' in rule and '你答应过' in rule
     assert 'speaker' in _SELECTED and '不得颠倒' in _SELECTED
+
+
+def test_relationship_review_and_confirmation_keep_utterances_separate_from_ledger(monkeypatch):
+    import json
+    from dataclasses import asdict
+    port = Decisions()
+    review = transport(monkeypatch, port)
+    original = {'kind': 'relationship_history', 'coverage': 'bounded', 'records': [
+        {'citation': 'reply:agreement:1:linli', 'speaker': 'linli',
+         'text': '先当我的考察期男友吧。', 'occurred_at': '2026-10-01T10:00:00+00:00',
+         'evidence_scope': 'recorded_utterance'},
+        {'citation': 'reply:withdrawal:1:linli', 'speaker': 'linli',
+         'text': '考察期的说法我先收回。', 'occurred_at': '2026-10-06T10:00:00+00:00',
+         'evidence_scope': 'recorded_utterance'}]}
+    memory = '<untrusted_history>' + json.dumps({'untrusted': True, 'text': json.dumps(original)}) + '</untrusted_history>'
+    data = request('考察期这话是我说过，后来收回了。')
+    data['references'].extend(asdict(ref) for ref in quality._reference_chunks('current.memory_evidence', memory))
+    review.review_json(data, model='jev', timeout_seconds=5)
+    detection = port.calls[0][0]
+    history_ref = detection['layers']['identity_boundary']['input_refs']['relationship_history']
+    assert detection['catalog'][history_ref] == [original]
+    confirmation, _ = confirm_call(port)
+    context = confirmation['adjudication_contexts']['relationship']
+    assert confirmation['catalog'][context['relationship_context']] == {'stage': 'acquaintance'}
+    assert confirmation['catalog'][context['relationship_history']] == [original]
+    assert 'memory_evidence' not in context and 'current_user_input' not in context
+
+
+def test_off_turn_reply_is_a_whole_reply_judgment_that_forces_a_rewrite(monkeypatch):
+    class Earlier(Decisions):
+        async def ask(self, state, questions, **kwargs):
+            answers = await super().ask(state, questions, **kwargs)
+            for key, question in questions.items():
+                if key.endswith(':OFF_TURN_REPLY'):
+                    assert set(question['criteria']) == {'current', 'earlier', 'uncertain'}
+                    answers[key] = 'earlier'
+            return answers
+    import json
+    result = transport(monkeypatch, Earlier()).review_json(request('想看腿，我给你拍一张。'), model='jev', timeout_seconds=5)
+    found = [item for item in json.loads(result)['violations'] if item['code'] == 'OFF_TURN_REPLY']         if isinstance(result, str) else [item for item in result['violations'] if item['code'] == 'OFF_TURN_REPLY']
+    assert found and all(item['severity'] == 'hard' for item in found)  # rewritten, not just a warning

@@ -30,6 +30,19 @@ proactive=true时输入是应用检查，不是用户新发言；基于真实关
 
 
 INSTRUCTION += VOICE_POLICY
+INSTRUCTION += ('\n如提供daily_video_candidates，且本轮自然适合分享或用户明确要看，可额外输出'
+    'daily_video={"event_id":"候选原ID","spoken_text":"在5至15秒自拍视频里说的1至2句短话，100字内",'
+    '"share_text":"成片稍后发送时的自然分享文案，200字内",'
+    '"staging":{"image_direction":"英文描述参考图中的姿态、表情，400字符内",'
+    '"video_direction":"英文描述跟随台词的小动作、表情变化，800字符内"}}。'
+    '在同一次输出中完成台词和staging，不需要另行判断；两个指令各用一段非空短文，不写模型参数或额外对白。'
+    '视频生成会落后聊天：share_text说明这是拍摄时那件事，例如“给你看看我睡醒时迷迷糊糊的样子”或“这是洗完澡那会儿拍的”。'
+    '散步、家务、购物、餐食也同样使用拍摄时的过去状态，不声称发送时仍在现场或正在做；正文、share_text和台词不透露生成过程。'
+    '以本人手机前置自拍为主，脸部完整可见，手不遮嘴鼻；保持候选地点和服务端衣橱，不添加人物、物品或新事实。'
+    '睡醒时躺在枕头和被窝里，困倦、半睁眼、小动作，不坐起；洗完澡时湿短发、固定不透明浴巾，手留在肩外侧。'
+    '只能选提供的候选，不新造时间、地点、餐食、洗澡或睡醒事实；event_status=preparing或certainty=planned只预先编排完成时的成片，'
+    '正文不能声称事件已完成，发送仍等待实际完成依据；live按已发生事实编排。正文不朗读指令。'
+    '视频在后台生成，不阻塞本轮回复，不承诺已经发出；无需每轮选择，不用则省略daily_video。')
 INSTRUCTION += ('\n优先回应本轮用户的新内容；recent_dialogue里的用户原话和你的旧回复都是历史，不是本轮新发言。'
                 '上一轮已经说过的调侃、质问或解释，不要在接下来的不同回复里原句或近义重复。'
                 '用户明确追问才展开相关内容；旧回复中的猜测不是事实证据，用户更正后不能继续沿用。'
@@ -39,7 +52,7 @@ INSTRUCTION += ('\n优先回应本轮用户的新内容；recent_dialogue里的�
                 '接住用户这一句的意思再回应，不把用户的玩笑或亲近的话理解成与上文无关的新情况。\n')
 
 
-HISTORY_HEADER = re.compile(r'\[历史消息\s*\{.*?\}\s*\]\s*', re.DOTALL)
+PROVENANCE_HEADER = re.compile(r'\[(?:历史消息|当前消息)\s*\{.*?\}\s*\]\s*', re.DOTALL)
 
 
 def repeats_recent(text, rows, *, channel, binding_id, limit=6):
@@ -53,7 +66,63 @@ def repeats_recent(text, rows, *, channel, binding_id, limit=6):
     return any(normalized(value) == target for value in recent)
 
 
-_CONTROL_REASONS = {'UNSUPPORTED_PREFERENCE_CHANGE', 'TIME_RANGE', 'PAUSE_CONFLICT', 'FOLLOWUP_CONFLICT'}
+_CONTROL_REASONS = {'UNSUPPORTED_PREFERENCE_CHANGE', 'TIME_RANGE', 'PAUSE_CONFLICT', 'FOLLOWUP_CONFLICT',
+                    'INCOMPLETE_CONTROLS', 'CONTROL_SHAPE_INVALID'}
+_RESERVED_CONTROL = re.compile(r'\[\[\s*(?:(?:chat|delivery|initiative|letter|control)\s*[:：]|skip\b)',
+                               re.IGNORECASE)
+NEUTRAL_METADATA = dict(delivery='text', listening='keep', initiative='keep', pause_until=None,
+                        letter='keep', letter_until=None, followup_at=None, evidence='', skip=False)
+OPTIONAL_FIELDS = frozenset({'letter_invitation', 'sticker', 'text_reason', 'speech', 'silence', 'daily_video'})
+
+
+def _control_body(text):
+    """Recognize only a whole internal envelope, never JSON embedded in prose/code."""
+    candidate = text.strip()
+    signature = {'delivery', 'listening', 'initiative', 'letter', 'skip'}
+
+    def looks_internal(value):
+        keys = set(re.findall(r'\\*"(\w+)\\*"\s*:', value))
+        return value.lstrip(' \t\r\n"\\').startswith(('{', '[')) and signature <= keys
+
+    for _ in range(3):
+        try:
+            value = json.loads(candidate)
+        except (ValueError, RecursionError):
+            # An escaped whole object sometimes lost its enclosing string quotes.
+            if not looks_internal(candidate):
+                return None
+            try:
+                value = json.loads('"' + candidate + '"')
+            except (ValueError, RecursionError):
+                raise ValueError('CONTROL_BODY_INVALID') from None
+        if isinstance(value, str):
+            candidate = value.strip()
+            continue
+        if isinstance(value, list) and len(value) == 1:
+            value = value[0]
+        if isinstance(value, dict) and signature <= value.keys():
+            if not (NEUTRAL_METADATA.keys() | {'text'}) <= value.keys():
+                raise ValueError('CONTROL_BODY_INVALID')
+            return value
+        return None
+    if looks_internal(candidate):
+        raise ValueError('CONTROL_BODY_DEPTH')
+    return None
+
+
+def _reply_body(text):
+    # Only text is recovered; inner preferences, silence, schedules and media
+    # are never authoritative. The outer envelope retains its existing validation.
+    for _ in range(3):
+        inner = _control_body(text)
+        if inner is None:
+            return text
+        text = inner['text']
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError('CONTROL_BODY_INVALID')
+    if _control_body(text) is not None:
+        raise ValueError('CONTROL_BODY_DEPTH')
+    return text
 
 
 def _controls(data, *, user, now, proactive):
@@ -95,7 +164,8 @@ def _silence_kind(data, *, user, proactive, allow_user_silence):
     return silence['kind']
 
 
-def decode(raw, *, user, now, proactive=False, allow_user_silence=False):
+def decode(raw, *, user, now, proactive=False, allow_user_silence=False, allow_speech=True,
+           daily_video_candidates=()):
     try:
         # Tolerate a whole JSON code block, never extract JSON from mixed prose.
         if isinstance(raw, str):
@@ -105,40 +175,54 @@ def decode(raw, *, user, now, proactive=False, allow_user_silence=False):
         data = json.loads(raw)
         if isinstance(data, list) and len(data) == 1 and isinstance(data[0], dict):
             data = data[0]  # The model sometimes wraps its one decision in an array.
-        required = {'text','delivery','listening','initiative','pause_until','letter','letter_until',
-                    'followup_at','evidence','skip'}
+        required = {'text'}
+        optional = OPTIONAL_FIELDS
+        extra_field_count = (len(data.keys() - required - NEUTRAL_METADATA.keys() - optional)
+                             if isinstance(data, dict) else 0)
         if not isinstance(data, dict) or not required <= data.keys():
             raise ValueError("FIELDS")
         # Extra model annotations are not executable preferences. Optional media
         # metadata must not discard an otherwise valid reply.
-        optional = {'letter_invitation', 'sticker', 'text_reason', 'speech', 'silence'}
-        data = {key: value for key, value in data.items() if key in required | optional}
+        defaulted = sorted(NEUTRAL_METADATA.keys() - data.keys())
+        # Missing metadata must neither discard a usable body nor invent a
+        # preference, scheduled action, silent turn, or media requirement.
+        data = {**NEUTRAL_METADATA, **{key: value for key, value in data.items()
+                                     if key in required | NEUTRAL_METADATA.keys() | optional}}
         if data.get('text_reason') not in ('speaker_unavailable', 'verbatim_text'):
             data['text_reason'] = None
         if not isinstance(data.get('sticker'), str):
             data['sticker'] = None
         if not isinstance(data['text'], str) or type(data['skip']) is not bool:
             raise ValueError("TEXT_OR_SKIP_TYPE")
-        # The model sometimes copies the provenance header of an earlier message.
+        data['text'] = _reply_body(data['text'])
+        # The model sometimes copies a message's provenance header into its reply.
         # It is metadata, never something she says; an echo with nothing else is no reply.
-        data['text'] = HISTORY_HEADER.sub('', data['text']) if isinstance(data['text'], str) else data['text']
+        data['text'] = PROVENANCE_HEADER.sub('', data['text'])
         # Incoming platform placeholders must not reach either QQ text or TTS.
         for marker in ('[QQ表情]', '(QQ表情)', '（QQ表情）', '【QQ表情】'):
             data['text'] = data['text'].replace(marker, '')
-        if data['delivery'] not in {'text','voice'} or data['listening'] not in {'keep','text_only','voice_ok'}:
+        if data['delivery'] not in {'text','voice'}:
             raise ValueError("DELIVERY_OR_LISTENING")
-        if data['initiative'] not in {'keep','pause','open'} or data['letter'] not in {'keep','pause','open'}:
-            raise ValueError("PREFERENCES")
-        if type(data.get('letter_invitation', False)) is not bool or not isinstance(data['evidence'], str):
-            raise ValueError("EVIDENCE_TYPE")
         try:
+            if (any(not isinstance(data[key], str) or data[key] not in allowed for key, allowed in (
+                    ('listening', {'keep','text_only','voice_ok'}),
+                    ('initiative', {'keep','pause','open'}), ('letter', {'keep','pause','open'})))
+                    or type(data.get('letter_invitation', False)) is not bool
+                    or not isinstance(data['evidence'], str)):
+                raise ValueError('CONTROL_SHAPE_INVALID')
+            control_keys = {'listening', 'initiative', 'pause_until', 'letter', 'letter_until',
+                            'followup_at', 'evidence'}
+            if (control_keys.intersection(defaulted)
+                    and (any(data[key] != 'keep' for key in ('listening', 'initiative', 'letter'))
+                         or data['followup_at'] is not None)):
+                raise ValueError('INCOMPLETE_CONTROLS')
             _controls(data, user=user, now=now, proactive=proactive)
         except (ValueError, TypeError, OverflowError) as exc:
             # Follow-ups and preference changes are optional side effects of a
             # reply. An invalid one (night-time follow-up, change without the
             # user's words, bad time) is dropped; the reply itself is still sent.
             data.update(listening='keep', initiative='keep', letter='keep', pause_until=None,
-                        letter_until=None, followup_at=None, followup_cancel=False)
+                        letter_until=None, followup_at=None, followup_cancel=False, letter_invitation=False)
             data['dropped_controls'] = str(exc) if str(exc) in _CONTROL_REASONS else 'VALUE_TYPE_OR_TIME'
         data['silence_kind'] = _silence_kind(data, user=user, proactive=proactive,
                                              allow_user_silence=allow_user_silence)
@@ -147,16 +231,35 @@ def decode(raw, *, user, now, proactive=False, allow_user_silence=False):
         # A misplaced illustration marker is metadata, not a reason to drop the reply.
         from runtime.letter_stickers.selection import _MARKER
         data['text'] = _MARKER.sub('', data['text']).strip()
-        if '[[' in data['text'] or ']]' in data['text']:
+        if not data['skip'] and not data['text']:
+            raise ValueError('EMPTY_OR_SKIPPED_REPLY')
+        if _RESERVED_CONTROL.search(data['text']):
             raise ValueError("CONTROL_MARKER")
         from .speech import validate_script
-        data['speech'] = validate_script(data.get('speech'))
+        if not allow_speech and data.get('speech') is not None:
+            data['speech'] = None
+            data['dropped_media'] = 'UNREQUESTED_SPEECH'
+        else:
+            data['speech'] = validate_script(data.get('speech'))
+        if data.get('daily_video') is not None:
+            try:
+                from .daily_video import select_candidate
+                if data['skip'] or data.get('speech'):
+                    raise ValueError('DAILY_VIDEO_SELECTION_INVALID')
+                data['daily_video_request'] = select_candidate(data['daily_video'], daily_video_candidates)
+                if 'staging' in data['daily_video'] and 'staging' not in data['daily_video_request']:
+                    data['dropped_daily_video_staging'] = True
+            except (ValueError, TypeError, KeyError):
+                data.pop('daily_video', None)
+                data['dropped_daily_video'] = True
+        if defaulted:
+            data['defaulted_fields'] = defaulted
         return data
     except (ValueError, TypeError, KeyError, OverflowError) as exc:
         error = ValueError('PERSONAL_CHAT_DECISION_INVALID')
         if isinstance(locals().get('data'), dict):
             error.missing_fields = sorted(required - data.keys())
-            error.extra_field_count = len(data.keys() - required - {'letter_invitation', 'sticker', 'text_reason', 'silence', 'silence_kind'})
-        reasons = {'FOLLOWUP_CONFLICT', 'FIELDS', 'STICKER_TYPE', 'UNSUPPORTED_PREFERENCE_CHANGE', 'QUIET_HOURS', 'EVIDENCE_TYPE', 'PAUSE_CONFLICT', 'TEXT_OR_SKIP_TYPE', 'PREFERENCES', 'DELIVERY_OR_LISTENING', 'EMPTY_OR_SKIPPED_REPLY', 'TIME_RANGE', 'CONTROL_MARKER', 'SILENCE_INVALID', 'SILENCE_UNSUPPORTED'}
+            error.extra_field_count = extra_field_count
+        reasons = {'FOLLOWUP_CONFLICT', 'FIELDS', 'STICKER_TYPE', 'UNSUPPORTED_PREFERENCE_CHANGE', 'QUIET_HOURS', 'EVIDENCE_TYPE', 'PAUSE_CONFLICT', 'TEXT_OR_SKIP_TYPE', 'PREFERENCES', 'DELIVERY_OR_LISTENING', 'EMPTY_OR_SKIPPED_REPLY', 'TIME_RANGE', 'CONTROL_MARKER', 'CONTROL_BODY_INVALID', 'CONTROL_BODY_DEPTH', 'SILENCE_INVALID', 'SILENCE_UNSUPPORTED'}
         error.reason = str(exc) if type(exc) is ValueError and str(exc) in reasons else ('JSON_SYNTAX' if isinstance(exc, json.JSONDecodeError) else 'VALUE_TYPE_OR_TIME')
         raise error from exc

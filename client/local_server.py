@@ -141,7 +141,7 @@ from runtime.memory.private_world_runtime import (
 )
 
 from runtime.imports.official_letters import collect_default_official_text_replies
-from runtime.imports.letter_backup import export_letters as export_letter_backup, import_letters as import_letter_backup, is_backup as is_letter_backup
+from runtime.imports.letter_backup import export_letters as export_letter_backup, import_letters as import_letter_backup, is_backup as is_letter_backup, personal_chat_letters
 from runtime.imports.offline_letter_pairs import (
     OFFLINE_LETTER_PAIR_PROVENANCE_KEY,
     OFFLINE_LETTER_PAIR_PUBLISH_STATUS_KEY,
@@ -406,6 +406,13 @@ def _runtime_diagnostic_record(event: object, fields: Mapping[str, object]) -> d
 
     if not isinstance(event, str) or not _RUNTIME_DIAGNOSTIC_EVENT_RE.fullmatch(event):
         return None
+    if event == 'daily_life_failed':
+        from runtime.diagnostics.failure_context import project_daily_life_failure
+        return {'event': event, **project_daily_life_failure(fields)}
+    if event in {'personal_chat_transport_closed', 'personal_chat_transport_state', 'personal_chat_exchange_cancelled',
+                 'personal_chat_decision_normalized', 'personal_chat_decision_warning'}:
+        from runtime.diagnostics.support_bundle import _project_tail_record
+        return _project_tail_record({'event': event, **fields}, runtime=True)
     if event == 'history_relationship_failed':
         from runtime.diagnostics.support_bundle import project_history_relationship_failure
         return project_history_relationship_failure({**fields, 'status': 'FAILED'})
@@ -440,6 +447,10 @@ def _safe_log(event: str, **fields) -> None:
         item = (next(_RUNTIME_EVENT_SEQUENCE), projected)
         (_RUNTIME_REQUEST_EVENTS if event in {"request", "cors_preflight"} else _RUNTIME_DIAGNOSTIC_EVENTS).append(item)
     print(json.dumps(record, ensure_ascii=False, sort_keys=True))
+
+
+from runtime.diagnostics.failure_context import set_failure_logger
+set_failure_logger(_safe_log)
 
 
 def _diagnostic_code(prefix: str, exc: Exception) -> str:
@@ -524,6 +535,7 @@ def apply_runtime_llm_config(
             rewriter=rewriter or UnavailableRewriter(),
             discover_runtime_ports=False,
             current_turn_interpreter=_runtime_current_turn_interpreter(quality_orchestrator),
+            recovery_root=_conversation_state_root() or _local_data_root(),
         )
     except Exception:
         raise
@@ -893,12 +905,17 @@ class LetterAdapter:
             return ()
         from runtime.reply.jev_questions import configured_questions
         from runtime.reply.world_context_selection import select_world_context, selection_dialogue
+        from runtime.personal_chat.presentation import CURRENT
         packet = self.daily_life.store.reply_candidates(now=now)
         packet['recent_dialogue'] = selection_dialogue(self.recent_letter_fragments(content, now=now))
         # Freeze the turn's local inputs before concurrent emotion evaluation
         # can update the store while selection awaits its provider.
         addressing = self.daily_life.store.addressing_profile(now=now)
-        value = await select_world_context(configured_questions(), packet, content)
+        # Proactive decisions verify this frozen activity and timetable against
+        # live state. Relevance selection must not discard their prerequisites.
+        selection = {'required_fields': ('current', 'last_observation', 'schedule')} if (
+            CURRENT.get() or {}).get('proactive') else {}
+        value = await select_world_context(configured_questions(), packet, content, **selection)
         fragments = [UntrustedFragment('linli.daily-life', value),
                      UntrustedFragment('linli.rhythm', json.dumps(packet['rhythm'], ensure_ascii=False))]
         if addressing:
@@ -916,7 +933,7 @@ class LetterAdapter:
             related = "\n".join(
                 pair.get("user_letter", "") + "\n" + pair.get("linli_reply", "")
                 for fragment in (self.recent_letter_fragments(content) if recent_fragments is None else recent_fragments)
-                if fragment.fragment_id != 'chat.historical'
+                if fragment.fragment_id not in {'chat.historical', 'chat.relationship', 'chat.diary'}
                 for pair in json.loads(fragment.text)["letters"]
             )
             now = self._now() if now is None else now
@@ -950,13 +967,29 @@ class LetterAdapter:
         return await emotion.evaluate_received(receipts, now=now)
 
     def recent_letter_fragments(self, content: str = "", *, now=None) -> tuple[UntrustedFragment, ...]:
-        if self.recent_letters is None:
-            return ()
+        now = self._now() if now is None else now
         from runtime.reply.conversation_context import conversation_context
-        recent, historical = conversation_context(self.recent_letters(), query=content,
-            now=self._now() if now is None else now, excluded_sources=self._memory_source_exclusions())
-        return tuple(UntrustedFragment(name, text) for name, text in
+        from runtime.personal_chat.context import READ_WINDOW
+        rows = self.recent_letters() if READ_WINDOW.get() is None and self.recent_letters is not None else ()
+        recent, historical = conversation_context(rows, query=content,
+            now=now, excluded_sources=self._memory_source_exclusions())
+        fragments = tuple(UntrustedFragment(name, text) for name, text in
                      (('chat.recent', recent), ('chat.historical', historical)) if text)
+        from runtime.memory.history_continuity import companion_view
+        builder = companion_view(getattr(self, 'memory_prompt_builder', None))
+        if builder is not None:
+            relationship = builder.relationship_context(as_of=now, exclude_source_ids=self._memory_source_exclusions())
+            if json.loads(relationship).get('records'):
+                fragments += (UntrustedFragment('chat.relationship', relationship),)
+        diary = getattr(self, 'diary', None)
+        if diary is not None:
+            try:
+                written = diary.context(now)
+            except (OSError, ValueError, sqlite3.Error):
+                written = None
+            if written:
+                fragments += (UntrustedFragment('chat.diary', written),)
+        return fragments
 
     @staticmethod
     def _memory_source_exclusions() -> tuple[str, ...]:
@@ -1281,6 +1314,25 @@ def _atomic_write_store_file(path: Path, serialized: str) -> None:
         )
 
 
+def _has_saved_video_order(letter) -> bool:
+    root = _local_data_root(_os.environ)
+    lid = str(letter.get('letter_id', ''))
+    if root is None or not _re.fullmatch(r'[A-Za-z0-9_-]{1,80}', lid):
+        return False
+    if letter.get('reply_video_enabled', letter.get('reply_mode') != 'voice_reply') is not True:
+        return False
+    path = root / 'media' / (lid + '-remote-order.private.json')
+    try:
+        saved = json.loads(path.read_text(encoding='utf-8'))
+        submission = saved['submission']
+        return (isinstance(saved['fingerprint'], str) and bool(_re.fullmatch('[a-f0-9]{64}', saved['fingerprint']))
+                and submission['kind'] in {'video', 'lipsync', 'cover_video', 'original_video'}
+                and isinstance(submission['request_id'], str)
+                and bool(_re.fullmatch('[A-Za-z0-9_-]{8,80}', submission['request_id'])))
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+
 def _load_store_state() -> None:
     global _store_state_error_code
     root = _state_root()
@@ -1327,7 +1379,11 @@ def _load_store_state() -> None:
                         _mark_media_not_requested(item)
                         needs_persist = True
                     if item.get("media_status") == "PROCESSING":
-                        item.update(media_status="UNAVAILABLE", media_error_code="MEDIA_JOB_INTERRUPTED", media_retryable=True)
+                        from runtime.remote_pipeline import enabled as remote_enabled
+                        if remote_enabled(_os.environ) and _has_saved_video_order(item):
+                            item.update(media_status='QUEUED', media_error_code=None, media_retryable=False)
+                        else:
+                            item.update(media_status="UNAVAILABLE", media_error_code="MEDIA_JOB_INTERRUPTED", media_retryable=True)
                         needs_persist = True
     if isinstance(loaded.get("settings"), dict):
         store.settings = loaded["settings"]
@@ -1380,6 +1436,8 @@ def _write_store_snapshot(root, payload):
         _store_state_error_code = StoreStateUnavailable.code
         raise
     _store_state_error_code = None
+    from runtime.diagnostics.reply_telemetry import observe_rows
+    observe_rows([*payload.get('letters', []), *payload.get('personal_chats', [])])
     try:
         _atomic_write_store_file(root / "state.json.bak", serialized)
     except StoreStateUnavailable:
@@ -1596,10 +1654,13 @@ letters_adapter = LetterAdapter(
 
 
 def _create_daily_life_runtime() -> DailyLifeRuntime | None:
-    from runtime.private_world.student_world import shanghai_weather
     try:
+        from runtime.private_world.student_world import shanghai_weather
         path, _reason, enabled = resolve_private_world_database(user_id=_memory_config.user_id)
         if not enabled or path is None:
+            _safe_log('daily_life_failed', failure_stage='initialization', endpoint='daily_life',
+                      error_code='DAILY_LIFE_DISABLED' if not enabled else 'DAILY_LIFE_UNAVAILABLE',
+                      recorded_at_ms=int(time.time() * 1000))
             return None
         return DailyLifeRuntime(
             DailyLifeStore(path.with_name("daily_life.sqlite3")),
@@ -1610,12 +1671,34 @@ def _create_daily_life_runtime() -> DailyLifeRuntime | None:
             weather_provider=shanghai_weather,
             dialogue_rows=lambda: [*store.letters, *store.personal_chats],
         )
-    except (OSError, RuntimeError, ValueError, sqlite3.Error):
+    except (OSError, RuntimeError, ValueError, TypeError, ImportError, sqlite3.Error) as exc:
+        from runtime.diagnostics.failure_context import daily_life_failure
+        _safe_log('daily_life_failed', recorded_at_ms=int(time.time() * 1000),
+                  **daily_life_failure(exc, 'initialization'))
         return None
 
 
 daily_life_runtime = _create_daily_life_runtime()
 letters_adapter.daily_life = daily_life_runtime
+
+
+def _create_diary_store():
+    try:
+        from runtime.diary.diary import DiaryStore
+        path, _reason, enabled = resolve_private_world_database(user_id=_memory_config.user_id)
+        if not enabled or path is None:
+            return None
+        return DiaryStore(path.with_name("diary.sqlite3"))
+    except (OSError, RuntimeError, ValueError, TypeError, ImportError, sqlite3.Error):
+        _safe_log('diary_unavailable', failure_stage='initialization')
+        return None
+
+
+diary_store = _create_diary_store()
+letters_adapter.diary = diary_store
+if diary_store is not None and getattr(letters_adapter, 'memory_prompt_builder', None) is not None:
+    # Recall uses her diary as a dated index into the originals.
+    letters_adapter.memory_prompt_builder.diary = diary_store
 
 
 def _create_candidate_runtime() -> PrivateWorldCandidateRuntime:
@@ -1846,6 +1929,8 @@ async def _migrate_official_history(
 _load_store_state()
 emotion_triage = LetterEmotionTriage(letters_adapter.gateway)
 media_semaphore = asyncio.Semaphore(1)
+# Remote video waits own a separate lane; GPU exclusivity stays on the server.
+video_media_semaphore = asyncio.Semaphore(1)
 media_tasks: set[asyncio.Task] = set()
 reply_tasks: set[asyncio.Task] = set()
 private_world_candidate_tasks: set[asyncio.Task] = set()
@@ -1887,6 +1972,7 @@ reply_pipeline = ReplyPipeline(
     reply_engine,
     reviewer=NullReviewer(),
     rewriter=UnavailableRewriter(),
+    recovery_root=_conversation_state_root() or _local_data_root(),
 )
 
 # ---------------------------------------------------------------------------
@@ -2034,6 +2120,26 @@ async def _media_handler(request: web.Request) -> web.StreamResponse:
 
 
 async def handler(request: web.Request):
+    if request.path.startswith(('/toy/wardrobe/images/', '/toy/images/')):
+        if request.method not in {'GET','HEAD'}:
+            return web.Response(status=405)
+        if request.headers.get('Origin') and not origin_allowed(request.headers['Origin']):
+            return web.Response(status=403)
+        from runtime.image_assets import ensure_image, image_entry
+        from runtime.cloud_service import CloudError
+        try:
+            parts=request.path.split('/')
+            if request.path.startswith('/toy/wardrobe/images/') and len(parts)==5:
+                kind, asset_id='wardrobe',parts[-1]
+            elif request.path.startswith('/toy/images/') and len(parts)==5:
+                kind, asset_id=parts[-2:]
+            else:
+                return web.Response(status=404)
+            target=await ensure_image(_local_data_root(),kind,asset_id)
+            return web.FileResponse(target,headers={'Content-Type':image_entry(_local_data_root(),kind,asset_id)['content_type'],
+                'Cache-Control':'private, no-cache',**CORS_HEADERS(request)})
+        except CloudError as exc:
+            return web.Response(status=404 if exc.code in {'IMAGE_ASSET_NOT_FOUND','STICKER_PACK_NOT_INSTALLED'} else 503)
     if request.path.startswith("/toy/local-songs/media/"):
         if request.method not in {"GET", "HEAD"}:
             return web.Response(status=405)
@@ -2286,6 +2392,21 @@ def _asr_health() -> tuple[dict, dict]:
             "network_called": False,
             "verified": False,
         }
+
+
+def _startup_health_result() -> dict:
+    """Core readiness without optional filesystem, database, or provider probes."""
+    required = contract.PROFILES[contract.HEALTH_PROFILE_CORE]["required_capabilities"]
+    states = {name: contract.CAPABILITIES.get(name, {}).get("status", "unavailable") for name in required}
+    identity = _os.environ.get("OLIVIA_BACKEND_ID", "legacy")
+    return ok({
+        "schema_version": contract.HTTP_ENVELOPE_SCHEMA_VERSION,
+        "contract_version": contract.HTTP_ENVELOPE_CONTRACT_VERSION,
+        "backend_id": identity if _re.fullmatch(r"[0-9A-Za-z.+-]{1,160}", identity) else "invalid",
+        "profile": contract.HEALTH_PROFILE_CORE,
+        "status": "HEALTHY" if all(state == "available" for state in states.values()) else "FAILED",
+        "required_checks": states,
+    })
 
 
 def _health_result(profile: str = contract.HEALTH_PROFILE_CORE) -> dict:
@@ -3078,13 +3199,14 @@ def _recent_active_duplicate(
 
 _proactive_busy = False
 _proactive_task = None
+_gift_task = None
 _proactive_reason = 'disabled'
 
 
 def _proactive_settings() -> dict:
-    from runtime.reply.proactive_letters import settings, read_json
+    from runtime.reply.proactive_letters import settings, load_settings
     root = _state_root()
-    return settings(read_json(root / 'proactive/settings.json') if root is not None else {})
+    return load_settings(root) if root is not None else settings({})
 
 
 def _refresh_proactive_context(*, pending_draft=None) -> dict:
@@ -3104,6 +3226,7 @@ def _refresh_proactive_context(*, pending_draft=None) -> dict:
                       if preview_configured(_state_root()) else None)
         if invitation:
             context['candidates'].insert(0, invitation)
+        context['candidates'][:0] = _diary_due_candidates(rows, context)
         root = _state_root()
         if root is not None:
             write_json(root / 'proactive/context.json', context)
@@ -3111,6 +3234,39 @@ def _refresh_proactive_context(*, pending_draft=None) -> dict:
         context['blocked'] = True
         _safe_log('proactive_context_unavailable')
     return context
+
+
+def _diary_due_candidates(rows, context) -> list:
+    """A remembered day (anniversary, the user's exam, a promised date) is a reason to reach out."""
+    if diary_store is None:
+        return []
+    from datetime import timedelta
+    from runtime.diary.diary import due_facts, SHANGHAI as DIARY_ZONE
+    now = datetime.now(timezone.utc)
+    latest = max((row for row in rows if row.get('origin') != 'proactive' and row.get('content')
+                  and (row.get('letter_status') == 'COMPLETED' or row.get('delivery_status') == 'DELIVERED')),
+                 key=lambda row: str(row.get('life_received_at') or row.get('created_at') or ''), default=None)
+    if latest is None:
+        return []
+    try:
+        facts = due_facts(diary_store, now)
+    except (OSError, ValueError, sqlite3.Error):
+        return []
+    start = datetime.combine(now.astimezone(DIARY_ZONE).date(), datetime.min.time(), DIARY_ZONE)
+    used = {row.get('proactive_candidate_id') for row in rows if row.get('origin') == 'proactive'}
+    result = []
+    for fact in facts:
+        item = {'source_id': f"reply:{latest['letter_id']}:{latest.get('reply_revision', 1)}",
+                'kind': 'diary_due', 'remembered': fact}
+        item['id'] = hashlib.sha256(json.dumps({'kind': 'diary_due', 'fact': fact, 'day': start.date().isoformat()},
+                                               sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:32]
+        if item['id'] in used:
+            continue
+        item.update(not_before=(start + timedelta(hours=9)).timestamp(), expires_at=(start + timedelta(hours=22)).timestamp(),
+                    relationship_tier=context.get('initiative_profile', {}).get('tier'),
+                    relationship_caution=context.get('initiative_profile', {}).get('caution'))
+        result.append(item)
+    return result
 
 
 def _proactive_status() -> dict:
@@ -3170,6 +3326,14 @@ def _proactive_instruction(intent, *, planning, mode='text'):
         if mode == 'text':
             from runtime.reply.letter_presentation import LETTER_PRESENTATION_INSTRUCTION
             task += '\n' + LETTER_PRESENTATION_INSTRUCTION
+    if intent.get('kind') == 'diary_due':
+        task += ('\n今天是她日记里记下的日子：opportunity.remembered 写明了是什么事。'
+                 '纪念日就自然地提起并表达心意；对方今天要考试、体检或出行，就关心一句；约好的事就主动提起。'
+                 '只说这件记下的事本身，不编造当时的细节。')
+    if intent.get('kind') == 'gift':
+        from runtime.cloud_events import instruction
+        task += '\n' + instruction(intent, photo=intent.get('photo') is True
+                                    and video_reply_settings_store.image_snapshot().get('enabled') is True)
     if intent.get('kind') == 'contact_invitation':
         task += ('\n本次关系资格已由应用确认。自然地提出交换联系方式，并明确询问用户想要QQ还是微信；'
                  '不要提分数、解锁、系统门槛，不声称已经添加或用户已经同意，不编造账号或二维码。'
@@ -3200,6 +3364,8 @@ async def _prepare_proactive_turn(intent: dict, *, now: datetime) -> dict:
     source = next((row for row in sources
                    if f"reply:{row.get('letter_id')}:{row.get('reply_revision', 1)}" == source_id), None)
     life_opportunity = development and intent.get('kind') in {'life_share', 'affection_checkin'}
+    if intent.get('kind') == 'gift':
+        life_opportunity = source is None  # A first top-up may come before any letter.
     if source is None and not life_opportunity:
         raise ValueError('PROACTIVE_SOURCE_UNAVAILABLE')
     source = source or {}
@@ -3300,6 +3466,9 @@ def _proactive_opportunity_current(intent, *, pending_draft=None):
         return False
     if not _proactive_settings()['enabled'] or _active_undelivered_letter(exclude_letter=pending_draft):
         return False
+    if intent.get('kind') == 'gift':
+        # Answered regardless of unread letters or the daily letter budget.
+        return True
     from runtime.reply.proactive_runtime import enabled, live_state
     if enabled():
         try:
@@ -3421,6 +3590,11 @@ async def _publish_proactive(intent: dict, plan: dict, *, turn: dict) -> None:
         store_expression_context(letter, snapshot, body)
         _persist_store_state()
         _commit_private_world_letter(letter)
+        if intent.get('kind') == 'gift' and intent.get('photo') is True:
+            letter.update(gift_id=intent['gift_id'], gift_photo=True,
+                          image_reply_settings=video_reply_settings_store.image_snapshot())
+            from runtime.image_reply import schedule as schedule_image
+            schedule_image(sys.modules[__name__], letter)
         if letter.get('reply_audio_url') and letter.get('media_status') == 'COMPLETED':
             root = _local_data_root()
             if root is not None:
@@ -3475,7 +3649,7 @@ async def _jev_proactive_tick() -> None:
         write_json(root / 'proactive/schedule.json', schedule)
         turn = await _prepare_proactive_turn(intent, now=now)
         state = turn['initiative_state']
-        kinds = {'correspondence_followup': 'followup', 'shared_followup': 'shared_topic',
+        kinds = {'correspondence_followup': 'followup', 'shared_followup': 'shared_topic', 'diary_due': 'shared_topic',
                  'relationship_checkin': 'connection', 'affection_checkin': 'connection',
                  'contact_invitation': 'connection', 'life_share': 'daily_share'}
         offered = [{'id': intent['id'], 'kind': kinds[intent['kind']],
@@ -3566,6 +3740,173 @@ async def _proactive_tick() -> None:
         _proactive_reason = 'deferred'
 
 
+async def _diary_tick(now=None) -> None:
+    from runtime.diary.diary import due_days, write_day, day_life
+    from runtime.private_world.daily_life_runtime import life_persona
+    if diary_store is None or not diary_store.enabled():
+        return
+    now = now or datetime.now(timezone.utc)
+    rows = [*store.letters, *store.personal_chats]
+    for day in due_days(diary_store, now)[:2]:
+        try:
+            outcome = await write_day(diary_store, letters_adapter.gateway, day, rows,
+                persona=life_persona(letters_adapter.persona_v2_path),
+                life=day_life(getattr(daily_life_runtime, 'store', None), day), now=now)
+        except (GatewayError, asyncio.TimeoutError, OSError, RuntimeError, ValueError, TypeError, KeyError, sqlite3.Error) as exc:
+            diary_store.failed(day, type(exc).__name__)
+            _safe_log('diary_write_failed', error_code=getattr(exc, 'code', None) or type(exc).__name__)
+            continue
+        if outcome == 'empty':
+            diary_store.skip(day, 'EMPTY_DAY')
+        else:
+            _safe_log('diary_written')
+
+
+_memoir_state = {'running': False, 'done': 0, 'failed': 0, 'total': 0}
+
+
+async def _write_memoirs(months) -> None:
+    with model_use('diary'):
+        await _write_memoirs_once(months)
+
+
+async def _write_memoirs_once(months) -> None:
+    from runtime.diary.diary import write_month
+    from runtime.private_world.daily_life_runtime import life_persona
+    _memoir_state.update(running=True, done=0, failed=0, total=len(months))
+    try:
+        rows = [*store.letters, *store.personal_chats]
+        for month in months:
+            try:
+                await write_month(diary_store, letters_adapter.gateway, month, rows,
+                                  persona=life_persona(letters_adapter.persona_v2_path))
+                _memoir_state['done'] += 1
+            except (GatewayError, asyncio.TimeoutError, OSError, RuntimeError, ValueError, TypeError, KeyError, sqlite3.Error) as exc:
+                _memoir_state['failed'] += 1
+                _safe_log('diary_memoir_failed', error_code=getattr(exc, 'code', None) or type(exc).__name__)
+    finally:
+        _memoir_state['running'] = False
+
+
+def _running_version() -> str:
+    try:
+        value = json.loads((Path(__file__).resolve().parent / 'installer' / 'release-version.json').read_text('utf-8'))['version']
+        return value if isinstance(value, str) and len(value) <= 32 else 'unknown'
+    except (OSError, ValueError, KeyError, TypeError):
+        return 'unknown'
+
+
+async def _improve_post(path, payload):
+    from runtime.improve.upload import post_json
+    await asyncio.to_thread(post_json, getattr(letters_adapter.config, 'base_url', ''), path, payload)
+
+
+async def _improve_loop() -> None:
+    from runtime.improve.upload import upload_once
+    await asyncio.sleep(300)
+    while True:
+        root = _state_root()
+        if root is not None:
+            try:
+                await upload_once(root, [*store.letters, *store.personal_chats], _improve_post,
+                                  client_version=_running_version())
+            except (OSError, RuntimeError, ValueError, TypeError):
+                _safe_log('improve_upload_deferred')
+        await asyncio.sleep(1800)
+
+
+async def _vector_index_loop() -> None:
+    """Embed earlier exchanges in the background so recall can match by meaning."""
+    await asyncio.sleep(180)
+    while True:
+        indexed = 0
+        index = getattr(conversation_memory_adapter, 'index_original_vectors', None)
+        if callable(index):
+            try:
+                indexed = await asyncio.to_thread(index, _memory_config.user_id, limit=64)
+            except Exception:
+                _safe_log('memory_vector_index_deferred')
+        await asyncio.sleep(20 if indexed else 600)
+
+
+_pets_checked_at = 0.0
+
+
+async def _pets_tick() -> None:
+    """Refresh what she owns every few hours (pets, cameras, clothes and today's outfit),
+    so replies know it without the user opening those pages."""
+    global _pets_checked_at
+    if (diary_store is None or time.time() - _pets_checked_at < 10800
+            or not _os.environ.get('OLIVIA_GPU_API_URL') or not _os.environ.get('OLIVIA_GPU_API_KEY')):
+        return
+    _pets_checked_at = time.time()
+    from runtime.remote_generation import RemoteGeneration
+    from runtime.cloud_service import CloudError
+    api = RemoteGeneration(_os.environ['OLIVIA_GPU_API_URL'], _os.environ['OLIVIA_GPU_API_KEY'])
+    now = datetime.now(timezone.utc)
+    for action, remember in (
+            ('pets_get', lambda r: diary_store.remember_pets(r['pets'], now, [i['name'] for i in r['items'] if i['owned']])),
+            ('gifts_get', lambda r: diary_store.remember_gifts([c for c in r['cameras'] if c['owned']], now)),
+            ('wardrobe_get', lambda r: diary_store.remember_wardrobe(r, now))):
+        try:
+            remember(await api.request(action, {}))
+        except (CloudError, KeyError, TypeError, ValueError):
+            continue  # one unavailable page never hides the others
+
+
+def model_use(use):
+    from runtime.model_routes import using
+    return using(use)
+
+
+async def _diary_loop() -> None:
+    await asyncio.sleep(120)
+    while True:
+        try:
+            with model_use('diary'):
+                await _diary_tick()
+        except (OSError, RuntimeError, ValueError, TypeError, sqlite3.Error):
+            _safe_log('diary_check_unavailable')
+        try:
+            await _pets_tick()
+        except (OSError, RuntimeError, ValueError, TypeError, KeyError, sqlite3.Error, asyncio.TimeoutError):
+            _safe_log('pets_check_unavailable')
+        await asyncio.sleep(900)
+
+
+async def _gift_letter_tick() -> None:
+    """A gift QQ did not take becomes a letter; one attempt each."""
+    from runtime import cloud_events
+    root = _state_root()
+    gifts = cloud_events.pending(root, time.time(), settled=cloud_events.QQ_HEAD_START)
+    if not gifts or not _proactive_ready():
+        return
+    gift = gifts[0]
+    rows = [*store.letters, *store.personal_chats]
+    latest = max((row for row in rows if row.get('origin') != 'proactive' and row.get('content')
+                  and (row.get('letter_status') == 'COMPLETED' or row.get('delivery_status') == 'DELIVERED')),
+                 key=lambda row: float(row.get('created_at') or 0), default=None)
+    intent = {'id': hashlib.sha256(gift['id'].encode()).hexdigest()[:32], 'kind': 'gift',
+              'gift_id': gift['id'], 'brief': gift['brief'], 'photo': gift['photo'],
+              'source_id': f"reply:{latest['letter_id']}:{latest.get('reply_revision', 1)}" if latest else 'gift:first'}
+    cloud_events.mark(root, gift['id'], 'letter')  # before any paid call
+    turn = await _prepare_proactive_turn(intent, now=datetime.now(timezone.utc))
+    await _publish_proactive(intent, {'decision': 'send', 'format': 'text', 'title': '收到啦'}, turn=turn)
+
+
+async def _gift_loop() -> None:
+    from runtime import cloud_events
+    await asyncio.sleep(30)
+    while True:
+        try:
+            await cloud_events.poll(_state_root())
+            with model_use('letter'):
+                await _gift_letter_tick()
+        except (OSError, RuntimeError, ValueError, TypeError, KeyError, GatewayError, asyncio.TimeoutError, sqlite3.Error):
+            _safe_log('gift_check_unavailable')
+        await asyncio.sleep(cloud_events.POLL_SECONDS)
+
+
 async def _proactive_loop() -> None:
     global _proactive_reason
     # A prepared login opportunity is checked after runtime initialization;
@@ -3576,7 +3917,8 @@ async def _proactive_loop() -> None:
     await asyncio.sleep(10 if prepared else 300)
     while True:
         try:
-            await _proactive_tick()
+            with model_use('letter'):
+                await _proactive_tick()
         except (OSError, RuntimeError, ValueError, TypeError, KeyError, GatewayError, asyncio.TimeoutError, sqlite3.Error):
             _proactive_reason = 'retry_later'
             _safe_log('proactive_check_unavailable')
@@ -3584,13 +3926,13 @@ async def _proactive_loop() -> None:
 
 
 def _active_undelivered_letter(*, now: float | None = None, exclude_letter=None) -> dict | None:
-    from original_client_letter_contract import _video_pending, _photo_pending
+    from original_client_letter_contract import _photo_pending
 
     current_time = time.time() if now is None else now
     for letter in store.letters:
         if letter is exclude_letter:
             continue
-        if _video_pending(letter) or _photo_pending(letter):
+        if _photo_pending(letter):
             return letter
         if letter.get("letter_status") in {"PENDING", "PROCESSING"}:
             return letter
@@ -3681,6 +4023,8 @@ async def route(
     ):
         _require_store_state_available()
     if p == "/health":
+        if query.get("probe") == "startup" and query.get("profile", contract.HEALTH_PROFILE_CORE) == contract.HEALTH_PROFILE_CORE:
+            return _startup_health_result()
         return _health_result(query.get("profile", contract.HEALTH_PROFILE_CORE))
     if p == "/toy/proactive/status":
         return ok(_proactive_status())
@@ -3750,6 +4094,20 @@ async def route(
             code = str(exc) if str(exc) in {'COVER_SOURCE_REQUIRED', 'COVER_TRANSCRIPTION_BUSY', 'COVER_TRANSCRIPTION_UNAVAILABLE'} else 'COVER_TRANSCRIPTION_FAILED'
             _persist_provider_failure(code, 'stage=transcribe; attempts=1', {**_os.environ, 'OLIVIA_LOCAL_DATA_ROOT': str(root)})
             return err(400, code, {'error_code': code})
+    if p in ("/toy/sticker-packs", "/toy/sticker-packs/open"):
+        if method == "POST" and companion_confirmed is not True:
+            return err(403, "COMPANION_CONFIRMATION_REQUIRED", {"status": "FAILED"})
+        root = _local_data_root()
+        if root is None:
+            return err(503, "STICKER_PACK_FOLDER_UNAVAILABLE", {"status": "FAILED"})
+        from runtime.letter_stickers import packs as sticker_packs
+        try:
+            if p.endswith("/open"):
+                await asyncio.to_thread(sticker_packs.open_folder, root)
+            return ok({"folder": str(sticker_packs.folder(root)),
+                       "packs": await asyncio.to_thread(sticker_packs.status, root)})
+        except OSError:
+            return err(503, "STICKER_PACK_FOLDER_UNAVAILABLE", {"status": "FAILED"})
     if p == "/toy/local-songs" or p.startswith("/toy/local-songs/"):
         if method == "POST" and companion_confirmed is not True:
             return err(403, "COMPANION_CONFIRMATION_REQUIRED", {"status": "FAILED"})
@@ -3879,13 +4237,14 @@ async def route(
         if companion_confirmed is not True:
             return err(403, "COMPANION_CONFIRMATION_REQUIRED")
         try:
+            if _store_state_error_code:
+                return err(503, "LETTER_BACKUP_STORAGE_UNAVAILABLE")
             if p.endswith('/import') and body.get('relationship_retry') is True:
                 _start_history_relationships(retry=True)
                 return ok(_history_relationship_status())
             if p.endswith("/export"):
-                if _store_state_error_code:
-                    return err(503, "LETTER_BACKUP_STORAGE_UNAVAILABLE")
-                payload = await asyncio.to_thread(export_letter_backup, _letter_collection("current", strict=True))
+                rows = _letter_collection("current", strict=True) + personal_chat_letters(getattr(store, 'personal_chats', ()))
+                payload = await asyncio.to_thread(export_letter_backup, rows)
                 return ok({"status": "READY", "backup": payload})
             if not _history_memory_admin_gate.acquire(blocking=False):
                 return err(409, "MEMORY_ADMIN_BUSY")
@@ -3896,6 +4255,7 @@ async def route(
                     # Recognize both original backups and exports of repaired
                     # dates, including hidden rows, without importing duplicates.
                     existing = existing + project(existing, getattr(store, 'letter_maintenance', {}), include_hidden=True)
+                    existing += personal_chat_letters(getattr(store, 'personal_chats', ()))
                     return await asyncio.to_thread(import_letter_backup, body.get("backup"),
                         adapter=_legacy_import_adapter(), existing=existing)
                 finally:
@@ -4219,9 +4579,184 @@ async def route(
         await commit_image_memory(sys.modules[__name__], row)
         return ok({'status':'DELIVERED'})
 
+    if p == '/toy/world/wardrobe':
+        from runtime.remote_generation import RemoteGeneration
+        from runtime.cloud_service import CloudError
+        try:
+            api=RemoteGeneration(_os.environ.get('OLIVIA_GPU_API_URL',''),_os.environ.get('OLIVIA_GPU_API_KEY',''))
+            if method=='POST':
+                if not companion_confirmed:
+                    return err(403,'COMPANION_CONFIRMATION_REQUIRED',{})
+                if not isinstance(body,dict) or set(body) not in ({'request_id','style_id'}, {'request_id','look_id','max_charge_cents'}):
+                    return err(400,'WARDROBE_STYLE_INVALID',{})
+                result=await api.request('wardrobe_buy' if 'look_id' in body else 'wardrobe_set',body)
+            elif method=='GET':
+                result=await api.request('wardrobe_get',{})
+            else:
+                return err(405,'METHOD_NOT_ALLOWED',{})
+            from runtime.image_assets import save_wardrobe_catalog
+            await asyncio.to_thread(save_wardrobe_catalog, _local_data_root(), result)
+            if diary_store is not None:
+                try:
+                    diary_store.remember_wardrobe(result, datetime.now(timezone.utc))
+                except (OSError, ValueError, KeyError, TypeError, sqlite3.Error):
+                    pass
+            for style in result['wardrobe_styles']:
+                for look in style['looks']:
+                    look['image_url']=f"http://127.0.0.1:{PORT}/toy/wardrobe/images/{look['look_id']}"
+            return ok(result)
+        except CloudError as exc:
+            return err(exc.status,exc.code,{'error_code':exc.code})
+
+    if p == '/toy/world/gifts':
+        from runtime.remote_generation import RemoteGeneration
+        from runtime.cloud_service import CloudError
+        try:
+            api = RemoteGeneration(_os.environ.get('OLIVIA_GPU_API_URL', ''), _os.environ.get('OLIVIA_GPU_API_KEY', ''))
+            if method == 'POST':
+                if not companion_confirmed:
+                    return err(403, 'COMPANION_CONFIRMATION_REQUIRED', {})
+                if not isinstance(body, dict) or set(body) != {'item'}:
+                    return err(400, 'GIFT_REQUEST_INVALID', {'error_code': 'GIFT_REQUEST_INVALID'})
+                result = await api.request('gifts_buy', body)
+            elif method == 'GET':
+                result = await api.request('gifts_get', {})
+            else:
+                return err(405, 'METHOD_NOT_ALLOWED', {})
+        except CloudError as exc:
+            return err(exc.status, exc.code, {'error_code': exc.code})
+        if diary_store is not None:
+            try:
+                diary_store.remember_gifts([c for c in result['cameras'] if c['owned']], datetime.now(timezone.utc))
+            except (OSError, ValueError, sqlite3.Error):
+                pass
+        return ok(result)
+
+    if p == '/toy/world/pets':
+        from runtime.remote_generation import RemoteGeneration
+        from runtime.cloud_service import CloudError
+        try:
+            api = RemoteGeneration(_os.environ.get('OLIVIA_GPU_API_URL', ''), _os.environ.get('OLIVIA_GPU_API_KEY', ''))
+            if method == 'POST':
+                if not companion_confirmed:
+                    return err(403, 'COMPANION_CONFIRMATION_REQUIRED', {})
+                result = await api.request('pets_post', body)
+            elif method == 'GET':
+                result = await api.request('pets_get', {})
+            else:
+                return err(405, 'METHOD_NOT_ALLOWED', {})
+        except CloudError as exc:
+            return err(exc.status, exc.code, {'error_code': exc.code})
+        if diary_store is not None:
+            try:
+                diary_store.remember_pets(result['pets'], datetime.now(timezone.utc), [item['name'] for item in result['items'] if item['owned']])
+            except (OSError, ValueError, sqlite3.Error):
+                pass
+        return ok(result)
+
+    if p.startswith('/toy/improve'):
+        from runtime.improve import upload as improve
+        root = _state_root()
+        if root is None:
+            return err(503, 'IMPROVE_UNAVAILABLE', {'error_code': 'IMPROVE_UNAVAILABLE'})
+        if p == '/toy/improve' and method == 'GET':
+            return ok(improve.public(improve.read_state(root)))
+        if method != 'POST':
+            return err(405, 'METHOD_NOT_ALLOWED', {})
+        if not companion_confirmed:
+            return err(403, 'COMPANION_CONFIRMATION_REQUIRED', {})
+        try:
+            if p == '/toy/improve/settings' and isinstance(body, dict) and set(body) == {'enabled'}:
+                return ok(improve.set_enabled(root, body['enabled']))
+            if p == '/toy/improve/forget' and body in ({}, None):
+                return ok(await improve.forget(root, _improve_post))
+        except ValueError:
+            return err(400, 'IMPROVE_REQUEST_INVALID', {'error_code': 'IMPROVE_REQUEST_INVALID'})
+        except (OSError, RuntimeError):
+            return err(503, 'IMPROVE_FORGET_UNAVAILABLE', {'error_code': 'IMPROVE_FORGET_UNAVAILABLE'})
+        return err(400, 'IMPROVE_REQUEST_INVALID', {'error_code': 'IMPROVE_REQUEST_INVALID'})
+
+    if p.startswith('/toy/diary'):
+        if diary_store is None:
+            return err(503, 'DIARY_UNAVAILABLE', {'error_code': 'DIARY_UNAVAILABLE'})
+        from runtime.diary.diary import local_day
+        try:
+            if p == '/toy/diary' and method == 'GET':
+                page = diary_store.page(page=int(query.get('page', 1)), limit=int(query.get('limit', 20)))
+                return ok({**page, 'enabled': diary_store.enabled(), 'today': local_day(datetime.now(timezone.utc))})
+            if p == '/toy/diary/memoir' and method == 'GET':
+                from runtime.diary.diary import memoir_months
+                months = memoir_months(diary_store, [*store.letters, *store.personal_chats], datetime.now(timezone.utc))
+                return ok({'months': months, 'chars': sum(m['chars'] for m in months), **_memoir_state})
+            if p == '/toy/diary/entry' and method == 'GET':
+                entry = diary_store.entry(str(query.get('day', '')))
+                if entry is None:
+                    return err(404, 'DIARY_ENTRY_NOT_FOUND', {'error_code': 'DIARY_ENTRY_NOT_FOUND'})
+                diary_store.mark_seen(entry['day'])
+                return ok(entry)
+            if method != 'POST':
+                return err(405, 'METHOD_NOT_ALLOWED', {})
+            if not companion_confirmed:
+                return err(403, 'COMPANION_CONFIRMATION_REQUIRED', {})
+            if not isinstance(body, dict):
+                return err(400, 'DIARY_REQUEST_INVALID', {'error_code': 'DIARY_REQUEST_INVALID'})
+            if p == '/toy/diary/settings' and set(body) == {'enabled'}:
+                diary_store.set_enabled(body['enabled'])
+                return ok({'enabled': diary_store.enabled()})
+            if p == '/toy/diary/memoir/start' and set(body) == {'months'}:
+                from runtime.diary.diary import memoir_months
+                available = {m['month'] for m in memoir_months(diary_store, [*store.letters, *store.personal_chats],
+                                                                datetime.now(timezone.utc))}
+                months = body['months']
+                if (not isinstance(months, list) or not months or len(months) > 120
+                        or any(month not in available for month in months)):
+                    return err(400, 'DIARY_MEMOIR_INVALID', {'error_code': 'DIARY_MEMOIR_INVALID'})
+                if _memoir_state['running']:
+                    return err(409, 'DIARY_MEMOIR_RUNNING', {'error_code': 'DIARY_MEMOIR_RUNNING'})
+                _memoir_state['running'] = True  # claimed before the task starts
+                task = asyncio.create_task(_write_memoirs(sorted(set(months))))
+                media_tasks.add(task)
+                task.add_done_callback(media_tasks.discard)
+                return ok({'started': len(set(months))})
+            if p == '/toy/diary/comment' and set(body) == {'day', 'text'}:
+                diary_store.add_comment(str(body['day']), body['text'], datetime.now(timezone.utc))
+                return ok(diary_store.entry(str(body['day'])))
+            if p == '/toy/diary/delete' and set(body) == {'day'}:
+                diary_store.delete(str(body['day']))
+                return ok({'deleted': str(body['day'])})
+            return err(400, 'DIARY_REQUEST_INVALID', {'error_code': 'DIARY_REQUEST_INVALID'})
+        except KeyError:
+            return err(404, 'DIARY_ENTRY_NOT_FOUND', {'error_code': 'DIARY_ENTRY_NOT_FOUND'})
+        except ValueError as exc:
+            code = str(exc) if str(exc).startswith('DIARY_') else 'DIARY_REQUEST_INVALID'
+            return err(400, code, {'error_code': code})
+
     if p == "/toy/settings/reply-routes":
+        from runtime.wardrobe import catalog
+        from runtime.video_reply_settings import image_model_capability, require_image_model
+        async def image_capability():
+            from runtime.remote_generation import RemoteGeneration
+            from runtime.cloud_service import CloudError
+            try:
+                api = RemoteGeneration(_os.environ.get('OLIVIA_GPU_API_URL', ''), _os.environ.get('OLIVIA_GPU_API_KEY', ''))
+                if not api.url or not api.token:
+                    return None
+                return image_model_capability(await asyncio.wait_for(api.request('capabilities', {}), 3))
+            except (CloudError, TimeoutError):
+                return None
         try:
             if method == "POST":
+                if 'image' in body:
+                    VideoReplySettingsStore._validate_image(body['image'])
+                    image = body['image']
+                    saved = video_reply_settings_store.image_snapshot()
+                    retaining_saved = (image.get('model') == saved.get('model') and image['resolution'] == saved['resolution']
+                                       and (image['enabled'] is False or saved['enabled'] is True))
+                    if 'model' in image and not retaining_saved:
+                        capability = await image_capability()
+                        require_image_model(image, {'image': capability} if capability is not None else {})
+                if set(body) == {'request_id', 'wardrobe'}:
+                    return ok(video_reply_settings_store.mutate_wardrobe(body['request_id'], body['wardrobe']))
                 if set(body) == {"request_id", "tier", "image"}:
                     return ok(video_reply_settings_store.mutate_tier(body["request_id"], body["tier"], image=body["image"]))
                 if set(body) == {'request_id', 'image'}:
@@ -4231,7 +4766,11 @@ async def route(
                 if set(body) not in ({"request_id", "routes"}, {"request_id", "routes", "videos"}):
                     return err(400, "VIDEO_REPLY_SETTING_PAYLOAD_INVALID", {})
                 return ok(video_reply_settings_store.mutate_routes(body["request_id"], body["routes"], body.get("videos")))
-            return ok({"state": "available", "image": video_reply_settings_store.image_snapshot(), "tier": video_reply_settings_store.tier_snapshot(), "tier_configured": video_reply_settings_store.saved_tier() is not None,
+            capability = await image_capability()
+            return ok({"state": "available", "image": video_reply_settings_store.image_snapshot(),
+                       **({'image_capability': capability} if capability is not None else {}),
+                       "wardrobe": video_reply_settings_store.wardrobe_snapshot(), "wardrobe_styles": catalog(),
+                       "tier": video_reply_settings_store.tier_snapshot(), "tier_configured": video_reply_settings_store.saved_tier() is not None,
                        "routes": video_reply_settings_store.routes_snapshot(), "videos": video_reply_settings_store.videos_snapshot(),
                        "ready": await asyncio.to_thread(_route_readiness)})
         except VideoReplySettingsError as exc:
@@ -5167,7 +5706,12 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
     def still_current():
         return binding == (letter.get('private_world_delivery_id', ''), letter.get('reply_revision'),
                            letter.get('private_world_reply_sha256'), letter.get('reply_text'))
-    async with media_semaphore:
+    from runtime.remote_pipeline import enabled as remote_enabled
+    is_video = letter.get("reply_video_enabled", reply_mode != "voice_reply") is True
+    # Local renderers still share one physical GPU. Only cloud video dispatch
+    # and polling may overlap the audio lane.
+    lane = video_media_semaphore if is_video and remote_enabled(_os.environ) else media_semaphore
+    async with lane:
         if not still_current():
             return
         letter["media_status"] = "PROCESSING"
@@ -5337,6 +5881,11 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                 return
             if video_enabled:
                 letter["reply_video_url"] = f"http://127.0.0.1:{PORT}/toy/media/{output_path.name}"
+                # The text can already have been read. Notify once when the
+                # corresponding video becomes available, without a new letter.
+                if not letter.get('video_completed_at'):
+                    letter['video_completed_at'] = time.time()
+                    letter['is_read'] = 0
             elif reply_mode != "voice_song_video":
                 letter["reply_audio_url"] = f"http://127.0.0.1:{PORT}/toy/media/{output_path.name}"
             letter["media_status"] = "COMPLETED"
@@ -5622,7 +6171,7 @@ async def _refresh_daily_life_periodically() -> None:
 
 
 async def _start_reply_tasks(_app: web.Application) -> None:
-    global _proactive_task
+    global _proactive_task, _gift_task
     if _refresh_contact_relationship_projection():
         try:
             _persist_store_state()
@@ -5637,6 +6186,7 @@ async def _start_reply_tasks(_app: web.Application) -> None:
         except (OSError, ValueError, RuntimeError):
             _safe_log('proactive_login_start_unavailable')
     _proactive_task = asyncio.create_task(_proactive_loop())
+    _gift_task = asyncio.create_task(_gift_loop())
     _schedule_pending_reply_jobs()
     _schedule_pending_media_jobs()
     from runtime.image_reply import schedule as schedule_image
@@ -5647,6 +6197,16 @@ async def _start_reply_tasks(_app: web.Application) -> None:
     photo_recovery = asyncio.create_task(_recover_photo_memories())
     media_tasks.add(photo_recovery)
     photo_recovery.add_done_callback(media_tasks.discard)
+    vector_task = asyncio.create_task(_vector_index_loop())
+    media_tasks.add(vector_task)
+    vector_task.add_done_callback(media_tasks.discard)
+    improve_task = asyncio.create_task(_improve_loop())
+    media_tasks.add(improve_task)
+    improve_task.add_done_callback(media_tasks.discard)
+    if diary_store is not None:
+        diary_task = asyncio.create_task(_diary_loop())
+        media_tasks.add(diary_task)
+        diary_task.add_done_callback(media_tasks.discard)
     if daily_life_runtime is not None:
         daily_life_runtime.schedule_refresh(datetime.now(timezone.utc))
         refresh_task = asyncio.create_task(_refresh_daily_life_periodically())
@@ -5737,7 +6297,7 @@ def _start_conversation_memory_initialization(loop: asyncio.AbstractEventLoop) -
 
 
 async def _stop_reply_tasks(_app: web.Application) -> None:
-    global _proactive_task, _history_relationship_task, _history_relationship_queue
+    global _proactive_task, _gift_task, _history_relationship_task, _history_relationship_queue
     if _history_relationship_task is not None:
         _history_relationship_task.cancel()
         await asyncio.gather(_history_relationship_task, return_exceptions=True)
@@ -5747,6 +6307,10 @@ async def _stop_reply_tasks(_app: web.Application) -> None:
         _proactive_task.cancel()
         await asyncio.gather(_proactive_task, return_exceptions=True)
         _proactive_task = None
+    if _gift_task is not None:
+        _gift_task.cancel()
+        await asyncio.gather(_gift_task, return_exceptions=True)
+        _gift_task = None
     _refresh_proactive_context()
     tasks = tuple(reply_tasks | media_tasks | private_world_candidate_tasks | set(daily_life_tasks.values()))
     for task in tasks:
@@ -6032,8 +6596,10 @@ async def _run_reply_pipeline_for_letter(
     )
     from runtime.reply.companion_runtime import TURN_CONTEXT
     input_revision = letter.get('input_revision', 0)
+    def turn_is_current():
+        return letter.get('input_revision', 0) == input_revision and letter.get('content', content) == content
     async def save_companion_decision(record):
-        if letter.get('input_revision', 0) != input_revision or letter.get('content', content) != content:
+        if not turn_is_current():
             raise RuntimeError('JEV_INPUT_SUPERSEDED')
         letter['companion_decision'] = record
         _persist_store_state()
@@ -6045,7 +6611,8 @@ async def _run_reply_pipeline_for_letter(
                        + (['audio_speech'] if exact_mode in {ReplyMode.TEXT_LETTER.value, 'voice_reply'}
                           and (letter.get('reply_routes') or {}).get('voice_reply') is True else []),
         input_revision=input_revision, companion_decision=letter.get('companion_decision'),
-        save_companion_decision=save_companion_decision))
+        save_companion_decision=save_companion_decision, turn_is_current=turn_is_current,
+        recovery_namespace=_memory_config.user_id))
     try:
         reply_input = reply_input_override
         if reply_input is None:
@@ -6080,6 +6647,15 @@ async def _run_reply_pipeline_for_letter(
             letter.get('image_reply_settings', {}),
         )
         if exact_mode == ReplyMode.TEXT_LETTER.value:
+            from runtime.reply.reply_context import TrustedTime
+            if letter.get('generation_context_at'):
+                try:
+                    context = replace(context, trusted_time=TrustedTime(
+                        datetime.fromisoformat(letter['generation_context_at']), source=context.trusted_time.source))
+                except (ValueError, TypeError):
+                    letter.pop('generation_context_at', None)
+            letter.setdefault('generation_context_at', context.trusted_time.instant.isoformat())
+        if exact_mode == ReplyMode.TEXT_LETTER.value:
             from original_client_letter_contract import _published
             context = replace(context, sticker_history=tuple(
                 row.get('reply_sticker_id')
@@ -6100,7 +6676,12 @@ async def _run_reply_pipeline_for_letter(
 
 async def generate_reply(letter_id, content, *, idempotency_key=None):
     from runtime.reply.jev_billing import billing_scope
-    with billing_scope('letter:' + str(letter_id)):
+    from runtime.model_routes import using
+    from runtime.diagnostics.reply_telemetry import scope, selected_model
+    row = next((r for r in store.letters if r['letter_id'] == letter_id), {})
+    row['diagnostic_attempt'] = row.get('diagnostic_attempt', 0) + 1
+    with billing_scope('letter:' + str(letter_id)), using('letter'), scope(letter_id, 'letter', row['diagnostic_attempt']):
+        row['diagnostic_model'] = selected_model()
         return await _generate_reply_billed(letter_id, content, idempotency_key=idempotency_key)
 
 
@@ -6229,6 +6810,10 @@ async def _generate_reply_billed(letter_id, content, *, idempotency_key=None):
             'reviewer_calls': getattr(result, 'reviewer_calls', None),
             'rewrite_calls': getattr(result, 'rewrite_calls', None),
             'quality_error_code': result.error_code,
+            'degraded_stages': getattr(result, 'degraded_stages', {}),
+            'stage_timing_seconds': getattr(result, 'stage_timing_seconds', {}),
+            'stage_cache_hits': getattr(result, 'stage_cache_hits', {}),
+            'stage_actual_calls': getattr(result, 'stage_actual_calls', {}),
         })
         letter.update(quality)
         # Keep the existing private state contract; exported metadata is finite.
@@ -6244,13 +6829,23 @@ async def _generate_reply_billed(letter_id, content, *, idempotency_key=None):
         from runtime.diagnostics.support_bundle import project_reply_quality
         _safe_log("letter_failed", error_code=public_code,
                   **project_reply_quality(letter),
-                  **project_failure_context({'cause_code': getattr(result, 'error_code', None)}))
+                  **project_failure_context({**getattr(result, 'failure_context', {}),
+                      'cause_code': getattr(result, 'error_code', None)}))
         return False
+    if getattr(result, 'degraded_stages', None):
+        letter['image_status'] = 'SKIPPED'
     if getattr(result, 'companion_decision', None) is not None:
         letter['companion_decision'] = result.companion_decision
         letter['companion_timing'] = result.companion_timing
         letter['companion_delivery'] = result.companion_delivery
-        if result.companion_delivery == 'audio_speech' and exact_mode == ReplyMode.TEXT_LETTER.value:
+        from runtime.reply.companion_runtime import media_locked
+        # Like QQ, a letter is spoken by default once the user has turned voice
+        # replies on, unless JEV chose another medium or the user limited media.
+        default_voice = (result.companion_delivery == 'text' and not getattr(result, 'degraded_stages', None)
+                         and (letter.get('reply_routes') or {}).get('voice_reply') is True
+                         and not media_locked(result.companion_decision.get('plan')))
+        if ((result.companion_delivery == 'audio_speech' or default_voice)
+                and exact_mode == ReplyMode.TEXT_LETTER.value):
             # JEV found a spoken reply was asked for: send this letter as a voice reply.
             exact_mode = 'voice_reply'
             letter['reply_mode'] = exact_mode
@@ -6273,10 +6868,10 @@ async def _generate_reply_billed(letter_id, content, *, idempotency_key=None):
     else:
         for field in ('companion_decision', 'companion_timing', 'companion_delivery'):
             letter.pop(field, None)
-    # A copied provenance header from an earlier message is metadata, never part of her letter.
+    # Copied source headers are metadata, never part of her letter.
     from dataclasses import replace as _replace_result
-    from runtime.personal_chat.decision import HISTORY_HEADER
-    cleaned = HISTORY_HEADER.sub('', result.text or '').strip()
+    from runtime.personal_chat.decision import PROVENANCE_HEADER
+    cleaned = PROVENANCE_HEADER.sub('', result.text or '').strip()
     if cleaned != (result.text or '').strip():
         if not cleaned:
             letter["letter_status"] = "FAILED"

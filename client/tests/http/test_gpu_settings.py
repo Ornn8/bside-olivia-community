@@ -88,11 +88,15 @@ def test_paid_quote_uses_only_the_olivia_account_key(tmp_path, monkeypatch):
     calls=[]
     available=[500]
     provider = [None]
+    music_limits = [None]
+    music_price = [None]
     async def remote(self, action, data):
         calls.append((self.url,self.token,action))
         if action=='capabilities':
             caps = {'kinds':['tts','video'],'billing_enabled':True,'reservation_cents':{'audio':100,'original':300,'video':500}}
             if provider[0] is not None: caps['original_music_provider'] = provider[0]
+            if music_limits[0] is not None: caps['original_music_input_limits'] = music_limits[0]
+            if music_price[0] is not None: caps['original_music_retail_price'] = music_price[0]
             return caps
         return {'balance_cents':available[0]}
     monkeypatch.setattr('runtime.remote_generation.RemoteGeneration.request',remote)
@@ -109,9 +113,18 @@ def test_paid_quote_uses_only_the_olivia_account_key(tmp_path, monkeypatch):
             assert env['OLIVIA_GPU_API_KEY']=='olivia-synthetic-shared'
             music = await (await client.post(path,json={'action':'music_settings_status'},headers=headers)).json()
             assert music['original_music_provider'] == 'legacy'
+            assert 'original_music_input_limits' not in music
             provider[0] = 'suno_v6'
             music = await (await client.post(path,json={'action':'music_settings_status'},headers=headers)).json()
             assert music['original_music_provider'] == 'suno_v6'
+            assert 'original_music_input_limits' not in music
+            options = {'caption': 'x' * 140, 'duration': 210}
+            saved = await client.post(path, json={'action': 'music_settings_save', 'options': options}, headers=headers)
+            assert saved.status == 200
+            music_limits[0] = {'lyrics': 3000, 'style': 120, 'duration_control': False}
+            music = await (await client.post(path, json={'action': 'music_settings_status'}, headers=headers)).json()
+            assert music['original_music_input_limits'] == music_limits[0]
+            assert music['options']['caption'] == options['caption'] and music['options']['duration'] == 210
             stale=await client.post(path,json={'action':'billing_quote','video':False},headers=headers)
             assert stale.status==409
             assert (await stale.json())['error_code']=='GPU_CLIENT_UPDATE_REQUIRED'
@@ -124,6 +137,23 @@ def test_paid_quote_uses_only_the_olivia_account_key(tmp_path, monkeypatch):
             available[0]=299
             denied=await client.post(path,json={'action':'billing_quote','video':False,'original':True},headers=headers)
             assert denied.status==402
+            music_price[0] = {'version': 'synthetic-new-song-price', 'min_cents': 120, 'max_cents': 130}
+            available[0] = 130
+            response = await client.post(path,json={'action':'billing_quote','video':False,'original':True},headers=headers)
+            assert response.status == 200
+            quote = await response.json()
+            assert quote['max_charge_cents'] == 130 and quote['original_music_retail_price'] == music_price[0]
+            available[0] = 500
+            quote = await (await client.post(path,json={'action':'billing_quote','video':True,'original':True},headers=headers)).json()
+            assert quote['max_charge_cents'] == 500 and quote['original_music_retail_price'] == music_price[0]
+            music = await (await client.post(path,json={'action':'music_settings_status'},headers=headers)).json()
+            assert music['original_music_retail_price'] == music_price[0]
+            available[0] = 129
+            assert (await client.post(path,json={'action':'billing_quote','video':False,'original':True},headers=headers)).status == 402
+            music_price[0] = {**music_price[0], 'max_cents': True}
+            assert (await client.post(path,json={'action':'billing_quote','video':False,'original':True},headers=headers)).status == 502
+            music_price[0] = None
+            available[0] = 299
             still_audio=await client.post(path,json={'action':'billing_quote','video':False,'original':False},headers=headers)
             assert still_audio.status==200
             available[0]=99

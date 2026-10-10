@@ -4,7 +4,34 @@ from datetime import datetime, timedelta, timezone
 from .world_decision import KINDS
 
 
+def overnight_plan(now, end_at):
+    """An explicit night plan is only a candidate until the writer selects it."""
+    local = timezone(timedelta(hours=8))
+    try:
+        if now.utcoffset() is None or end_at.utcoffset() is None:
+            raise ValueError()
+        start, end = now.astimezone(local), end_at.astimezone(local)
+        minutes = (end_at - now).total_seconds() / 60
+        night_date = start.date() if start.hour < 4 else (start + timedelta(days=1)).date()
+        if (not (start.hour >= 20 or start.hour < 4) or not 4 <= end.hour < 12
+                or end.date() != night_date or not 120 <= minutes <= 720):
+            raise ValueError()
+    except (ValueError, TypeError, AttributeError):
+        raise ValueError('LIFE_EPISODE_SLEEP_INVALID') from None
+    return dict(kind='overnight', duration_minutes=int(minutes) if minutes.is_integer() else minutes,
+                end_at=end_at.astimezone(timezone.utc).isoformat())
+
+
 _ACTIVITY_PATHS = {
+    'bath_started': ('现在开始自己的这次洗澡', [
+        ('准备开始清洁', '进入浴室，开始本次洗澡', 'partial', '已经开始这次洗澡，还没有洗完。')]),
+    'shopping': ('为自己买本次需要的日常用品', [
+        ('日常用品需要补充', '选好本次需要的用品，结账后装进袋子', 'completed', '这次需要的日常用品已经买好，装进了袋子。'),
+        ('选项有点多', '比较后选好当前需要的用品，结账并收好', 'completed', '这次购物已经完成，买好的东西收进了袋子。'),
+        ('当前没有合适的选项', '这次先不买，结束挑选', 'paused', '这次没有买到合适的用品，之后再找。')]),
+    'bath_finished': ('完成自己这次洗澡并准备擦干头发', [
+        ('洗澡结束后头发还湿着', '关好水并裹好浴巾，准备擦头发', 'completed', '刚洗完这次澡，已经裹好浴巾，头发还没完全干。'),
+        ('发梢还在滴水', '裹好浴巾后先用毛巾擦发梢', 'completed', '这次洗澡已经完成，裹好浴巾后正在擦头发。')]),
     'class': ('跟进当前正在进行的课程', [
         ('概念还没有理清', '对照自己的笔记重新整理', 'partial', '当前这一处内容理清了一点，课程仍在进行。'),
         ('注意力有些分散', '把注意力收回当前内容，记下疑问', 'partial', '记下了还未弄懂的问题，尚未解决，课程仍在进行。'),
@@ -73,9 +100,28 @@ def save(db, episode, source_id, now):
             raise ValueError('LIFE_EPISODE_RECOVERY_INVALID')
     sleep = episode.get('effects', {}).get('sleep_plan')
     if sleep is not None:
-        if (not isinstance(sleep, dict) or set(sleep) != {'duration_minutes', 'end_at'}
-                or type(sleep['duration_minutes']) is not int or sleep['duration_minutes'] not in {30, 60, 90}
-                or sleep['end_at'] != (now + timedelta(minutes=sleep['duration_minutes'])).astimezone(timezone.utc).isoformat()
+        overnight = isinstance(sleep, dict) and sleep.get('kind') == 'overnight'
+        if overnight:
+            try:
+                expected = overnight_plan(now, datetime.fromisoformat(sleep['end_at']))
+            except (ValueError, KeyError, TypeError):
+                raise ValueError('LIFE_EPISODE_SLEEP_INVALID') from None
+            if sleep != expected:
+                raise ValueError('LIFE_EPISODE_SLEEP_INVALID')
+            stamp = now.astimezone(timezone.utc).isoformat()
+            if db.execute("""SELECT 1 FROM life_episodes prior
+                    WHERE prior.source_id<>? AND prior.occurred_at<?
+                      AND json_extract(prior.payload,'$.effects.sleep_plan.kind')='overnight'
+                      AND json_extract(prior.payload,'$.effects.sleep_plan.end_at')>?
+                      AND NOT EXISTS (SELECT 1 FROM life_episodes ended
+                        WHERE json_extract(ended.payload,'$.effects.sleep_resolution.source_id')=prior.source_id
+                          AND ended.occurred_at<=?) LIMIT 1""",
+                          (source_id, sleep['end_at'], stamp, stamp)).fetchone():
+                raise ValueError('LIFE_EPISODE_SLEEP_INVALID')
+        if (not isinstance(sleep, dict) or set(sleep) != ({'kind', 'duration_minutes', 'end_at'} if overnight else {'duration_minutes', 'end_at'})
+                or (type(sleep['duration_minutes']) is not int and not overnight)
+                or (not overnight and (sleep['duration_minutes'] not in {30, 60, 90}
+                    or sleep['end_at'] != (now + timedelta(minutes=sleep['duration_minutes'])).astimezone(timezone.utc).isoformat()))
                 or episode['activity_kind'] != 'rest' or episode['result']['status'] != 'paused' or recovery is not None):
             raise ValueError('LIFE_EPISODE_SLEEP_INVALID')
     resolution = episode.get('effects', {}).get('sleep_resolution')
@@ -85,6 +131,25 @@ def save(db, episode, source_id, now):
         prior = db.execute('SELECT payload FROM life_episodes WHERE source_id=? AND occurred_at<=?',
                            (resolution['source_id'], episode['occurred_at'])).fetchone()
         if episode['activity_kind'] != 'rest' or not prior or not json.loads(prior[0]).get('effects', {}).get('sleep_plan'):
+            raise ValueError('LIFE_EPISODE_SLEEP_INVALID')
+    wake = episode.get('effects', {}).get('morning_wake')
+    if wake is not None:
+        if (not isinstance(wake, dict) or set(wake) != {'sleep_source_id'}
+                or resolution != {'source_id': wake.get('sleep_source_id')}
+                or episode['result']['status'] != 'completed'):
+            raise ValueError('LIFE_EPISODE_SLEEP_INVALID')
+        prior_episode = json.loads(prior[0])
+        plan = prior_episode['effects']['sleep_plan']
+        end = datetime.fromisoformat(plan['end_at'])
+        local_now = now.astimezone(timezone(timedelta(hours=8)))
+        if (plan.get('kind') != 'overnight' or now < end or not 4 <= local_now.hour < 12
+                or local_now.date() != end.astimezone(local_now.tzinfo).date()
+                or db.execute("SELECT 1 FROM life_episodes WHERE json_extract(payload,'$.effects.sleep_resolution.source_id')=?",
+                              (wake['sleep_source_id'],)).fetchone()
+                or not db.execute("SELECT 1 FROM life_moments WHERE source_id=? AND kind='daily'",
+                                  (wake['sleep_source_id'],)).fetchone()
+                or db.execute('SELECT 1 FROM life_rest_exchanges WHERE received_at<=? AND received_at<? AND replied_at>?',
+                              (episode['occurred_at'], plan['end_at'], prior_episode['occurred_at'])).fetchone()):
             raise ValueError('LIFE_EPISODE_SLEEP_INVALID')
     encoded = json.dumps(episode,ensure_ascii=False,sort_keys=True,allow_nan=False)
     if len(encoded)>4000:
@@ -154,8 +219,24 @@ async def create(port, source_id, now, kind, context, *, meal=None):
                 paths[f'nap_{duration}'] = _path('想补一段觉来恢复精力', '放下手头事务，开始补觉并留出明确的休息时段',
                     'paused', f'开始补觉，计划休息{duration}分钟，醒来后再判断精力和接下来的安排。')
         sleep = (context.get('rhythm') or {}).get('authored_sleep')
+        night_plan = context.get('overnight_sleep_candidate')
+        if night_plan is not None:
+            night_plan = overnight_plan(now, datetime.fromisoformat(night_plan['end_at']))
+            if not sleep:
+                paths['night_sleep'] = _path('准备结束今天的活动', '放下手头事务，开始今晚这一段睡眠',
+                    'paused', '已经开始今晚的睡眠，计划醒来后再判断精力和接下来的安排。')
         if sleep and sleep['status'] == 'due':
-            if not sleep.get('interrupted'):
+            if sleep.get('kind') == 'overnight':
+                local_end = datetime.fromisoformat(sleep['end_at']).astimezone(now_local.tzinfo)
+                if not sleep.get('interrupted') and 4 <= now_local.hour < 12 and now_local.date() == local_end.date():
+                    paths['morning_wake'] = _path('昨夜已经开始的睡眠需要续接',
+                        '结束这一夜的睡眠，睁开眼睛慢慢醒来', 'completed', '这一夜的睡眠已经结束，刚醒来，还在慢慢缓神。')
+                else:
+                    paths['night_ended'] = _path(
+                        '夜间睡眠期间又开始通信' if sleep.get('interrupted') else '之前的夜间睡眠尚未记录结束，已经错过晨间醒来时段',
+                        '明确结束之前这段睡眠，重新安排此刻的休息与活动', 'paused',
+                        '之前这段睡眠现已结束，当前已经醒着；没有确认睡眠充分或精力恢复，之后再安排休息。')
+            elif not sleep.get('interrupted'):
                 paths['nap_refreshed'] = _path('之前的补觉需要续接', '结束已经开始的补觉，重新感受醒来后的精力',
                     'completed', '这段补觉结束，醒来后精力有所恢复，可以按意愿接回日常安排。')
                 paths['nap_tired'] = _path('补觉后仍有一些疲惫', '结束这一段补觉，先慢慢接回吃饭和轻活动',
@@ -172,7 +253,17 @@ async def create(port, source_id, now, kind, context, *, meal=None):
         elif status=='skipped':
             paths={'skip':_path('当下不想开始进食','决定这一餐先不吃','paused','这次没有吃这一餐。')}
         elif status=='planned':
-            paths={'delay':_path('想先留一点间隔','把用餐安排到已经选定的稍后时刻','paused','这一餐尚未开始，保留明确的用餐计划。')}
+            preparation = {
+                'ordered': ('等待外卖送达', '已经下单，等待送餐', '外卖已经下单，尚未送达，也没有开始吃。'),
+                'preparing': ('餐食还需准备', '开始准备这一餐', '正在准备餐食，还没有开始吃。'),
+                'travelling': ('需要前往用餐地点', '准备出门就餐', '准备去计划中的地点吃饭，尚未到店。'),
+                'collecting': ('需要买饭带回', '准备去买这一餐', '准备买饭带回，还没有取到餐。'),
+            }.get(meal.get('meal_stage'))
+            if preparation:
+                obstacle, response, detail = preparation
+                paths={'preparing':_path(obstacle,response,'partial',detail)}
+            else:
+                paths={'delay':_path('想先留一点间隔','把用餐安排到已经选定的稍后时刻','paused','这一餐尚未开始，保留明确的用餐计划。')}
         else:
             paths={'ordinary':_path('没有明显阻碍','停下其他活动，开始进食','partial','这一餐正在吃，尚未结束。'),
                    'slow':_path('暂时没有很强的食欲','慢一点吃，不勉强赶进度','partial','已经开始进食，仍在慢慢吃。')}
@@ -188,7 +279,7 @@ async def create(port, source_id, now, kind, context, *, meal=None):
         effects = {'none': effects['none']}
     elif kind=='practice':
         effects['return']=dict(next_action='下次优先回到本次未稳的片段',open_loop='练习片段仍待巩固')
-    elif kind in _ACTIVITY_PATHS:
+    elif kind in _ACTIVITY_PATHS and kind not in {'bath_started', 'bath_finished'}:
         effects['return']=dict(next_action='之后回到这次尚未解决的部分',open_loop='本次活动中留下的问题仍待处理')
     world=context.get('world') or {}
     projected={key:context[key] for key in ('time','selected_activity') if key in context}
@@ -212,6 +303,8 @@ async def create(port, source_id, now, kind, context, *, meal=None):
         projected['world']['weather']={k:v for k,v in (world.get('weather') or {}).items()
                                       if k in {'summary','temperature_c','condition','observed_at','stale'}}
     projected['coverage']='仅当前新活动、前态及身体情绪，不是全部历史；未提供旧事不代表不存在。'
+    if kind == 'rest' and context.get('overnight_sleep_candidate'):
+        projected['overnight_sleep_candidate'] = dict(night_plan, meaning='待选休息计划，不证明已经睡着。')
     if len(json.dumps(projected,ensure_ascii=False).encode('utf8'))>14000:
         raise ValueError('LIFE_EPISODE_CONTEXT_TOO_LARGE')
     combinations={f'{p}:{i}:{e}':dict(path=p,interpretation=i,effect=e)
@@ -230,6 +323,13 @@ async def create(port, source_id, now, kind, context, *, meal=None):
             '不要只因旧负荷高就继续照搬ongoing。独立不适不能宣布治愈，普通休息不证明睡着。'
             'nap_N只开始未来补觉，不提前恢复；nap_refreshed/nap_tired只续接已开始且到时的补觉。'
             '连续精力不足且日程有空档，可以安排nap_N补觉，不反复沿用同一句继续静坐。结合当前精力仍可继续休息，或选择新的恢复过程。')
+        experience_instructions += ('night_sleep只在显式夜间计划存在时创作实际开始睡眠，未选择就仍是计划。'
+            'morning_wake只续接已发布且到期、未被通信打断的夜间睡眠，明确创作此刻结束睡眠并醒来；到点不自动醒来。'
+            'night_ended只在夜间睡眠被打断或错过晨间窗口时，明确创作现在结束旧睡眠、当前已经醒着；不证明完整睡过或精力恢复。'
+            '仍要睡或只是普通静坐休息时选择其他path，不把午睡当成早晨刚醒。')
+    if kind == 'shopping':
+        experience_instructions += ('shopping路径只创作她自己本次真实购物经过；completed须已选好并结账，'
+            '只挑选、出门准备或购物计划不能当购买完成。不添品牌或未给出的具体商品；未知时只保留日常用品与袋子。')
     answers=await port.ask({'new_activity':kind,'context':projected,'meal':meal,
                            'paths':paths,'interpretations':interpretations,'effects':effects}, {
         'trigger':dict(instructions='为本次新发生的角色自身行动选择动机。不要替真实用户或他人编动作、对话或私事；不得补写旧事件的原因。',criteria=triggers),
@@ -252,9 +352,13 @@ async def create(port, source_id, now, kind, context, *, meal=None):
             duration = int(path.split('_')[1])
             selected_effects['sleep_plan'] = {'duration_minutes': duration,
                 'end_at': (now + timedelta(minutes=duration)).astimezone(timezone.utc).isoformat()}
+        if path == 'night_sleep':
+            selected_effects['sleep_plan'] = night_plan
         sleep = (context.get('rhythm') or {}).get('authored_sleep')
-        if sleep and sleep['status'] == 'due':
+        if sleep and sleep['status'] == 'due' and (sleep.get('kind') != 'overnight' or path in {'morning_wake', 'night_ended'}):
             selected_effects['sleep_resolution'] = {'source_id': sleep['source_id']}
+        if path == 'morning_wake':
+            selected_effects['morning_wake'] = {'sleep_source_id': sleep['source_id']}
     return dict(schema='character-life-episode/1',source_id=source_id,occurred_at=now.astimezone(timezone.utc).isoformat(),
         actor='character',activity_kind=kind,trigger=dict(kind=answers['trigger'],detail=triggers[answers['trigger']]),
         **paths[answers['path']],interpretation=dict(subjective=True,**interpretations[answers['interpretation']]),

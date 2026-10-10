@@ -10,7 +10,11 @@ TURN_CONTEXT = ContextVar('companion_decision_turn', default=None)
 
 
 class CompanionRuntimeError(RuntimeError):
-    pass
+    def __init__(self, code, *, detail=None, **sizes):
+        super().__init__(code)
+        from runtime.diagnostics.failure_context import project_failure_context
+        self.failure_context = (project_failure_context(dict(failure_stage='decision_context',
+            failure_detail=detail, **sizes)) if detail else {})
 
 
 def configured_port():
@@ -59,7 +63,7 @@ async def authorize_user_silence(user_text, silence, *, port=None) -> bool:
     return answers['user_silence'] == 'authorized'
 
 
-def _decision_context(messages, required_sources=()):
+def _decision_context(messages, required_sources=(), recent_turns=1):
     """Keep conversational resolution evidence, not the writer's full read window.
 
     The newest stored decision carries unresolved media requirements. Legacy
@@ -67,7 +71,7 @@ def _decision_context(messages, required_sources=()):
     """
     from runtime.personal_chat.context import READ_WINDOW
     recent = _recent_dialogue(messages)
-    window = list(READ_WINDOW.get() or ())
+    window = READ_WINDOW.get() or ()
     required = set(required_sources)
     covered = set()
     for index in range(len(window) - 1, -1, -1):
@@ -86,16 +90,32 @@ def _decision_context(messages, required_sources=()):
         break
 
     if any(not isinstance(source, str) or not source for source in required):
-        raise CompanionRuntimeError('JEV_CONTEXT_UNAVAILABLE')
+        raise CompanionRuntimeError('JEV_CONTEXT_UNAVAILABLE', detail='required_source_invalid')
 
     def matches(row, source):
         base = source.rsplit(':', 1)[0] if source.endswith((':user', ':linli')) else source
         return row['event_id'] == source or row['source'] == base or row['source'].startswith(base + ':')
 
-    latest = recent[-1]['source'] if recent else None
-    kept = [row for row in recent if row['source'] == latest
+    latest = {row['source'] for row in recent[-recent_turns:]}
+    kept = [row for row in recent if row['source'] in latest
             or any(matches(row, source) for source in required)
             or row['role'] == 'user' and not any(row['source'].startswith('reply:' + key + ':') for key in covered)]
+    # A writer excerpt can be short while the matching frozen original is still
+    # available. Restore exact source/revision/role; never call an excerpt whole.
+    for row in kept:
+        if not row.get('truncated'):
+            continue
+        original = next((item for item in reversed(window)
+                         if row['source'] == f"reply:{item.get('letter_id')}:{item.get('reply_revision', 1)}"), None)
+        if original is None or row['role'] == 'assistant' and original.get('_received_only'):
+            continue
+        text = original.get('reply_text' if row['role'] == 'assistant' else 'content')
+        if isinstance(text, str) and text.strip():
+            row.update(text=text, truncated=False)
+    # An excerpt whose original is gone is left out rather than failing the turn:
+    # a failed turn stores no decision, so the next turn would see even more old
+    # uncovered rows and fail again. Evidence for pending requirements stays strict.
+    kept = [row for row in kept if not row.get('truncated') or any(matches(row, source) for source in required)]
     # Pending originals may predate the writer's bounded read window.
     restored = []
     for source in sorted(required):
@@ -104,25 +124,44 @@ def _decision_context(messages, required_sources=()):
         original = next(((index, row) for index, row in enumerate(window)
                          if source.startswith('reply:' + str(row.get('letter_id')) + ':')), None)
         if original is None:
-            raise CompanionRuntimeError('JEV_CONTEXT_UNAVAILABLE')
+            raise CompanionRuntimeError('JEV_CONTEXT_UNAVAILABLE', detail='required_source_missing')
         index, original = original
         assistant = source.endswith(':linli')
         text = original.get('reply_text' if assistant else 'content')
         if not isinstance(text, str) or not text.strip() or assistant and original.get('_received_only'):
-            raise CompanionRuntimeError('JEV_CONTEXT_UNAVAILABLE')
+            raise CompanionRuntimeError('JEV_CONTEXT_UNAVAILABLE', detail='required_original_missing')
         restored.append((index, dict(source=source, event_id=source,
             role='assistant' if assistant else 'user', text=text,
             image_delivery_confirmed=assistant and original.get('image_delivery_status') == 'DELIVERED')))
-    return [row for _, row in sorted(restored, key=lambda item: item[0])] + kept
+    result = [row for _, row in sorted(restored, key=lambda item: item[0])] + kept
+    return [{**row, 'required': any(matches(row, source) for source in required)} for row in result]
 
 
 async def prepare_decision(port, messages, user_text, *, source_id, input_revision, as_of, kinds, cached=None,
-                           required_sources=(), speech_enabled=False):
-    from .companion_decision import FrozenCompanionTurn, FrozenCompanionDecision
+                           required_sources=(), speech_enabled=False, bedtime_offer=False,
+                           daily_video_experience=None):
+    from .companion_decision import FrozenCompanionTurn, FrozenCompanionDecision, MAX_MESSAGE_CHARS
     metadata = TURN_CONTEXT.get() or {}
-    recent = _decision_context(messages, (*required_sources, *metadata.get('companion_context_sources', ())))
-    if not isinstance(user_text, str) or not user_text.strip() or any(row.get('truncated') for row in recent):
-        raise CompanionRuntimeError('JEV_CONTEXT_UNAVAILABLE')
+    reuse = isinstance(cached, dict) and cached.get('input_revision') == input_revision
+    if reuse and 'input' in cached:
+        try:
+            frozen = FrozenCompanionTurn.from_record(cached)
+            if (type(frozen.input_revision) is not type(input_revision)
+                    or frozen.source_ids[-1][1] != source_id
+                    or frozen.input['messages'][-1]['text'] != user_text):
+                raise ValueError('stored decision belongs to another input')
+            return FrozenCompanionDecision.from_record(frozen, cached, profile=getattr(port, 'profile', 'full'))
+        except ValueError:
+            raise CompanionRuntimeError('JEV_STORED_DECISION_INVALID', detail='stored_decision_invalid') from None
+    if reuse:
+        bedtime_offer = 'speech_offer' in cached
+    sources = (*required_sources, *metadata.get('companion_context_sources', ()))
+    recent = (_decision_context(messages, sources, 4) if bedtime_offer
+              else _decision_context(messages, sources))
+    if not isinstance(user_text, str) or not user_text.strip():
+        raise CompanionRuntimeError('JEV_CONTEXT_UNAVAILABLE', detail='current_input_invalid')
+    if any(row.get('truncated') for row in recent):
+        raise CompanionRuntimeError('JEV_CONTEXT_UNAVAILABLE', detail='required_excerpt_incomplete')
     # These are the native prior-turn frames from our frozen assembly, not
     # retrieved summaries, incoming image interpretations, or writer drafts.
     turns = [dict(source_id=row['event_id'], role=row['role'], text=row['text']) for row in recent]
@@ -137,45 +176,65 @@ async def prepare_decision(port, messages, user_text, *, source_id, input_revisi
     turns.append(dict(source_id=source_id, role='user', text=user_text))
     # Re-use the original classification instant only for this input revision.
     # The digest below still checks every original, source and capability.
-    reuse = isinstance(cached, dict) and cached.get('input_revision') == input_revision
     if reuse:
         as_of = cached.get('as_of', as_of)
         # A capability rollout must not invalidate a paid, frozen decision.
         # Legacy records have no speech slot; digest validation still catches edits.
         speech_enabled = 'speech_request' in cached
+        daily_video_experience = cached.get('daily_video_experience')
+        if daily_video_experience is None:
+            kinds = [kind for kind in kinds if kind != 'video_speech']
     from .companion_decision import CompanionDecisionError
-    protected = set(required_sources)
+    protected = {row['event_id'] for row in recent if row.get('required')} | set(sources)
+    if any(not isinstance(turn['text'], str) for turn in turns):
+        raise CompanionRuntimeError('JEV_CONTEXT_UNAVAILABLE', detail='decision_input_invalid')
     while True:
+        # Never relabel a clipped original as complete. Capacity-only failures
+        # use the reviewed text lane without granting media/control authority.
+        largest = max(len(turn['text']) for turn in turns)
+        if largest > MAX_MESSAGE_CHARS:
+            raise CompanionRuntimeError('JEV_CONTEXT_BUDGET_EXCEEDED', detail='decision_message_budget',
+                largest_message_chars=largest, max_message_chars=MAX_MESSAGE_CHARS, message_count=len(turns))
         try:
             frozen = FrozenCompanionTurn.create(messages=turns, current_source_id=source_id,
                 capabilities=dict(kinds=list(kinds), synchronize=False, playback_events=False,
                     compose_audio=False, compose_video=False, split_spoken_content=False),
                 environment=dict(can_read=None, can_view=None, can_listen=None), forbidden_kinds=[],
-                as_of=as_of, input_revision=input_revision, speech_enabled=speech_enabled)
+                as_of=as_of, input_revision=input_revision, speech_enabled=speech_enabled,
+                bedtime_offer=bedtime_offer,
+                daily_video_experience=daily_video_experience)
             break
         except CompanionDecisionError as exc:
             # Long QQ bursts can exceed one request's size or turn count. Leave out
             # the oldest turns, never the current message, its three predecessors
             # or required originals; a genuinely invalid input still fails below.
             droppable = [i for i, turn in enumerate(turns[:-4]) if turn['source_id'] not in protected]
-            if exc.code not in {'JEV_INPUT_TOO_LARGE', 'JEV_INPUT_INVALID'} or not droppable:
-                raise CompanionRuntimeError('JEV_CONTEXT_UNAVAILABLE') from None
+            capacity = exc.code == 'JEV_INPUT_TOO_LARGE' or len(turns) > 32
+            if not capacity:
+                raise CompanionRuntimeError('JEV_CONTEXT_UNAVAILABLE', detail='decision_input_invalid') from None
+            if not droppable:
+                from .jev_limits import JEV_MAX_INPUT_BYTES
+                raise CompanionRuntimeError('JEV_CONTEXT_BUDGET_EXCEEDED', detail='decision_wire_budget',
+                    message_count=len(turns), largest_message_chars=largest,
+                    max_input_bytes=JEV_MAX_INPUT_BYTES) from None
             del turns[droppable[0]]
         except ValueError:
-            raise CompanionRuntimeError('JEV_CONTEXT_UNAVAILABLE') from None
+            raise CompanionRuntimeError('JEV_CONTEXT_UNAVAILABLE', detail='decision_input_invalid') from None
     if reuse:
         try:
             return FrozenCompanionDecision.from_record(frozen, cached, profile=getattr(port, 'profile', 'full'))
         except ValueError:
             # An altered decision must not silently become a newly paid request.
-            raise CompanionRuntimeError('JEV_STORED_DECISION_INVALID') from None
+            raise CompanionRuntimeError('JEV_STORED_DECISION_INVALID', detail='stored_decision_invalid') from None
     result = await port.decide(frozen)
     if result.decision is None:
-        raise CompanionRuntimeError(result.error_code or 'JEV_UNAVAILABLE')
+        error = CompanionRuntimeError(result.error_code or 'JEV_UNAVAILABLE')
+        error.failure_context = getattr(result, 'failure_context', {})
+        raise error
     return result.decision
 
 
-def delivery_for(decision, *, kinds):
+def delivery_for(decision, *, kinds, daily_video=False):
     """Consume one text, speech or QQ image body and silence.
 
     Keep composite proposals explicit until their durable step consumer exists;
@@ -196,7 +255,12 @@ def delivery_for(decision, *, kinds):
             or proposal['contents'][0]['derived_from'] is not None):
         raise CompanionRuntimeError('JEV_PLAN_UNSUPPORTED')
     kind = step['parts'][0]['kind']
-    if kind not in {'text', 'audio_speech', 'image'} or kind not in kinds:
+    allowed = {'text', 'audio_speech', 'image'}
+    if daily_video:
+        record = decision.record()
+        if record.get('daily_video_experience') and not record.get('speech_request'):
+            allowed.add('video_speech')
+    if kind not in allowed or kind not in kinds:
         raise CompanionRuntimeError('JEV_PLAN_UNSUPPORTED')
     # Uncertain media must be clarified before a paid asset is generated.
     if resolution['status'] == 'needs_clarification' and kind != 'text':
@@ -217,8 +281,11 @@ def media_locked(plan):
         return True  # Unknown shape: keep JEV's chosen medium.
 
 
-def project_decision(messages, decision, *, max_input_chars, delivery):
+def decision_instruction(decision, *, delivery):
     payload = decision.writer_projection()
+    from .context_budget import _identities
+    sources = dict(decision.source_ids)
+    payload['source_ids'] = sorted({sources[key] for key in _identities(payload) if key in sources})
     ordinary_silent_fallback = payload.get('timing') in {'wait_user', 'defer', 'no_reply'} and delivery in {'text', 'voice_default'}
     if ordinary_silent_fallback:
         payload['pending_requirements'] = [dict(fulfillment='pending', kinds=sorted({
@@ -252,6 +319,13 @@ def project_decision(messages, decision, *, max_input_chars, delivery):
         note += VOICE_PROSE
     elif delivery == 'text':
         note += '本轮交付已选定文字，结构化回复的 delivery 必须是 text。'
+    elif delivery == 'video_speech':
+        note += ('本轮交付已选定提供的日常事件候选的5–15秒自拍视频。delivery=text，正文先自然回应当前用户，'
+                 'daily_video必须从daily_video_candidates选择一个event_id并在同一次输出中撰写spoken_text短台词、'
+                 'staging.image_direction参考图姿态表情、staging.video_direction视频动作表情和share_text延后发送时的分享文案，遵守daily_video格式。'
+                 '不能省略daily_video，不选候选之外的事件，不把用户的活动当成自己的活动。'
+                 'event_status=preparing或planned候选只预先准备完成时的成片，不声称现在已完成，即使certainty=live也不例外。'
+                 '视频将在正文发送确认后后台生成，不能声称已拍好或已发送。speech必须为null，不生成长语音脚本。')
     elif delivery == 'letter_image':
         note += ('本轮信件会附带一张图片。写自然的文字回信，回应用户当前来信；'
                  '图片由后续流程制作，不要把绘图提示词当作回信，不声称图片已经生成或发送。')
@@ -260,15 +334,13 @@ def project_decision(messages, decision, *, max_input_chars, delivery):
                  '该正文不会作为聊天文字发出；描述符合当前请求的画面，不声称照片已生成或已发送。'
                  '这张照片一定会发出：只描述画面，不推辞、不说拍不了、没带手机、不给看或下次再拍。')
     note += '\n<companion_decision>\n' + encoded + '\n</companion_decision>'
-    result = [dict(message) for message in messages]
-    position = next((i for i in range(len(result) - 1, -1, -1) if result[i].get('role') == 'user'), len(result))
-    result.insert(position, dict(role='system', content=note))
-    # The plan arrives after assembly. When it does not fit, give up the oldest
-    # native dialogue messages first rather than the whole reply.
-    while sum(len(message.get('content', '')) for message in result) > max_input_chars:
-        oldest = next((i for i, m in enumerate(result) if m.get('role') in ('user', 'assistant')
-                       and isinstance(m.get('content'), str) and m['content'].startswith('[历史消息 ')), None)
-        if oldest is None:
-            raise CompanionRuntimeError('JEV_CONTEXT_BUDGET_EXCEEDED')
-        del result[oldest]
-    return tuple(result)
+    return note
+
+
+def project_decision(messages, decision, *, max_input_chars, delivery):
+    from .fact_attribution import finalize_reply_messages
+    try:
+        return finalize_reply_messages(messages, decision_instruction(decision, delivery=delivery),
+                                       max_input_chars=max_input_chars)
+    except ValueError:
+        raise CompanionRuntimeError('JEV_CONTEXT_BUDGET_EXCEEDED') from None

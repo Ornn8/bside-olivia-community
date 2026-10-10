@@ -1,4 +1,4 @@
-"""Portable text-only mailbox backups; no provider, credentials or media paths."""
+"""Portable letter/chat text backups; no provider, credentials or media paths."""
 from datetime import datetime, timezone, timedelta
 import hashlib
 import json
@@ -57,12 +57,60 @@ def _record(value):
     result['replied_at'] = _time(value.get('replied_at'))
     # Whitelisted source identity is data, never an instruction or filesystem path.
     result['source_id'] = _text(value.get('source_id', ''), 512)
+    if 'channel' in value:
+        channel = value['channel']
+        delivery = value.get('delivery_status')
+        if channel not in ('qq', 'wechat') or delivery not in ('DELIVERED', 'RECEIVED_ONLY'):
+            raise ValueError('LETTER_BACKUP_INVALID')
+        if delivery == 'RECEIVED_ONLY' and (result['reply_text'] or result['replied_at'] is not None):
+            raise ValueError('LETTER_BACKUP_INVALID')
+        result.update(channel=channel, delivery_status=delivery)
+    elif 'delivery_status' in value:
+        raise ValueError('LETTER_BACKUP_INVALID')
     return result
 
 
 def identity(record):
     return hashlib.sha256(json.dumps(record, ensure_ascii=False, sort_keys=True,
                                      separators=(',', ':')).encode('utf-8')).hexdigest()
+
+
+def personal_chat_letters(chats):
+    """Copy chat text for Archive, without queue state or unsent drafts."""
+    snapshots = [dict(row) for row in chats]
+    parents = {row.get('letter_id'): row for row in snapshots
+               if row.get('channel') in ('qq', 'wechat')}
+    result = []
+    for row in snapshots:
+        if row.get('channel') not in ('qq', 'wechat'):
+            continue
+        parent = parents.get(row['superseded_by']) if row.get('superseded_by') else None
+        sources = row.get('source_messages')
+        parent_sources = parent.get('source_messages') if parent else None
+        # Merged children are kept in the live queue as receipts. Exclude them
+        # only when their inputs really survive in the exported parent.
+        if (parent and parent is not row and parent.get('channel') == row['channel']
+                and parent.get('binding_id') == row.get('binding_id')
+                and isinstance(parent.get('content'), str) and parent['content']
+                and isinstance(sources, dict) and sources and isinstance(parent_sources, dict)
+                and all(key in parent_sources and parent_sources[key] == text for key, text in sources.items())):
+            continue
+        delivered = row.get('delivery_status') == 'DELIVERED'
+        content = row.get('content') or ''
+        reply = (row.get('reply_text') or '') if delivered else ''
+        if not content and not reply:
+            continue
+        result.append({
+            'letter_id': row.get('letter_id') or '', 'content': content, 'reply_text': reply,
+            'title': '', 'origin': row.get('origin') or 'user',
+            'reply_mode': row.get('reply_mode') or 'future_im',
+            'letter_status': 'COMPLETED' if delivered else 'RECEIVED',
+            'created_at': row.get('user_sent_at') or row.get('created_at'),
+            'replied_at': (row.get('replied_at') or row.get('private_world_occurred_at')) if delivered else None,
+            'channel': row['channel'],
+            'delivery_status': 'DELIVERED' if delivered else 'RECEIVED_ONLY',
+        })
+    return result
 
 
 def export_letters(letters):
@@ -82,6 +130,8 @@ def export_letters(letters):
                 'created_at': letter.get('occurred_at', letter.get('created_at')),
                 'replied_at': letter.get('replied_at'),
                 'source_id': letter.get('source_record_id') or letter.get('letter_id') or '',
+                **({key: letter.get(key) for key in ('channel', 'delivery_status')}
+                   if 'channel' in letter else {}),
             })
         digest = identity(record)
         if digest not in seen:

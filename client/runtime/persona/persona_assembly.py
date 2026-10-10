@@ -477,7 +477,8 @@ def _persona_blocks(
                 _budget_id("history", fragment.fragment_id),
                 # The delivered conversation tail is continuity, not optional
                 # retrieval. Do not drop what we just said before old memories.
-                PromptSection.RECENT_DIALOGUE if fragment.fragment_id == 'chat.recent' else PromptSection.HISTORY,
+                (PromptSection.RECENT_DIALOGUE if fragment.fragment_id == 'chat.recent' else
+                 PromptSection.PRIVATE_BEHAVIOR if fragment.fragment_id in {'chat.relationship', 'chat.diary'} else PromptSection.HISTORY),
                 {"untrusted": True, "text": fragment.text},
             )
         )
@@ -688,5 +689,6 @@ def _im_presentation():
     value = CURRENT.get()
     local_only = {'companion_decision', 'save_companion_decision', 'received_source_id', 'input_revision',
                   'proactive_decide', 'proactive_decision', 'turn_is_current',
-                  'record_stage_timing', 'generation_attempts'}
+                  'record_stage_timing', 'generation_attempts', 'daily_video_candidates', 'story_continuation',
+                  'generation_run_id', 'generation_attempt_id', 'save_writer_checkpoint'}
     return {"chat_delivery": {key: item for key, item in value.items() if key not in local_only}} if value is not None else {}

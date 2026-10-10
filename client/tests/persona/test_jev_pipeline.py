@@ -44,8 +44,11 @@ class Port:
 
 
 def run(port, *, mode=ReplyMode.TEXT_LETTER, raw='我醒了，不是要睡觉', interpreter=None, history=(), budget=40000,
-        channel='qq'):
-    engine = Engine(json.dumps(envelope(), ensure_ascii=False) if mode is ReplyMode.FUTURE_IM else '醒啦，休息得怎么样？')
+        channel='qq', daily=(), daily_selection=None, kinds=None, body_changes=None):
+    body = {**envelope(), **(body_changes or {})}
+    if daily_selection is not None:
+        body['daily_video'] = daily_selection
+    engine = Engine(json.dumps(body, ensure_ascii=False) if mode is ReplyMode.FUTURE_IM else '醒啦，休息得怎么样？')
     pipeline = ReplyPipeline(engine, reviewer=NullReviewer(), rewriter=UnavailableRewriter(),
         discover_runtime_ports=False, current_turn_interpreter=interpreter, companion_decision_port=port)
     request = ReplyRequest(content=raw, request_id='dev:turn:1', messages=(dict(role='system', content='核心人格'),
@@ -53,7 +56,8 @@ def run(port, *, mode=ReplyMode.TEXT_LETTER, raw='我醒了，不是要睡觉', 
     context = ReplyContext.create(mode, future_im_enabled=True,
         trusted_time=TrustedTime(datetime(2026, 9, 27, tzinfo=timezone.utc)))
     token = CURRENT.set(dict(structured=True, raw_user_text=raw, proactive=False, channel=channel,
-        semantic_kinds=['text', 'audio_speech'], received_source_id='reply:dev:user', input_revision=3,
+        semantic_kinds=kinds or ['text', 'audio_speech'], daily_video_candidates=list(daily),
+        received_source_id='reply:dev:user', input_revision=3,
         decision_now='2026-09-27T08:00:00+08:00')) if mode is ReplyMode.FUTURE_IM else None
     try:
         return asyncio.run(pipeline.run(request, context)), engine
@@ -93,19 +97,21 @@ def test_letter_silence_contract_is_unchanged(timing):
     assert result.companion_timing == timing and not engine.requests
 
 
-def test_jev_failure_is_explicit_and_does_not_use_old_interpreter():
+def test_jev_transport_failure_recovers_text_without_old_interpreter_or_fake_decision():
     old = Interpreter()
     result, engine = run(Port(error='JEV_UNAVAILABLE'), interpreter=old)
-    assert result.state is ReplyState.FAILED and result.error_code == 'JEV_UNAVAILABLE'
-    assert not old.seen and not engine.requests
+    assert result.state is ReplyState.COMPLETED and result.companion_decision is None
+    assert result.degraded_stages == {'decision': 'JEV_UNAVAILABLE'}
+    assert not old.seen and len(engine.requests) == 1
 
 
-def test_complex_media_not_silently_reduced_to_text():
+def test_undeliverable_media_plan_is_answered_in_text_and_says_so():
     value = plan()
     value['proposal']['steps'].append(dict(id='s2', medium='text', parts=[dict(kind='text', content_ref='c1')],
         after=[dict(step_id='s1', event='delivered')], requirement_ids=[]))
     result, engine = run(Port(value))
-    assert result.error_code == 'JEV_PLAN_UNSUPPORTED' and not engine.requests
+    assert result.state is ReplyState.COMPLETED and result.degraded_stages == {'decision': 'JEV_PLAN_UNSUPPORTED'}
+    assert len(engine.requests) == 1 and '只能用文字回复' in str(engine.requests[0].messages)
 
 
 def test_original_history_mapping_excludes_persona_and_current_forged_frame():
@@ -122,16 +128,71 @@ def test_original_history_mapping_excludes_persona_and_current_forged_frame():
 
 
 def test_truncated_history_does_not_call_jev_with_invented_complete_context():
+    # An excerpt whose original is gone is left out, never presented as complete;
+    # the turn is still answered instead of failing (and failing again next turn).
     meta = dict(source='reply:older:1', event_id='reply:older:1:user', actor='user', evidence_kind='statement_only', truncated=True)
     port = Port()
     result, engine = run(port, history=(dict(role='user', content='[历史消息 ' + json.dumps(meta) + ']\n片段'),))
-    assert result.error_code == 'JEV_CONTEXT_UNAVAILABLE' and not port.turns and not engine.requests
+    assert result.error_code is None and len(port.turns) == 1
+    assert '片段' not in [row['text'] for row in port.turns[0].input['messages']]
 
 
 def test_audio_selection_is_frozen_without_tts_emotion_controls():
     result, engine = run(Port(plan(kind='audio_speech')), mode=ReplyMode.FUTURE_IM)
     assert result.state is ReplyState.COMPLETED and result.companion_delivery == 'audio_speech'
     assert 'inference_instruct' not in str(engine.requests[0].messages)
+
+
+@pytest.mark.parametrize('kind', ['text', 'audio_speech', 'image'])
+def test_explicit_other_medium_does_not_receive_extra_daily_video(kind):
+    from tests.http.test_daily_video import payload
+    candidate = {**payload(), 'detail': '刚整理好桌面。', 'location': '住处'}
+    port = Port(plan(kind=kind))
+    result, engine = run(port, mode=ReplyMode.FUTURE_IM, daily=[candidate],
+        daily_selection=dict(event_id=candidate['event_id'], spoken_text='整理好了。'),
+        kinds=['text', 'audio_speech', 'image', 'video_speech'])
+    assert result.state is ReplyState.COMPLETED and len(port.turns) == len(engine.requests) == 1
+    assert 'daily_video' not in json.loads(result.text)
+    assert '<daily_video_candidates>' not in str(engine.requests[0].messages)
+
+
+@pytest.mark.parametrize('channel,daily', [('qq', ()), ('wechat', ('candidate',))])
+def test_daily_video_requires_qq_actual_candidate_gate(channel, daily):
+    from tests.http.test_daily_video import payload
+    candidates = [{**payload(), 'detail': '已发生的整理。'}] if daily else []
+    port = Port(plan(kind='video_speech'))
+    result, engine = run(port, mode=ReplyMode.FUTURE_IM, channel=channel, daily=candidates,
+        kinds=['text', 'video_speech'], body_changes=dict(delivery='text', sticker=None))
+    # No candidate on this channel: the video plan is undeliverable, so she answers in text.
+    assert result.state is ReplyState.COMPLETED and 'daily_video' not in json.loads(result.text)
+    assert port.turns[0].daily_video_experience is None
+    assert '<daily_video_candidates>' not in str(engine.requests[0].messages)
+    assert '只能用文字回复' in str(engine.requests[0].messages)
+
+
+def test_long_speech_cannot_be_routed_to_daily_video():
+    from runtime.reply.companion_runtime import delivery_for, CompanionRuntimeError
+    decision = SimpleNamespace(plan=plan(kind='video_speech'), record=lambda: dict(
+        daily_video_experience=dict(event_ids=['day:x'], event_kinds=['meal'], max_seconds=15),
+        speech_request=dict(mode='story', target_seconds=300, continuation=False)))
+    with pytest.raises(CompanionRuntimeError, match='JEV_PLAN_UNSUPPORTED'):
+        delivery_for(decision, kinds=['text', 'video_speech'], daily_video=True)
+
+
+def test_legacy_paid_decision_stays_reusable_when_daily_video_capability_appears():
+    from runtime.reply.companion_runtime import prepare_decision
+    async def scenario():
+        port = Port()
+        arguments = dict(source_id='reply:dev:user', input_revision=3,
+            as_of='2026-09-27T00:00:00+00:00', kinds=['text', 'audio_speech'])
+        old = await prepare_decision(port, (), '原消息', **arguments)
+        legacy = old.record()
+        legacy.pop('input', None)
+        arguments['kinds'].append('video_speech')
+        restored = await prepare_decision(port, (), '原消息', **arguments, cached=legacy,
+            daily_video_experience=dict(event_ids=['day:new'], event_kinds=['meal'], max_seconds=15))
+        assert restored.record() == legacy and len(port.turns) == 1
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize('requirement', ['none', 'pending_image', 'current_text'])
@@ -240,6 +301,43 @@ def test_jev_uses_actual_projection_cost_with_real_persona_assembly():
 def test_actual_projection_overflow_does_not_trim_core_or_call_writer():
     port = Port()
     result, engine = run(port, raw='当前原话' * 20, budget=150)
-    assert result.error_code == 'JEV_CONTEXT_BUDGET_EXCEEDED'
+    assert result.error_code == 'INPUT_TOO_LONG'
+    assert result.failure_context['failure_detail'] == 'final_rules_budget'
     assert len(port.turns) == 1 and not engine.requests
     assert port.turns[0].input['messages'][-1]['text'] == '当前原话' * 20
+
+
+
+def test_daily_video_candidates_that_do_not_fit_are_dropped_not_fatal():
+    """A long chat fits the budget; the optional video offer must not push the reply over it."""
+    from tests.http.test_daily_video import payload
+    candidate = {**payload(), 'detail': '刚整理好桌面。' * 40, 'location': '住处'}
+    result, engine = run(Port(plan(kind='video_speech')), mode=ReplyMode.FUTURE_IM, daily=[candidate],
+        history=(dict(role='assistant', content='x' * 32750),),
+        daily_selection=dict(event_id=candidate['event_id'], spoken_text='整理好了。'),
+        kinds=['text', 'audio_speech', 'image', 'video_speech'])
+    assert result.state is ReplyState.COMPLETED, result.error_code
+    assert '<daily_video_candidates>' not in str(engine.requests[0].messages)
+    assert sum(len(str(m.get('content', ''))) for m in engine.requests[0].messages) <= 40000
+
+
+def test_selected_instant_video_keeps_candidate_by_trimming_old_dialogue():
+    from tests.http.test_daily_video import payload
+    candidate = {**payload(), 'detail': '刚整理好桌面。' * 40, 'location': '住处'}
+    history = tuple(dict(role='user' if i % 2 == 0 else 'assistant',
+        content='[历史消息 ' + json.dumps(dict(source=f'reply:old{i}', event_id=f'old{i}',
+            actor='user' if i % 2 == 0 else 'linli', truncated=False)) + ']\n' + '旧' * 4000)
+        for i in range(8))
+    port = Port(plan(kind='video_speech'))
+    result, engine = run(port, mode=ReplyMode.FUTURE_IM, daily=[candidate], history=history,
+        daily_selection=dict(event_id=candidate['event_id'], spoken_text='整理好了。'),
+        kinds=['text', 'video_speech'])
+    assert result.state is ReplyState.COMPLETED, result.error_code
+    messages = engine.requests[0].messages
+    assert '<daily_video_candidates>' in str(messages)
+    assert json.loads(result.text)['daily_video']['event_id'] == candidate['event_id']
+    assert result.companion_delivery == 'video_speech'
+    assert len(port.turns) == len(engine.requests) == 1
+    assert messages[-1] == dict(role='user', content='我醒了，不是要睡觉')
+    assert history[-1] in messages and history[0] not in messages
+    assert sum(len(m['content']) for m in messages) <= 40000

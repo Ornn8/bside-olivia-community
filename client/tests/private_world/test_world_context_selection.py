@@ -47,6 +47,58 @@ def test_selection_budget_does_not_choose_manual_priority_or_truncate(tmp_path):
         asyncio.run(select_world_context(Port(), packet, '说说今天', max_chars=100))
 
 
+@pytest.mark.parametrize('historical', [False, True])
+def test_required_activity_keeps_complete_facts_and_staleness_within_budget(tmp_path, historical):
+    now = datetime(2026, 9, 28, 5, tzinfo=timezone.utc)
+    store = DailyLifeStore(tmp_path / 'life.db')
+    store.publish_day('day:read', {'location': '家里', 'activity': '读书', 'note': '读完一篇散文。'}, [],
+                      occurred_at=now - timedelta(minutes=5))
+    if historical:
+        store.record_exchange('reply:new', '你好', '你好', [], occurred_at=now)
+    packet = store.reply_candidates(now=now)
+    packet['records'].append({'field': 'threads', 'many': True, 'value': {'note': '可选经历' * 2000}})
+    field = 'last_observation' if historical else 'current'
+    expected = {r['field']: r['value'] for r in packet['records'] if r['field'] in (field, 'schedule')}
+    class Port:
+        async def ask(self, state, questions, **kwargs):
+            return {key: 'must' if item['field'] == 'threads' else 'skip'
+                    for key, item in state['records'].items()}
+    result = asyncio.run(select_world_context(Port(), packet, '',
+        required_fields=('current', 'last_observation', 'schedule')))
+    value = json.loads(result)
+    assert len(result) <= 3500
+    assert value['stale'] is historical
+    assert value[field] == expected[field]
+    assert value['schedule'] == expected['schedule']
+    assert value['threads'] == []
+    if historical:
+        assert value['current'] is None
+
+
+def test_required_facts_over_budget_fail_before_provider_instead_of_truncating(tmp_path):
+    packet = DailyLifeStore(tmp_path / 'life.db').reply_candidates(now=datetime.now(timezone.utc))
+    packet['records'].append({'field': 'current', 'value': {'note': '完整事实' * 2000}})
+    class Port:
+        async def ask(self, *args, **kwargs):
+            pytest.fail('An impossible required-state budget must be detected before billing')
+    with pytest.raises(WorldSelectionError, match='^JEV_WORLD_SELECTION_BUDGET$'):
+        asyncio.run(select_world_context(Port(), packet, '', required_fields=('current', 'schedule')))
+
+
+def test_ordinary_reply_can_still_skip_current_activity_and_schedule(tmp_path):
+    now = datetime(2026, 9, 28, 5, tzinfo=timezone.utc)
+    store = DailyLifeStore(tmp_path / 'life.db')
+    store.publish_day('day:read', {'location': '家里', 'activity': '读书', 'note': '读完一篇散文。'}, [],
+                      occurred_at=now)
+    packet = store.reply_candidates(now=now)
+    class Port:
+        async def ask(self, state, questions, **kwargs):
+            return {key: 'skip' for key in questions}
+    result = json.loads(asyncio.run(select_world_context(Port(), packet, '你好')))
+    assert result['current'] is None
+    assert 'schedule' not in result
+
+
 def test_failed_jev_does_not_fall_back_to_keyword_selection(tmp_path):
     packet = DailyLifeStore(tmp_path / 'life.db').reply_candidates(now=datetime.now(timezone.utc))
     class Port:

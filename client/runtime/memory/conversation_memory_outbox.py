@@ -10,6 +10,7 @@ own SQLite journal.  No message text is copied into the journal.
 from __future__ import annotations
 
 import asyncio
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
@@ -174,6 +175,7 @@ class CanonicalMemoryOutbox:
             try:
                 letters = self._read_letters()
                 received = self._read_received_rows()
+                terminal_sources = self._terminal_sources()
             except ConversationMemoryOutboxError as exc:
                 return OutboxScanResult("unavailable", error_code=exc.code)
 
@@ -185,17 +187,25 @@ class CanonicalMemoryOutbox:
             except Exception:
                 # Canonical delivery remains independent; retry from durable state.
                 pending += 1
-            indexed = 0
+            deliveries = []
             for row in letters:
                 delivery = _delivery_from_row(row, user_id=self.user_id)
                 if delivery is None:
                     ignored += 1
                     continue
-                discovered += 1
-                index_original = getattr(self.committer, "index_original", None)
-                if index_original is not None and indexed < 20:
+                deliveries.append(delivery)
+            # Prioritize fresh originals when an old, already-completed account
+            # first builds its local index. Canonical commits retain store order.
+            index_original = getattr(self.committer, "index_original", None)
+            if callable(index_original):
+                indexed = 0
+                for delivery in sorted(deliveries, key=lambda d: d.occurred_at, reverse=True):
                     indexed += bool(await index_original(delivery))
-                if self._is_terminal(delivery.source_id):
+                    if indexed >= 20:
+                        break
+            for delivery in deliveries:
+                discovered += 1
+                if delivery.source_id in terminal_sources:
                     duplicates += 1
                     continue
                 if self._budget_exhausted(delivery.source_id):
@@ -206,6 +216,11 @@ class CanonicalMemoryOutbox:
                 if callable(drain):
                     for completed_delivery, completed_result in drain():
                         self._record(completed_delivery, completed_result)
+                        if completed_result.status in {
+                            CanonicalMemoryDeliveryStatus.WRITTEN, CanonicalMemoryDeliveryStatus.DUPLICATE,
+                            CanonicalMemoryDeliveryStatus.SKIPPED,
+                        }:
+                            terminal_sources.add(completed_delivery.source_id)
                 if result.status is CanonicalMemoryDeliveryStatus.WRITTEN:
                     delivered += 1
                     self._record(delivery, result)
@@ -218,8 +233,16 @@ class CanonicalMemoryOutbox:
                 else:
                     pending += 1
                     self._record(delivery, result)
+                if result.status in {
+                    CanonicalMemoryDeliveryStatus.WRITTEN, CanonicalMemoryDeliveryStatus.DUPLICATE,
+                    CanonicalMemoryDeliveryStatus.SKIPPED,
+                }:
+                    terminal_sources.add(delivery.source_id)
 
             await self._index_archive_originals()
+            refresh = getattr(self.committer, 'refresh_relationship_memory', None)
+            if callable(refresh):
+                await refresh(self.user_id)
             status = "degraded" if pending else "available"
             return OutboxScanResult(
                 status,
@@ -241,6 +264,10 @@ class CanonicalMemoryOutbox:
             return  # Archive failures must not block canonical delivery; retry next scan.
         indexed = 0
         deliveries = []
+        # Dates the user restored in the mailbox stamp the derived recall index,
+        # so a question naming that day finds those letters. Originals stay unchanged.
+        from runtime.imports.letter_maintenance import key as maintenance_key
+        restored_dates = self._restored_dates()
         for row in rows:
             if not isinstance(row, Mapping):
                 continue
@@ -253,13 +280,16 @@ class CanonicalMemoryOutbox:
             user_text, reply = metadata.get("user_content"), metadata.get("reply_text")
             if not isinstance(source, str) or not source or not all(isinstance(v, str) for v in (user_text, reply)):
                 continue
-            stamp = _timestamp(row.get("occurred_at"))
+            edit = restored_dates.get(maintenance_key(row)) if restored_dates else None
+            restored = _timestamp(edit.get("created_at")) if isinstance(edit, Mapping) else None
+            stamp = restored or _timestamp(row.get("occurred_at"))
+            occurred = restored.isoformat() if restored else row.get("occurred_at")
             digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
             source_id = ("history:offline:" if source.startswith("offline-letter-pairs:") else "history:") + digest
             delivery = SimpleNamespace(user_id=self.user_id, source_id=source_id,
                 user_message=user_text, assistant_message=reply, occurred_at=stamp,
                 lifecycle_at=_timestamp(row.get("imported_at")) or stamp or datetime.fromtimestamp(0, timezone.utc),
-                content_hash=hashlib.sha256(json.dumps([user_text, reply, row.get("occurred_at")], ensure_ascii=False).encode("utf-8")).hexdigest())
+                content_hash=hashlib.sha256(json.dumps([user_text, reply, occurred], ensure_ascii=False).encode("utf-8")).hexdigest())
             deliveries.append(delivery)
         register = getattr(self.committer, "register_archive_sources", None)
         if callable(register):
@@ -267,10 +297,18 @@ class CanonicalMemoryOutbox:
                 await register(self.user_id, [delivery.source_id for delivery in deliveries])
             except Exception:
                 pass  # Progress is optional; indexing still proceeds.
-        for delivery in deliveries:
+        for delivery in sorted(deliveries, key=lambda d: d.occurred_at or datetime.fromtimestamp(0, timezone.utc), reverse=True):
             indexed += bool(await index(delivery))
             if indexed >= 20:
                 break
+
+    def _restored_dates(self) -> Mapping[str, object]:
+        try:
+            payload = json.loads(self.state_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return {}
+        edits = payload.get("letter_maintenance") if isinstance(payload, Mapping) else None
+        return edits if isinstance(edits, Mapping) else {}
 
     def health(self) -> dict[str, object]:
         try:
@@ -395,25 +433,26 @@ class CanonicalMemoryOutbox:
         # The same outbox/committer owns both channels. Generated or uncertain
         # sends are never canonical memory even if their text is present.
         from runtime.image_understanding import image_memory_rows
+        from runtime.incoming_media import media_memory_rows
         image_rows = tuple(image for row in (*letters, *chats) if isinstance(row, Mapping)
                            for image in image_memory_rows(row))
+        media_rows = tuple(media for row in (*letters, *chats) if isinstance(row, Mapping)
+                           for media in media_memory_rows(row))
         return (*tuple(row for row in letters if isinstance(row, Mapping)),
                 *tuple(row for row in chats if isinstance(row, Mapping)
-                       and row.get("delivery_status") == "DELIVERED"), *image_rows)
+                       and row.get("delivery_status") == "DELIVERED"), *image_rows, *media_rows)
 
-    def _is_terminal(self, source_id: str) -> bool:
+    def _terminal_sources(self) -> set[str]:
         try:
-            with self._connect() as connection:
-                row = connection.execute(
-                    "SELECT status FROM canonical_memory_deliveries "
-                    "WHERE source_id = ?",
-                    (source_id,),
-                ).fetchone()
+            with closing(self._connect()) as connection:
+                rows = connection.execute(
+                    "SELECT source_id FROM canonical_memory_deliveries WHERE status IN ('written','duplicate')"
+                ).fetchall()
         except (OSError, sqlite3.Error) as exc:
             raise ConversationMemoryOutboxError(
                 "MEMORY_OUTBOX_STORAGE_UNAVAILABLE"
             ) from exc
-        return row is not None and str(row[0]) in _TERMINAL
+        return {str(row[0]) for row in rows}
 
     def _record(
         self,

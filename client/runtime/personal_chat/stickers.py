@@ -3,7 +3,7 @@ import re
 from runtime.letter_stickers.selection import allowed_stickers, weighted_candidates, _labels
 
 
-def choices(rows, view, *, channel='wechat'):
+def choices(rows, view, *, channel='wechat', installed=()):
     delivered = [r for r in rows if r.get('channel') == channel and r.get('delivery_status') == 'DELIVERED']
     since = 0
     for row in reversed(delivered):
@@ -17,7 +17,8 @@ def choices(rows, view, *, channel='wechat'):
     history = [row.get('sticker_id') for row in delivered]
     appeared = [row.get('sticker_id') if row.get('sticker_delivery_status') in
                 {'SENDING', 'DELIVERED', 'UNKNOWN'} else None for row in delivered]
-    sampled = weighted_candidates(allowed_stickers(view, channel=channel), history, appeared=appeared, limit=10)
+    sampled = weighted_candidates(allowed_stickers(view, channel=channel, installed=installed),
+                                  history, appeared=appeared, limit=10)
     return {key: _labels()[key] for key in sampled}
 
 

@@ -139,7 +139,7 @@ LETTER_DETAIL_MEDIA_ERROR_CODES.update({
         "GPU_CONNECTION_FAILED", "GPU_AUTH_FAILED", "GPU_QUEUE_FULL",
         "GPU_REQUEST_FAILED", "GPU_TASK_TIMEOUT", "GPU_TASK_FAILED",
         "GPU_DOWNLOAD_FAILED", "GPU_OUTPUT_INVALID", "GPU_SHARED_SCENE_MISSING",
-        "GPU_NOT_CONFIGURED", "GPU_CAPABILITY_UNAVAILABLE", "MEDIA_JOB_INTERRUPTED",
+        "GPU_NOT_CONFIGURED", "GPU_CAPABILITY_UNAVAILABLE", "MEDIA_JOB_INTERRUPTED", "GPU_RECOVERY_REQUIRED",
     )
 })
 
@@ -233,6 +233,19 @@ def canonical_route_path(path: str) -> str:
 
 ROUTES: dict[str, dict[str, Any]] = {
     "/toy/settings/reply-routes": _route(["GET", "POST"], "settings.video_reply", evidence="local-extension"),
+    "/toy/world/wardrobe": _route(["GET", "POST"], "settings.video_reply", evidence="local-extension"),
+    "/toy/world/gifts": _route(["GET", "POST"], "settings.video_reply", evidence="local-extension"),
+    "/toy/world/pets": _route(["GET", "POST"], "settings.video_reply", evidence="local-extension"),
+    "/toy/diary": _route(["GET"], "letters.read", read_only=True, evidence="local-extension"),
+    "/toy/improve": _route(["GET"], "core.health", read_only=True, evidence="local-extension"),
+    "/toy/improve/settings": _route(["POST"], "core.health", evidence="local-extension"),
+    "/toy/improve/forget": _route(["POST"], "core.health", evidence="local-extension"),
+    "/toy/diary/entry": _route(["GET"], "letters.read", evidence="local-extension"),
+    "/toy/diary/memoir": _route(["GET"], "letters.read", evidence="local-extension"),
+    "/toy/diary/memoir/start": _route(["POST"], "letters.read", evidence="local-extension"),
+    "/toy/diary/settings": _route(["POST"], "letters.read", evidence="local-extension"),
+    "/toy/diary/comment": _route(["POST"], "letters.read", evidence="local-extension"),
+    "/toy/diary/delete": _route(["POST"], "letters.read", evidence="local-extension"),
     "/toy/image/ack": _route(["POST"], "settings.video_reply", evidence="local-extension"),
     "/toy/image/status": _route(["GET"], "settings.video_reply", evidence="local-extension"),
     "/toy/letter/route-preview": _route(["POST"], "letters.send", evidence="local-extension"),
@@ -252,6 +265,12 @@ ROUTES: dict[str, dict[str, Any]] = {
         "support.diagnostics",
         read_only=True,
         evidence="local-extension",
+    ),
+    "/toy/diagnostics/save": _route(
+        ["POST"], "support.diagnostics", evidence="local-extension"
+    ),
+    "/toy/companion/private-world/life/diagnostic": _route(
+        ["POST"], "support.diagnostics", evidence="local-extension"
     ),
     "/toy/capabilities/video/source": _route(
         ["POST"], "settings.video_reply", evidence="local-extension"
@@ -356,6 +375,8 @@ ROUTES: dict[str, dict[str, Any]] = {
     "/toy/midi/cancelGenerate": _route(["POST"], "music.midi_jobs"),
     "/toy/midi/deleteJob": _route(["POST"], "music.midi_jobs"),
     "/toy/local-songs": _route(["GET"], "music.local_library"),
+    "/toy/sticker-packs": _route(["GET"], "letters.sticker_packs", read_only=True),
+    "/toy/sticker-packs/open": _route(["POST"], "letters.sticker_packs"),
     "/toy/local-songs/import": _route(["POST"], "music.local_library"),
     "/toy/local-songs/from-letter": _route(["POST"], "music.local_library"),
     "/toy/local-songs/rename": _route(["POST"], "music.local_library"),

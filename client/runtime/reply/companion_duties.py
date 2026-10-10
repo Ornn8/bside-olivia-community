@@ -17,11 +17,11 @@ import urllib.request
 
 from jsonschema import Draft202012Validator, ValidationError
 
-from runtime.reply.jev_billing import billing_headers, settle_receipt
+from runtime.reply.jev_billing import settle_receipt
 
 from runtime.reply.companion_decision import (
     CompanionDecisionError, DEFAULT_ENDPOINT, ERROR_CODES, JevDecisionPort,
-    _json, _nonfinite, _pairs,
+    _json,
 )
 
 
@@ -32,7 +32,6 @@ _KINDS = ('persona', 'exchange', 'world')
 _REQUESTS = {kind: Draft202012Validator(_SCHEMA[kind + '_request']) for kind in _KINDS}
 _RESPONSES = {kind: Draft202012Validator(_SCHEMA[kind + '_response']) for kind in _KINDS}
 from runtime.reply.jev_limits import JEV_MAX_INPUT_BYTES as _MAX_INPUT_BYTES
-_MAX_RESPONSE_BYTES = 262144
 
 
 def _digest(encoded):
@@ -170,18 +169,7 @@ class JevDutiesPort:
             raise CompanionDecisionError('JEV_INPUT_TOO_LARGE')
         headers = self._transport.request_headers(_digest(input_json))
         request = urllib.request.Request(endpoint, data=body, headers=headers, method='POST')
-        with self._transport._opener.open(request, timeout=self._transport.timeout_seconds) as response:
-            if response.status != 200:
-                raise CompanionDecisionError('JEV_HTTP_ERROR')
-            if response.headers.get_content_type() != 'application/json':
-                raise CompanionDecisionError('JEV_RESPONSE_INVALID')
-            raw = response.read(_MAX_RESPONSE_BYTES + 1)
-        if len(raw) > _MAX_RESPONSE_BYTES:
-            raise CompanionDecisionError('JEV_RESPONSE_INVALID')
-        try:
-            return json.loads(raw.decode('utf-8'), object_pairs_hook=_pairs, parse_constant=_nonfinite)
-        except (ValueError, UnicodeError, RecursionError):
-            raise CompanionDecisionError('JEV_RESPONSE_INVALID') from None
+        return self._transport.json_response(request)
 
     async def evaluate(self, kind, packet):
         # Freeze before the first await; later edits cannot rebind a valid result.

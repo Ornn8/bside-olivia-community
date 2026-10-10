@@ -1,4 +1,4 @@
-"""Jev selects complete authorized world records; code only enforces budgets."""
+"""Jev selects optional world records around the host's required state."""
 import json
 
 
@@ -77,11 +77,14 @@ def _trim_order(records):
     return sorted(removable, key=lambda i: (not finished(records[i]), age(records[i]), i))
 
 
-async def select_world_context(port, packet, user_text, *, max_chars=3500):
+async def select_world_context(port, packet, user_text, *, max_chars=3500, required_fields=()):
     if port is None:
         raise WorldSelectionError('JEV_WORLD_SELECTION_UNAVAILABLE')
     records = packet['records']
     base = {**packet['base'], 'threads': []}
+    required = {i for i, record in enumerate(records) if record['field'] in required_fields}
+    for index in sorted(required):
+        base = _append(base, records[index])
     if len(_json(base)) > max_chars:
         raise WorldSelectionError('JEV_WORLD_SELECTION_BUDGET')
     common = {'user_text': user_text, 'as_of': packet['base']['as_of'],
@@ -130,8 +133,10 @@ async def select_world_context(port, packet, user_text, *, max_chars=3500):
             raise WorldSelectionError('JEV_WORLD_SELECTION_INVALID')
         ranked.extend((_LEVEL_RANK[answers[key]], int(key[1:])) for key in questions if answers[key] != 'skip')
     value = base
-    retained = 0
+    retained = len(required)
     for rank, index in sorted(ranked, key=lambda item: (-item[0], item[1])):
+        if index in required:
+            continue
         candidate = _append(value, records[index])
         if len(_json(candidate)) <= max_chars:
             value = candidate

@@ -23,6 +23,11 @@ class QQFileRejected(RuntimeError):
     pass
 
 
+class QQVideoDeferred(RuntimeError):
+    """Validation finished after new input; no platform action was attempted."""
+    pass
+
+
 def text_segments(text):
     """Convert exact catalog labels, never interpret arbitrary CQ commands."""
     segments = []
@@ -46,7 +51,7 @@ def _ack(raw):
     return raw["data"]
 
 
-async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_timeout, merge_seconds=2, state_callback=None, media_ack_timeout=120):
+async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_timeout, merge_seconds=2, state_callback=None, media_ack_timeout=120, diagnostic_callback=None):
     queue = asyncio.Queue(maxsize=32)
     intake_queue = asyncio.Queue(maxsize=32)
     control_queue = asyncio.Queue(maxsize=32)
@@ -130,6 +135,19 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
         from pathlib import Path
         return await send_item({'type': 'image', 'data': {'file': Path(path).resolve().as_uri()}})
 
+    async def send_video(path, reply_to=None, *, eligible=None, caption=''):
+        from pathlib import Path
+        from .daily_video import validate_video
+        path = Path(path).resolve()
+        await asyncio.to_thread(validate_video, path)
+        if callable(eligible) and not eligible():
+            raise QQVideoDeferred('QQ_VIDEO_DEFERRED')
+        if not isinstance(caption, str) or len(caption) > 256:
+            raise ValueError('QQ_VIDEO_CAPTION_INVALID')
+        items = text_segments(caption) if caption else []
+        items.append({'type': 'video', 'data': {'file': path.as_uri()}})
+        return await send_item(items, reply_to)
+
     async def send_file(path, name):
         from pathlib import Path
         path = Path(path).resolve()
@@ -155,7 +173,26 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
 
     send.audio = send_audio
     send.image = send_image
+    send.video = send_video
     send.file = send_file
+    async def resolve_media(kind, reference):
+        if kind not in {'audio', 'video', 'file'} or not re.fullmatch(r'[A-Za-z0-9_.-]{1,256}', reference):
+            raise ValueError('QQ_MEDIA_REFERENCE_INVALID')
+        echo = uuid.uuid4().hex
+        future = asyncio.get_running_loop().create_future()
+        pending[echo] = future
+        try:
+            action = 'get_record' if kind == 'audio' else 'get_private_file_url' if kind == 'file' else 'get_file'
+            params = {'file_id': reference}
+            if kind == 'audio':
+                params['out_format'] = 'wav'
+            await ws.send_json({'action': action, 'echo': echo, 'params': params})
+            return _ack(await asyncio.wait_for(future, media_ack_timeout))
+        finally:
+            pending.pop(echo, None)
+            if not future.done():
+                future.cancel()
+    send.resolve_media = resolve_media
     send.is_available = lambda: not ws.closed
 
     def for_exchange(event):
@@ -173,7 +210,11 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
             from pathlib import Path
             return await send_item({'type': 'image', 'data': {'file': Path(path).resolve().as_uri()}}, reply_to)
         correlated.image = correlated_image
+        async def correlated_video(path, *, eligible=None):
+            return await send_video(path, reply_to, eligible=eligible)
+        correlated.video = correlated_video
         correlated.file = send_file
+        correlated.resolve_media = resolve_media
         correlated.is_available = send.is_available
         return correlated
 
@@ -274,7 +315,7 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
                         break
                     if (next_event.text.strip() == '/连接测试'
                             or sum(len(e.text)+1 for e in events) + len(next_event.text) > 10000
-                            or sum(len(e.images) for e in events) + len(next_event.images) > 4
+                            or sum(len(e.images) + len(e.media) for e in events) + len(next_event.images) + len(next_event.media) > 4
                             or not mergeable_by_sent_time(events[-1], next_event, merge_seconds)):
                         carry = next_event
                         break
@@ -305,6 +346,20 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
         if worker_task.done():
             worker_task.result()
         if reader_task.done():
+            if not stop_event.is_set() and callable(diagnostic_callback):
+                exc = ws.exception()
+                kind = ('NONE' if exc is None else 'TIMEOUT' if isinstance(exc, TimeoutError)
+                        else 'CONNECTION' if isinstance(exc, ConnectionError)
+                        else 'CLIENT' if isinstance(exc, aiohttp.ClientError) else 'OTHER')
+                fields = dict(processing=processing, pending_actions=len(pending),
+                              response_queue=queue.qsize(), intake_queue=intake_queue.qsize(),
+                              control_queue=control_queue.qsize(), transport_error=kind)
+                if type(ws.close_code) is int and 1000 <= ws.close_code <= 4999:
+                    fields['close_code'] = ws.close_code
+                try:
+                    diagnostic_callback(**fields)
+                except Exception:
+                    log.warning('QQ_DIAGNOSTIC_RECORD_FAILED')
             reader_task.result()
             if not stop_event.is_set() and (processing or not queue.empty() or not intake_queue.empty() or not control_queue.empty()):
                 raise RuntimeError("QQ_CONNECTION_LOST_DURING_EXCHANGE")
@@ -315,7 +370,7 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
 
 
 async def run_qq(url, token, account_id, owner_id, handle_message, stop_event,
-                 *, ack_timeout=30, reconnect_delay=1, merge_seconds=2, state_callback=None, media_ack_timeout=120):
+                 *, ack_timeout=30, reconnect_delay=1, merge_seconds=2, state_callback=None, media_ack_timeout=120, diagnostic_callback=None):
     """Run until stopped. send(text) returns a confirmed platform message ID.
 
     The handler must persist a sending reservation before calling send: a timeout
@@ -342,9 +397,11 @@ async def run_qq(url, token, account_id, owner_id, handle_message, stop_event,
         while not stop_event.is_set():
             try:
                 publish("CONNECTING" if failures == 0 else "RECONNECTING")
-                async with session.ws_connect(url, headers={"Authorization": "Bearer " + token}, heartbeat=20) as ws:
+                async with session.ws_connect(url, headers={"Authorization": "Bearer " + token}, heartbeat=20,
+                                              max_msg_size=8 * 1024 * 1024) as ws:
                     await _connection(ws, account_id, owner_id, handle_message, stop_event, ack_timeout, merge_seconds,
-                                      state_callback=publish, media_ack_timeout=media_ack_timeout)
+                                      state_callback=publish, media_ack_timeout=media_ack_timeout,
+                                      diagnostic_callback=diagnostic_callback)
             except (aiohttp.ClientError, ConnectionError, TimeoutError):
                 log.warning("QQ_TRANSPORT_DISCONNECTED")
             if stop_event.is_set():

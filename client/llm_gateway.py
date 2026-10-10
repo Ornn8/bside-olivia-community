@@ -26,11 +26,12 @@ from runtime.diagnostics.usage_metrics import record_usage, purpose_for
 from runtime.tls import client_tls_context
 from runtime.reply.model_capabilities import model_capabilities
 from runtime.reply.model_request_policy import reasoning_request_parameters
+from runtime.official_endpoints import API_ORIGIN, canonical_api_base
 
 
 PROVIDER_USER_AGENT = "Olivia-Community/0.1"
 # The Olivia relay is the only supported provider; it always requires an account key.
-_RELAY_HOST = "175.24.191.6"
+_RELAY_HOST = urlsplit(API_ORIGIN).hostname
 
 
 def provider_request_headers(base_url: str, *, session_id: str | None = None) -> dict[str, str]:
@@ -242,7 +243,7 @@ class GatewayConfig:
 
         return cls(
             provider=provider,
-            base_url=str(base_url or "").strip(),
+            base_url=canonical_api_base(str(base_url or "").strip()),
             model=str(model or "").strip(),
             api_key_env=str(api_key_env or "").strip(),
             api_style=_normalize_api_style(api_style),
@@ -344,7 +345,7 @@ class ManagedLLMConfig:
         base_url = raw.get("base_url")
         if not isinstance(base_url, str) or len(base_url) > 512:
             raise ValueError("invalid managed LLM base URL")
-        normalized_url = base_url.strip().rstrip("/")
+        normalized_url = canonical_api_base(base_url.strip().rstrip("/"))
         try:
             parsed = urlsplit(normalized_url)
             port = parsed.port
@@ -829,12 +830,23 @@ class OpenAICompatibleAdapter(Gateway):
         *,
         key_resolver: Callable[[], str | None] | None = None,
     ) -> None:
-        self.config = config
+        self._config = replace(config, base_url=canonical_api_base(config.base_url))
         self.stream_enabled = bool(config.stream)
         self._key_resolver = key_resolver
         # One runtime connection serves this owner's conversation across turns.
         # Independent adapters and setup probes must not share routing identity.
         self._provider_session_id = str(uuid.uuid4())
+
+    @property
+    def config(self) -> GatewayConfig:
+        """The saved settings, with the model the user chose for this call's use (QQ, letters, diary)."""
+        from runtime.model_routes import routed_model
+        model = routed_model(self._config.base_url, self._config.model)
+        return self._config if model == self._config.model else replace(self._config, model=model)
+
+    @config.setter
+    def config(self, value: GatewayConfig) -> None:
+        self._config = value
 
     def _key(self) -> str | None:
         if self._key_resolver is not None:
@@ -969,6 +981,16 @@ class OpenAICompatibleAdapter(Gateway):
         )
         from runtime.model_policy import encode_chat
         body = encode_chat(body, endpoint or self._url())
+        if request_id.startswith('personal-chat:'):
+            encoded_size = len(json.dumps(body, ensure_ascii=False, separators=(',', ':')).encode('utf-8'))
+            from runtime.reply.context_budget import PERSONAL_CHAT_MAX_INPUT_BYTES
+            if encoded_size > PERSONAL_CHAT_MAX_INPUT_BYTES:
+                error = InvalidGatewayInput('INPUT_TOO_LONG')
+                error.failure_context = dict(failure_stage='writer_context', failure_detail='final_rules_budget',
+                    input_bytes=encoded_size, max_input_bytes=PERSONAL_CHAT_MAX_INPUT_BYTES,
+                    input_chars=sum(len(m.get('content', '')) for m in body.get('messages', []) if isinstance(m.get('content'), str)),
+                    max_input_chars=self.config.max_input_chars)
+                raise error
         for attempt in range(self.config.max_retries + 1):
             diagnostic_stage = "request"
             response = None
@@ -1349,6 +1371,16 @@ class OpenAICompatibleAdapter(Gateway):
         )
         from runtime.model_policy import encode_chat
         body = encode_chat(body, self._url())
+        if request.startswith('personal-chat:'):
+            encoded_size = len(json.dumps(body, ensure_ascii=False, separators=(',', ':')).encode('utf-8'))
+            from runtime.reply.context_budget import PERSONAL_CHAT_MAX_INPUT_BYTES
+            if encoded_size > PERSONAL_CHAT_MAX_INPUT_BYTES:
+                error = InvalidGatewayInput('INPUT_TOO_LONG')
+                error.failure_context = dict(failure_stage='writer_context', failure_detail='final_rules_budget',
+                    input_bytes=encoded_size, max_input_bytes=PERSONAL_CHAT_MAX_INPUT_BYTES,
+                    input_chars=sum(len(m.get('content', '')) for m in body.get('messages', []) if isinstance(m.get('content'), str)),
+                    max_input_chars=self.config.max_input_chars)
+                raise error
         for attempt in range(self.config.max_retries + 1):
             usage = None
             response = None

@@ -104,9 +104,9 @@ def _appraisal_feedback(value, sources, contexts):
 
 
 class CharacterEmotionRuntime:
-    def __init__(self, life_store, gateway_factory, persona_factory, *, relationship=None, timeout_seconds=40, dialogue_rows=None):
+    def __init__(self, life_store, gateway_factory, persona_factory, *, relationship=None, timeout_seconds=40, dialogue_rows=None, initialize=True):
         self.life_store = life_store
-        self.store = CharacterEmotionStore(life_store.path)
+        self.store = CharacterEmotionStore(life_store.path, initialize=initialize)
         self.gateway, self.persona = gateway_factory, persona_factory
         self.relationship, self.timeout_seconds = relationship, timeout_seconds
         self.dialogue_rows = dialogue_rows
@@ -152,7 +152,7 @@ class CharacterEmotionRuntime:
             # This independent projection must never block receipt/event recovery.
             pass
 
-    def view(self, now):
+    def view(self, now, *, read_only: bool = False):
         try:
             view = self.store.view(now=now)
         except Exception:
@@ -165,7 +165,12 @@ class CharacterEmotionRuntime:
         if self.error_code == 'EMOTION_STATE_UNAVAILABLE':
             self.error_code = None
         try:
-            view['current_affect'] = self._affect().view(now)
+            if read_only:
+                from .current_affect import CurrentAffect
+                affect = CurrentAffect(self.life_store, initialize=False)
+            else:
+                affect = self._affect()
+            view['current_affect'] = affect.view(now)
         except Exception:
             view['current_affect'] = {'status': 'unavailable', 'label': None,
                                       'as_of': None, 'reason': None, 'basis': {}}

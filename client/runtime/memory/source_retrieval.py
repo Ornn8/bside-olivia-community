@@ -54,13 +54,27 @@ class SourceRetrieval:
         db.execute('CREATE TABLE IF NOT EXISTS source_dependencies '
                    '(user TEXT, dependency_id TEXT, payload TEXT NOT NULL, retracted INTEGER NOT NULL DEFAULT 0, '
                    'PRIMARY KEY(user,dependency_id))')
+        db.execute('CREATE TABLE IF NOT EXISTS source_vectors '
+                   '(user TEXT, source TEXT, model TEXT, digest TEXT, vector BLOB, PRIMARY KEY(user,source,model))')
+        db.execute('CREATE TABLE IF NOT EXISTS vector_models (user TEXT, model TEXT, PRIMARY KEY(user,model))')
+        db.execute('CREATE TABLE IF NOT EXISTS vector_pending '
+                   '(user TEXT, model TEXT, source TEXT, stamp TEXT, PRIMARY KEY(user,model,source))')
+        db.execute('CREATE INDEX IF NOT EXISTS vector_pending_order ON vector_pending(user,model,stamp DESC,source)')
         db.execute('CREATE TABLE IF NOT EXISTS source_aliases '
                    '(user TEXT, exchange_source TEXT, receipt_source TEXT, PRIMARY KEY(user,exchange_source,receipt_source))')
+        db.execute('CREATE TABLE IF NOT EXISTS relationship_quotes '
+                   '(user TEXT, source TEXT, digest TEXT, attempts INTEGER NOT NULL DEFAULT 0, '
+                   'categories TEXT, PRIMARY KEY(user,source))')
+        db.execute('CREATE INDEX IF NOT EXISTS relationship_pending ON relationship_quotes(user,attempts) '
+                   'WHERE categories IS NULL')
+        db.execute("CREATE INDEX IF NOT EXISTS relationship_kept ON relationship_quotes(user) WHERE categories!='[]'")
         return db
 
     @staticmethod
     def _aliases(db, user, sources):
         found = set(sources)
+        if not found:
+            return found
         pairs = db.execute('SELECT exchange_source,receipt_source FROM source_aliases WHERE user=?', (user,)).fetchall()
         while True:
             expanded = found | {node for a, b in pairs if a in found or b in found for node in (a, b)}
@@ -74,6 +88,9 @@ class SourceRetrieval:
             db.execute('INSERT OR IGNORE INTO forgotten VALUES (?,?)', (user, source))
             db.execute('DELETE FROM originals WHERE user=? AND source=?', (user, source))
             db.execute('DELETE FROM chunks WHERE user=? AND source=?', (user, source))
+            db.execute('DELETE FROM relationship_quotes WHERE user=? AND source=?', (user, source))
+            db.execute('DELETE FROM source_vectors WHERE user=? AND source=?', (user, source))
+            db.execute('DELETE FROM vector_pending WHERE user=? AND source=?', (user, source))
 
     @classmethod
     def _lineage(cls, db, user, source):
@@ -124,6 +141,7 @@ class SourceRetrieval:
             if old:
                 return True
             db.execute('INSERT INTO originals VALUES (?,?,?,?,?)', (user, source, 'user', stamp, text))
+            self._queue_vector_source(db, user, source, stamp)
             for start in range(0, len(text), 280):
                 chunk = text[start:start + 360]
                 db.execute('INSERT INTO chunks VALUES (?,?,?,?,?,?,?)', (user, source, 'user', stamp, start, chunk, ' '.join(terms(chunk))))
@@ -262,6 +280,12 @@ class SourceRetrieval:
             db.executemany("INSERT OR IGNORE INTO archive_targets VALUES (?,?)", ((user, source) for source in sources))
             db.execute("INSERT OR REPLACE INTO archive_scan VALUES (?,?)", (user, datetime.now(timezone.utc).isoformat()))
 
+    # A QQ message is indexed when it arrives and again inside its reply exchange.
+    # The browser lists the arrival record only, so one message appears once.
+    _SHOWN = ("NOT (actor='user' AND source LIKE 'reply:%' AND EXISTS (SELECT 1 FROM source_aliases a "
+              "JOIN originals r ON r.user=a.user AND r.source=a.receipt_source AND r.actor='user' "
+              "WHERE a.user=originals.user AND a.exchange_source=originals.source))")
+
     def browse(self, user, query, limit):
         with closing(self.connect()) as db:
             indexed = db.execute("SELECT COUNT(DISTINCT source) FROM originals WHERE user=?", (user,)).fetchone()[0]
@@ -270,7 +294,8 @@ class SourceRetrieval:
                 COALESCE(SUM(EXISTS(SELECT 1 FROM originals o WHERE o.user=t.user AND o.source=t.source)),0),
                 COALESCE(SUM(EXISTS(SELECT 1 FROM forgotten f WHERE f.user=t.user AND f.source=t.source)),0)
                 FROM archive_targets t WHERE user=?""", (user,)).fetchone()
-            rows = [] if query else db.execute("SELECT source,actor,stamp,text FROM originals WHERE user=? ORDER BY stamp DESC,source,actor LIMIT ?", (user, limit)).fetchall()
+            rows = [] if query else db.execute("SELECT source,actor,stamp,text FROM originals WHERE user=? AND " + self._SHOWN +
+                                               " ORDER BY stamp DESC,source,actor LIMIT ?", (user, limit)).fetchall()
         if query:
             records = self.search(query, user, limit=limit)
             rows = [(r.source_id, r.metadata['speaker'], r.occurred_at.isoformat() if r.occurred_at else None, r.text) for r in records]
@@ -288,7 +313,7 @@ class SourceRetrieval:
         if (source_id is not None and (not isinstance(source_id, str) or not source_id or len(source_id) > 160)
                 or type(full) is not bool or full and source_id is None):
             raise ValueError("MEMORY_BROWSE_OPTIONS_INVALID")
-        where, args = ["user=?"], [user]
+        where, args = ["user=?", self._SHOWN], [user]
         if query and query.strip():
             where.append("instr(lower(text),lower(?))>0")
             args.append(query.strip())
@@ -322,16 +347,126 @@ class SourceRetrieval:
         with closing(self.connect()) as db, db:
             if db.execute("SELECT 1 FROM forgotten WHERE user=? AND source=?", (user, source)).fetchone():
                 return
+            previous = [db.execute("SELECT text,stamp FROM originals WHERE user=? AND source=? AND actor=?",
+                                   (user, source, actor)).fetchone() for actor in ("user", "linli")]
+            if (None not in previous and [row[0] for row in previous] == [user_text, reply_text]
+                    and any(row[1] != stamp for row in previous)):
+                # Same words with a new date (a date the user restored in the mailbox):
+                # move the stamp only. Existing relationship labels still describe these words.
+                db.execute("UPDATE originals SET stamp=? WHERE user=? AND source=?", (stamp, user, source))
+                db.execute("UPDATE chunks SET stamp=? WHERE user=? AND source=?", (stamp, user, source))
+                self._queue_vector_source(db, user, source, stamp)
+                if reply_text.strip():
+                    digest = _digest(json.dumps([user_text, reply_text, stamp], ensure_ascii=False))
+                    db.execute('INSERT INTO relationship_quotes(user,source,digest) VALUES (?,?,?) '
+                               'ON CONFLICT(user,source) DO NOTHING', (user, source, digest))
+                return
+            changed = False
             for actor, text in (("user", user_text), ("linli", reply_text)):
                 previous = db.execute("SELECT text,stamp FROM originals WHERE user=? AND source=? AND actor=?", (user, source, actor)).fetchone()
                 if previous == (text, stamp):
                     continue
+                changed = True
                 db.execute("DELETE FROM chunks WHERE user=? AND source=? AND actor=?", (user, source, actor))
                 db.execute("INSERT OR REPLACE INTO originals VALUES (?,?,?,?,?)", (user, source, actor, stamp, text))
                 # Overlap preserves sentence context; offsets retain exact provenance.
                 for start in range(0, len(text), 280):
                     chunk = text[start:start + 360]
                     db.execute("INSERT INTO chunks VALUES (?,?,?,?,?,?,?)", (user, source, actor, stamp, start, chunk, " ".join(terms(chunk))))
+            if changed:
+                self._queue_vector_source(db, user, source, stamp)
+            if reply_text.strip():
+                digest = _digest(json.dumps([user_text, reply_text, stamp], ensure_ascii=False))
+                # Re-indexing old delivered originals also queues their missing
+                # character statements. A changed original invalidates old labels.
+                db.execute('INSERT INTO relationship_quotes(user,source,digest) VALUES (?,?,?) '
+                           'ON CONFLICT(user,source) DO UPDATE SET digest=excluded.digest, attempts=0, categories=NULL '
+                           'WHERE relationship_quotes.digest != excluded.digest', (user, source, digest))
+
+    def claim_relationship_exchanges(self, user):
+        """Claim at most eight whole exchanges within one shared input budget."""
+        with closing(self.connect()) as db, db:
+            db.execute('BEGIN IMMEDIATE')
+            rows = db.execute('SELECT q.source,q.digest,u.text,l.text,l.stamp FROM relationship_quotes q '
+                "CROSS JOIN originals u ON u.user=q.user AND u.source=q.source AND u.actor='user' "
+                "CROSS JOIN originals l ON l.user=q.user AND l.source=q.source AND l.actor='linli' "
+                'WHERE q.user=? AND q.categories IS NULL AND q.attempts<3 '
+                'AND julianday(l.stamp) IS NOT NULL AND length(u.text)+length(l.text)<=12000 '
+                'AND NOT EXISTS (SELECT 1 FROM forgotten f WHERE f.user=q.user AND f.source=q.source) '
+                'ORDER BY julianday(l.stamp) DESC,q.source DESC LIMIT 8', (user,)).fetchall()
+            originals, chars = [], 0
+            for row in rows:
+                size = len(row[2]) + len(row[3])
+                if chars + size > 12000:
+                    break  # Keep whole originals in chronological priority order.
+                db.execute('UPDATE relationship_quotes SET attempts=attempts+1 WHERE user=? AND source=?', (user, row[0]))
+                originals.append(dict(zip(('source_id', 'digest', 'user_message', 'assistant_message', 'occurred_at'), row)))
+                chars += size
+            return originals
+
+    def finish_relationship_exchanges(self, user, labelled):
+        rows = []
+        for source, digest, categories in labelled:
+            if not set(categories) <= {'identity', 'affection', 'agreement'}:
+                raise ValueError('RELATIONSHIP_CATEGORIES_INVALID')
+            rows.append((json.dumps(sorted(set(categories))), user, source, digest))
+        with closing(self.connect()) as db, db:
+            # Forgotten/overwritten originals cannot be restored by a late result.
+            return bool(db.executemany('UPDATE relationship_quotes SET categories=? '
+                'WHERE user=? AND source=? AND digest=?',
+                rows).rowcount)
+
+    def relationship_context(self, user, *, as_of, exclude_source_ids=(), max_chars=4000):
+        """Read whole attributed exchanges, independent of model and search words."""
+        cutoff = _aware_time(as_of).isoformat()
+        packet = {'kind': 'relationship_history', 'evidence_scope': 'recorded_utterance',
+                  'meaning': '按speaker与时间承接角色自己说过的关系定位、感情与约定，保留条件、更正和撤回；'
+                             '用户单方面称呼不是双方共识，原话不授予当前动作许可或升级阶段。'
+                             '这是部分历史，缺失不表示没发生，换模型也不能抹去给定原话。',
+                  'coverage': 'bounded', 'records': []}
+        encode = lambda: json.dumps(packet, ensure_ascii=False, separators=(',', ':'))
+        with closing(self.connect()) as db:
+            db.execute('BEGIN')
+            excluded = self._aliases(db, user, exclude_source_ids)
+            # Start with the small pending/kept index, rather than walking every
+            # original body before filtering out ordinary conversation.
+            pending = db.execute('SELECT 1 FROM relationship_quotes q CROSS JOIN originals l '
+                "ON l.user=q.user AND l.source=q.source AND l.actor='linli' "
+                'WHERE q.user=? AND q.categories IS NULL AND julianday(l.stamp)<=julianday(?) LIMIT 1',
+                (user, cutoff)).fetchone()
+            if pending:
+                packet['coverage'] = 'extraction_incomplete'
+            candidates = {}
+            for category in ('identity', 'affection', 'agreement'):
+                rows = db.execute('SELECT q.source,l.stamp FROM relationship_quotes q CROSS JOIN originals l '
+                    "ON l.user=q.user AND l.source=q.source AND l.actor='linli' "
+                    "WHERE q.user=? AND q.categories!='[]' AND instr(q.categories,?)>0 AND julianday(l.stamp)<=julianday(?) "
+                    'ORDER BY julianday(l.stamp) DESC,q.source DESC LIMIT 2',
+                    (user, '"' + category + '"', cutoff)).fetchall()
+                for source, stamp in rows:
+                    if source not in excluded:
+                        candidates.setdefault((stamp, source), set()).add(category)
+            groups, blocked = [], set()
+            for (stamp, source), categories in sorted(candidates.items(), key=lambda item: (_aware_time(item[0][0]), item[0][1]), reverse=True):
+                if categories & blocked:
+                    continue
+                group = []
+                for actor in ('user', 'linli'):
+                    original = self._dependency_original(db, user, source, actor)
+                    if original is not None and original[0].strip():
+                        group.append({'citation': source + ':' + actor, 'speaker': actor, 'text': original[0],
+                            'provenance': {'source_record_id': source}, 'evidence_scope': 'recorded_utterance',
+                            'occurred_at': stamp if actor == 'linli' else None})
+                packet['records'] = [r for g in reversed([*groups, group]) for r in g]
+                if len(encode()) + 32 > max_chars:
+                    # Do not admit an old promise while omitting its later
+                    # withdrawal, or cut off a condition at the end of a reply.
+                    blocked.update(categories)
+                    packet['coverage'] = 'omitted_due_to_capacity'
+                else:
+                    groups.append(group)
+            packet['records'] = [r for g in reversed(groups) for r in g]
+        return encode()
 
     def retract_received(self, user, sources):
         """Drop receipts that were never delivered (failed letters), without a user "forget".
@@ -350,6 +485,8 @@ class SourceRetrieval:
                 removed += db.execute('DELETE FROM originals WHERE user=? AND source=? AND actor=?',
                                       (user, source, 'user')).rowcount
                 db.execute('DELETE FROM chunks WHERE user=? AND source=?', (user, source))
+                db.execute('DELETE FROM source_vectors WHERE user=? AND source=?', (user, source))
+                db.execute('DELETE FROM vector_pending WHERE user=? AND source=?', (user, source))
         return removed
 
     def forget(self, user, source=None):
@@ -539,6 +676,141 @@ class SourceRetrieval:
                               **metadata,
                               **({'history_actor': actor} if source.startswith('history:') else {})}))
         return tuple(result)
+
+    def sources_in_range(self, user, first, last, query='', *, exclude_source_ids=(), limit=6):
+        """Complete exchanges received between two instants, best matching the question first."""
+        excluded = set(exclude_source_ids)
+        wanted = set(terms((query or '')[:2000]))
+        with closing(self.connect()) as db:
+            db.execute('BEGIN')
+            excluded.update(row[0] for row in db.execute('SELECT source FROM forgotten WHERE user=?', (user,)))
+            rows = db.execute('SELECT source, MIN(stamp), GROUP_CONCAT(text, char(10)) FROM originals WHERE user=? '
+                              'AND stamp IS NOT NULL AND julianday(stamp) >= julianday(?) AND julianday(stamp) < julianday(?) '
+                              'GROUP BY source', (user, first.isoformat(), last.isoformat())).fetchall()
+            ranked = sorted((row for row in rows if row[0] not in excluded),
+                            key=lambda row: (-len(wanted.intersection(terms(row[2] or ''))), row[1], row[0]))
+            return tuple(record for source, _, _ in ranked[:limit]
+                         for record in self._source_records(db, user, source, {'retrieval_route': 'date'}))
+
+    # Semantic index over whole exchanges. Vectors are derived data: a changed or
+    # forgotten original simply loses its vector and is embedded again later.
+    @staticmethod
+    def _exchange_text(rows):
+        user = ' '.join(text for actor, text in rows if actor == 'user')
+        linli = ' '.join(text for actor, text in rows if actor != 'user')
+        return (user[:600] + '\n' + linli[:400]).strip()
+
+    def vectors_missing(self, user, model, limit=32):
+        """Read bounded durable work, not every original on every reply.
+
+        A model's first use backfills the queue once and validates old vectors;
+        subsequent source writes invalidate and queue just the changed exchange.
+        """
+        if limit <= 0:
+            return []
+        with closing(self.connect()) as db, db:
+            db.execute('BEGIN IMMEDIATE')
+            if not db.execute('SELECT 1 FROM vector_models WHERE user=? AND model=?', (user, model)).fetchone():
+                from itertools import groupby
+                rows = db.execute('SELECT o.source,o.actor,o.text,o.stamp,v.digest FROM originals o '
+                    'LEFT JOIN source_vectors v ON v.user=o.user AND v.source=o.source AND v.model=? '
+                    'WHERE o.user=? AND NOT EXISTS (SELECT 1 FROM forgotten f WHERE f.user=o.user AND f.source=o.source) '
+                    'ORDER BY o.source,o.actor DESC', (model, user))
+                for source, items in groupby(rows, key=lambda row: row[0]):
+                    items = list(items)
+                    text = self._exchange_text([(row[1], row[2]) for row in items])
+                    if text and items[0][4] != _digest(text):
+                        db.execute('DELETE FROM source_vectors WHERE user=? AND source=? AND model=?', (user, source, model))
+                        stamp = max((row[3] for row in items if row[3] is not None), default=None)
+                        db.execute('INSERT OR IGNORE INTO vector_pending VALUES (?,?,?,?)', (user, model, source, stamp))
+                db.execute('INSERT INTO vector_models VALUES (?,?)', (user, model))
+            sources = db.execute('SELECT source FROM vector_pending WHERE user=? AND model=? '
+                                 'ORDER BY stamp DESC,source LIMIT ?', (user, model, limit)).fetchall()
+            result = []
+            for (source,) in sources:
+                rows = db.execute('SELECT actor,text FROM originals WHERE user=? AND source=? ORDER BY actor DESC',
+                                  (user, source)).fetchall()
+                text = self._exchange_text(rows)
+                if text:
+                    result.append((source, _digest(text), text))
+                else:
+                    db.execute('DELETE FROM vector_pending WHERE user=? AND model=? AND source=?', (user, model, source))
+            return result
+
+    @classmethod
+    def _queue_vector_source(cls, db, user, source, stamp):
+        rows = db.execute('SELECT actor,text FROM originals WHERE user=? AND source=? ORDER BY actor DESC',
+                          (user, source)).fetchall()
+        digest = _digest(cls._exchange_text(rows))
+        # Stamp-only edits and changes outside the bounded embedding input must
+        # not trigger another paid embedding of identical text.
+        db.execute('DELETE FROM source_vectors WHERE user=? AND source=? AND digest!=?', (user, source, digest))
+        db.execute('DELETE FROM vector_pending WHERE user=? AND source=? AND model IN '
+                   '(SELECT model FROM source_vectors WHERE user=? AND source=? AND digest=?)',
+                   (user, source, user, source, digest))
+        db.execute('INSERT OR REPLACE INTO vector_pending '
+                   'SELECT m.user,m.model,?,? FROM vector_models m WHERE m.user=? '
+                   'AND NOT EXISTS (SELECT 1 FROM source_vectors v WHERE v.user=m.user AND v.model=m.model AND v.source=?)',
+                   (source, stamp, user, source))
+
+    def put_vectors(self, user, model, items):
+        """items: (source, digest, vector) with a unit-length float vector."""
+        from array import array
+        with closing(self.connect()) as db, db:
+            db.execute('BEGIN IMMEDIATE')
+            for source, digest, vector in items:
+                rows = db.execute('SELECT actor,text FROM originals WHERE user=? AND source=? ORDER BY actor DESC',
+                                  (user, source)).fetchall()
+                text = self._exchange_text(rows)
+                if not text or _digest(text) != digest:
+                    continue  # An in-flight result cannot restore an edited/deleted original.
+                db.execute('INSERT OR REPLACE INTO source_vectors VALUES (?,?,?,?,?)',
+                           (user, source, model, digest, array('f', vector).tobytes()))
+                db.execute('DELETE FROM vector_pending WHERE user=? AND model=? AND source=?', (user, model, source))
+
+    def vector_coverage(self, user, model):
+        """Share of exchanges holding a vector for this model (stale ones count)."""
+        with closing(self.connect()) as db:
+            total = db.execute('SELECT COUNT(DISTINCT source) FROM originals WHERE user=?', (user,)).fetchone()[0]
+            have = db.execute('SELECT COUNT(*) FROM source_vectors WHERE user=? AND model=?', (user, model)).fetchone()[0]
+        return have / total if total else 0.0
+
+    def nearest_sources(self, user, model, vector, *, limit=12, exclude_source_ids=()):
+        """Sources ranked by cosine similarity to a unit-length query vector."""
+        from array import array
+        from heapq import nlargest
+        if limit <= 0:
+            return []
+        excluded = set(exclude_source_ids)
+        query = array('f', vector)
+        try:
+            import numpy
+        except ImportError:
+            numpy = None
+        result = []
+        with closing(self.connect()) as db:
+            db.execute('BEGIN')
+            cursor = db.execute('SELECT v.source,v.vector FROM source_vectors v WHERE v.user=? AND v.model=? '
+                'AND NOT EXISTS (SELECT 1 FROM forgotten f WHERE f.user=v.user AND f.source=v.source)', (user, model))
+            def scores():
+                # Exact search remains linear, but matrix and top-k storage stay
+                # bounded instead of copying/sorting all vectors at once.
+                while batch := cursor.fetchmany(256):
+                    rows = [(s, b) for s, b in batch if s not in excluded and len(b) == len(query) * query.itemsize]
+                    if numpy is not None and rows and query:
+                        matrix = numpy.frombuffer(b''.join(b for _, b in rows), dtype=numpy.float32).reshape(len(rows), len(query))
+                        yield from zip((matrix @ numpy.asarray(query, dtype=numpy.float32)).tolist(), (s for s, _ in rows))
+                    else:
+                        for source, blob in rows:
+                            stored = array('f')
+                            stored.frombytes(blob)
+                            yield sum(a * b for a, b in zip(query, stored)), source
+            for score, source in nlargest(limit, scores()):
+                row = db.execute("SELECT text FROM originals WHERE user=? AND source=? AND actor='user'", (user, source)).fetchone()                     or db.execute('SELECT text FROM originals WHERE user=? AND source=?', (user, source)).fetchone()
+                snippet = ' '.join((row[0] if row else '').split())[:200]
+                if snippet:
+                    result.append((source, score, snippet))
+        return result
 
     def get_sources(self, user, source_ids, exclude_source_ids=()):
         """Read complete source groups atomically; never restore forgotten data."""

@@ -592,6 +592,11 @@ class DeferredConversationMemoryAdapter:
         with self._using_current() as delegate:
             return delegate.register_archive_sources(user_id=user_id, sources=sources)
 
+    def index_original_vectors(self, user_id, *, limit=32):
+        with self._using_current() as delegate:
+            index = getattr(delegate, 'index_original_vectors', None)
+            return index(user_id, limit=limit) if callable(index) else 0
+
     def search_evidence_context(self, query: str, *, user_id: str, limit: int, exclude_source_ids=()):
         return self.search_evidence_result(query, user_id=user_id, limit=limit,
                                            exclude_source_ids=exclude_source_ids).records
@@ -614,6 +619,11 @@ class DeferredConversationMemoryAdapter:
         with self._using_current() as delegate:
             index = getattr(delegate, "index_original_exchange", None)
             return index(**kwargs) if index is not None else False
+
+    def refresh_relationship_memory(self, **kwargs):
+        with self._using_current() as delegate:
+            refresh = getattr(delegate, 'refresh_relationship_memory', None)
+            return refresh(**kwargs) if callable(refresh) else False
 
     def index_received_user(self, **kwargs):
         with self._using_current() as delegate:
@@ -1128,6 +1138,36 @@ class Mem0ConversationMemoryAdapter:
                             user_message, assistant_message, occurred_at)
         return True
 
+    def refresh_relationship_memory(self, *, user_id, memory_lifecycle=None):
+        if self.config.context_max_chars == 0:
+            return False
+        from runtime.reply.jev_questions import configured_questions
+        from .relationship_continuity import extract_relationships
+        port = configured_questions()
+        if port is None:
+            return False
+        user = self._normalized_user_id(user_id)
+        claim = lambda: self._originals.claim_relationship_exchanges(user)
+        originals = memory_lifecycle.run_write(claim) if memory_lifecycle is not None else claim()
+        if not originals:
+            return False
+        if memory_lifecycle is not None:
+            originals = [original for original in originals
+                         if not memory_lifecycle.blocks_delivery(_date(original['occurred_at']))]
+        if not originals:
+            return False
+        # Never hold the lifecycle lock during a network call: generation reads
+        # pause state under that lock, and must not wait for this optional job.
+        choices = extract_relationships(port, originals)
+        def save():
+            labelled = [(original['source_id'], original['digest'], categories)
+                for original, categories in zip(originals, choices)
+                if memory_lifecycle is None or not memory_lifecycle.blocks_delivery(_date(original['occurred_at']))]
+            return self._originals.finish_relationship_exchanges(user, labelled)
+        # Lifecycle uses a reentrant lock: recheck every source while holding it,
+        # then persist the bounded batch atomically, without locking during Jev.
+        return bool(memory_lifecycle.run_write(save) if memory_lifecycle is not None else save())
+
     def retract_received_user(self, *, user_id, source_ids):
         removed = self._originals.retract_received(self._normalized_user_id(user_id), source_ids)
         if removed:
@@ -1306,6 +1346,80 @@ class Mem0ConversationMemoryAdapter:
             sorted(records_by_id.values(), key=_record_search_key)
         )[:limit], None
 
+    def _embedder(self):
+        """The provider's own local embedding model, when long-term memory is installed."""
+        model = getattr(self.backend, 'embedding_model', None)
+        embed = getattr(model, 'embed', None)
+        return embed if callable(embed) else None
+
+    def index_original_vectors(self, user_id: str, *, limit: int = 32) -> int:
+        """Embed a bounded batch of exchanges that have no current vector.
+
+        The cloud model is filled first when the account can use it; the local
+        model keeps its own vectors as the fallback when the cloud is unusable.
+        """
+        from . import remote_embedding
+        user_id = self._normalized_user_id(user_id)
+        indexed = 0
+        if remote_embedding.available():
+            missing = self._originals.vectors_missing(user_id, remote_embedding.MODEL, limit=limit)
+            vectors = remote_embedding.embed([text for _, _, text in missing]) if missing else None
+            if vectors:
+                self._originals.put_vectors(user_id, remote_embedding.MODEL,
+                                            [(source, digest, vector) for (source, digest, _), vector in zip(missing, vectors)])
+                indexed += len(vectors)
+        return indexed + self._index_local_vectors(user_id, limit=limit)
+
+    def _index_local_vectors(self, user_id, *, limit):
+        embed = self._embedder()
+        if embed is None:
+            return 0
+        missing = self._originals.vectors_missing(user_id, self.config.embedding_model, limit=limit)
+        items = []
+        for source, digest, text in missing:
+            vector = embed(text, 'add')
+            norm = sum(value * value for value in vector) ** 0.5 or 1.0
+            items.append((source, digest, [value / norm for value in vector]))
+        if items:
+            self._originals.put_vectors(user_id, self.config.embedding_model, items)
+        return len(items)
+
+    def _original_vector_hits(self, query, user_id, excluded):
+        """Exchanges whose meaning is close to the question, as semantic candidates.
+
+        The cloud vectors answer once they cover nearly all exchanges (a half
+        filled index would hide older ones); a slow or failed cloud read falls
+        back to the local model within the same reply.
+        """
+        from . import remote_embedding
+        try:
+            hits, floor = None, 0.45
+            if (remote_embedding.available()
+                    and self._originals.vector_coverage(user_id, remote_embedding.MODEL) >= 0.9):
+                vector = remote_embedding.embed_query(query)
+                if vector is not None:
+                    hits = self._originals.nearest_sources(user_id, remote_embedding.MODEL, vector, limit=12,
+                                                           exclude_source_ids=excluded)
+                    floor = remote_embedding.SCORE_FLOOR
+            if hits is None:
+                embed = self._embedder()
+                if embed is None:
+                    return ()
+                # Only the local model indexes inline: it is fast and offline.
+                self._index_local_vectors(self._normalized_user_id(user_id), limit=16)
+                vector = embed(query[:500], 'search')
+                norm = sum(value * value for value in vector) ** 0.5 or 1.0
+                hits = self._originals.nearest_sources(user_id, self.config.embedding_model,
+                                                       [value / norm for value in vector], limit=12,
+                                                       exclude_source_ids=excluded)
+            return tuple(ConversationMemoryRecord(memory_id='vector:' + hashlib.sha256(source.encode()).hexdigest()[:32],
+                                                  text=snippet, user_id=user_id, source_id=source,
+                                                  score=max(0.0, min(1.0, float(score))),
+                                                  metadata={'retrieval_route': 'semantic'})
+                         for source, score, snippet in hits if score >= floor)
+        except Exception:
+            return ()
+
     def search_evidence_context(self, query: str, *, user_id: str, limit: int, exclude_source_ids=()):
         return self.search_evidence_result(query, user_id=user_id, limit=limit,
                                            exclude_source_ids=exclude_source_ids).records
@@ -1326,6 +1440,7 @@ class Mem0ConversationMemoryAdapter:
         semantic, error = self._search_context_result(query, user_id=user_id, limit=20)
         self._last_error_code = error
         semantic = tuple(replace(record, user_id=user_id) for record in semantic)
+        semantic = semantic + self._original_vector_hits(query, user_id, excluded)
         source_status = [("semantic", "unavailable" if error else "available")]
         try:
             records = self._originals.search(query, user_id, semantic, limit=limit, exclude_source_ids=excluded, expanded=limit > 8)

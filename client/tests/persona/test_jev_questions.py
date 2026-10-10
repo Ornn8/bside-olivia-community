@@ -45,6 +45,25 @@ def test_semantic_request_accepts_complete_30kb_evidence_and_rejects_over_32kb()
         asyncio.run(port.ask(packet['state'], packet['questions'], purpose=packet['purpose']))
 
 
+def test_error_body_interruption_preserves_http_category_and_closes_response():
+    from http.client import IncompleteRead
+    from urllib.error import HTTPError
+    class Body:
+        closed = False
+        def read(self, *args): raise IncompleteRead(b'private partial body', 100)
+        def close(self): self.closed = True
+    body = Body()
+    class Opener:
+        def open(self, request, **kwargs):
+            raise HTTPError(request.full_url, 503, 'unavailable', {}, body)
+    port = JevQuestionsPort('http://127.0.0.1:8097/v1/companion/decide')
+    port.transport._opener = Opener()
+    with pytest.raises(ValueError, match='^JEV_HTTP_503$') as failure:
+        port.ask_sync({'text': 'synthetic'}, {'q': {'instructions': 'Choose', 'criteria': {'yes': 'yes'}}},
+            purpose='test')
+    assert body.closed and failure.value.failure_context['http_status'] == 503
+
+
 def test_native_choice_bridge_binds_input_and_rejects_altered_result():
     class Native:
         def ask(self, state, questions):
@@ -79,3 +98,29 @@ def test_native_choice_bridge_binds_input_and_rejects_altered_result():
     finally:
         server.shutdown()
         server.server_close()
+
+
+@pytest.mark.parametrize('failure,expected,stage', [
+    (TimeoutError('private address'), 'JEV_TIMEOUT', 'request'),
+    (__import__('urllib.error', fromlist=['URLError']).URLError(TimeoutError('private address')),
+     'JEV_TIMEOUT', 'request'),
+    (__import__('http.client', fromlist=['RemoteDisconnected']).RemoteDisconnected('private body'),
+     'JEV_UNAVAILABLE', 'request'),
+])
+def test_transport_failure_is_categorized_and_traceable_without_private_text(failure, expected, stage):
+    from runtime.diagnostics.failure_context import failure_snapshot
+    from uuid import UUID
+    calls = []
+    class Opener:
+        def open(self, request, **kwargs):
+            calls.append(request)
+            raise failure
+    port = JevQuestionsPort('http://127.0.0.1:8097/v1/companion/decide')
+    port.transport._opener = Opener()
+    with pytest.raises(ValueError, match=expected):
+        port.ask_sync({'text': 'private input'}, {'q': {'instructions': 'Choose',
+            'criteria': {'yes': 'yes', 'no': 'no'}}}, purpose='test')
+    evidence = failure_snapshot()[-1]
+    assert evidence['cause_code'] == expected and evidence['failure_stage'] == stage
+    assert str(UUID(evidence['provider_request_id'])) == calls[0].get_header('X-olivia-request-id')
+    assert 'private' not in json.dumps(evidence)

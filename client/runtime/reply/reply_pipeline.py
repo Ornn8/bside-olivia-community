@@ -10,6 +10,7 @@ import os
 import time
 from collections import OrderedDict
 import re
+import random
 from datetime import datetime
 from typing import Any, Mapping, Protocol
 
@@ -42,8 +43,40 @@ from runtime.reply.prompt_budget import PromptBudgetExceeded
 
 
 _CHARACTER_REPLY_HISTORY_LIMIT = 1200
+
+
+def _chat_fit_bytes():
+    from .context_budget import PERSONAL_CHAT_FIT_BYTES
+    return PERSONAL_CHAT_FIT_BYTES
+
 _CHARACTER_REPLY_PREFIX = "character_reply: "
 _PERSONA_NOT_READY = "PERSONA_NOT_READY"
+_TEXT_RECOVERY_CODES = frozenset({
+    'JEV_UNAVAILABLE', 'JEV_TIMEOUT', 'JEV_WORLD_SELECTION_UNAVAILABLE',
+    'JEV_WORLD_SELECTION_BUDGET', 'JEV_CONTEXT_BUDGET_EXCEEDED',
+    'JEV_PROVIDER_CONNECT_FAILED', 'JEV_PROVIDER_READ_FAILED', 'JEV_PROVIDER_JSON_INVALID',
+    *(f'JEV_PROVIDER_HTTP_{n}' for n in (429, 500, 502, 503, 504, 529)),
+    'JEV_HTTP_429', 'JEV_HTTP_502', 'JEV_HTTP_503', 'JEV_HTTP_504',
+})
+_TEXT_RECOVERY_NOTE = (
+    '本轮部分辅助理解或世界资料暂不可用，缺失信息保持未知。当前用户原话、核心人格、'
+    '已有可信关系与原话证据仍有效，不能据此清空关系或否认已有约定。'
+    '只用可核对的资料自然回应或澄清，不推断午饭、活动、天气等缺失事实。'
+    '本轮只有文字回应权限，没有有效媒体或控制计划。用户要求的媒体尚未完成，'
+    '不得声称已经制作、发送或兑现；偏好、未来任务和记忆不得改变，也不能承诺稍后主动发送。'
+)
+# The asked-for form (voice, video, a song) cannot be delivered this turn. The
+# message still deserves an answer: reply in text and say so plainly.
+_UNSUPPORTED_MEDIA_NOTE = (
+    '本轮用户要求或适合的形式（例如语音、视频、点歌）现在无法交付，只能用文字回复。'
+    '先正常回应当前原话的内容，再自然地说一句这次先用文字回，不解释系统原因，'
+    '不声称已经发出或稍后会发送语音、视频或歌曲。'
+)
+_TEXT_RECOVERY_OUTPUT = (
+    '\n本轮恢复路径只输出文字：delivery="text",text_reason=null,skip=false,sticker=null，'
+    'listening、initiative、letter均为keep，pause_until、letter_until、followup_at均为null，'
+    'evidence为空。不包含speech或silence，不邀请写信。这里只回应或澄清，不执行任何动作。'
+)
 
 
 class _PersonaNotReadyError(RuntimeError):
@@ -125,6 +158,8 @@ class PipelineResult:
     stage_cache_hits: dict[str, int] = field(default_factory=dict)
     stage_actual_calls: dict[str, int] = field(default_factory=dict)
     failure_context: dict[str, object] = field(default_factory=dict)
+    decision_dropped_media: str | None = None
+    degraded_stages: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -152,6 +187,7 @@ class ReplyPipeline:
         current_turn_interpreter: CurrentTurnInterpreterPort | None = None,
         companion_decision_port: object | None = None,
         silence_authorization_port: object | None = None,
+        recovery_root=None,
     ) -> None:
         self.orchestrator = orchestrator
         self.companion_decision_port = companion_decision_port
@@ -179,22 +215,26 @@ class ReplyPipeline:
             and runtime_rewriter is not None
             else rewriter
         )
-        # Runtime-only, bounded to interrupted chat turns. Never serialize model
-        # bodies or typed quality results into rows or diagnostic bundles.
+        # Typed quality results remain in memory; private writer candidates may
+        # survive restarts outside rows and diagnostic bundles.
         self._stage_recoveries = OrderedDict()
+        from .stage_recovery import WriterRecoveryStore
+        self._writer_store = WriterRecoveryStore(recovery_root) if recovery_root is not None else None
 
     @staticmethod
     def _recovery_key(metadata):
         source, revision = metadata.get('received_source_id'), metadata.get('input_revision')
+        namespace = metadata.get('recovery_namespace', '')
         if (metadata.get('proactive') or not isinstance(source, str) or not source
-                or type(revision) is not int or not callable(metadata.get('turn_is_current'))):
+                or type(revision) is not int or revision < 0 or not isinstance(namespace, str)
+                or not callable(metadata.get('turn_is_current'))):
             return None
-        return source, revision
+        return source, revision, metadata.get('recovery_namespace', '')
 
-    def _forget_recovery(self, key):
+    def _forget_recovery(self, key, *, preserve_writer=False):
         entry = self._stage_recoveries.pop(key, None)
         if entry is not None:
-            entry[1].invalidate()
+            entry[1].invalidate(preserve_writer=preserve_writer)
 
     def _recover_stages(self, metadata, fingerprint):
         from .stage_recovery import StageRecovery
@@ -205,35 +245,47 @@ class ReplyPipeline:
             return None
         now = time.monotonic()
         for old, (created, _) in tuple(self._stage_recoveries.items()):
-            if now - created > 300 or old[0] == key[0] and old != key:
-                self._forget_recovery(old)
+            if now - created > 300 or old[0] == key[0] and old[2] == key[2] and old != key:
+                self._forget_recovery(old, preserve_writer=now - created > 300)
         guard = metadata['turn_is_current']
         if not guard():
             self._forget_recovery(key)
             return None
         entry = self._stage_recoveries.get(key)
-        recovery = entry[1] if entry is not None else StageRecovery(fingerprint, guard)
+        from .stage_recovery import canonical_hash
+        storage_key = canonical_hash(key) if isinstance(key[2], str) and key[2] else None
+        recovery = entry[1] if entry is not None else StageRecovery(fingerprint, guard,
+            writer_store=self._writer_store if storage_key is not None else None, storage_key=storage_key)
         recovery.bind_input(fingerprint, guard)
         self._stage_recoveries[key] = now, recovery
         self._stage_recoveries.move_to_end(key)
         while len(self._stage_recoveries) > 16:
-            self._forget_recovery(next(iter(self._stage_recoveries)))
+            self._forget_recovery(next(iter(self._stage_recoveries)), preserve_writer=True)
         return recovery
 
     async def run(self, request: object, context: ReplyContext) -> PipelineResult:
         from runtime.personal_chat.presentation import CURRENT
-        metadata = (CURRENT.get() or {}) if isinstance(context, ReplyContext) and context.mode is ReplyMode.FUTURE_IM else {}
+        from .companion_runtime import TURN_CONTEXT
+        metadata = ((CURRENT.get() or {}) if context.mode is ReplyMode.FUTURE_IM else
+                    (TURN_CONTEXT.get() or {}) if context.mode is ReplyMode.TEXT_LETTER else {}) if isinstance(context, ReplyContext) else {}
         key = self._recovery_key(metadata)
         timings = {}
+        degraded = {}
         started = time.perf_counter()
         async def measure(name, work):
             begin = time.perf_counter()
             try:
+                if name in {'writer', 'quality'}:
+                    from runtime.diagnostics.reply_telemetry import measure as telemetry_measure
+                    return await telemetry_measure('generation' if name == 'writer' else 'validation', work)
                 return await work
             finally:
                 timings[name] = round(timings.get(name, 0) + time.perf_counter() - begin, 4)
         try:
-            result = await self._run(request, context, measure)
+            result = await self._run(request, context, measure, degraded, metadata)
+        except asyncio.CancelledError:
+            self._forget_recovery(key, preserve_writer=True)
+            raise
         except BaseException:
             self._forget_recovery(key)
             raise
@@ -247,20 +299,24 @@ class ReplyPipeline:
             result = replace(result, stage_cache_hits=entry[1].cache_hits,
                              stage_actual_calls=entry[1].actual_calls)
         recoverable = {'REVIEW_FAILED', 'REVIEWER_UNAVAILABLE', 'REVIEWER_RESPONSE_INVALID',
-                       'REWRITE_FAILED', 'REWRITE_PROVIDER_UNAVAILABLE'}
+                       'REWRITE_FAILED', 'REWRITE_PROVIDER_UNAVAILABLE',
+                       'INPUT_TOO_LONG', 'JEV_CONTEXT_BUDGET_EXCEEDED', 'RECALL_CONTEXT_BUDGET_EXCEEDED'}
         # A rejected candidate needs fresh generation. Only a failed provider
         # stage may reuse its successful prefix within the existing two attempts.
         if result.error_code not in recoverable or metadata.get('generation_attempts', 1) >= 2:
-            self._forget_recovery(key)
-        return replace(result, stage_timing_seconds=timings)
+            self._forget_recovery(key, preserve_writer=result.error_code in recoverable)
+        return replace(result, stage_timing_seconds=timings, degraded_stages=degraded)
 
-    async def _run(self, request: object, context: ReplyContext, measure) -> PipelineResult:
+    async def _run(self, request: object, context: ReplyContext, measure, degraded, receipt_metadata) -> PipelineResult:
         if not isinstance(context, ReplyContext):
             raise TypeError("ReplyContext is required")
         sticker_choices = allowed_stickers(context.private_behavior)
         if context.mode is ReplyMode.TEXT_LETTER:
+            from .stage_recovery import canonical_hash
+            seed = canonical_hash(self._recovery_key(receipt_metadata)) if self._recovery_key(receipt_metadata) is not None else None
             sticker_choices = weighted_candidates(
                 sticker_choices, context.sticker_history, limit=32,
+                rng=random.Random(seed) if seed is not None else None,
             )
         sticker_note = (LETTER_PRESENTATION_INSTRUCTION + '\n' + selection_instruction(sticker_choices)) if context.mode is ReplyMode.TEXT_LETTER else ""
         generation_note = sticker_note
@@ -305,11 +361,17 @@ class ReplyPipeline:
                 return PipelineResult(getattr(request, 'request_id', ''), ReplyState.FAILED,
                                       error_code='JEV_CONFIG_INVALID')
         use_companion = interpret_turn and companion_port is not None
-        parallel_preparation = context.mode is ReplyMode.FUTURE_IM and not (chat_metadata or {}).get('proactive')
+        parallel_preparation = context.mode in {ReplyMode.TEXT_LETTER, ReplyMode.FUTURE_IM} and not (chat_metadata or {}).get('proactive')
+        text_recovery_allowed = (parallel_preparation and isinstance(user_text, str) and bool(user_text.strip())
+                                 and (context.mode is ReplyMode.TEXT_LETTER or (chat_metadata or {}).get('structured')))
+        if callable((chat_metadata or {}).get('turn_is_current')) and not chat_metadata['turn_is_current']():
+            return PipelineResult(getattr(request, 'request_id', ''), ReplyState.FAILED,
+                                  error_code='JEV_INPUT_SUPERSEDED')
         ordinary_chat = (context.mode is ReplyMode.FUTURE_IM
                          and (chat_metadata or {}).get('structured')
                          and not (chat_metadata or {}).get('proactive'))
         companion_decision = companion_timing = companion_delivery = None
+        decision_note = ''
         proactive_decision = None
         silence_authorized = False
         reconsidered_silence = False
@@ -332,12 +394,23 @@ class ReplyPipeline:
                 except Exception:
                     return None  # Optional subjective state cannot block received text.
 
+        if isinstance(generation_request, ReplyRequest) and generation_request.messages is None:
+            # Recall embeds this message through the cloud; start it now so the
+            # few seconds it takes overlap world selection instead of adding to it.
+            from runtime.memory import remote_embedding
+            remote_embedding.prefetch(generation_request.content)
         try:
             async def select_world():
                 if isinstance(generation_request, ReplyRequest) and generation_request.messages is None:
                     select_life = getattr(adapter, 'prepare_daily_life_fragments', None)
                     if callable(select_life) and getattr(adapter, 'daily_life', None) is not None:
-                        return await select_life(generation_request.content or '', now=context.trusted_time.instant)
+                        try:
+                            return await select_life(generation_request.content or '', now=context.trusted_time.instant)
+                        except WorldSelectionError as error:
+                            if not text_recovery_allowed or str(error) not in _TEXT_RECOVERY_CODES:
+                                raise
+                            degraded['world'] = str(error)
+                            return ()  # Never reload an old world through the sync adapter.
 
             async def interpret_safely():
                 try:
@@ -371,6 +444,14 @@ class ReplyPipeline:
                 self.orchestrator,
                 life_fragments=life_fragments,
             )
+            if (preparation.persona_snapshot is not None and life_fragments is not None
+                    and any(f.fragment_id == 'linli.daily-life' for f in life_fragments)
+                    and preparation.adopted_world is None):
+                if not text_recovery_allowed:
+                    raise _WorldSelectionBudgetExceeded()
+                # Keep the already assembled persona and originals. Missing world
+                # evidence permits reviewed text only, never a new media authority.
+                degraded['world'] = _WorldSelectionBudgetExceeded.code
         except _PersonaNotReadyError:
             return PipelineResult(
                 request.request_id if isinstance(request, ReplyRequest) else "",
@@ -382,10 +463,12 @@ class ReplyPipeline:
             return PipelineResult(
                 request.request_id if isinstance(request, ReplyRequest) else '',
                 ReplyState.FAILED, error_code=error.code, retryable=False,
+                failure_context=_assembly_capacity_failure(error.__cause__),
             )
-        except PromptBudgetExceeded:
+        except PromptBudgetExceeded as error:
             return PipelineResult(getattr(request, 'request_id', ''), ReplyState.FAILED,
-                error_code='JEV_CONTEXT_BUDGET_EXCEEDED' if companion_enabled else 'INPUT_TOO_LONG')
+                error_code='JEV_CONTEXT_BUDGET_EXCEEDED' if companion_enabled else 'INPUT_TOO_LONG',
+                retryable=False, failure_context=_assembly_capacity_failure(error))
         prepared = preparation.request
         if not parallel_preparation:
             tasks = [asyncio.create_task(measure('interpretation', interpret_safely())),
@@ -416,29 +499,20 @@ class ReplyPipeline:
                     ReplyState.FAILED, error_code="CURRENT_TURN_INTERPRETATION_FAILED",
                 )
         adopted = {}
-        if isinstance(prepared, ReplyRequest) and prepared.messages:
-            from runtime.memory.history_selection import select_history_messages as prepare_recall_messages
-            adapter = getattr(getattr(self.orchestrator, 'gateway', None), 'adapter', None)
-            gateway = getattr(adapter, 'gateway', None)
-            current_sources = getattr(adapter, '_memory_source_exclusions', lambda: ())()
-            messages = await measure('history', prepare_recall_messages(prepared.messages, gateway,
-                max_input_chars=prepared.max_input_chars, request_id=prepared.request_id,
-                memory_builder=getattr(adapter, 'memory_prompt_builder', None),
-                as_of=context.trusted_time.instant,
-                exclude_source_ids=current_sources, current_source_ids=current_sources,
-                current_user_text=user_text, persona_snapshot=preparation.persona_snapshot,
-                persona_mode=persona_mode_for_reply_mode(context.mode),
-                persona_development=(preparation.adopted_world or {}).get('character_development')))
-            prepared = replace(prepared, messages=messages)
+        selection_messages = getattr(prepared, 'messages', None)
         if isinstance(prepared, ReplyRequest) and prepared.messages:
             from .fact_attribution import prepare_dialogue_messages
             prepared = replace(prepared, messages=prepare_dialogue_messages(
                 prepared.messages, max_input_chars=prepared.max_input_chars))
         if use_companion:
-            from .companion_runtime import (prepare_decision, delivery_for, project_decision, CompanionRuntimeError,
+            from .companion_runtime import (prepare_decision, delivery_for, decision_instruction, CompanionRuntimeError,
                                             TURN_CONTEXT, media_locked)
             metadata = chat_metadata if chat_metadata is not None else (TURN_CONTEXT.get() or {})
             kinds = metadata.get('semantic_kinds', ['text'])
+            offered = metadata.get('daily_video_candidates') or [] if metadata.get('channel') == 'qq' else []
+            daily_experience = (dict(event_ids=[item['event_id'] for item in offered],
+                event_kinds=list(dict.fromkeys(item['event_kind'] for item in offered)), max_seconds=15)
+                if offered and 'video_speech' in kinds else None)
             try:
                 if isinstance(prepared, ReplyRequest) and prepared.messages is None:
                     prepared = replace(prepared, messages=prepared.normalized_messages())
@@ -447,7 +521,11 @@ class ReplyPipeline:
                     input_revision=metadata.get('input_revision', 0),
                     as_of=context.trusted_time.instant.isoformat(), kinds=kinds,
                     cached=metadata.get('companion_decision'),
-                    speech_enabled=(chat_metadata or {}).get('speech_enabled') is True))
+                    speech_enabled=(chat_metadata or {}).get('speech_enabled') is True,
+                    bedtime_offer=(context.mode is ReplyMode.FUTURE_IM and (chat_metadata or {}).get('channel') == 'qq'
+                                   and (chat_metadata or {}).get('bedtime_offer_enabled') is True
+                                   and not (chat_metadata or {}).get('proactive')),
+                    daily_video_experience=daily_experience))
                 companion_decision = decision.record()
                 save_decision = metadata.get('save_companion_decision')
                 if callable(save_decision):
@@ -455,7 +533,14 @@ class ReplyPipeline:
                         await save_decision(companion_decision)
                     except Exception:
                         raise CompanionRuntimeError('JEV_DECISION_NOT_SAVED') from None
-                companion_timing, companion_delivery = delivery_for(decision, kinds=kinds)
+                companion_timing, companion_delivery = delivery_for(decision, kinds=kinds,
+                    daily_video=bool(daily_experience))
+                if degraded and (companion_delivery not in {None, 'text'}
+                                 or companion_decision.get('speech_request')):
+                    # Missing world context cannot turn a valid requested media
+                    # plan into a completed text reply. Keep its requirements.
+                    return PipelineResult(getattr(request, 'request_id', ''), ReplyState.FAILED,
+                        error_code=degraded['world'], companion_decision=companion_decision, retryable=True)
                 if companion_timing in {'wait_user', 'defer', 'no_reply'}:
                     if not ordinary_chat:
                         return PipelineResult(getattr(request, 'request_id', ''), ReplyState.COMPLETED,
@@ -467,24 +552,89 @@ class ReplyPipeline:
                     # a pending media requirement or a new media permission.
                     companion_timing, companion_delivery = 'now', 'text'
                     reconsidered_silence = True
-                prepared = replace(prepared, messages=project_decision(_generation_messages(prepared), decision,
-                    max_input_chars=original_budget-len(generation_note)-2,
+                decision_note = decision_instruction(decision,
                     delivery=('letter_image' if context.mode is ReplyMode.TEXT_LETTER
                               and companion_delivery == 'image' else
                               # Apply the QQ speech default without changing requested media.
-                              'voice_default' if (context.mode is ReplyMode.FUTURE_IM and companion_delivery == 'text'
+                              'voice_default' if (not degraded and context.mode is ReplyMode.FUTURE_IM and companion_delivery == 'text'
                                                   and (chat_metadata or {}).get('structured')
                                                   and (chat_metadata or {}).get('channel') == 'qq'
                                                   and 'audio_speech' in kinds and not media_locked(decision.plan))
-                              else companion_delivery)),
-                    max_input_chars=original_budget-len(generation_note)-2)
+                               else companion_delivery))
             except CompanionRuntimeError as error:
-                return PipelineResult(getattr(request, 'request_id', ''), ReplyState.FAILED,
-                    error_code=str(error), companion_decision=companion_decision)
+                unsupported = str(error) == 'JEV_PLAN_UNSUPPORTED'
+                if (not text_recovery_allowed or str(error) not in _TEXT_RECOVERY_CODES and not unsupported
+                        or companion_decision is not None and not unsupported):
+                    return PipelineResult(getattr(request, 'request_id', ''), ReplyState.FAILED,
+                        error_code=str(error), companion_decision=companion_decision,
+                        failure_context=getattr(error, 'failure_context', {}))
+                degraded['decision'] = str(error)
+        if degraded:
+            # This is an application-owned text/clarification lane, not a fabricated
+            # Jev decision. Unknown media/control requirements gain no authority.
+            companion_timing, companion_delivery = 'now', 'text'
+            decision_note = (_UNSUPPORTED_MEDIA_NOTE if degraded.get('decision') == 'JEV_PLAN_UNSUPPORTED'
+                             else _TEXT_RECOVERY_NOTE)
+            if ordinary_chat:
+                generation_note += _TEXT_RECOVERY_OUTPUT
+        speech_request = None if degraded or reconsidered_silence else (companion_decision or {}).get('speech_request')
+        speech_note = ''
+        if speech_request and (chat_metadata or {}).get('channel') == 'qq':
+            from runtime.personal_chat.speech import SPEECH_WRITER_INSTRUCTION
+            speech_note = (SPEECH_WRITER_INSTRUCTION + '\n<speech_request>' + json.dumps(speech_request, ensure_ascii=False)
+                           + '</speech_request>')
+            if speech_request['continuation']:
+                from .fact_attribution import story_evidence
+                speech_note += '\n' + story_evidence((chat_metadata or {}).get('story_continuation'))
+        elif (not degraded and context.mode is ReplyMode.FUTURE_IM and (chat_metadata or {}).get('structured')
+              and chat_metadata.get('channel') == 'qq' and chat_metadata.get('speech_enabled') is True
+              and not chat_metadata.get('proactive')
+              and (companion_decision or {}).get('speech_offer') in {'none', 'bedtime', 'clarify'}):
+            from runtime.personal_chat.speech import BEDTIME_OFFER_INSTRUCTION
+            speech_note = BEDTIME_OFFER_INSTRUCTION[(companion_decision or {})['speech_offer']]
+        final_notes = tuple(note for note in (decision_note, generation_note, speech_note) if note)
+        # Content-only legacy requests keep their adapter-owned assembly path.
+        if decision_note and isinstance(prepared, ReplyRequest) and prepared.messages is None:
+            prepared = replace(prepared, messages=prepared.normalized_messages())
+        # Optional expression and scene offers cannot consume the final contract's room.
+        context_budget = original_budget - sum(map(len, final_notes))
+        if ordinary_chat and isinstance(prepared, ReplyRequest) and prepared.messages:
+            from .context_budget import wire_size, PERSONAL_CHAT_FIT_BYTES
+            base_chars = sum(len(m['content']) for m in prepared.messages)
+            wire = [*prepared.messages, dict(role='system', content='\n'.join(final_notes))]
+            context_budget = min(context_budget, base_chars + max(0, (PERSONAL_CHAT_FIT_BYTES - wire_size(wire)) // 4))
         if isinstance(prepared, ReplyRequest) and prepared.messages:
+            from runtime.memory.history_selection import select_history_messages as prepare_recall_messages
+            adapter = getattr(getattr(self.orchestrator, 'gateway', None), 'adapter', None)
+            gateway = getattr(adapter, 'gateway', None)
+            current_sources = getattr(adapter, '_memory_source_exclusions', lambda: ())()
+            messages = await measure('history', prepare_recall_messages(selection_messages or prepared.messages, gateway,
+                max_input_chars=max(1, context_budget), request_id=prepared.request_id,
+                memory_builder=getattr(adapter, 'memory_prompt_builder', None),
+                as_of=context.trusted_time.instant,
+                exclude_source_ids=current_sources, current_source_ids=current_sources,
+                current_user_text=user_text, persona_snapshot=preparation.persona_snapshot,
+                persona_mode=persona_mode_for_reply_mode(context.mode),
+                persona_development=(preparation.adopted_world or {}).get('character_development')))
+            prepared = replace(prepared, messages=messages)
+        if isinstance(prepared, ReplyRequest) and prepared.messages:
+            from .fact_attribution import prepare_dialogue_messages
+            prepared = replace(prepared, messages=prepare_dialogue_messages(
+                prepared.messages, max_input_chars=max(1, context_budget)))
+        if isinstance(prepared, ReplyRequest) and prepared.messages:
+            from .fact_attribution import finalize_reply_messages
+            try:
+                packed = finalize_reply_messages(prepared.messages, '\n'.join(final_notes),
+                    max_input_chars=original_budget, max_input_bytes=_chat_fit_bytes() if ordinary_chat else None)
+            except ValueError as error:
+                return PipelineResult(prepared.request_id, ReplyState.FAILED, error_code='INPUT_TOO_LONG',
+                    retryable=False, failure_context=getattr(error, 'failure_context', {}))
+            prepared = replace(prepared, messages=tuple(m for m in packed
+                if not (m.get('role') == 'system' and m.get('content') == '\n'.join(final_notes))),
+                max_input_chars=max(1, context_budget))
             from .character_emotion_context import project_emotion
             prepared = replace(prepared, messages=project_emotion(prepared.messages, emotion_view,
-                max_input_chars=prepared.max_input_chars, adopted=adopted))
+                max_input_chars=context_budget, adopted=adopted))
         proactive_decide = (chat_metadata or {}).get('proactive_decide')
         if (chat_metadata or {}).get('proactive') and callable(proactive_decide):
             from .proactive_runtime import project_decision, record_decision
@@ -503,32 +653,53 @@ class ReplyPipeline:
             except CompanionRuntimeError as error:
                 return PipelineResult(getattr(request, 'request_id', ''), ReplyState.FAILED,
                                       error_code=str(error), proactive_decision=proactive_decision)
-        if generation_note and isinstance(prepared, ReplyRequest) and prepared.messages:
+        daily_candidates = []
+        if final_notes and isinstance(prepared, ReplyRequest) and prepared.messages:
+            daily_candidates = ((chat_metadata or {}).get('daily_video_candidates') or []
+                if (chat_metadata or {}).get('channel') == 'qq' else [])
+            if companion_decision is not None:
+                if companion_delivery != 'video_speech':
+                    daily_candidates = []
             # Finalize the delivery contract after dialogue/recall projection.
             # The current user input stays last; evidence cannot become the
             # last instruction defining what the model is supposed to output.
             from .fact_attribution import finalize_reply_messages
             try:
-                messages = finalize_reply_messages(prepared.messages, generation_note,
-                                                   max_input_chars=original_budget)
+                messages = prepared.messages
+                if daily_candidates:
+                    note = '<daily_video_candidates>' + json.dumps(daily_candidates,
+                        ensure_ascii=False, separators=(',', ':')).replace('<', r'\u003c') + '</daily_video_candidates>'
+                    try:
+                        # A selected instant video needs its scene just as the writer
+                        # needs its output rules. Reserve both, trimming old dialogue
+                        # first; unselected offers must not displace recent dialogue.
+                        with_candidates = finalize_reply_messages(messages, note,
+                            max_input_chars=context_budget,
+                            trim_history=companion_delivery == 'video_speech')
+                        messages = with_candidates
+                    except ValueError:
+                        daily_candidates = []
+                messages = [dict(m) for m in messages
+                            if not (m.get('role') == 'system' and m.get('content') in final_notes)]
+                current = next((i for i in range(len(messages)-1, -1, -1)
+                                if messages[i].get('role') == 'user'), len(messages))
+                messages[current:current] = [dict(role='system', content=note) for note in final_notes]
+                messages = finalize_reply_messages(messages, '', max_input_chars=original_budget,
+                    max_input_bytes=_chat_fit_bytes() if ordinary_chat else None)
                 from runtime.personal_chat.decision import INSTRUCTION as CHAT_RULES
                 if (chat_metadata or {}).get('structured') and generation_note == CHAT_RULES:
                     from .fact_attribution import cache_output_rules
-                    messages = cache_output_rules(messages, generation_note)
-            except ValueError:
+                    messages = cache_output_rules(messages, generation_note, max_input_chars=original_budget,
+                                                  max_input_bytes=_chat_fit_bytes() if ordinary_chat else None)
+            except ValueError as error:
                 return PipelineResult(prepared.request_id, ReplyState.FAILED,
-                                      error_code='INPUT_TOO_LONG', retryable=False)
+                    error_code='INPUT_TOO_LONG', retryable=False,
+                    failure_context=getattr(error, 'failure_context', None) or dict(
+                        failure_stage='writer_context', failure_detail='final_rules_budget',
+                        input_chars=sum(len(m['content']) for m in messages), max_input_chars=original_budget))
             prepared = replace(prepared, messages=messages, max_input_chars=original_budget)
-        speech_request = None if reconsidered_silence else (companion_decision or {}).get('speech_request')
-        if speech_request and (chat_metadata or {}).get('channel') == 'qq':
-            note = '<speech_request>' + json.dumps(speech_request, ensure_ascii=False) + '</speech_request>'
-            if speech_request['continuation']:
-                from .fact_attribution import story_evidence
-                note += '\n' + story_evidence((chat_metadata or {}).get('story_continuation'))
-            messages = list(_generation_messages(prepared))
-            at = next((i for i in range(len(messages)-1,-1,-1) if messages[i].get('role') == 'user'),len(messages))
-            messages.insert(at, {'role':'system','content':note})
-            prepared = replace(prepared,messages=tuple(messages))
+        if not any('<character_emotion>' in m.get('content', '') for m in _generation_messages(prepared)):
+            adopted.pop('emotion', None)
         from .character_emotion_context import freeze_expression_context
         # Local assembly establishes provenance; later recall may legitimately
         # replace duplicated notes with source references. Freeze that final
@@ -538,12 +709,22 @@ class ReplyPipeline:
         expression_context = freeze_expression_context(getattr(request, 'request_id', ''),
             context.trusted_time.instant, world=world, emotion=adopted.get('emotion'))
         from .stage_recovery import canonical_hash
+        provider_binding = (getattr(adapter, 'config', None),
+            tuple((type(port).__module__, type(port).__qualname__, getattr(port, 'config', None),
+                   getattr(getattr(port, 'adapter', None), 'config', None),
+                   getattr(getattr(port, 'gateway', None), 'config', None),
+                   getattr(getattr(getattr(port, '_transport', None), 'gateway', None), 'config', None)) for port in
+                  (self.orchestrator, self.reviewer, self.rewriter)),
+            os.environ.get('OLIVIA_JEV_DECISION_URL', ''), os.environ.get('OLIVIA_REPLY_REVIEW_ENABLED', ''))
         fingerprint = canonical_hash(_generation_messages(prepared), context.to_dict(),
             preparation.trusted_evidence, preparation.persona_snapshot,
             getattr(prepared, 'max_input_chars', None), getattr(prepared, 'gateway_scope', None),
-            id(self.orchestrator), id(self.reviewer), id(self.rewriter))
-        recovery = self._recover_stages(chat_metadata or {}, fingerprint) if context.mode is ReplyMode.FUTURE_IM else None
-        if callable((chat_metadata or {}).get('turn_is_current')) and not chat_metadata['turn_is_current']():
+            provider_binding)
+        recovery = self._recover_stages(receipt_metadata, fingerprint)
+        checkpoint = receipt_metadata.get('save_writer_checkpoint')
+        if recovery is not None and recovery.storage_key is not None and callable(checkpoint):
+            await checkpoint(recovery.storage_key, fingerprint)
+        if callable(receipt_metadata.get('turn_is_current')) and not receipt_metadata['turn_is_current']():
             return PipelineResult(getattr(request, 'request_id', ''), ReplyState.FAILED,
                                   error_code='JEV_INPUT_SUPERSEDED')
         candidate = recovery.get_writer(getattr(prepared, 'request_id', None)) if recovery is not None else None
@@ -590,7 +771,9 @@ class ReplyPipeline:
                 from runtime.personal_chat.decision import decode
                 now = datetime.fromisoformat(chat_metadata['decision_now']).timestamp()
                 options = dict(user=user_text, now=now, proactive=bool(chat_metadata.get('proactive')),
-                               allow_user_silence=bool(ordinary_chat))
+                               allow_user_silence=bool(ordinary_chat),
+                                allow_speech=bool(speech_request and chat_metadata.get('channel') == 'qq'),
+                                daily_video_candidates=daily_candidates)
                 decision = decode(clean_text, **options)
                 if reconsidered_silence and decision.get('speech'):
                     return PipelineResult(candidate.request_id, ReplyState.FAILED,
@@ -599,6 +782,21 @@ class ReplyPipeline:
                 envelope = json.loads(fenced.group(1) if fenced else clean_text)
                 if isinstance(envelope, list):
                     envelope = envelope[0]
+                if degraded:
+                    from runtime.personal_chat.decision import NEUTRAL_METADATA
+                    required = {**NEUTRAL_METADATA, 'text_reason': None, 'sticker': None}
+                    if (not isinstance(envelope, dict) or any(envelope.get(k) != v for k, v in required.items())
+                            or envelope.get('speech') is not None or 'silence' in envelope
+                            or envelope.get('letter_invitation') is True):
+                        return PipelineResult(candidate.request_id, ReplyState.FAILED,
+                            error_code='PERSONAL_CHAT_DECISION_INVALID',
+                            decision_rejection_reason='RECOVERY_ACTION_WITHOUT_PLAN')
+                if decision.get('dropped_media'):
+                    envelope.pop('speech', None)
+                    clean_text = json.dumps(envelope, ensure_ascii=False)
+                if decision.get('dropped_daily_video'):
+                    envelope.pop('daily_video', None)
+                    clean_text = json.dumps(envelope, ensure_ascii=False)
                 review_text = decision['text']
             except (ValueError, TypeError, KeyError) as exc:
                 return PipelineResult(candidate.request_id, ReplyState.FAILED,
@@ -748,6 +946,7 @@ class ReplyPipeline:
             companion_delivery=companion_delivery,
             silence_authorized=silence_authorized,
             proactive_decision=proactive_decision,
+            decision_dropped_media=decision.get('dropped_media') if envelope is not None else None,
         )
 
 
@@ -789,9 +988,6 @@ def _prepare_generation_request(
         raise _PersonaNotReadyError(_PERSONA_NOT_READY)
     messages, evidence = assemble_reply_messages(adapter, loaded.snapshot, context,
         request.content, max_input_chars=request.max_input_chars, life_fragments=life_fragments)
-    if (life_fragments is not None and any(f.fragment_id == 'linli.daily-life' for f in life_fragments)
-            and _assembled_life_projection(messages) is None):
-        raise _WorldSelectionBudgetExceeded()
     return _PreparedGeneration(replace(request, content=None, messages=messages), evidence,
                                _assembled_life_projection(messages), loaded.snapshot)
 
@@ -824,6 +1020,18 @@ def assemble_reply_messages(adapter, snapshot, context, content, *, max_input_ch
     messages, evidence, assembly_limit = _assemble_reply_evidence(adapter, snapshot, context, content,
         max_input_chars=max_input_chars, user_input=user_input, life_fragments=life_fragments)
     return prepare_dialogue_messages(messages, max_input_chars=assembly_limit), evidence
+
+
+
+def _assembly_capacity_failure(error):
+    report = getattr(error, 'report', None)
+    if report is None:
+        return {}
+    return dict(failure_stage='writer_context', failure_detail='final_rules_budget',
+                input_chars=report.input_units, max_input_chars=report.max_units,
+                fixed_chars=report.required_units,
+                optional_chars=max(0, report.input_units-report.required_units),
+                packed_chars=report.used_units)
 
 
 def _assemble_reply_evidence(adapter, snapshot, context, content, *, max_input_chars, user_input=None, life_fragments=None):

@@ -386,6 +386,41 @@ def test_disconnect_during_send_is_visible_and_never_resends():
     asyncio.run(scenario())
 
 
+def test_disconnect_during_generation_records_close_without_private_details():
+    async def scenario():
+        started = asyncio.Event()
+        records, cancellations = [], []
+        async def handler(message, send):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancellations.append(1)
+                raise
+        async def socket(request):
+            ws = web.WebSocketResponse()
+            await ws.prepare(request)
+            await login(ws)
+            await ws.send_json(event())
+            await asyncio.wait_for(started.wait(), 1)
+            await ws.close(code=4001, message=b'private server close detail')
+            return ws
+        app = web.Application()
+        app.router.add_get('/', socket)
+        async with TestServer(app) as server:
+            with pytest.raises(RuntimeError, match='^QQ_CONNECTION_LOST_DURING_EXCHANGE$'):
+                await asyncio.wait_for(run_qq(str(server.make_url('/')), TOKEN, '100', '200', handler,
+                    asyncio.Event(), diagnostic_callback=lambda **fields: records.append(fields)), 3)
+        assert cancellations == [1]
+        assert len(records) == 1
+        assert records[0]['close_code'] == 4001
+        assert records[0]['processing'] is True
+        assert records[0]['pending_actions'] == 0
+        assert records[0]['transport_error'] == 'NONE'
+        assert 'private' not in str(records) and TOKEN not in str(records)
+    asyncio.run(scenario())
+
+
 def test_qq_logged_out_state_requires_relogin_without_hiding_status():
     async def scenario():
         states = []

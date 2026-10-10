@@ -27,8 +27,8 @@ def test_patch_preserves_unrelated_members_and_is_idempotent(tmp_path):
         assert patched.count('signature:i.mail.received?.signature') == 2
         assert patched.count('["bodyText","signature","stickerId",') == 2
         assert 'class:"olivia-letter-signature"},v(A.signature),1)' in patched
-        assert sum(n.endswith('.png') for n in z.namelist())==252
-        assert sum(n.endswith('.gif') for n in z.namelist())==20
+        assert sum(n.endswith('.png') for n in z.namelist())==108
+        assert sum(n.endswith('.gif') for n in z.namelist())==0
         assert 'oliviaLetterStickerAsset(A.stickerId)' in patched
     before=path.read_bytes()
     assert patch_letter_stickers(path)=='ALREADY_PATCHED'
@@ -51,8 +51,22 @@ def test_patch_preserves_unrelated_members_and_is_idempotent(tmp_path):
     assert patch_letter_stickers(old)=='PATCHED'
     with zipfile.ZipFile(old) as z:
         assert z.read('assets/main-31595bd3.js').decode()==patched
-        assert 'assets/letter-stickers/linli-272.gif' in z.namelist()
+        assert 'assets/letter-stickers/linli-108.png' in z.namelist()
     assert patch_letter_stickers(old)=='ALREADY_PATCHED'
+
+    # Image-free program patches keep the already installed line art.
+    from installer import patch_letter_stickers as module
+    metadata=tmp_path/'metadata';metadata.mkdir()
+    for name in ('catalog.json','select.js'):
+        (metadata/name).write_bytes((module.ASSETS/name).read_bytes())
+    original_assets=module.ASSETS
+    module.ASSETS=metadata
+    try:
+        assert patch_letter_stickers(path)=='ALREADY_PATCHED'
+        with zipfile.ZipFile(path) as z:
+            assert len([n for n in z.namelist() if n.endswith('.png')])==108
+    finally:
+        module.ASSETS=original_assets
 
     # Existing v4 installations must switch native rendering from PNG-only to extension-aware assets.
     from installer.patch_letter_stickers import MARKER, PREVIOUS_MARKER

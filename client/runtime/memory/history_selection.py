@@ -64,7 +64,7 @@ def _split(messages):
                 packet = json.loads(text)
             except ValueError:
                 packet = None
-            if isinstance(packet, dict) and packet.get('kind') in {'recent_dialogue', 'delivered_media'}:
+            if isinstance(packet, dict) and packet.get('kind') in {'recent_dialogue', 'delivered_media', 'relationship_history'}:
                 return match.group(0)
             groups = []
             if '[ORIGINAL_CORRESPONDENCE_UNTRUSTED]' in text:
@@ -148,6 +148,33 @@ async def select_history_messages(messages, gateway, *, max_input_chars, request
                                   current_source_ids=(), current_user_text=None,
                                   persona_snapshot=None, persona_mode=None, persona_development=None,
                                   persona_decision_port=None):
+    task = None
+    if persona_snapshot is not None and (persona_decision_port is not None
+            or os.environ.get('OLIVIA_JEV_DECISION_URL', '').strip()):
+        base, _ = _split(messages)
+        current = current_user_text if isinstance(current_user_text, str) else next(
+            (m['content'] for m in reversed(base) if m.get('role') == 'user'), '')
+        task = asyncio.create_task(_jev_persona_selection(
+            persona_decision_port, base, current, persona_snapshot, persona_mode))
+    try:
+        return await _select_history_messages(messages, gateway,
+            max_input_chars=max_input_chars, request_id=request_id, memory_builder=memory_builder,
+            as_of=as_of, exclude_source_ids=exclude_source_ids, current_source_ids=current_source_ids,
+            current_user_text=current_user_text, persona_snapshot=persona_snapshot, persona_mode=persona_mode,
+            persona_development=persona_development, persona_decision_port=persona_decision_port,
+            persona_selection_task=task)
+    finally:
+        if task is not None:
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+
+async def _select_history_messages(messages, gateway, *, max_input_chars, request_id=None,
+                                  memory_builder=None, as_of=None, exclude_source_ids=(),
+                                  current_source_ids=(), current_user_text=None,
+                                  persona_snapshot=None, persona_mode=None, persona_development=None,
+                                  persona_decision_port=None, persona_selection_task=None):
     from runtime.diagnostics.recall_trace import finish
     from llm_gateway import GatewayRequestScope
     from runtime.reply.jev_questions import configured_questions
@@ -201,10 +228,10 @@ async def select_history_messages(messages, gateway, *, max_input_chars, request
         from runtime.persona.persona_selection import (
             SELECTION_INSTRUCTION, contextual_catalog, validate_persona_ids, project_persona_selection,
         )
-        if use_persona_duty:
+        if use_persona_duty and persona_selection_task is None:
             persona_ids, persona_unavailable = await _jev_persona_selection(
                 persona_decision_port, base, current, persona_snapshot, persona_mode)
-        else:
+        elif not use_persona_duty:
             instruction += SELECTION_INSTRUCTION
             persona_offered = contextual_catalog(persona_snapshot, persona_mode)
             packet['persona_candidates'] = list(persona_offered)
@@ -321,6 +348,16 @@ async def select_history_messages(messages, gateway, *, max_input_chars, request
                     selected.append(complete)
                 elif complete != offered[source] or any(r.get('interpretation_dependencies') for r in complete):
                     gap = True
+            if not ids:
+                # The user named this day, or her diary pointed to it: that original is
+                # what was asked about even when the relevance check kept nothing.
+                for source, group in offered.items():
+                    if len(selected) == 2:
+                        break
+                    if any((r.get('provenance') or {}).get('requested_reference') in {'date', 'diary'} for r in group):
+                        complete = close_group(group, offered, dependencies)
+                        if len(_block([*selected, complete])) <= remaining:
+                            selected.append(complete)
             status, reason = 'checked', (reason if reason == 'dependency_store' else None)
         except Exception as error:
             reason = ('timeout' if isinstance(error, TimeoutError) else
@@ -352,6 +389,8 @@ async def select_history_messages(messages, gateway, *, max_input_chars, request
         base.insert(len(base) - 1, {'role': 'system', 'content': _RECALL_UNAVAILABLE})
     base = [m for m in base if m.get('role') != 'system' or m.get('content', '').strip()]
     if persona_snapshot is not None:
+        if persona_selection_task is not None:
+            persona_ids, persona_unavailable = await persona_selection_task
         base = project_persona_selection(base, persona_snapshot, persona_mode, persona_ids,
             max_input_chars=max_input_chars, unavailable=persona_unavailable, development=persona_development)
     finish(messages, base, {'status': status, 'reason': reason, 'findings': []})

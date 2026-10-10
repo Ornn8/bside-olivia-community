@@ -320,6 +320,9 @@
             },
             "MEDIA_JOB_INTERRUPTED": {
               "$ref": "#/$defs/media_error"
+            },
+            "GPU_RECOVERY_REQUIRED": {
+              "$ref": "#/$defs/media_error"
             }
           }
         }

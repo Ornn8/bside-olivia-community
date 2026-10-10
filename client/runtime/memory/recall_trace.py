@@ -9,6 +9,27 @@ from .recall import RecallResult, query_topics, source_id
 _RECALL_CUE = re.compile(r'记得|记不记得|回忆|记错|更正|说过|答应|承诺|约定|第一次|\b(?:remember|recall)\b', re.I)
 
 
+def _alternate(records, priority):
+    """Pointer groups first, then alternate with search groups.
+
+    Current life pointers are read every turn. Placed wholly ahead, they fill the
+    evidence budget and push out the letters the user is actually asking about.
+    """
+    groups = {}
+    for record in records:
+        groups.setdefault(source_id(record), []).append(record)
+    requested = [group for group in groups.values()
+                 if any(record.metadata.get('retrieval_route') in {'date', 'diary'} for record in group)]
+    pointers = [group for source, group in groups.items() if source in priority and group not in requested]
+    searched = [group for source, group in groups.items() if source not in priority and group not in requested]
+    # Days the user named (or her diary matched) lead; they answer the question asked.
+    ordered = [record for group in requested for record in group]
+    for index in range(max(len(pointers), len(searched))):
+        ordered.extend(pointers[index] if index < len(pointers) else ())
+        ordered.extend(searched[index] if index < len(searched) else ())
+    return tuple(ordered)
+
+
 def deepen_recall(builder, recall: RecallResult, *, query, source_ids=(), exclude_source_ids=()) -> RecallResult:
     excluded = tuple(dict.fromkeys(exclude_source_ids))
 
@@ -90,7 +111,7 @@ def deepen_recall(builder, recall: RecallResult, *, query, source_ids=(), exclud
             # and disappear again when the frozen evidence is packed.
             priority = {source_id(record) for record in combined
                         if source_id(record) in seeds or record.metadata.get('requested_source_id') in seeds}
-            combined = tuple(sorted(combined, key=lambda record: source_id(record) not in priority))
+            combined = _alternate(combined, priority)
         result = replace(result, records=combined, source_status=tuple(states.items()))
         if not additions:
             # Exact reads validate an event pointer even if its original was

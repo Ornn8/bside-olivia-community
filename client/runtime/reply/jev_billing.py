@@ -4,9 +4,12 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 import asyncio
 import hashlib
+import http.client
 import json
 import os
 import re
+import ssl
+import time
 import urllib.error
 import urllib.request
 
@@ -103,13 +106,23 @@ def _post_settlement(key, signed):
         headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json', **MINIMUM_HEADER})
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect(),
                                         urllib.request.HTTPSHandler(context=gpu_tls_context()))
-    with opener.open(request, timeout=20) as response:
-        if response.status != 200 or response.headers.get_content_type() != 'application/json':
-            raise ValueError('JEV_BILLING_RESPONSE_INVALID')
-        raw = response.read(65537)
-    if len(raw) > 65536:
-        raise ValueError('JEV_BILLING_RESPONSE_INVALID')
-    return json.loads(raw)
+    # A wallet commit can succeed while its acknowledgement is lost. Replay
+    # the identical signed operation; the relay never debits it twice.
+    for attempt in range(3):
+        try:
+            with opener.open(request, timeout=20) as response:
+                if response.status != 200 or response.headers.get_content_type() != 'application/json':
+                    raise ValueError('JEV_BILLING_RESPONSE_INVALID')
+                raw = response.read(65537)
+            if len(raw) > 65536:
+                raise ValueError('JEV_BILLING_RESPONSE_INVALID')
+            return json.loads(raw)
+        except urllib.error.HTTPError:
+            raise
+        except (urllib.error.URLError, TimeoutError, ConnectionError, http.client.HTTPException) as exc:
+            if attempt == 2 or isinstance(getattr(exc, 'reason', None), ssl.SSLCertVerificationError):
+                raise
+            time.sleep(.25 * (attempt + 1))
 
 
 def settle_receipt_sync(billing, expected_body_digest):

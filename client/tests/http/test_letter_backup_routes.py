@@ -59,3 +59,71 @@ def test_old_file_can_import_originals_with_unavailable_mem0(tmp_path, monkeypat
         assert result['data']['provider_calls'] == 0
     finally:
         archive.close()
+
+
+def test_export_restore_chat_history_without_transport_or_generation(tmp_path, monkeypatch):
+    from copy import deepcopy
+    import local_server as server
+    from tests.imports.test_personal_chat_backup import chat
+    live = [chat(), chat('im-received', content='收到的消息仍保留', delivery_status='FAILED',
+                        letter_status='FAILED', reply_text='never-export-draft')]
+    original = deepcopy(live)
+    archive = LocalMemoryAdapter(tmp_path / 'archive.sqlite3')
+    state = SimpleNamespace(letters=[{'letter_id': 'one', 'content': '信件原文',
+                                     'reply_text': '信件回复'}], personal_chats=live, legacy_letters=[])
+    monkeypatch.setattr(server, 'store', state)
+    monkeypatch.setattr(server, 'memory_adapter', archive)
+    monkeypatch.setattr(server, '_legacy_import_adapter', lambda: archive)
+    monkeypatch.setattr(server, '_mark_superseded_failed_retries', lambda: None)
+    monkeypatch.setattr(server, '_start_history_relationships', lambda **kw: None)
+    monkeypatch.setattr(server, '_store_state_error_code', None)
+    async def run():
+        exported = await server.route('POST', '/toy/letter/backup/export', {}, {}, companion_confirmed=True)
+        backup = exported['data']['backup']
+        assert len(backup['letters']) == 3
+        assert sum(row.get('channel') == 'qq' for row in backup['letters']) == 2
+        assert state.personal_chats == original
+        assert 'never-export' not in str(backup)
+        same = await server.route('POST', '/toy/letter/backup/import', {'backup': backup}, {}, companion_confirmed=True)
+        assert (same['data']['inserted'], same['data']['duplicates']) == (0, 3)
+        state.letters = []
+        state.personal_chats = []
+        imported = await server.route('POST', '/toy/letter/backup/import', {'backup': backup}, {}, companion_confirmed=True)
+        assert imported['data']['inserted'] == 3 and imported['data']['provider_calls'] == 0
+        assert state.letters == [] and state.personal_chats == []
+        assert len(server._letter_collection('current')) == 3
+        assert all(row['read_only'] for row in server._letter_collection('current'))
+        restored = await server.route('POST', '/toy/letter/backup/export', {}, {}, companion_confirmed=True)
+        assert sorted(restored['data']['backup']['letters'], key=lambda row: row['source_id']) == sorted(
+            backup['letters'], key=lambda row: row['source_id'])
+        again = await server.route('POST', '/toy/letter/backup/import', {'backup': backup}, {}, companion_confirmed=True)
+        assert again['data']['duplicates'] == 3
+        from runtime.memory.companion_memory_context import CompanionMemoryPromptBuilder
+        from runtime.memory.mem0_memory import Mem0ConversationMemoryAdapter
+        from tests.memory.test_mem0_memory import FakeMem0, _config
+        backend = FakeMem0()
+        memory = Mem0ConversationMemoryAdapter(backend, _config(tmp_path))
+        prompt = CompanionMemoryPromptBuilder(archive, memory).build('蜗牛')
+        assert '橙色围巾' in prompt.text
+        assert not any(method == 'add' for method, _ in backend.calls)
+    try:
+        asyncio.run(run())
+    finally:
+        archive.close()
+
+
+def test_backup_restore_rejects_unloaded_live_chat_state(tmp_path, monkeypatch):
+    import local_server as server
+    archive = LocalMemoryAdapter(tmp_path / 'archive.sqlite3')
+    monkeypatch.setattr(server, '_store_state_error_code', 'STORE_STATE_INVALID')
+    monkeypatch.setattr(server, '_legacy_import_adapter', lambda: archive)
+    monkeypatch.setattr(server, '_start_history_relationships', lambda **kw: None)
+    try:
+        result = asyncio.run(server.route('POST', '/toy/letter/backup/import',
+            {'backup': export_letters([{'letter_id': 'one', 'content': 'synthetic'}])},
+            {}, companion_confirmed=True))
+        assert result['code'] == 503
+        assert result['message'] == 'LETTER_BACKUP_STORAGE_UNAVAILABLE'
+        assert not archive.list_legacy()
+    finally:
+        archive.close()

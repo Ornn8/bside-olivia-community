@@ -26,14 +26,12 @@ def test_start_local_configures_private_world_under_install_data(
 
     monkeypatch.setattr(start_local, "_active_backend", lambda: backend)
     health = iter(("UNAVAILABLE", "READY", "READY", "READY"))
-    monkeypatch.setattr(start_local, "_health", lambda _port: next(health))
-    monkeypatch.setattr(
-        start_local,
-        "_server_backend_id",
-        lambda _port: start_local._backend_id(backend, root.resolve()),
-    )
+    monkeypatch.setattr(start_local, "_probe_health", lambda _port: (
+        next(health), start_local._backend_id(backend, root.resolve())))
+    monkeypatch.setattr(start_local, "_port_is_bindable", lambda _port: True)
     monkeypatch.setattr(start_local, "_load_dpapi_key", lambda _path: "")
     monkeypatch.setattr(start_local, "_client_executable", lambda _root: client)
+    monkeypatch.setattr(start_local, "_repair_local_login", lambda _root: "ALREADY_APPLIED")
     monkeypatch.setattr(
         start_local,
         "_repair_client_frontend",

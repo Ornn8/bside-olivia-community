@@ -73,6 +73,21 @@ def _files() -> dict[str, bytes]:
     }
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows path length restrictions")
+def test_embedding_install_uses_native_staging_paths_and_keeps_cache_location(tmp_path):
+    config = _config(tmp_path)
+
+    class NativeDownloader(SyntheticDownloader):
+        def download(self, **kwargs):
+            assert str(kwargs["destination"]).startswith("\\\\?\\")
+            return super().download(**kwargs)
+
+    installer = Mem0EmbeddingInstaller(config, downloader=NativeDownloader(_files()))
+    assert installer.install().status == "APPLIED"
+    assert verified_embedding_cache(config)
+    assert not list(config.model_cache.glob(".olivia-mem0-embedding-stage-*"))
+
+
 def test_missing_explicit_install_verifies_then_runtime_reuses_offline_cache(tmp_path: Path) -> None:
     config = _config(tmp_path)
     downloader = SyntheticDownloader(_files())
@@ -638,7 +653,7 @@ def test_settings_exposes_only_the_confirmed_embedding_action_and_health_is_hone
     ).replace("https://opencode.ai/zen/go/v1", "").replace(
         "https://dashscope.aliyuncs.com/compatible-mode/v1", ""
     )
-    assert "https://" not in without_provider_presets.replace("https://175.24.191.6/v1", "")
+    assert "https://" not in without_provider_presets.replace("https://api.bside-moon.cn/v1", "")
 
     memory = UnavailableConversationMemoryPort("MEM0_EMBEDDING_CACHE_UNAVAILABLE")
     admin = ConversationMemoryAdminService(memory, tmp_path / "memory-admin.sqlite3")

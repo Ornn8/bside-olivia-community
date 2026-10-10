@@ -135,6 +135,44 @@ def test_actual_http_one_complete_decision_freezes_input_and_bounded_writer_proj
         decision.plan_json = '{}'
 
 
+def test_daily_video_descriptor_is_optional_frozen_and_sent_in_same_http_call(sidecar):
+    args = input_args()
+    args['capabilities']['kinds'].append('video_speech')
+    baseline = FrozenCompanionTurn.create(**args)
+    descriptor = dict(event_ids=['day:meal-1', 'day:meal-2'], event_kinds=['meal'], max_seconds=15)
+    frozen = FrozenCompanionTurn.create(**args, daily_video_experience=descriptor)
+    descriptor['event_ids'].append('not-frozen')
+    sidecar['body']['evaluation'] = dict(profile='single_delivery', not_evaluated=['control'])
+    decision = asyncio.run(JevDecisionPort(sidecar['url'], profile='single_delivery').decide(frozen)).decision
+    assert frozen.input_digest != baseline.input_digest and decision.matches(frozen)
+    assert len(sidecar['calls']) == 1
+    packet = json.loads(sidecar['calls'][0][2])
+    assert set(packet) == {'input', 'profile', 'daily_video_experience'}
+    assert packet['daily_video_experience'] == dict(event_ids=['day:meal-1', 'day:meal-2'], event_kinds=['meal'], max_seconds=15)
+    record = decision.record()
+    assert FrozenCompanionDecision.from_record(frozen, record, profile='single_delivery').matches(frozen)
+    record['daily_video_experience']['event_ids'][0] = 'day:changed'
+    with pytest.raises(CompanionDecisionError):
+        FrozenCompanionDecision.from_record(frozen, record, profile='single_delivery')
+
+
+@pytest.mark.parametrize('descriptor', [
+    {}, dict(event_ids=[], event_kinds=['meal'], max_seconds=15),
+    dict(event_ids=['x'] * 2, event_kinds=['meal'], max_seconds=15),
+    dict(event_ids=['汉字'], event_kinds=['meal'], max_seconds=15),
+    dict(event_ids=['x'], event_kinds=['rest'], max_seconds=15),
+    dict(event_ids=['x'], event_kinds=['meal'] * 2, max_seconds=15),
+    dict(event_ids=['x'], event_kinds=['meal'], max_seconds=True),
+    dict(event_ids=['x'], event_kinds=['meal'], max_seconds=60),
+    dict(event_ids=[str(i) for i in range(7)], event_kinds=['meal'], max_seconds=15),
+])
+def test_invalid_daily_video_descriptor_fails_before_call(descriptor):
+    args = input_args()
+    args['capabilities']['kinds'].append('video_speech')
+    with pytest.raises(CompanionDecisionError, match='JEV_INPUT_INVALID'):
+        FrozenCompanionTurn.create(**args, daily_video_experience=descriptor)
+
+
 @pytest.mark.parametrize('field,value', [
     ('input_revision', 5), ('as_of', '2026-09-27T03:01:00+00:00'),
     ('capabilities', dict(kinds=['text', 'image'], synchronize=False, playback_events=False,
@@ -195,7 +233,7 @@ def test_port_only_accepts_the_local_full_decision_endpoint(endpoint):
     assert error.value.code == 'JEV_CONFIGURATION_INVALID'
 
 
-@pytest.mark.parametrize('status', [400, 401, 404, 413, 429, 503])
+@pytest.mark.parametrize('status', [400, 401, 404, 413, 429, 502, 503, 504])
 def test_http_errors_are_explicit_no_decision_and_never_retried(sidecar, status):
     sidecar.update(status=status, body=dict(error='secret provider detail', decision=None))
     result = decide(sidecar)
@@ -296,13 +334,17 @@ def test_valid_unsupported_plan_is_retained_as_unexecuted_not_rewritten(sidecar)
     assert result.decision.plan['resolution']['action_executed'] is False
 
 
-def test_persisted_record_roundtrip_is_bound_without_repeating_original_text():
+def test_persisted_record_roundtrip_keeps_frozen_input_out_of_diagnostics():
     turn = FrozenCompanionTurn.create(**input_args())
     decision = FrozenCompanionDecision.from_response(turn, envelope())
     record = json.loads(json.dumps(decision.record()))
     restored = FrozenCompanionDecision.from_record(turn, record)
     assert restored == decision and restored.matches(turn)
-    assert input_args()['messages'][-1]['text'] not in json.dumps(record, ensure_ascii=False)
+    assert record['input'] == turn.input
+    from runtime.diagnostics.support_bundle import project_chat_task
+    diagnostic = project_chat_task(dict(channel='qq', companion_decision=record))
+    assert 'companion_decision' not in diagnostic and 'input' not in diagnostic
+    assert input_args()['messages'][-1]['text'].strip() not in json.dumps(diagnostic, ensure_ascii=False)
     assert record['source_id_map']['t2'] == 'qq:received:19'
     record['plan']['proposal']['moves'].clear()
     assert restored.plan['proposal']['moves']

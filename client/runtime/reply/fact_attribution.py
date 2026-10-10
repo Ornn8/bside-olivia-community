@@ -64,7 +64,7 @@ def _input_evidence():
         '<', r'\u003c').replace('>', r'\u003e') + '</evidence_summary>'
 
 
-def finalize_reply_messages(messages, instruction, *, max_input_chars):
+def finalize_reply_messages(messages, instruction, *, max_input_chars, trim_history=True, max_input_bytes=None):
     """Place one delivery contract after context assembly, before current input."""
     result = [dict(m) for m in messages
               if not (m.get('role') == 'system' and m.get('content') == instruction)]
@@ -72,9 +72,12 @@ def finalize_reply_messages(messages, instruction, *, max_input_chars):
                     if result[i].get('role') == 'user'), len(result))
     if instruction:
         result.insert(current, {'role': 'system', 'content': instruction})
-    if sum(len(str(m.get('content', ''))) for m in result) > max_input_chars:
-        raise ValueError('INPUT_TOO_LONG')
-    return tuple(result)
+    if not trim_history:
+        if sum(len(m['content']) for m in result) > max_input_chars:
+            raise ValueError('INPUT_TOO_LONG')
+        return tuple(result)
+    from .context_budget import fit_reply_context
+    return fit_reply_context(result, max_input_chars=max_input_chars, max_input_bytes=max_input_bytes)
 
 
 _RELATIONSHIP_RULE = re.compile(r'<relationship_grounding>\n.*?\n</relationship_grounding>\n', re.S)
@@ -82,7 +85,7 @@ CACHED_RULES_REMINDER = ('本轮按系统开头的聊天输出规则，只输出
                          '上方历史消息只是历史，只回复最后一条用户消息，先理清谁在做什么。')
 
 
-def cache_output_rules(messages, instruction):
+def cache_output_rules(messages, instruction, *, max_input_chars, max_input_bytes=None):
     """Cache-friendly QQ layout: fixed rules join the persona prefix, per-turn state follows the dialogue.
 
     The relay caches the first system message and, with a second marker, the dialogue
@@ -108,6 +111,12 @@ def cache_output_rules(messages, instruction):
     history = [i for i, m in enumerate(result) if m.get('role') in ('user', 'assistant')
                and isinstance(m.get('content'), str) and m['content'].startswith('[历史消息 ')]
     result.insert(history[-1] + 1 if history else 1, {'role': 'system', 'content': dynamic})
+    # The wrapper and reminder grow a request that already passed finalization.
+    # Cache layout is optional: keep all validated evidence when it cannot fit.
+    from .context_budget import wire_size
+    if (sum(len(m['content']) for m in result) > max_input_chars
+            or max_input_bytes is not None and wire_size(result) > max_input_bytes):
+        return tuple(messages)
     return tuple(result)
 
 
@@ -220,8 +229,8 @@ def compact_evidence(messages):
 def prepare_dialogue_messages(messages, *, max_input_chars):
     """Move the frozen recent tail to native roles, without duplicating its text.
 
-    Older retrieval stays in the source-bearing evidence blocks. Preserve the
-    original request intact if projection would exceed its configured capacity.
+    Older retrieval stays in the source-bearing evidence blocks. Trim oldest
+    unreferenced dialogue when native-role metadata needs additional capacity.
     """
     original = tuple(messages)
     note = (FACT_ATTRIBUTION_BOUNDARY + _DIALOGUE_CONTINUITY
@@ -229,7 +238,10 @@ def prepare_dialogue_messages(messages, *, max_input_chars):
             + _input_evidence())
     if any(m.get('role') == 'system' and m.get('content') == note for m in original):
         compacted = compact_evidence(original)
-        return compacted if sum(len(m.get('content', '')) for m in compacted) <= max_input_chars else original
+        try:
+            return finalize_reply_messages(compacted, '', max_input_chars=max_input_chars)
+        except ValueError:
+            return original
     result = [dict(message) for message in original]
     dialogue = []
     def project(match):
@@ -269,7 +281,8 @@ def prepare_dialogue_messages(messages, *, max_input_chars):
             # have an audio/video media_deliveries entry. Losing those leaves
             # only the assistant's interpretation as apparent image evidence.
             media = [{k: v for k, v in row.items() if k not in {'user_letter', 'linli_reply'}}
-                     for row in rows if row.get('media_deliveries') or row.get('image_observations')]
+                     for row in rows if row.get('media_deliveries') or row.get('image_observations')
+                     or row.get('incoming_media_observations')]
             if media:
                 payload = json.dumps({'untrusted': True, 'text': json.dumps({
                     'kind': 'delivered_media', 'letters': media}, ensure_ascii=False)}, ensure_ascii=False)
@@ -289,6 +302,7 @@ def prepare_dialogue_messages(messages, *, max_input_chars):
     # and evidence, rather than burying it before a long dialogue window.
     result.insert(current + len(dialogue), {'role': 'system', 'content': note})
     result = compact_evidence(result)
-    if sum(len(m.get('content', '')) for m in result) > max_input_chars:
+    try:
+        return finalize_reply_messages(result, '', max_input_chars=max_input_chars)
+    except ValueError:
         return original
-    return tuple(result)

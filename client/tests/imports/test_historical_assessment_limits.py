@@ -104,8 +104,9 @@ def test_long_chinese_policy_fits_actual_jev_packet_and_preserves_five_excerpts(
             if len(body) > JEV_MAX_INPUT_BYTES:
                 raise ValueError('JEV_INPUT_TOO_LARGE')
             self.packets.append((state, len(body)))
-            return {k: 'unknown' if k == 'stage' else 'yes' if k.startswith('e') else '10'
-                    for k in questions}
+            return {k: 'unknown' if k == 'stage' else 'yes' if k.startswith('e')
+                    else '10' if '10' in q['criteria'] else 'same'
+                    for k, q in questions.items()}
     port = Questions()
     monkeypatch.setattr(jev_questions, 'configured_questions', lambda: port)
     gateway = SimpleNamespace(config=SimpleNamespace(max_input_chars=100000))

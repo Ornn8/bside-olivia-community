@@ -203,7 +203,7 @@ const panel = {isConnected: true, __oliviaCompanionStatusNode: statusNode};
 
 # The shipped CEF surface needs explicit no-drag/pointer and display-state guards.
 def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
-    assert SETTINGS_UI_VERSION == "p03.original-settings-manage.v55"
+    assert SETTINGS_UI_VERSION == "p03.original-settings-manage.v58"
     for declaration in (
             'const STATUS_PATH = "/toy/companion/status";',
             'const MEMORY_PATH = "/toy/companion/memory";',
@@ -218,7 +218,7 @@ def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
     ):
         assert BOOTSTRAP_JAVASCRIPT.count(declaration) == 1
     assert BOOTSTRAP_JAVASCRIPT.count('method: "GET"') == 2
-    assert BOOTSTRAP_JAVASCRIPT.count('method: "POST"') == 4
+    assert BOOTSTRAP_JAVASCRIPT.count('method: "POST"') == 5
     assert "page: view.page, limit: 20" in BOOTSTRAP_JAVASCRIPT
     assert "input.maxLength = 500" in BOOTSTRAP_JAVASCRIPT
     assert "const LETTER_CHARACTER_LIMIT = 1200;" in BOOTSTRAP_JAVASCRIPT
@@ -255,7 +255,7 @@ def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
 def test_proactive_letters_use_native_mailbox_routes_and_settings_contract() -> None:
     source = BOOTSTRAP_JAVASCRIPT
 
-    assert SETTINGS_UI_VERSION == "p03.original-settings-manage.v55"
+    assert SETTINGS_UI_VERSION == "p03.original-settings-manage.v58"
     assert 'const PROACTIVE_STATUS_PATH = "/toy/proactive/status";' in source
     assert 'const PROACTIVE_SETTINGS_PATH = "/toy/proactive/settings";' in source
     assert "login_check_enabled" in source
@@ -910,6 +910,12 @@ const statusPayload = (status) => ({
   if (endpoint.pathname === "/toy/generation/action") {
     return {ok:true,json:async()=>({route:"local",url:"",has_key:false})};
   }
+  if (endpoint.pathname === "/toy/sticker-packs") {
+    return {ok:true,json:async()=>({code:0,data:{folder:"C:/fixture/sticker-packs",packs:[]}})};
+  }
+  if (endpoint.pathname === "/toy/improve") {
+    return {ok:true,json:async()=>({code:0,data:{enabled:false,uploaded:0,since:null}})};
+  }
   mutationPaths.push(endpoint.pathname);
   return { ok: true, json: async () => ({ status: "APPLIED", request_id: "memory.lifecycle.1", affected_count: 0 }) };
 };
@@ -1084,3 +1090,7 @@ process.stdout.write(JSON.stringify([
         [[1200], [1200]],
         [[1200], [None]],
     ]
+def test_local_song_ui_uses_bounded_native_id_instead_of_1e15() -> None:
+    assert "1000000000000000" not in BOOTSTRAP_JAVASCRIPT
+    assert "song.native_id" in BOOTSTRAP_JAVASCRIPT
+    assert 'native("checkLocalSongs", {songs: imported})' in BOOTSTRAP_JAVASCRIPT

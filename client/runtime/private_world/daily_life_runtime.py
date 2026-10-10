@@ -188,11 +188,18 @@ class DailyLifeRuntime:
 
     @property
     def emotion(self):
+        return self._get_emotion()
+
+    def _get_emotion(self, *, initialize: bool = True):
         if self._emotion is None:
             try:
                 from .character_emotion_runtime import CharacterEmotionRuntime
-                self._emotion = CharacterEmotionRuntime(self.store, self.gateway, self.emotion_persona,
-                    relationship=self.relationship, timeout_seconds=self.timeout_seconds, dialogue_rows=self.dialogue_rows)
+                emotion = CharacterEmotionRuntime(self.store, self.gateway, self.emotion_persona,
+                    relationship=self.relationship, timeout_seconds=self.timeout_seconds,
+                    dialogue_rows=self.dialogue_rows, initialize=initialize)
+                if not initialize:
+                    return emotion
+                self._emotion = emotion
             except Exception:
                 return None
         return self._emotion
@@ -283,16 +290,14 @@ class DailyLifeRuntime:
                 (source_id,),
             )
 
-    def snapshot(self, now: datetime) -> dict:
-        if self.relationship is not None:
-            relation = self.relationship()
-            affinity = (min(relation.trust, relation.comfort) + relation.closeness) / 200
-            self.store.adapt_routine(now, affinity=affinity)
+    def snapshot(self, now: datetime, *, read_only: bool = False) -> dict:
         value = self.store.snapshot(now)
         value.update(refreshing=self._lock.locked() or (self._task is not None and not self._task.done()),
                      error_code=self.error_code, last_failure_code=getattr(self, '_last_failure_code', None))
-        emotion = self.emotion
-        view = emotion.view(now) if emotion is not None else {}
+        # Support health probes read the life projection without adapting the
+        # routine or lazily creating optional emotion/affect stores.
+        emotion = None if read_only else self._get_emotion(initialize=False)
+        view = emotion.view(now, read_only=True) if emotion is not None else {}
         value['emotion'] = dict(
             status='available' if emotion is not None and not emotion.error_code else 'unavailable',
             observed_at=now.isoformat(),
@@ -365,6 +370,10 @@ class DailyLifeRuntime:
             local_time = now.astimezone(_SHANGHAI)
             source_id = f"day:{local_time:%Y%m%d}:{local_time.hour // 6}"
             try:
+                if self.relationship is not None:
+                    relation = self.relationship()
+                    affinity = (min(relation.trust, relation.comfort) + relation.closeness) / 200
+                    await asyncio.to_thread(self.store.adapt_routine, now, affinity=affinity)
                 duties = configured_duties()
                 persona = self.persona()
                 development_topics = self.store.configure_development(persona)
@@ -383,6 +392,11 @@ class DailyLifeRuntime:
                 state = self.store.snapshot(now)
                 from runtime.reply.jev_questions import configured_questions
                 meal_port = configured_questions()
+                plan = None
+                if meal_port is not None:
+                    from .day_plan import ensure as ensure_day_plan
+                    plan = await ensure_day_plan(self.store, self.gateway(), now=now, persona=persona,
+                        weather=state['world'].get('weather'), schedule=state['world'].get('schedule'))
                 sleep_due = (state['rhythm'].get('authored_sleep') or {}).get('status') == 'due'
                 if sleep_due and meal_port is None:
                     raise RuntimeError('JEV_RESPONSE_INVALID')
@@ -403,7 +417,8 @@ class DailyLifeRuntime:
                     # published moment advance again within that budget.
                     digest = hashlib.sha256(previous["source_id"].encode("utf-8")).hexdigest()[:12]
                     source_id += f":{digest}"
-                    if not sleep_due and state["rhythm"]["phase"] in {"bathing", "sleep", "interrupted_rest"}:
+                    if (not sleep_due and not state['rhythm'].get('authored_bath')
+                            and state["rhythm"]["phase"] in {"sleep", "interrupted_rest"}):
                         return
                 if exchange_actions:
                     source_id += ':exchange:' + hashlib.sha256(exchange_actions[0]['source_id'].encode()).hexdigest()[:12]
@@ -441,9 +456,6 @@ class DailyLifeRuntime:
                     data['emotion'] = self.emotion.view(now)
                 if meal_port is not None:
                     # Once a day: fresh concrete candidates instead of a fixed catalog.
-                    from .day_plan import ensure as ensure_day_plan
-                    plan = await ensure_day_plan(self.store, self.gateway(), now=now, persona=data.get('persona'),
-                        weather=world.get('weather'), schedule=world.get('schedule'))
                     if plan is not None:
                         data['day_plan'] = plan
                 for attempt in range(2):
@@ -463,7 +475,7 @@ class DailyLifeRuntime:
                         repeated = (previous is not None and not exchange_actions and not timing_pending
                                     and result['activity']['kind'] == previous.get('activity_kind'))
                         if (meal_port is not None and result['activity']['kind'] != 'meal'
-                                and not (repeated and result['activity']['kind'] != 'rest')):
+                                and not (repeated and result['activity']['kind'] not in {'rest', 'bath_finished', 'shopping'})):
                             from .life_episode import create as create_episode
                             episode = await create_episode(meal_port, source_id, now, result['activity']['kind'],
                                                            {**data, 'selected_activity': result['activity'],

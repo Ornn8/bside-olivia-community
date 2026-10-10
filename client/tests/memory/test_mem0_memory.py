@@ -2413,25 +2413,29 @@ def test_timed_out_duplicate_settles_as_duplicate_without_created_ids(
         backend,
         replace(_config(tmp_path), write_timeout_seconds=0.1),
     )
-    timed_out = adapter.remember_exchange(
-        user_message="这是重复消息。",
-        assistant_message="这是重复回复。",
-        occurred_at=NOW,
-        source_id="reply:write-timeout:duplicate",
-        user_id="local-user",
-    )
-    assert entered.is_set()
-    assert timed_out.error_code == "MEM0_WRITE_TIMEOUT"
+    try:
+        timed_out = adapter.remember_exchange(
+            user_message="这是重复消息。",
+            assistant_message="这是重复回复。",
+            occurred_at=NOW,
+            source_id="reply:write-timeout:duplicate",
+            user_id="local-user",
+        )
+        # Timing out does not guarantee the daemon has already been scheduled.
+        assert entered.wait(timeout=5.0)
+        assert timed_out.error_code == "MEM0_WRITE_TIMEOUT"
 
-    release.set()
-    settled = adapter.settle_exchange_write(
-        source_id="reply:write-timeout:duplicate",
-        user_id="local-user",
-    )
+        release.set()
+        settled = adapter.settle_exchange_write(
+            source_id="reply:write-timeout:duplicate",
+            user_id="local-user",
+        )
 
-    assert settled.status is MemoryWriteStatus.DUPLICATE
-    assert settled.memory_ids == ()
-    assert [row["id"] for row in backend.rows] == ["memory.existing"]
+        assert settled.status is MemoryWriteStatus.DUPLICATE
+        assert settled.memory_ids == ()
+        assert [row["id"] for row in backend.rows] == ["memory.existing"]
+    finally:
+        release.set()
 
 
 def test_exchange_fails_closed_when_exact_source_id_page_is_incomplete(

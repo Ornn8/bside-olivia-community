@@ -35,6 +35,47 @@ $a = Resolve-OfficialInstall -SteamRoots @((Join-Path $pwd 'steam')) -ManifestPa
     assert value == {'found': True, 'count': 1}
 
 
+@pytest.mark.parametrize(('payload', 'source', 'expected'), [
+    ('product/.olivia-setup-is-TEST.tmp/OliviaPayload',
+     'product/.olivia-setup-is-TEST.tmp/OliviaPayload/offline/original-client', 'OK'),
+    ('payload', 'steam/Olivia', 'OK'),
+    ('payload', 'product/install/app', 'INSTALL_ROOT_OVERLAPS_OFFICIAL'),
+    ('payload', 'product', 'INSTALL_ROOT_OVERLAPS_OFFICIAL'),
+    ('payload', '.', 'INSTALL_ROOT_OVERLAPS_OFFICIAL'),
+    ('product/install/.olivia-setup-is-TEST.tmp/OliviaPayload',
+     'product/install/.olivia-setup-is-TEST.tmp/OliviaPayload/offline/original-client',
+     'INSTALL_ROOT_OVERLAPS_OFFICIAL'),
+    ('product/.olivia-setup-is-TEST.tmp/OliviaPayload',
+     'product/.olivia-setup-is-TEST.tmp/other-client', 'INSTALL_ROOT_OVERLAPS_OFFICIAL'),
+    ('product/user-files/OliviaPayload', 'product/user-files/OliviaPayload/offline/original-client',
+     'INSTALL_ROOT_OVERLAPS_OFFICIAL'),
+])
+def test_bundled_source_is_allowed_only_in_setup_staging(tmp_path, payload, source, expected):
+    value = run_functions(tmp_path, f"""
+try {{
+    Assert-OfficialSourceLocation -ProductRoot (Join-Path $pwd 'product') `
+        -PayloadRoot (Join-Path $pwd '{payload}') -SourceRoot (Join-Path $pwd '{source}')
+    'OK' | ConvertTo-Json
+}} catch {{ $_.Exception.Message | ConvertTo-Json }}
+""")
+    assert value == expected
+
+
+def test_bundled_source_rejects_reparse_points(tmp_path):
+    value = run_functions(tmp_path, """
+$stage = Join-Path $pwd 'product/.olivia-setup-is-TEST.tmp/OliviaPayload'
+New-Item -ItemType Directory -Force -Path (Join-Path $stage 'offline'), 'external' | Out-Null
+$source = Join-Path $stage 'offline/original-client'
+New-Item -ItemType Junction -Path $source -Value (Join-Path $pwd 'external') | Out-Null
+try {
+    Assert-OfficialSourceLocation -ProductRoot (Join-Path $pwd 'product') -PayloadRoot $stage -SourceRoot $source
+    'OK' | ConvertTo-Json
+} catch { $_.Exception.Message | ConvertTo-Json }
+finally { [IO.Directory]::Delete($source) }
+""")
+    assert value == 'OFFICIAL_INSTALL_PATH_REPARSE_POINT'
+
+
 @pytest.mark.parametrize(('expression', 'expected'), [
     ("[UnauthorizedAccessException]::new('private-secret')", 'SETUP_FILE_PERMISSION_DENIED'),
     ("[IO.FileNotFoundException]::new('private-secret')", 'SETUP_FILE_MISSING'),

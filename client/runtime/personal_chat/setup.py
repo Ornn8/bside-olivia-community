@@ -221,6 +221,12 @@ def _qq_config_active(config, active):
         return False
 
 
+def _can_reuse_qq(config) -> bool:
+    return (isinstance(config, dict) and config.get('managed') is True
+            and all(_QQ_ID.fullmatch(str(config.get(key, ''))) for key in ('account', 'owner'))
+            and str(config['account']) != str(config['owner']))
+
+
 def _public_status(request: web.Request, server) -> dict[str, object]:
     config = _read_config(server)
     selected = _selected_channels(server)
@@ -246,6 +252,7 @@ def _public_status(request: web.Request, server) -> dict[str, object]:
     owner = str(config.get("qq", {}).get("owner", ""))
     if _QQ_ID.fullmatch(owner):
         qq["owner_masked"] = "*" * (len(owner) - 4) + owner[-4:]
+    qq['can_reuse_owner'] = _can_reuse_qq(config.get('qq'))
     return {
         "contact_state": str(_contact_access(server).get("state", "locked")),
         "selected_channels": sorted(selected),
@@ -707,6 +714,14 @@ def install_setup_routes(app: web.Application, server) -> None:
             return web.json_response({"error": "QQ_SETUP_INVALID"}, status=400)
         managed = body.get("managed") is True
         owner = str(body.get("owner", "")).strip()
+        saved = None
+        if body.get('reuse_saved_owner') is True:
+            saved = _read_config(server).get('qq')
+            # Reusing a private saved owner is explicit and stays bound to the
+            # verified bot account. A blank new binding still fails validation.
+            if not managed or owner or not _can_reuse_qq(saved):
+                return web.json_response({'error': 'QQ_SETUP_INVALID'}, status=400)
+            owner = str(saved['owner'])
         # Invalid form input says nothing about the existing live connection.
         if not _QQ_ID.fullmatch(owner):
             return web.json_response({"error": "QQ_SETUP_INVALID"}, status=400)
@@ -716,7 +731,7 @@ def install_setup_routes(app: web.Application, server) -> None:
 
                 # Background status probes are short-lived snapshots. A transient
                 # timeout must not veto an explicit binding request without a live check.
-                expected = str(runtime.get("napcat_account") or "")
+                expected = str(saved['account'] if saved else runtime.get("napcat_account") or "")
                 url, token = await asyncio.to_thread(
                     napcat_installer.managed_connection, _root(server)
                 )

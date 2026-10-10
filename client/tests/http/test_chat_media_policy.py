@@ -9,7 +9,11 @@ def test_extended_styles_are_qq_only():
         allowed = allowed_stickers(view, channel=channel)
         assert len(allowed) == 108
         assert split_selection('正文\n[[sticker:linli-253]]', allowed) == ('正文', 'linli-01')
-    assert len(allowed_stickers(view, channel='qq')) == 272
+    # Only line art ships; QQ adds the styles the user installed as packs.
+    assert len(allowed_stickers(view, channel='qq')) == 108
+    every = {f'linli-{i:03d}' for i in range(109, 273)}
+    assert len(allowed_stickers(view, channel='qq', installed=every)) == 272
+    assert len(allowed_stickers(view, channel='wechat', installed=every)) == 108
 
 
 def test_voice_context_uses_actual_deliveries_for_this_binding_only():

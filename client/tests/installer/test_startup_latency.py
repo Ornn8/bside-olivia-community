@@ -38,7 +38,8 @@ def test_hidden_launcher_error_remains_visible_in_batch_mode(tmp_path):
             visible.append(window)
         return True
     try:
-        deadline = time.monotonic() + 6
+        # The separate interactive WScript host can start slowly on a busy runner.
+        deadline = time.monotonic() + 15
         while not visible and process.poll() is None and time.monotonic() < deadline:
             user32.EnumWindows(find, 0)
             time.sleep(0.05)

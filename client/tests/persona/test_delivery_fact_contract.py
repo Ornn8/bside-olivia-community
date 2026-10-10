@@ -10,6 +10,21 @@ from runtime.reply.jev_quality import _purpose_state, review_messages, _confirma
 from runtime.reply import reply_model_quality as quality
 
 
+def execute_speech(text, **kwargs):
+    from runtime.reply.companion_decision import CompanionDecisionResult, FrozenCompanionDecision
+    from tests.persona.test_companion_decision import envelope as companion_envelope, project
+    from tests.persona.test_jev_pipeline import plan
+
+    class SpeechPort:
+        async def decide(self, turn):
+            proposed = plan(kind='audio_speech')
+            return CompanionDecisionResult(decision=FrozenCompanionDecision.from_response(turn,
+                {**companion_envelope(), 'plan': proposed, 'tasks': project(proposed),
+                 'speech_request': dict(mode='story', target_seconds=120, continuation=False)}))
+
+    return execute(text, companion_decision_port=SpeechPort(), **kwargs)
+
+
 @pytest.mark.parametrize('mode', list(ReplyMode))
 def test_every_delivery_mode_reviews_actual_body(mode):
     reviewer = Reviewer(ReviewVerdict.PASS)
@@ -27,7 +42,7 @@ def test_long_speech_is_reviewed_separately_and_repaired_without_changing_contro
     reviewer = Reviewer(ReviewVerdict.PASS, ReviewVerdict.REWRITE, ReviewVerdict.PASS)
     repaired = '这只是故事里的雨声。' * 8
     rewriter = Rewriter(repaired)
-    result, _ = execute(json.dumps(payload), mode=ReplyMode.FUTURE_IM, reviewer=reviewer, rewriter=rewriter)
+    result, _ = execute_speech(json.dumps(payload), mode=ReplyMode.FUTURE_IM, reviewer=reviewer, rewriter=rewriter)
     assert result.state.value == 'completed'
     assert [item[0] for item in reviewer.seen] == [payload['text'], script['spoken_text'], repaired]
     assert json.loads(result.text) == {**payload, 'speech': {**script, 'spoken_text': repaired}}
@@ -40,7 +55,7 @@ def test_long_speech_is_reviewed_separately_and_repaired_without_changing_contro
 
 def test_failed_speech_review_cannot_release_successful_confirmation():
     payload = {**envelope(), 'speech': dict(title='晚安', spoken_text='无依据的经历。' * 10, continuation_summary='')}
-    result, _ = execute(json.dumps(payload), mode=ReplyMode.FUTURE_IM,
+    result, _ = execute_speech(json.dumps(payload), mode=ReplyMode.FUTURE_IM,
                         reviewer=Reviewer(ReviewVerdict.PASS, RuntimeError('private')))
     assert result.state.value == 'failed' and not result.text
 
@@ -48,7 +63,7 @@ def test_failed_speech_review_cannot_release_successful_confirmation():
 def test_one_rewrite_budget_is_shared_by_confirmation_and_speech():
     payload = {**envelope(), 'speech': dict(title='晚安', spoken_text='无依据的经历。' * 10, continuation_summary='')}
     rewrite = Rewriter('更正。' * 20)
-    result, _ = execute(json.dumps(payload), mode=ReplyMode.FUTURE_IM,
+    result, _ = execute_speech(json.dumps(payload), mode=ReplyMode.FUTURE_IM,
         reviewer=Reviewer(ReviewVerdict.REWRITE, ReviewVerdict.PASS, ReviewVerdict.REWRITE), rewriter=rewrite)
     assert result.state.value == 'failed' and not result.text
     assert len(rewrite.calls) == 1 and result.rewrite_calls == 1
@@ -91,7 +106,9 @@ def test_every_fact_span_is_checked_and_separately_confirmed(monkeypatch):
             if 'confirmation_rules' not in state:
                 for key in questions:
                     code = key.split(':', 1)[1]
-                    if code.isupper():
+                    if code == 'OFF_TURN_REPLY':
+                        answers[key] = 'current'  # a whole-reply question, not a span
+                    elif code.isupper():
                         answers[key] = 'none'
                     elif code.startswith('fact:'):
                         answers[key] = 'unsupported'
@@ -162,7 +179,7 @@ def test_rewritten_speech_is_canonicalized_before_fresh_review_and_sealing():
     raw = ('这是故事里的雨声。' + r'\n') * 8
     canonical = raw.replace(r'\n', '\n')
     reviewer = Reviewer(ReviewVerdict.PASS, ReviewVerdict.REWRITE, ReviewVerdict.PASS)
-    result, _ = execute(json.dumps(payload), mode=ReplyMode.FUTURE_IM, reviewer=reviewer, rewriter=Rewriter(raw))
+    result, _ = execute_speech(json.dumps(payload), mode=ReplyMode.FUTURE_IM, reviewer=reviewer, rewriter=Rewriter(raw))
     assert result.state.value == 'completed'
     assert reviewer.seen[-1][0] == canonical
     assert json.loads(result.text)['speech']['spoken_text'] == canonical

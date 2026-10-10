@@ -155,6 +155,7 @@ RELEASE_ROOT_FILES = {
     "video_capability_install.py",
 }
 RELEASE_INSTALLER_FILES = {
+    "installer/patch_local_login.py",
     "installer/patch_letter_stickers.py",
     "installer/__init__.py",
     "installer/__main__.py",
@@ -164,10 +165,10 @@ RELEASE_INSTALLER_FILES = {
     "installer/configure.py",
     "installer/Create-Shortcut.ps1",
     "installer/assets/olivia.ico",
-    "installer/assets/wechat-payment.jpeg",
     "installer/full_patch.py",
     "installer/full-patch-manifest.json",
     "installer/Install.ps1",
+    "installer/pip_runtime.py",
     "installer/activate_private_video.py",
     "installer/patch_native_navigation.py",
     "installer/patch_native_splash.py",
@@ -214,6 +215,7 @@ RELEASE_TOOL_FILES = {
     "tools/tts_cli.py",
 }
 REQUIRED_PAYLOAD_FILES = {
+    "installer/patch_local_login.py",
     "installer/Install.ps1",
     "installer/runtime-requirements.txt",
 }

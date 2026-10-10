@@ -526,7 +526,11 @@ def test_deepseek_v4_flash_nonrelease_text_requests_keep_legacy_payload(
     assert "reasoning_effort" not in body
 
 
-@pytest.mark.parametrize("model,required", [("synthetic-model", True), ("qwen3.7-flash", True)])
+@pytest.mark.parametrize("model,required", [
+    ("synthetic-model", True), ("qwen3.7-flash", True),
+    ("claude-opus-5-5", False), ("claude-sonnet-5-5", False),
+    ("claude-opus-4-6", True), ("gemini-3.8-flash", True), ("qwen3.8-max", True),
+])
 def test_openai_compatible_adapter_returns_required_tool_calls(
     monkeypatch: pytest.MonkeyPatch,
     model, required,
