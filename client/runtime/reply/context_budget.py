@@ -13,6 +13,11 @@ _BLOCK = re.compile(r'<([a-z][a-z0-9_]*)>\s*(.*?)\s*</\1>', re.S)
 _IDENTITIES = {'source', 'source_id', 'source_record_id', 'event_id', 'citation',
                'text_ref', 'source_ref', 'earlier_source', 'later_source', 'earlier', 'later',
                'source_ids', 'evidence_turn_ids'}
+# QQ writer requests: about 0.26-0.37 tokens per serialized byte for Chinese JSON
+# (measured on live requests), so 250 KB keeps every chat model under 100k tokens.
+# Packing stops a little earlier so the final contract always fits under the hard cap.
+PERSONAL_CHAT_MAX_INPUT_BYTES = 250_000
+PERSONAL_CHAT_FIT_BYTES = 245_000
 OMISSION_NOTE = '部分历史及其关联原话因本轮容量一起省略；缺失不表示没有发生，不能据此否认旧约定或补写细节。'
 
 

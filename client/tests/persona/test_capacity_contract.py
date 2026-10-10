@@ -101,7 +101,8 @@ def test_final_gateway_guard_runs_before_transport_and_keeps_sizes(stream):
     adapter = OpenAICompatibleAdapter(GatewayConfig(provider='openai_compatible',
         base_url='http://127.0.0.1:1/v1', model='synthetic', requires_api_key=False,
         max_input_chars=100000, max_retries=0))
-    messages = [dict(role='user', content='x' * 91000)]
+    # 91k Chinese characters stay under the character cap but exceed the byte cap.
+    messages = [dict(role='user', content='汉' * 91000)]
     async def run():
         if stream:
             return [part async for part in adapter.stream(messages, request_id='personal-chat:guard')]
@@ -110,7 +111,8 @@ def test_final_gateway_guard_runs_before_transport_and_keeps_sizes(stream):
         asyncio.run(run())
     safe = exception_context(raised.value)
     assert safe['failure_stage'] == 'writer_context'
-    assert safe['input_bytes'] > 90000 and safe['input_chars'] == 91000
+    from runtime.reply.context_budget import PERSONAL_CHAT_MAX_INPUT_BYTES
+    assert safe['input_bytes'] > PERSONAL_CHAT_MAX_INPUT_BYTES and safe['input_chars'] == 91000
 
 
 def test_optional_world_and_canon_share_the_final_capacity():

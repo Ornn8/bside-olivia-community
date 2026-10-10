@@ -983,10 +983,11 @@ class OpenAICompatibleAdapter(Gateway):
         body = encode_chat(body, endpoint or self._url())
         if request_id.startswith('personal-chat:'):
             encoded_size = len(json.dumps(body, ensure_ascii=False, separators=(',', ':')).encode('utf-8'))
-            if encoded_size > 90000:
+            from runtime.reply.context_budget import PERSONAL_CHAT_MAX_INPUT_BYTES
+            if encoded_size > PERSONAL_CHAT_MAX_INPUT_BYTES:
                 error = InvalidGatewayInput('INPUT_TOO_LONG')
                 error.failure_context = dict(failure_stage='writer_context', failure_detail='final_rules_budget',
-                    input_bytes=encoded_size, max_input_bytes=90000,
+                    input_bytes=encoded_size, max_input_bytes=PERSONAL_CHAT_MAX_INPUT_BYTES,
                     input_chars=sum(len(m.get('content', '')) for m in body.get('messages', []) if isinstance(m.get('content'), str)),
                     max_input_chars=self.config.max_input_chars)
                 raise error
@@ -1372,10 +1373,11 @@ class OpenAICompatibleAdapter(Gateway):
         body = encode_chat(body, self._url())
         if request.startswith('personal-chat:'):
             encoded_size = len(json.dumps(body, ensure_ascii=False, separators=(',', ':')).encode('utf-8'))
-            if encoded_size > 90000:
+            from runtime.reply.context_budget import PERSONAL_CHAT_MAX_INPUT_BYTES
+            if encoded_size > PERSONAL_CHAT_MAX_INPUT_BYTES:
                 error = InvalidGatewayInput('INPUT_TOO_LONG')
                 error.failure_context = dict(failure_stage='writer_context', failure_detail='final_rules_budget',
-                    input_bytes=encoded_size, max_input_bytes=90000,
+                    input_bytes=encoded_size, max_input_bytes=PERSONAL_CHAT_MAX_INPUT_BYTES,
                     input_chars=sum(len(m.get('content', '')) for m in body.get('messages', []) if isinstance(m.get('content'), str)),
                     max_input_chars=self.config.max_input_chars)
                 raise error

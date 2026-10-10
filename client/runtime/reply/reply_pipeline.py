@@ -43,6 +43,12 @@ from runtime.reply.prompt_budget import PromptBudgetExceeded
 
 
 _CHARACTER_REPLY_HISTORY_LIMIT = 1200
+
+
+def _chat_fit_bytes():
+    from .context_budget import PERSONAL_CHAT_FIT_BYTES
+    return PERSONAL_CHAT_FIT_BYTES
+
 _CHARACTER_REPLY_PREFIX = "character_reply: "
 _PERSONA_NOT_READY = "PERSONA_NOT_READY"
 _TEXT_RECOVERY_CODES = frozenset({
@@ -593,10 +599,10 @@ class ReplyPipeline:
         # Optional expression and scene offers cannot consume the final contract's room.
         context_budget = original_budget - sum(map(len, final_notes))
         if ordinary_chat and isinstance(prepared, ReplyRequest) and prepared.messages:
-            from .context_budget import wire_size
+            from .context_budget import wire_size, PERSONAL_CHAT_FIT_BYTES
             base_chars = sum(len(m['content']) for m in prepared.messages)
             wire = [*prepared.messages, dict(role='system', content='\n'.join(final_notes))]
-            context_budget = min(context_budget, base_chars + max(0, (88000 - wire_size(wire)) // 4))
+            context_budget = min(context_budget, base_chars + max(0, (PERSONAL_CHAT_FIT_BYTES - wire_size(wire)) // 4))
         if isinstance(prepared, ReplyRequest) and prepared.messages:
             from runtime.memory.history_selection import select_history_messages as prepare_recall_messages
             adapter = getattr(getattr(self.orchestrator, 'gateway', None), 'adapter', None)
@@ -619,7 +625,7 @@ class ReplyPipeline:
             from .fact_attribution import finalize_reply_messages
             try:
                 packed = finalize_reply_messages(prepared.messages, '\n'.join(final_notes),
-                    max_input_chars=original_budget, max_input_bytes=88000 if ordinary_chat else None)
+                    max_input_chars=original_budget, max_input_bytes=_chat_fit_bytes() if ordinary_chat else None)
             except ValueError as error:
                 return PipelineResult(prepared.request_id, ReplyState.FAILED, error_code='INPUT_TOO_LONG',
                     retryable=False, failure_context=getattr(error, 'failure_context', {}))
@@ -679,12 +685,12 @@ class ReplyPipeline:
                                 if messages[i].get('role') == 'user'), len(messages))
                 messages[current:current] = [dict(role='system', content=note) for note in final_notes]
                 messages = finalize_reply_messages(messages, '', max_input_chars=original_budget,
-                    max_input_bytes=88000 if ordinary_chat else None)
+                    max_input_bytes=_chat_fit_bytes() if ordinary_chat else None)
                 from runtime.personal_chat.decision import INSTRUCTION as CHAT_RULES
                 if (chat_metadata or {}).get('structured') and generation_note == CHAT_RULES:
                     from .fact_attribution import cache_output_rules
                     messages = cache_output_rules(messages, generation_note, max_input_chars=original_budget,
-                                                  max_input_bytes=88000 if ordinary_chat else None)
+                                                  max_input_bytes=_chat_fit_bytes() if ordinary_chat else None)
             except ValueError as error:
                 return PipelineResult(prepared.request_id, ReplyState.FAILED,
                     error_code='INPUT_TOO_LONG', retryable=False,

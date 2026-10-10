@@ -349,9 +349,9 @@ def test_full_chat_context_reaches_writer_without_losing_recall(tmp_path, monkey
     asyncio.run(scenario())
     before, recall_limit = selected[0]
     after = authored[0]
-    from runtime.reply.context_budget import wire_size
+    from runtime.reply.context_budget import wire_size, PERSONAL_CHAT_FIT_BYTES
     assert sum(len(m['content']) for m in after) <= 100000
-    assert wire_size(after) <= 88000
+    assert wire_size(after) <= PERSONAL_CHAT_FIT_BYTES
     assert after[-1] == before[-1]
     assert sum(m['content'].count('忆') for m in after) == sum(m['content'].count('忆') for m in before)
     assert sum(m['content'].count(INSTRUCTION) for m in after) == 1
