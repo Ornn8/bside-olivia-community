@@ -45,6 +45,16 @@ def mount_cloud_api(app, service, setup, gpu_settings=None):
                     amount = caps.get('reservation_cents', {}).get('video' if body['video'] else 'original' if original else 'audio')
                     if type(amount) is not int or amount != (500 if body['video'] else 300 if original else 100):
                         raise CloudError('GPU_RESPONSE_INVALID', 502)
+                    if original:
+                        from runtime.media.music_options import retail_price
+                        try:
+                            price = retail_price(caps)
+                        except ValueError:
+                            raise CloudError('GPU_RESPONSE_INVALID', 502) from None
+                        if price is not None:
+                            result['original_music_retail_price'] = price
+                            if not body['video']:
+                                amount = price['max_cents']
                     account = await api.request('billing_account', {})
                     if account['balance_cents'] < amount:
                         raise CloudError('GPU_INSUFFICIENT_BALANCE', 402)
@@ -62,6 +72,17 @@ def mount_cloud_api(app, service, setup, gpu_settings=None):
                         result['original_music_provider'] = 'unavailable'
                     if caps.get('original_music_provider') == 'suno_v6':
                         result['original_music_provider'] = 'suno_v6'
+                    from runtime.media.music_options import input_limits, retail_price
+                    try:
+                        limits = input_limits(caps)
+                        price = retail_price(caps)
+                    except ValueError:
+                        result['original_music_provider'] = 'unavailable'
+                    else:
+                        if limits is not None:
+                            result['original_music_input_limits'] = limits
+                        if price is not None:
+                            result['original_music_retail_price'] = price
                 return web.json_response(result, headers=_headers(origin))
             if operation == 'music_settings_save' and set(body) == {'options'}:
                 return web.json_response(music_settings.save(body['options']), headers=_headers(origin))

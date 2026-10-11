@@ -25,9 +25,14 @@ const text=(tag,value)=>Object.assign(new Element(),{textContent:value});
 const button=(label,callback)=>Object.assign(text('button',label),{click:callback});
 const actions=()=>new Element(),setButtonsBusy=(buttons,busy)=>buttons.forEach(b=>b.disabled=busy);
 const LOCAL_LETTER_IMPORT_PATH='local-import',requestJson=async()=>({status:'APPLIED',processed:0,total:0});
-const window={setTimeout(){},location:{reload(){}}},confirmAction=async()=>true;
+const confirmations=[];
+const window={setTimeout(){},location:{reload(){}}},confirmAction=async(value)=>{confirmations.push(value);return true};
 const URL={createObjectURL(value){blob=value;return 'blob:fixture'},revokeObjectURL(){}};
-const backup={schema_version:'olivia.letters.v1',letters:[{content:'line one\nline two',reply_text:'reply'}]};
+let backup={schema_version:'olivia.letters.v1',letters:[
+ {content:'line one\nline two',reply_text:'reply'},
+ {content:'qq message',reply_text:'qq response',channel:'qq',delivery_status:'DELIVERED'},
+ {content:'wechat message',reply_text:'',channel:'wechat',delivery_status:'RECEIVED_ONLY'}
+]};
 const requestMutation=async(path,body)=>{
  if(path.endsWith('/export'))return {status:'READY',backup};
  imported=body.backup;return {status:'APPLIED',inserted:1,duplicates:0};
@@ -39,12 +44,21 @@ const requestMutation=async(path,body)=>{
 (async()=>{
  mountLetterBackup(new Element());
  const buttons=all.filter(x=>x.textContent&&typeof x.click==='function');
- const save=buttons.find(x=>x.textContent==='导出信件备份');
+ const save=buttons.find(x=>x.textContent==='导出信件与聊天备份');
  await save.click(); assert.match(downloaded,/^Olivia-letters-.*\.json$/);
  assert.deepEqual(JSON.parse(await blob.text()),backup);
+ assert.ok(all.some(x=>x.textContent==='已导出 1 封信件、1 条 QQ 和 1 条微信聊天记录，请在下载位置查看。'));
  const file=all.find(x=>x.type==='file');
  file.files=[{size:100,text:async()=>JSON.stringify(backup)}];
  await file.events.change(); assert.deepEqual(JSON.parse(imported),backup); assert.equal(file.value,'');
+ assert.match(confirmations.at(-1),/QQ.*微信/);
+ assert.match(confirmations.at(-1),/只读.*不.*发/);
+ assert.ok(all.some(x=>x.textContent==='已导入 1 条记录，重复 0 条。正在刷新历史记录。'));
+ backup={schema_version:'olivia.letters.v1',letters:[{content:'legacy letter',reply_text:'legacy reply'}]};
+ await save.click();assert.deepEqual(JSON.parse(await blob.text()),backup);
+ assert.ok(all.some(x=>x.textContent==='已导出 1 封信件、0 条 QQ 和 0 条微信聊天记录，请在下载位置查看。'));
+ file.files=[{size:100,text:async()=>JSON.stringify(backup)}];
+ await file.events.change(); assert.deepEqual(JSON.parse(imported),backup);
  const pairs=[{content:'original',reply:'response'}];
  file.files=[{size:100,text:async()=>JSON.stringify(pairs)}];
  await file.events.change(); assert.deepEqual(JSON.parse(imported),pairs);

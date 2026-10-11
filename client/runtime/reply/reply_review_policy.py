@@ -1,6 +1,7 @@
 """Shared review scope: preferences warn; specific claims require evidence."""
 
-SOFT_STYLE_CODES = frozenset({'STYLE_DRIFT', 'GENERIC_COUNSELOR', 'IDENTITY_DRIFT'})
+SOFT_STYLE_CODES = frozenset({'STYLE_DRIFT', 'GENERIC_COUNSELOR', 'IDENTITY_DRIFT',
+                             'FOCUS_REVIEW_UNAVAILABLE', 'AUTONOMY_REVIEW_UNAVAILABLE'})
 
 # Reused by detection and confirmation rather than a word-based classifier.
 FACT_REVIEW_SCOPE = (

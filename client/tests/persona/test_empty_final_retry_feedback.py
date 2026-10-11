@@ -17,10 +17,10 @@ FEEDBACK = (
 )
 
 
-def run_review(monkeypatch, first, *, mode="text_letter", second=None):
+def run_review(monkeypatch, first, *, mode="text_letter", second=None, failing_layer="focus_response"):
     snapshot = load_persona(Path(__file__).resolve().parents[2] / "linli_character/persona_release_v2.json").snapshot
     authorities = tuple(a for a in quality._build_release_layer_authorities(snapshot, mode=mode)
-                        if a.name in {"focus_response", "autonomy_life"})
+                        if a.name in {failing_layer, "autonomy_life"})
     seen = []
 
     async def complete(gateway, messages, timeout, request_id, gateway_scope=None, **kwargs):
@@ -28,13 +28,17 @@ def run_review(monkeypatch, first, *, mode="text_letter", second=None):
         previous = sum(row["layer"] == layer for row in seen)
         seen.append({"layer": layer, "reference": messages, "snapshot": copy.deepcopy(messages),
                      "scope": gateway_scope, "timeout": timeout})
-        if layer == "focus_response":
+        if layer == failing_layer:
             value = first if previous == 0 else second
             if isinstance(value, Exception):
                 raise value
             if value is not None:
                 return value
-        return json.dumps({"layer": layer, "score": 2, "hard_violations": [], "drift_detected": False})
+        answer = {"layer": layer, "score": 2, "hard_violations": [], "drift_detected": False}
+        if layer == "identity_boundary":
+            answer.update(hard_evidence=[], independent_soft_issue=False,
+                          intimacy_request="none", intimacy_claims=[])
+        return json.dumps(answer)
 
     monkeypatch.setattr(quality, "_complete_layer_text", complete)
     try:
@@ -62,11 +66,17 @@ def test_empty_retry_adds_feedback_without_mutating_original_or_sibling(monkeypa
     assert all(FEEDBACK not in row["snapshot"][0]["content"] for row in seen if row["layer"] != "focus_response")
 
 
-def test_second_empty_fails_closed_without_a_third_attempt(monkeypatch):
-    result, seen = run_review(monkeypatch, "", second=" ")
-    assert isinstance(result, quality._ReviewDiagnosticsError)
-    assert any(d.reason is quality.ReviewFailureReason.EMPTY_TEXT for d in result.diagnostics)
-    assert sum(row["layer"] == "focus_response" for row in seen) == 2
+@pytest.mark.parametrize("layer", ["focus_response", "identity_boundary"])
+def test_second_empty_has_no_third_attempt_and_preserves_review_authority(monkeypatch, layer):
+    result, seen = run_review(monkeypatch, "", second=" ", failing_layer=layer)
+    if layer == "focus_response":
+        assert not isinstance(result, Exception)
+        failed = next(item for item in result if item.layer == layer)
+        assert failed.optional_failure.reason is quality.ReviewFailureReason.EMPTY_TEXT
+    else:
+        assert isinstance(result, quality._ReviewDiagnosticsError)
+        assert any(d.reason is quality.ReviewFailureReason.EMPTY_TEXT for d in result.diagnostics)
+    assert sum(row["layer"] == layer for row in seen) == 2
 
 
 @pytest.mark.parametrize("first", ["{}", quality._GatewayInvocationFailure(retryable=True)])
@@ -78,19 +88,23 @@ def test_nonempty_contract_or_transport_retry_keeps_request_unchanged(monkeypatc
         assert len(focus) == 2
         assert focus[0]["snapshot"] == focus[1]["snapshot"]
     else:
-        assert isinstance(result, quality._ReviewDiagnosticsError)
+        assert not isinstance(result, Exception)
+        assert next(item for item in result if item.layer == 'focus_response').optional_failure is not None
+        assert len(focus) == 1
     assert all(FEEDBACK not in row["snapshot"][0]["content"] for row in focus)
 
 
 def test_video_empty_final_does_not_gain_retry_feedback(monkeypatch):
     result, seen = run_review(monkeypatch, "", mode="spoken_video")
-    assert isinstance(result, quality._ReviewDiagnosticsError)
+    assert not isinstance(result, Exception)
+    assert next(item for item in result if item.layer == 'focus_response').optional_failure.reason is quality.ReviewFailureReason.EMPTY_TEXT
     assert sum(row["layer"] == "focus_response" for row in seen) == 1
     assert all(FEEDBACK not in row["snapshot"][0]["content"] for row in seen)
 
 
 @pytest.mark.parametrize("second_empty", [False, True])
-def test_real_adapter_empty_stop_reaches_reviewer_feedback(monkeypatch, second_empty):
+@pytest.mark.parametrize("failing_layer", ["focus_response", "identity_boundary"])
+def test_real_adapter_empty_stop_reaches_reviewer_feedback(monkeypatch, second_empty, failing_layer):
     from datetime import datetime, timezone
     from llm_gateway import GatewayConfig, OpenAICompatibleAdapter
     from runtime.reply.reply_context import ReplyContext, ReplyMode, TrustedTime
@@ -107,7 +121,7 @@ def test_real_adapter_empty_stop_reaches_reviewer_feedback(monkeypatch, second_e
             answer.update(hard_evidence=[], independent_soft_issue=False)
         if layer == "identity_boundary":
             answer.update(intimacy_request="none", intimacy_claims=[])
-        text = "" if layer == "focus_response" and (attempt == 0 or second_empty) else json.dumps(answer)
+        text = "" if layer == failing_layer and (attempt == 0 or second_empty) else json.dumps(answer)
         return {"choices": [{"finish_reason": "stop", "message": {"content": text,
                               "reasoning_content": "PRIVATE_SYNTHETIC_REASONING"}}]}
 
@@ -118,7 +132,7 @@ def test_real_adapter_empty_stop_reaches_reviewer_feedback(monkeypatch, second_e
         Path(__file__).resolve().parents[2] / "linli_character/persona_release_v2.json", 600,
         reasoning_timeout_seconds=600)
     result = reviewer.review("Synthetic candidate.", context)
-    focus = [body for layer, body in bodies if layer == "focus_response"]
+    focus = [body for layer, body in bodies if layer == failing_layer]
     assert len(focus) == 2
     assert focus[1]["messages"][0]["content"] == focus[0]["messages"][0]["content"] + FEEDBACK
     assert focus[1]["messages"][1:] == focus[0]["messages"][1:]
@@ -127,7 +141,11 @@ def test_real_adapter_empty_stop_reaches_reviewer_feedback(monkeypatch, second_e
                for layer, body in bodies)
     assert "PRIVATE_SYNTHETIC_REASONING" not in json.dumps(bodies)
     if second_empty:
-        assert result.error_code == "REVIEWER_UNAVAILABLE"
         assert any(d.reason is quality.ReviewFailureReason.EMPTY_TEXT for d in reviewer.last_failure_diagnostics)
+        if failing_layer == "identity_boundary":
+            assert result.error_code == "REVIEWER_UNAVAILABLE"
+        else:
+            assert result.error_code is None and result.verdict.value == "pass"
+            assert [(v.code, v.severity) for v in result.violations] == [('FOCUS_REVIEW_UNAVAILABLE', 'soft')]
     else:
         assert result.verdict.value == "pass"

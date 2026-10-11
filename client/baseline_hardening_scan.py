@@ -343,11 +343,26 @@ def scan_sensitive_paths(root: Path, files: list[Path]) -> tuple[list[str], list
     ]
 
 
+MEDIA_SUFFIXES = frozenset({
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico", ".svg",
+    ".mp4", ".mov", ".webm", ".wav", ".mp3", ".ogg", ".flac", ".m4a",
+})
+# Images, audio and video are served from the operator's server, not this public
+# repository. Only these media files, already published, remain tracked.
+_TRACKED_MEDIA = re.compile(
+    r"^(?:client/)?(?:runtime/letter_stickers/linli-(?:0[1-9]|[1-9][0-9]|1[0-9][0-9]|2[0-6][0-9]|27[0-2])\.(?:png|gif)"
+    r"|installer/assets/(?:olivia\.ico|wechat-payment\.jpeg))$"
+)
+
+
 def scan_large_files(root: Path, files: list[Path]) -> list[str]:
     findings: list[str] = []
     for path in files:
         if path.is_file() and path.stat().st_size > MAX_TRACKED_FILE_BYTES:
             findings.append(f"{relative(path, root)}:{path.stat().st_size}")
+        name = relative(path, root).replace("\\", "/")
+        if path.suffix.lower() in MEDIA_SUFFIXES and not _TRACKED_MEDIA.fullmatch(name):
+            findings.append(f"{name}:untracked_media_not_allowed")
     return findings
 
 

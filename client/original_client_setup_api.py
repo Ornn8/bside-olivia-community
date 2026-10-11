@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 
 from aiohttp import web
 from llm_gateway import ManagedLLMConfig
+from runtime.official_endpoints import migrate_saved_api_url
 
 
 SETUP_STATUS_PATH = "/toy/setup/status"
@@ -172,8 +173,8 @@ def _dpapi_unprotect(value: str) -> str:
 
 
 def _is_relay(config: ManagedLLMConfig) -> bool:
-    from original_client_relay_api import RELAY_BASE, RELAY_MODEL
-    return config.base_url.rstrip("/") == RELAY_BASE and config.model == RELAY_MODEL
+    from original_client_relay_api import RELAY_BASE, RELAY_MODELS
+    return config.base_url.rstrip("/") == RELAY_BASE and config.model in RELAY_MODELS
 
 
 def _relay_config(base_url: object, model: object) -> ManagedLLMConfig:
@@ -247,6 +248,7 @@ class LLMSetupService:
         self._config_root = Path(data_root) / "config"
         self._key_path = self._config_root / "deepseek_api_key.dpapi"
         self._config_path = self._config_root / "llm.json"
+        migrate_saved_api_url(self._config_path)
         self._complete_path = self._config_root / "initial_setup.json"
         self._protect = protect
         self._unprotect = unprotect
@@ -356,7 +358,7 @@ class LLMSetupService:
         candidate = _api_key(supplied, allow_empty=True)
         if candidate:
             return candidate
-        if not _managed_config(base_url, model).is_preset:
+        if not _is_relay(_managed_config(base_url, model)):
             return ""
         configured = self._config()
         if (

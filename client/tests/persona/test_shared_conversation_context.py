@@ -166,3 +166,14 @@ def test_long_photo_observations_do_not_erase_latest_correction():
                and i['summary'].endswith('_end') for i in item['image_observations'])
     assert len(recent) + len(old) <= 6000
     assert len(row['incoming_image_observations'][0]['summary']) > 500
+def test_large_unrelated_history_is_not_repeatedly_segmented():
+    import cProfile
+    from runtime.reply.recent_correspondence import recent_correspondence
+    rows = [dict(letter_id=f'scale{i}', reply_revision=1, letter_status='COMPLETED',
+        private_world_occurred_at='2026-10-06T00:00:00+00:00',
+        content='普通生活见闻。' * 60, reply_text='我听到了这些近况。' * 60) for i in range(1000)]
+    profile = cProfile.Profile()
+    value = profile.runcall(recent_correspondence, rows, query='早上好', max_chars=6000)
+    assert len(json.loads(value)['letters']) == 2
+    segmentation_calls = sum(s.callcount for s in profile.getstats() if getattr(s.code, 'co_name', None) == 'tokens')
+    assert segmentation_calls < 20  # Irrelevant rows cannot cause thousands of full-text tokenizations.

@@ -70,6 +70,34 @@ def _source() -> dict[str, object]:
     }
 
 
+def test_transport_close_and_interruption_survive_bundle_without_secrets(monkeypatch, capsys):
+    from collections import deque
+    import local_server
+    source = _source()
+    source['runtime_tail'] = [dict(event='personal_chat_transport_closed', channel='qq',
+        recorded_at_ms=1791127848000, close_code=4001, processing=True, pending_actions=0,
+        response_queue=1, intake_queue=0, control_queue=0, transport_error='NONE',
+        account='private-account', owner='private-owner', reason_text='private-close-detail', token='private-token'),
+        dict(event='personal_chat_transport_state', channel='qq', status='connected', recorded_at_ms=1791127849000),
+        dict(event='personal_chat_exchange_cancelled', channel='qq',
+             error_code='PERSONAL_CHAT_GENERATION_INTERRUPTED', recorded_at_ms=1791127848001)]
+    # Exercise the actual in-memory log ring as well as the ZIP projection.
+    monkeypatch.setattr(local_server, '_RUNTIME_DIAGNOSTIC_EVENTS', deque(maxlen=160))
+    monkeypatch.setattr(local_server, '_RUNTIME_REQUEST_EVENTS', deque(maxlen=40))
+    for row in source['runtime_tail']:
+        local_server._safe_log(row['event'], **{key: value for key, value in row.items() if key != 'event'})
+    source['runtime_tail'] = list(local_server.runtime_diagnostic_event_snapshot())
+    capsys.readouterr()
+    with zipfile.ZipFile(io.BytesIO(build_diagnostic_bundle(source))) as archive:
+        raw = archive.read('runtime-tail.jsonl').decode()
+    rows = [json.loads(line) for line in raw.splitlines()]
+    assert rows[0] == dict(event='personal_chat_transport_closed', channel='qq',
+        recorded_at_ms=1791127848000, close_code=4001, processing=True, pending_actions=0,
+        response_queue=1, intake_queue=0, control_queue=0, transport_error='NONE')
+    assert rows[1:] == source['runtime_tail'][1:]
+    assert 'private-' not in raw
+
+
 def test_chat_order_evidence_survives_two_projections_without_private_identifiers():
     from runtime.diagnostics.support_bundle import project_chat_task
     raw = {
@@ -99,6 +127,38 @@ def test_chat_order_evidence_survives_two_projections_without_private_identifier
     assert exported['timeline'] == projected['timeline']
     for private in ('651930410', 'private-message', 'private-reply', 'sk-private', raw['letter_id']):
         assert private.encode() not in encoded
+
+
+def test_reply_tolerance_receipts_survive_log_ring_and_zip_without_drafts(monkeypatch, capsys):
+    from collections import deque
+    import local_server
+    from runtime.diagnostics.support_bundle import project_chat_task
+    fields = dict(decision_defaulted_fields=['initiative', 'private-message', ['private-token']],
+                  decision_warning_codes=['REPEATED_REPLY', 'private-secret'],
+                  decision_dropped_media='UNREQUESTED_SPEECH',
+                  decision_dropped_controls='CONTROL_SHAPE_INVALID', quality_status='accepted_with_warnings',
+                  quality_violation_codes=['FOCUS_REVIEW_UNAVAILABLE', 'AUTONOMY_REVIEW_UNAVAILABLE', 'private-secret'],
+                  text='private-draft', evidence='private-quote', token='private-token')
+    monkeypatch.setattr(local_server, '_RUNTIME_DIAGNOSTIC_EVENTS', deque(maxlen=160))
+    monkeypatch.setattr(local_server, '_RUNTIME_REQUEST_EVENTS', deque(maxlen=40))
+    local_server._safe_log('personal_chat_decision_normalized', channel='qq', **fields)
+    capsys.readouterr()
+    source = _source()
+    source['runtime_tail'] = list(local_server.runtime_diagnostic_event_snapshot())
+    source['tasks']['items'][0].update(channel='qq', **fields)
+    with zipfile.ZipFile(io.BytesIO(build_diagnostic_bundle(source))) as archive:
+        raw = archive.read('runtime-tail.jsonl') + archive.read('tasks.json')
+        tail = json.loads(archive.read('runtime-tail.jsonl'))
+        task = json.loads(archive.read('tasks.json'))['items'][0]
+    for row in (tail, task):
+        assert row['decision_defaulted_fields'] == ['initiative']
+        assert row['decision_warning_codes'] == ['REPEATED_REPLY']
+        assert row['decision_dropped_media'] == 'UNREQUESTED_SPEECH'
+        assert row['decision_dropped_controls'] == 'CONTROL_SHAPE_INVALID'
+        assert row['quality_violation_codes'] == ['FOCUS_REVIEW_UNAVAILABLE', 'AUTONOMY_REVIEW_UNAVAILABLE']
+    assert b'private-' not in raw
+    assert project_chat_task(project_chat_task(task)) == project_chat_task(task)
+    assert project_chat_task({'decision_dropped_controls': ['private-token']}) == {}
 
 
 def test_chat_order_evidence_ignores_malformed_and_unrelated_identifiers():

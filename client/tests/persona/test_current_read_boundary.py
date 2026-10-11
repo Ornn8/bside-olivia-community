@@ -110,3 +110,33 @@ def test_merged_current_uses_last_receipt_cutoff_without_moving_original_identit
     actual = freeze_read_window(rows, channel='qq', binding_id='same', current_id='current')
     assert [r['letter_id'] for r in actual] == ['wechat-between']
     assert rows[0]['created_at'] == 1 and rows[0]['received_sequence'] == 1
+
+
+def test_read_snapshot_ignores_generation_payloads_and_freezes_nested_evidence():
+    from runtime.personal_chat.context import freeze_read_window
+    class UnreadGenerationTrace:
+        def __deepcopy__(self, memo):
+            raise AssertionError('generation payload is not dialogue evidence')
+    delivered = row('old', 'DELIVERED', 1, generation_trace=UnreadGenerationTrace(),
+                    incoming_media_observations=[{'summary': '冻结的观察'}],
+                    companion_decision={'source_id_map': {'a': 'reply:old:1:user'}})
+    actual = freeze_read_window([delivered, row('current', 'GENERATING', 2)],
+                               channel='qq', binding_id='same', current_id='current')
+    delivered['incoming_media_observations'][0]['summary'] = '后来修改'
+    delivered['companion_decision']['source_id_map']['a'] = 'later'
+    assert actual[0]['incoming_media_observations'][0]['summary'] == '冻结的观察'
+    assert actual[0]['companion_decision']['source_id_map']['a'] == 'reply:old:1:user'
+    assert 'generation_trace' not in actual[0]
+
+
+def test_late_pending_merge_preserves_delivery_order_even_with_platform_clock_reversal():
+    from runtime.personal_chat.context import freeze_read_window
+    rows = [row('first', 'DELIVERED', 1, user_sent_at='1970-01-01T00:00:30Z'),
+            row('second', 'DELIVERED', 2, user_sent_at='1970-01-01T00:00:10Z'),
+            {**row('other-channel', 'DELIVERED', 3), 'channel': 'wechat'},
+            row('late-25', 'FAILED', 4, user_sent_at='1970-01-01T00:00:25Z'),
+            row('late-20', 'FAILED', 5, user_sent_at='1970-01-01T00:00:20Z'),
+            row('last', 'DELIVERED', 6, user_sent_at='1970-01-01T00:00:40Z'),
+            row('current', 'GENERATING', 7)]
+    actual = freeze_read_window(rows, channel='qq', binding_id='same', current_id='current')
+    assert [r['letter_id'] for r in actual] == ['late-20', 'late-25', 'first', 'second', 'other-channel', 'last']

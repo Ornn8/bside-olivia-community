@@ -39,6 +39,13 @@ def render_original_reply(content, reply_text, output_path, *, environment,
     # Old central servers still render ACE's 110s preset. Only the advertised
     # Suno pipeline accepts the full-song lyric plan.
     caps = capabilities(environment) if cloud else {}
+    from runtime.media.music_options import from_environment, generation_parameters, input_limits, require_input_limits
+    try:
+        limits = input_limits(caps)
+        music_options = from_environment(environment)
+        require_input_limits(music_options, limits)
+    except ValueError as exc:
+        raise MusicReplyError(str(exc)) from exc
     planning_duration = 240 if caps.get('original_music_provider') == 'suno_v6' else 110
     audio = output_path.with_name(output_path.stem + "-original.wav") if render_video else output_path
     if cloud and caps.get('server_media_planning') is True:
@@ -57,6 +64,8 @@ def render_original_reply(content, reply_text, output_path, *, environment,
                            or declaration.tier=='MODE_STYLE' and declaration.mode=='musical_video'][:24]
         data={'media_request':{'incoming':content,'reply':reply_text,'reference':expression_context or {},
                               'persona':persona,'duration_seconds':planning_duration}}
+        if limits is not None:
+            data['music_options'] = music_options
         if render_video:
             from runtime.media.remote_materials import render_music_materials
             metadata=render_music_materials('original_video',data,output_path,environment=environment,
@@ -67,10 +76,10 @@ def render_original_reply(content, reply_text, output_path, *, environment,
                 'reply_structure':metadata.get('reply_structure','original_song_audio')}
     if not enabled(environment) and not original_configured(environment):
         raise MusicReplyError("ORIGINAL_RUNTIME_UNAVAILABLE")
-    from runtime.media.music_options import from_environment, generation_parameters
-    music_options = from_environment(environment)
     try:
         planner_options = {"gateway": gateway} if gateway is not None else {}
+        style_options = {'style_max_chars': limits['style']} if limits is not None else {}
+        planner_options.update(style_options)
         if reply_adapter is not None:
             planner_options['reply_adapter'] = reply_adapter
         if expression_context is not None:
@@ -78,6 +87,7 @@ def render_original_reply(content, reply_text, output_path, *, environment,
         plan = cached_song_plan(audio.parent / (audio.stem + "-song-plan.private.json"),
             content, reply_text, planning_duration,
             lambda: plan_song_content(content, reply_text, planning_duration, **planner_options),
+            **style_options,
             **({'expression_context':expression_context} if expression_context is not None else {}))
     except Exception as exc:
         raise MusicReplyError("SONG_CONTENT_UNAVAILABLE") from exc

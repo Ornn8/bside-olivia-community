@@ -14,6 +14,72 @@ from runtime.cloud_service import CloudError
 PLAN = dict(attach=True, photo_type='snapshot', room='music-workstation', time_of_day='night', prompt='Coffee on a wooden desk')
 
 
+@pytest.mark.parametrize('server_planned', [False, True])
+def test_selected_image_model_is_frozen_and_resumed_after_catalog_removal(tmp_path, monkeypatch, server_planned):
+    async def scenario():
+        server, row, calls = setup(tmp_path, monkeypatch)
+        row['image_reply_settings'] = {'enabled': True, 'resolution': '1K', 'model': 'approved-photo'}
+        base = remote_generation.RemoteGeneration
+        caps = {'kinds': ['image'], 'shared_assets': [], 'server_media_planning': server_planned,
+                'image': {'models': [{'id': 'approved-photo', 'display_name': 'Photo', 'resolutions': ['1K']}]}}
+        class Cloud(base):
+            async def request(self, action, data):
+                if action == 'capabilities': return caps
+                result = await super().request(action, data)
+                if server_planned: result['media_plan'] = {k: v for k, v in PLAN.items() if k != 'attach'}
+                return result
+        monkeypatch.setattr(remote_generation, 'RemoteGeneration', Cloud)
+        await image_reply._prepare_once(server, row, 'photo', 'Okay')
+        assert row['image_status'] == 'RETRY_PENDING'
+        assert calls['submissions'][0]['input']['model'] == 'approved-photo'
+        caps['image']['models'] = []
+        server.video_reply_settings_store.image_snapshot = lambda: {'enabled': True, 'resolution': '1K', 'model': 'new-model'}
+        row['image_retry_at'] = 0
+        await image_reply._prepare_once(server, row, 'photo', 'Okay')
+        assert row['image_status'] == 'COMPLETED'
+        assert len(calls['submits']) == 1 and calls['statuses'] == ['saved-task']
+        assert row['image_reply_settings']['model'] == 'approved-photo'
+    asyncio.run(scenario())
+
+
+def test_unadvertised_image_model_fails_before_any_paid_or_planning_request(tmp_path, monkeypatch):
+    async def scenario():
+        server, row, calls = setup(tmp_path, monkeypatch)
+        row['image_reply_settings'] = {'enabled': True, 'resolution': '1K', 'model': 'local-only-photo'}
+        await image_reply._prepare_once(server, row, 'photo', 'Okay')
+        assert row['image_status'] == 'FAILED' and row['image_error_code'] == 'IMAGE_MODEL_UNAVAILABLE'
+        assert not calls['submits'] and not calls['plans']
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('damage', ['model', 'remove', 'corrupt'])
+def test_server_planned_model_binding_cannot_create_a_second_paid_request(tmp_path, monkeypatch, damage):
+    async def scenario():
+        server, row, calls = setup(tmp_path, monkeypatch)
+        row['image_reply_settings'] = {'enabled': True, 'resolution': '1K', 'model': 'approved-photo'}
+        base = remote_generation.RemoteGeneration
+        class Cloud(base):
+            async def request(self, action, data):
+                if action == 'capabilities': return {'kinds': ['image'], 'shared_assets': [], 'server_media_planning': True,
+                    'image': {'models': [{'id': 'approved-photo', 'display_name': 'Photo', 'resolutions': ['1K']}]}}
+                result = await super().request(action, data)
+                result['media_plan'] = {k: v for k, v in PLAN.items() if k != 'attach'}
+                return result
+        monkeypatch.setattr(remote_generation, 'RemoteGeneration', Cloud)
+        await image_reply._prepare_once(server, row, 'photo', 'Okay')
+        assert row['image_status'] == 'RETRY_PENDING'
+        receipt = next((tmp_path / 'media').glob('*.task.json'))
+        if damage == 'model': row['image_reply_settings']['model'] = 'different-photo'
+        elif damage == 'remove': receipt.unlink()
+        else: receipt.write_text('bad')
+        row['image_retry_at'] = 0
+        await image_reply._prepare_once(server, row, 'photo', 'Okay')
+        assert row['image_status'] == 'FAILED'
+        assert row['image_error_code'] in {'IMAGE_GENERATION_BINDING_CHANGED', 'IMAGE_RECEIPT_MISSING', 'IMAGE_RECEIPT_INVALID'}
+        assert len(calls['submits']) == 1 and not calls['statuses']
+    asyncio.run(scenario())
+
+
 def test_completed_photo_survives_state_save_failure_without_new_charge(tmp_path, monkeypatch):
     async def scenario():
         server, row, calls = setup(tmp_path, monkeypatch, failure='none')

@@ -15,7 +15,7 @@ RHYTHM_FACT_AUTHORITY = (
     "planned_rest_window 只支持她目前给自己定的休息安排，不证明长期习惯、实际入睡起床时刻、睡前活动或过去如何调整作息。"
     "作息只是计划，可以因为当下的事调整：她此刻正在回复就说明醒着，不说自己在睡、还没醒或被吵醒，"
     "可以自然表达困了、该睡了，但不借作息敷衍或打发对方。"
-    "authored_sleep另指已发布的角色补觉过程：sleeping是已开始，due是到续接时刻或通信打断后待判断；"
+    "authored_sleep另指已发布的角色睡眠过程（nap补觉或overnight夜间睡眠）：sleeping是已开始，due是到续接时刻或通信打断后待判断；"
     "到时不自动证明睡完或恢复。wellbeing.basis=night_correspondence只来自通信负荷，不证明疾病或请假。"
 )
 
@@ -186,7 +186,9 @@ def with_recovery(state, episodes, now, *, exchanges=None, shifts=None):
                           for received, completed in exchanges or [])
         due = now >= end or interrupted
         result = {**result, 'authored_sleep': {'source_id': latest['source_id'], 'started_at': latest['occurred_at'],
-                   'end_at': end.isoformat(), 'status': 'due' if due else 'sleeping', 'interrupted': interrupted}}
+                   'end_at': end.isoformat(), 'kind': latest['effects']['sleep_plan'].get('kind', 'nap'),
+                   'status': 'due' if due else 'sleeping', 'interrupted': interrupted}}
         if not due:
-            result.update(phase='sleep', activity='补觉中', availability='rest', phase_basis='authored_sleep')
+            result.update(phase='sleep', activity='夜间睡眠中' if latest['effects']['sleep_plan'].get('kind') == 'overnight' else '补觉中',
+                          availability='rest', phase_basis='authored_sleep')
     return result

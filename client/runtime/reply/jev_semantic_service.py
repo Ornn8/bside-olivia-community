@@ -61,6 +61,14 @@ def decide(client, packet):
                 or any(not isinstance(k, str) or not k or len(k) > 200 for k in value['criteria'])):
             raise ValueError('invalid_question')
         native[key] = {'type': 'choice', **value}
+        # Older clients used numeric descriptions for these 0-100 labels.
+        # Normalize only the provider projection; request/billing digests stay unchanged.
+        if packet['purpose'] == 'historical-relationship' and key in {
+                'familiarity', 'trust', 'comfort', 'closeness', 'tension'}:
+            native[key]['criteria'] = {
+                label: str(description) if type(description) is int
+                and 0 <= description <= 100 and label == str(description) else description
+                for label, description in value['criteria'].items()}
     encoded = json.dumps(packet, ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False)
     if len(encoded.encode('utf-8')) > SEMANTIC_REQUEST_MAX_BYTES:
         raise ValueError('invalid_body_size')

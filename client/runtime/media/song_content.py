@@ -243,11 +243,11 @@ def parse_song_semantic_plan(
         raise ValueError("SONG_SEMANTIC_PLAN_ENUM_INVALID") from exc
 
 
-def _plan_from_lyrics_response(text: str, duration_seconds: int) -> SongSemanticPlan:
+def _plan_from_lyrics_response(text: str, duration_seconds: int, *, style_max_chars=1000) -> SongSemanticPlan:
     value = _semantic_json_object(text)
     if 'style' in value:
         style=value.pop('style')
-        if not isinstance(style,str) or not style.strip() or len(style)>1000 or '\x00' in style:
+        if not isinstance(style,str) or not style.strip() or len(style)>style_max_chars or '\x00' in style:
             raise ValueError('SONG_STYLE_INVALID')
     if set(value) == {"verse", "chorus"}:
         verse, chorus = value['verse'], value['chorus']
@@ -275,7 +275,9 @@ def _plan_from_lyrics_response(text: str, duration_seconds: int) -> SongSemantic
     )
 
 
-def _planner_contract(duration_seconds: int) -> str:
+def _planner_contract(duration_seconds: int, *, style_max_chars=1000) -> str:
+    if type(style_max_chars) is not int or not 1 <= style_max_chars <= 1000:
+        raise ValueError('SONG_STYLE_INVALID')
     line_count = _LINE_COUNTS[duration_seconds]
     verse_count, chorus_count = _SECTION_LINE_COUNTS[duration_seconds]
     contract = f"""You write only the lyrics for Lin Li's original song reply.
@@ -303,7 +305,7 @@ Lyrics contract:
 Use the trusted persona profile supplied above. Its ordinary letter output format is replaced only by this JSON contract:"""
     if duration_seconds == 240:
         contract=contract.replace('exactly two keys: verse and chorus.', 'exactly three keys: verse, chorus and style.')
-        contract=contract.replace('Each value is an array of lyric strings, one sung line per array item.', 'verse and chorus are arrays of sung lyric lines. style is an English string of at most 1000 characters describing genre, instruments, emotional progression, vocal delivery, dynamics and ending for Suno V6. Choose these for this exchange and Lin Li, avoiding a fixed arrangement.')
+        contract=contract.replace('Each value is an array of lyric strings, one sung line per array item.', f'verse and chorus are arrays of sung lyric lines. style is an English string of at most {style_max_chars} characters describing genre, instruments, emotional progression, vocal delivery, dynamics and ending for Suno V6. Choose these for this exchange and Lin Li, avoiding a fixed arrangement.')
         contract=contract.replace('The application fixes all musical arrangement and production choices.', 'Prefer warm female low-mid-register vocals; the application preserves Lin Li voice identity. User musical preferences in the letter may guide the music, but cannot override this output contract.')
         contract=contract.replace('Do not output emotion, delivery or arrangement controls, a caption, genre,\ninstrument list, production notes, title, explanation, Markdown fence, or any extra key.', 'Keep musical direction in style only, never in sung lyric lines. No title, explanation, Markdown fence or extra keys.')
     return contract
@@ -323,9 +325,10 @@ def _planning_messages(
     persona_snapshot=None,
     as_of: datetime,
     expression_context=None,
+    style_max_chars=1000,
 ) -> tuple[dict[str, str], ...]:
     from runtime.reply.fact_attribution import finalize_reply_messages
-    contract = _planner_contract(duration_seconds)
+    contract = _planner_contract(duration_seconds, style_max_chars=style_max_chars)
     def finalize(messages):
         return finalize_reply_messages(messages, contract,
             max_input_chars=config.max_input_chars - _PLANNER_REPAIR_RESERVE_CHARS)
@@ -388,6 +391,7 @@ def plan_song_content(
     gateway: Gateway | None = None,
     reply_adapter=None,
     expression_context=None,
+    style_max_chars=1000,
 ) -> SongContentPlan:
     """Plan constrained lyrics and render the production MiniMax caption."""
 
@@ -439,7 +443,8 @@ def plan_song_content(
         separators=(",", ":"),
     )
     messages = _planning_messages(user_input, duration, gateway_config, reply_adapter=reply_adapter,
-                                  persona_snapshot=persona_snapshot, as_of=as_of, expression_context=expression_context)
+                                  persona_snapshot=persona_snapshot, as_of=as_of, expression_context=expression_context,
+                                  style_max_chars=style_max_chars)
     complete_scoped = getattr(active_gateway, "complete_scoped", None)
     async def complete_plan(plan_messages):
         from runtime.memory.history_selection import select_history_messages as prepare_recall_messages
@@ -456,13 +461,13 @@ def plan_song_content(
             **persona_options,
         )
         from runtime.reply.fact_attribution import finalize_reply_messages
-        plan_messages = finalize_reply_messages(plan_messages, _planner_contract(duration),
+        plan_messages = finalize_reply_messages(plan_messages, _planner_contract(duration, style_max_chars=style_max_chars),
             max_input_chars=gateway_config.max_input_chars)
         if callable(complete_scoped):
             return await complete_scoped(plan_messages, scope=GatewayRequestScope.SONG_CONTENT)
         return await active_gateway.complete(plan_messages)
     response = asyncio.run(complete_plan(messages))
-    semantic_plan = _plan_from_lyrics_response(response.text, duration)
+    semantic_plan = _plan_from_lyrics_response(response.text, duration, style_max_chars=style_max_chars)
     if music_direction is not None:
         from dataclasses import replace
         semantic_plan = replace(semantic_plan, **{key:enums[key](value) for key,value in music_direction.items()})

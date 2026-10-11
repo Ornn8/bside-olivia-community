@@ -60,13 +60,18 @@ def envelope(**changes):
         sticker='test-sticker', skip=False, **changes)
 
 
-def execute(text, *, mode=ReplyMode.TEXT_LETTER, reviewer=None, rewriter=None, interpreter=None, proactive=False, raw='我醒啦'):
+def execute(text, *, mode=ReplyMode.TEXT_LETTER, reviewer=None, rewriter=None, interpreter=None,
+            proactive=False, raw='我醒啦', companion_decision_port=None):
     engine = Engine(text)
     pipeline = ReplyPipeline(engine, reviewer=reviewer or NullReviewer(), rewriter=rewriter or UnavailableRewriter(),
-        discover_runtime_ports=False, current_turn_interpreter=interpreter)
+        discover_runtime_ports=False, current_turn_interpreter=interpreter,
+        companion_decision_port=companion_decision_port)
     request = ReplyRequest(content=raw, messages=({'role':'system','content':'人物参考'}, {'role':'user','content':raw}), max_input_chars=40000)
     context = ReplyContext.create(mode, trusted_time=TrustedTime(datetime(2026,9,26,6,38,tzinfo=timezone.utc)), future_im_enabled=True)
-    token = CURRENT.set({'structured': True, 'raw_user_text':raw, 'decision_now':'2026-09-26T14:38:00+08:00', 'proactive':proactive}) if mode is ReplyMode.FUTURE_IM else None
+    token = CURRENT.set({'structured': True, 'raw_user_text':raw, 'channel':'qq',
+        'speech_enabled': companion_decision_port is not None,
+        'semantic_kinds': ['text', 'audio_speech'] if companion_decision_port is not None else ['text'],
+        'decision_now':'2026-09-26T14:38:00+08:00', 'proactive':proactive}) if mode is ReplyMode.FUTURE_IM else None
     try:
         return asyncio.run(pipeline.run(request, context)), engine
     finally:
@@ -220,10 +225,16 @@ def test_reconsidered_silence_requires_envelope_with_partial_runtime_metadata(ti
     finally:
         CURRENT.reset(token)
     assert len(port.turns) == len(engine.requests) == 1
-    assert result.state is ReplyState.FAILED and result.error_code == 'PERSONAL_CHAT_DECISION_INVALID'
-    assert not result.text and not result.silence_authorized
-    assert result.decision_rejection_reason == (
-        'JSON_SYNTAX' if candidate_kind == 'plaintext' else 'MEDIA_WITHOUT_PLAN')
+    if candidate_kind == 'plaintext':
+        assert result.state is ReplyState.FAILED and result.error_code == 'PERSONAL_CHAT_DECISION_INVALID'
+        assert not result.text and not result.silence_authorized
+        assert result.decision_rejection_reason == 'JSON_SYNTAX'
+    else:
+        assert result.state is ReplyState.COMPLETED and result.error_code is None
+        assert json.loads(result.text) == {
+            key: item for key, item in value.items() if key != 'speech'}
+        assert 'speech' not in json.loads(result.text)
+        assert not result.silence_authorized
 
 
 def test_qq_rewrite_control_markup_rejected():

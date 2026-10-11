@@ -136,14 +136,14 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
 
   const mount = () => {
     if (document.querySelector("[data-olivia-personal-chat-setup]")) return true;
-    // Lives in the "QQ / 微信" settings group, whose title line shows its state.
+    // Existing WeChat bindings remain compatible; only QQ is offered in settings.
     const anchor = document.querySelector('[data-olivia-group-body="chat"]');
     if (!anchor) return false;
     ensureStyle();
 
     const root = document.createElement("section");
     root.dataset.oliviaPersonalChatSetup = "true";
-    const copy = node("div", "在这里选择并绑定聊天方式。微信直接扫码；QQ 可以由 Olivia 一键准备本地 QQ 组件，不需要手填 OneBot 参数。", "olivia-chat-copy");
+    const copy = node("div", "在这里绑定 QQ。Olivia 可以一键准备本地 QQ 组件，不需要手填 OneBot 参数。请使用 QQ 小号扫码登录，再填写你用来聊天的个人 QQ 号。", "olivia-chat-copy");
     const content = document.createElement("div");
     let qqOwnerDraft = "";
     let qqSaving = false;
@@ -159,6 +159,8 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
       }
       const code = error?.code || error?.message || String(error || "连接失败");
       target.textContent = ({
+        QQ_SETUP_INVALID: "请填写有效的个人 QQ 号；已有保存的 QQ 号时，也可以留空并使用已保存QQ连接。",
+        PERSONAL_CHAT_GENERATION_INTERRUPTED: "这次回复生成被中断。连接恢复后，可以重新发送这条消息。",
         QQ_BOT_AND_OWNER_MUST_DIFFER: "这里请填写你用来和机器人聊天的个人 QQ 号，不能填写刚扫码登录的机器人 QQ 号。",
         JEV_BILLING_ACCOUNT_UNAVAILABLE: "还没有连接 Olivia 账户 Key，或 Key 无法读取。请在设置的“回信服务 → Olivia 账户”获取或导入 Key，点“连接并保存”后再聊天。",
         OLIVIA_KEY_REQUIRED: "还没有连接 Olivia 账户 Key，请在设置的“回信服务 → Olivia 账户”获取或导入 Key，点“连接并保存”后再聊天。",
@@ -188,12 +190,10 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
 
     const renderChannelChoice = (selected = []) => {
       const box = node("div", null, "olivia-chat-channel");
-      box.append(node("div", selected.length ? "添加聊天方式" : "选择聊天方式", "olivia-chat-name"));
-      box.append(node("div", selected.length ? "可以继续添加另一种聊天方式，已绑定的渠道会保留。" : "不用再寄一封信确认。直接选择你想使用的聊天方式；选择微信会立即打开扫码绑定。", "olivia-chat-copy"));
+      box.append(node("div", "绑定 QQ", "olivia-chat-name"));
+      box.append(node("div", "点击下方按钮开始准备 QQ。", "olivia-chat-copy"));
       const actions = node("div", null, "olivia-chat-actions");
-      if (!selected.includes("wechat")) actions.append(action(selected.length ? "添加微信" : "微信", async () => chooseChannel("wechat", box)));
       if (!selected.includes("qq")) actions.append(action(selected.length ? "添加 QQ" : "QQ", async () => chooseChannel("qq", box)));
-      if (!selected.length) actions.append(action("两个都要", async () => chooseChannel("both", box)));
       box.append(actions);
       return box;
     };
@@ -332,7 +332,7 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
         const login = status.qq_login || {};
         const message = login.logged_in ? "QQ 已登录，正在准备连接…"
           : login.scanned ? "已扫码，请在手机 QQ 上确认登录。"
-          : login.qr_data ? "请用手机 QQ 扫描下方二维码登录。关闭设置页不会关闭 QQ 组件，再次进入即可继续登录。"
+          : login.qr_data ? "请使用用于林离的 QQ 小号扫描下方二维码登录。关闭设置页不会关闭 QQ 组件，再次进入即可继续登录。"
           : "QQ 组件正在后台运行，暂未取得登录二维码。请刷新二维码，或点击下方按钮打开登录窗口。";
         component.append(node("div", message, "olivia-chat-copy"));
         if (login.qr_data) {
@@ -379,21 +379,33 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
         owner.style.marginTop = "10px";
         managed.append(owner);
         const controls = node("div", null, "olivia-chat-actions");
-        controls.append(action("连接并保存", async (button) => {
+        const canReuse = status.qq?.can_reuse_owner === true;
+        const connectLabel = () => canReuse && !owner.value.trim() ? "使用已保存QQ连接" : "连接并保存";
+        if (canReuse) managed.append(node("div", "保留输入框为空，可直接使用已保存的聊天 QQ；填写新号码则替换。", "olivia-chat-copy"));
+        const connectButton = action(connectLabel(), async (button) => {
           qqSaving = true;
           owner.disabled = true;
           button.textContent = "正在验证并保存…";
           try {
-            await request(QQ_CONFIGURE, {method: "POST", body: {managed: true, owner: owner.value.trim()}});
+            const body = canReuse && !owner.value.trim()
+              ? {managed: true, reuse_saved_owner: true} : {managed: true, owner: owner.value.trim()};
+            await request(QQ_CONFIGURE, {method: "POST", body});
             qqSaving = false;
             await refresh(false);
           } catch (error) { renderError(managed, error); }
           finally {
             qqSaving = false;
             owner.disabled = false;
-            button.textContent = "连接并保存";
+            button.textContent = connectLabel();
+            button.disabled = !owner.value.trim() && !canReuse;
           }
-        }));
+        });
+        connectButton.disabled = !owner.value.trim() && !canReuse;
+        owner.addEventListener("input", () => {
+          connectButton.textContent = connectLabel();
+          connectButton.disabled = qqSaving || !owner.value.trim() && !canReuse;
+        });
+        controls.append(connectButton);
         managed.append(controls);
         box.append(managed);
       }
@@ -434,7 +446,7 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
     const reportGroup = (status) => {
       if (typeof CustomEvent !== "function" || typeof root.dispatchEvent !== "function") return;
       const names = {qq: "QQ", wechat: "微信"};
-      const selected = Array.isArray(status.selected_channels) ? status.selected_channels : [];
+      const selected = Array.isArray(status.selected_channels) ? status.selected_channels.filter(name => name === 'qq') : [];
       const live = (name) => ["CONNECTED", "LISTENING"].includes(status.listeners?.[name]);
       for (const name of ["qq", "wechat"]) {
         const problem = selected.includes(name) && status.reply_errors?.[name];
@@ -473,7 +485,7 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
         const status = await request(STATUS);
         if (!root.isConnected) return;
         if (qqSaving) { pollTimer = setTimeout(() => refresh(true), 2000); return; }
-        const selected = Array.isArray(status.selected_channels) ? status.selected_channels : [];
+        const selected = Array.isArray(status.selected_channels) ? status.selected_channels.filter(name => name === 'qq') : [];
         if (selected.includes("qq") && status.napcat?.state === "AWAITING_QQ_LOGIN") {
           try { status.qq_login = await request(NAPCAT_LOGIN); }
           catch (_) { status.qq_login = {}; }
@@ -492,9 +504,7 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
         if (!selected.length) {
           fragment.append(renderChannelChoice());
         } else {
-          if (selected.includes("wechat")) fragment.append(renderWechat(status));
           if (selected.includes("qq")) fragment.append(renderQQ(status));
-          if (selected.length === 1) fragment.append(renderChannelChoice(selected));
         }
         content.replaceChildren(fragment);
         renderedStatus = signature;

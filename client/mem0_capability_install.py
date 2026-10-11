@@ -16,6 +16,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from typing import Any, Protocol
@@ -24,7 +25,7 @@ from urllib.request import Request, urlopen
 import uuid
 import zipfile
 
-from installer.uninstall_safety import safe_managed_target
+from installer.uninstall_safety import native_path, safe_managed_target
 
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -37,6 +38,7 @@ MEM0_INSTALL_FAILURE_CODES = frozenset({
     "MEM0_CAPABILITY_INSTALL_FAILED", "MEM0_CAPABILITY_VERIFY_FAILED",
     "MEM0_CAPABILITY_PERMISSION_DENIED", "MEM0_CAPABILITY_DISK_SPACE_LOW",
     "MEM0_CAPABILITY_FILE_IN_USE", "MEM0_OFFLINE_PACKAGE_INVALID",
+    "MEM0_CAPABILITY_PATH_TOO_LONG",
     "MEM0_OFFLINE_PACKAGE_HASH_MISMATCH",
     "MEM0_RUNTIME_DOWNLOAD_FAILED", "MEM0_RUNTIME_VERIFY_FAILED",
     "MEM0_RUNTIME_PTH_UNAVAILABLE", "MEM0_RUNTIME_HASH_MISMATCH",
@@ -46,6 +48,8 @@ MEM0_INSTALL_FAILURE_CODES = frozenset({
 
 def _install_failure_code(exc: Exception) -> str:
     if isinstance(exc, OSError):
+        if exc.errno == errno.ENAMETOOLONG or getattr(exc, "winerror", None) == 206:
+            return "MEM0_CAPABILITY_PATH_TOO_LONG"
         if exc.errno == errno.ENOSPC or getattr(exc, "winerror", None) == 112:
             return "MEM0_CAPABILITY_DISK_SPACE_LOW"
         if getattr(exc, "winerror", None) in {32, 33}:
@@ -820,6 +824,7 @@ def _run_command(
             lowered = tail.lower()
             for markers, code in (
                 ((b"no space left", b"winerror 112", b"errno 28"), "MEM0_CAPABILITY_DISK_SPACE_LOW"),
+                ((b"winerror 206", f"errno {errno.ENAMETOOLONG}".encode("ascii")), "MEM0_CAPABILITY_PATH_TOO_LONG"),
                 ((b"winerror 32", b"winerror 33"), "MEM0_CAPABILITY_FILE_IN_USE"),
                 ((b"permission denied", b"access is denied", b"winerror 5"), "MEM0_CAPABILITY_PERMISSION_DENIED"),
                 ((b"do not match the hashes",), "MEM0_RUNTIME_HASH_MISMATCH"),
@@ -1013,8 +1018,7 @@ class ManagedMem0Runtime:
     def _command(self, *, target: Path, source: str | None, wheelhouse: Path | None) -> list[str]:
         command = [
             str(self.python_executable),
-            "-m",
-            "pip",
+            native_path(Path(__file__).resolve().parent / "installer/pip_runtime.py"),
             "install",
             "--disable-pip-version-check",
             "--require-hashes",
@@ -1026,14 +1030,14 @@ class ManagedMem0Runtime:
             "--compile",
             "--ignore-installed",
             "--target",
-            str(target),
+            native_path(target),
             "-r",
-            str(self.requirements),
+            native_path(self.requirements),
         ]
         if wheelhouse is not None:
-            command[6:6] = ["--no-index", "--find-links", str(wheelhouse)]
+            command[5:5] = ["--no-index", "--find-links", native_path(wheelhouse)]
         elif source is not None:
-            command[6:6] = ["--index-url", source, "--cache-dir", str(self.cache)]
+            command[5:5] = ["--index-url", source, "--cache-dir", native_path(self.cache)]
         return command
 
     def install(
@@ -1067,6 +1071,11 @@ class ManagedMem0Runtime:
                 "DO_NOT_TRACK": "1",
             }
         )
+        if os.name == "nt":
+            # pip unpacks wheels into TEMP before moving them to --target.
+            # Both trees need extended paths, including cross-drive copies.
+            temporary = native_path(tempfile.gettempdir())
+            environment.update(TEMP=temporary, TMP=temporary, TMPDIR=temporary)
         installed = False
         failure_code = "MEM0_RUNTIME_DOWNLOAD_FAILED"
         reported_progress = 0
@@ -1084,7 +1093,7 @@ class ManagedMem0Runtime:
             )
 
         for source, wheelhouse in attempts:
-            shutil.rmtree(self.staging, ignore_errors=True)
+            shutil.rmtree(native_path(self.staging), ignore_errors=True)
             self.staging.mkdir(parents=True, exist_ok=True)
             marker = {
                 "bytecode_policy": _RUNTIME_BYTECODE_POLICY,
@@ -1120,10 +1129,10 @@ class ManagedMem0Runtime:
                 installed = True
                 break
         if not installed:
-            shutil.rmtree(self.staging, ignore_errors=True)
+            shutil.rmtree(native_path(self.staging), ignore_errors=True)
             raise RuntimeError(failure_code)
         if not self._verify(self.staging):
-            shutil.rmtree(self.staging, ignore_errors=True)
+            shutil.rmtree(native_path(self.staging), ignore_errors=True)
             raise RuntimeError("MEM0_RUNTIME_VERIFY_FAILED")
         backup = self.target.with_name(f"{self.target.name}.backup.{uuid.uuid4().hex}")
         old_pth = self._pth().read_bytes()
@@ -1136,12 +1145,12 @@ class ManagedMem0Runtime:
                 raise RuntimeError("MEM0_RUNTIME_VERIFY_FAILED")
             self._activate_current_runtime()
         except Exception:
-            shutil.rmtree(self.target, ignore_errors=True)
+            shutil.rmtree(native_path(self.target), ignore_errors=True)
             if backup.exists():
                 backup.replace(self.target)
             self._pth().write_bytes(old_pth)
             raise
-        shutil.rmtree(backup, ignore_errors=True)
+        shutil.rmtree(native_path(backup), ignore_errors=True)
         self._ready_fingerprint = self._fingerprint()
         self._ready_result = True
         progress(
@@ -1166,7 +1175,7 @@ class ManagedMem0Runtime:
         self._update_pth(enabled=False)
         for path in (self.target, self.staging):
             if path.exists():
-                shutil.rmtree(path)
+                shutil.rmtree(native_path(path))
             if path.exists():
                 raise RuntimeError("MEM0_RUNTIME_UNINSTALL_FAILED")
         self._ready_fingerprint = None

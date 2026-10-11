@@ -19,6 +19,7 @@ from patch_companion_settings import (
 )
 from patch_feapp import patch_feapp
 from patch_webplayer import WebPlayerPatchError, patch_webplayer
+from installer.patch_local_login import LocalLoginPatchError, apply as apply_local_login
 from installer.patch_native_navigation import (
     COMPATIBILITY_MANIFEST_NAME,
     NativeNavigationPatchError,
@@ -55,14 +56,25 @@ PAYLOAD_EXTRA_DIRS = (
     "runtime/validation",
     "runtime/visual",
     "runtime/diagnostics",
+    "runtime/diary",
+    "runtime/improve",
 )
 PAYLOAD_EXTRA_FILES = (
+    "runtime/official_endpoints.py",
+    "runtime/image_assets.py",
+    "runtime/image_assets.json",
+    "runtime/wardrobe.py",
+    "runtime/gifts.py",
+    "runtime/pets.py",
     "runtime/model_policy.py",
     "runtime/model_policy_aliases.json",
     "runtime/chinese_calendar.py",
     "runtime/_chinese_calendar_data.py",
     "runtime/image_reply.py",
     "runtime/image_understanding.py",
+    "runtime/cloud_events.py",
+    "runtime/model_routes.py",
+    "runtime/incoming_media.py",
     "runtime/cloud_service.py",
     "runtime/gpu_settings.py",
     "runtime/music_settings.py",
@@ -80,6 +92,8 @@ PAYLOAD_EXTRA_FILES = (
     "runtime/video_reply_settings.py",
 )
 PAYLOAD_SUFFIXES = {".py", ".json", ".toml", ".ini", ".txt", ".ps1", ".patch"}
+IMAGE_SUFFIXES = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.avif'}
+DEFAULT_STICKER_FILES = frozenset(f'linli-{i:02}.png' for i in range(1,109))
 PAYLOAD_ROOT_FILES = {
     "THIRD_PARTY_NOTICES.md",
     "local_server.py",
@@ -127,12 +141,21 @@ PAYLOAD_REQUIRED_ROOT_FILES = {
     "video_capability_install.py",
 }
 PAYLOAD_REQUIRED_RELATIVE_FILES = {
+    "runtime/official_endpoints.py",
+    "runtime/image_assets.py",
+    "runtime/image_assets.json",
+    "runtime/wardrobe.py",
+    "runtime/gifts.py",
+    "runtime/pets.py",
+    "installer/patch_local_login.py",
     "runtime/model_policy.py",
     "runtime/model_policy_aliases.json",
     "runtime/chinese_calendar.py",
     "runtime/_chinese_calendar_data.py",
     "runtime/image_reply.py",
     "runtime/image_understanding.py",
+    "runtime/cloud_events.py",
+    "runtime/model_routes.py",
     "contracts/component_update_package.example.json",
     "contracts/component_update_package.schema.json",
     "contracts/component_update_state.example.json",
@@ -158,7 +181,6 @@ PAYLOAD_REQUIRED_RELATIVE_FILES = {
     "installer/start_hidden.vbs.txt",
     "installer/startup_animation.ps1",
     "installer/assets/olivia.ico",
-    "installer/assets/wechat-payment.jpeg",
     "installer/mem0-capability-manifest.json",
     "installer/video-capability-manifest.json",
     "installer/cosyvoice-windows-audio.patch.json",
@@ -172,6 +194,7 @@ PAYLOAD_REQUIRED_RELATIVE_FILES = {
     "runtime/diagnostics/__init__.py",
     "runtime/diagnostics/support_bundle.py",
     "runtime/reply/stage_recovery.py",
+    "runtime/incoming_media.py",
     "runtime/original_client_media_http.py",
     "runtime/video_reply_settings.py",
 }
@@ -378,10 +401,12 @@ def _is_non_runtime_payload_file(name: str) -> bool:
     )
 
 
-def _ignore_payload_copy(directory: str, names: list[str]) -> set[str]:
+def _ignore_payload_copy(directory: str, names: list[str], *, include_base_stickers=True) -> set[str]:
     excluded = _ignore_official_copy(directory, names)
     excluded.update(
-        name for name in names if _is_non_runtime_payload_file(name)
+        name for name in names if _is_non_runtime_payload_file(name) or (
+            Path(name).suffix.lower() in IMAGE_SUFFIXES and not (
+                include_base_stickers and Path(directory).name == 'letter_stickers' and name in DEFAULT_STICKER_FILES))
     )
     return excluded
 
@@ -448,9 +473,10 @@ def _payload_tree_contains_tracked(
 def _ignore_tracked_payload_copy(
     payload_root: Path,
     tracked_files: set[str] | None,
+    *, include_base_stickers=True,
 ):
     def ignore(directory: str, names: list[str]) -> set[str]:
-        excluded = _ignore_payload_copy(directory, names)
+        excluded = _ignore_payload_copy(directory, names, include_base_stickers=include_base_stickers)
         if tracked_files is None:
             return excluded
         directory_path = Path(directory)
@@ -477,6 +503,7 @@ def _ignore_tracked_payload_copy(
 def copy_project_payload(
     payload_root: Path,
     destination: Path,
+    *, include_base_stickers=True,
 ) -> list[str]:
     """Copy project source/config scripts, never original or model payloads."""
 
@@ -507,6 +534,7 @@ def copy_project_payload(
                 ignore=_ignore_tracked_payload_copy(
                     payload_root,
                     tracked_files,
+                    include_base_stickers=include_base_stickers,
                 ),
             )
             copied.append(child.name + "/")
@@ -531,6 +559,7 @@ def copy_project_payload(
                 ignore=_ignore_tracked_payload_copy(
                     payload_root,
                     tracked_files,
+                    include_base_stickers=include_base_stickers,
                 ),
             )
             copied.append(relative + "/")
@@ -817,6 +846,12 @@ def install_full_patch(
         base_http = f"http://127.0.0.1:{port}"
         operation = "patch_resources"
         try:
+            if version != "0.0.9.627":
+                raise LocalLoginPatchError("LOCAL_LOGIN_UNSUPPORTED_CLIENT")
+            local_login_patch = apply_local_login(staging)
+        except LocalLoginPatchError as exc:
+            raise PatchInstallError(str(exc)) from exc
+        try:
             navigation_manifest = (
                 staging / "local_backend" / "installer" / COMPATIBILITY_MANIFEST_NAME
             )
@@ -868,6 +903,7 @@ def install_full_patch(
             "backup_webplayer_sha256": player_patch["backup_sha256"],
             "webplayer_patch_status": player_patch["status"],
             "original_client_only": True,
+            "local_login_patch_status": local_login_patch,
             "companion_settings_embedded": True,
             "webplayer_local_media": True,
             "port": port,

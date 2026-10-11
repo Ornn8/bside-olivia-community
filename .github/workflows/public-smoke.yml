@@ -15,7 +15,7 @@ jobs:
   public-smoke:
     name: Public smoke (Windows / Python 3.12)
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: Check out source
         uses: actions/checkout@v4

@@ -5,16 +5,19 @@ The checked-in schema is exported from the verified sidecar contract; no runtime
 dependency on a developer's release directory or training environment exists.
 """
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import hashlib
+import http.client
 import ipaddress
 import json
 import math
+import re
 from pathlib import Path
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 
 from jsonschema import Draft202012Validator, ValidationError
 
@@ -46,6 +49,9 @@ _SIDECAR_ERRORS = {
     'decision_timeout': 'JEV_TIMEOUT',
     'insufficient_balance': 'JEV_BALANCE_INSUFFICIENT',
     'provider_unavailable': 'JEV_UNAVAILABLE',
+    'provider_connect_failed': 'JEV_PROVIDER_CONNECT_FAILED',
+    'provider_read_failed': 'JEV_PROVIDER_READ_FAILED',
+    'provider_json_invalid': 'JEV_PROVIDER_JSON_INVALID',
     **{f'provider_http_{n}': f'JEV_PROVIDER_HTTP_{n}'
        for n in (400, 401, 403, 404, 413, 422, 429, 500, 502, 503, 504, 529)},
 }
@@ -59,12 +65,13 @@ ERROR_CODES = frozenset({
     'JEV_BILLING_UNAVAILABLE', 'JEV_BILLING_RECEIPT_INVALID', 'JEV_BILLING_RESPONSE_INVALID',
     'JEV_BILLING_ACCOUNT_UNAVAILABLE', 'JEV_BILLING_TURN_INVALID',
     *(f'JEV_BILLING_HTTP_{status}' for status in (401, 402, 403, 409, 429, 502, 503, 504)),
-    *(f'JEV_HTTP_{status}' for status in (400, 401, 404, 413, 429, 503)),
+    *(f'JEV_HTTP_{status}' for status in (400, 401, 404, 413, 429, 502, 503, 504)),
 })
 from runtime.reply.jev_limits import JEV_MAX_INPUT_BYTES as _MAX_INPUT_BYTES
 _MAX_RESPONSE_BYTES = 262144
 _SCHEMA = json.loads(Path(__file__).with_name('companion_decision_schema.json').read_text('utf-8'))
 _INPUT = Draft202012Validator(_SCHEMA['input'])
+MAX_MESSAGE_CHARS = _SCHEMA['input']['properties']['messages']['items']['properties']['text']['maxLength']
 _OUTPUT = Draft202012Validator(_SCHEMA['output'])
 _OPERATIONS = _SCHEMA['control_operations']
 
@@ -93,7 +100,7 @@ def _http_error_code(error):
             code = _SIDECAR_ERRORS.get(reason, code)
             if reason.startswith('empty_reference_catalog:'):
                 code = 'JEV_REFERENCE_UNAVAILABLE'
-    except (ValueError, OSError, RecursionError):
+    except (ValueError, OSError, RecursionError, http.client.HTTPException):
         pass
     finally:
         error.close()
@@ -116,6 +123,23 @@ def _validate_input(value):
         raise ValueError('invalid current turn')
 
 
+def _daily_video_experience(value):
+    if value is None:
+        return None
+    kinds = {'housework', 'walk', 'bath_finished', 'shopping', 'meal', 'wake_up'}
+    if (not isinstance(value, dict) or set(value) != {'event_ids', 'event_kinds', 'max_seconds'}
+            or type(value['max_seconds']) is not int or value['max_seconds'] != 15
+            or not isinstance(value['event_ids'], list) or not 1 <= len(value['event_ids']) <= 6
+            or not all(isinstance(item, str) and re.fullmatch(r'[A-Za-z0-9._:-]{1,128}', item)
+                       for item in value['event_ids'])
+            or len(set(value['event_ids'])) != len(value['event_ids'])
+            or not isinstance(value['event_kinds'], list) or not 1 <= len(value['event_kinds']) <= 6
+            or not all(isinstance(item, str) and item in kinds for item in value['event_kinds'])
+            or len(set(value['event_kinds'])) != len(value['event_kinds'])):
+        raise ValueError('invalid daily video experience')
+    return json.loads(_json(value))
+
+
 @dataclass(frozen=True)
 class FrozenCompanionTurn:
     input_json: str
@@ -124,11 +148,16 @@ class FrozenCompanionTurn:
     input_revision: int | str
     input_digest: str
     speech_enabled: bool = False
+    bedtime_offer: bool = False
+    daily_video_json: str | None = None
 
     @classmethod
     def create(cls, *, messages, current_source_id, capabilities, environment,
-               forbidden_kinds, as_of, input_revision=0, speech_enabled=False):
+               forbidden_kinds, as_of, input_revision=0, speech_enabled=False, bedtime_offer=False,
+               daily_video_experience=None):
         try:
+            if type(bedtime_offer) is not bool:
+                raise ValueError('invalid bedtime offer scope')
             if (type(input_revision) not in (int, str)
                     or isinstance(input_revision, int) and input_revision < 0
                     or isinstance(input_revision, str) and not 1 <= len(input_revision) <= 128):
@@ -156,16 +185,52 @@ class FrozenCompanionTurn:
                            contract=_SCHEMA['source_sha256'])
             if speech_enabled:
                 binding['speech_experience'] = True
+            if bedtime_offer:
+                if not speech_enabled:
+                    raise ValueError('bedtime offer requires speech capability')
+                binding['bedtime_offer'] = True
+            daily = _daily_video_experience(daily_video_experience)
+            if daily is not None:
+                if 'video_speech' not in capabilities['kinds']:
+                    raise ValueError('daily video capability missing')
+                binding['daily_video_experience'] = daily
             digest = hashlib.sha256(_json(binding).encode('utf-8')).hexdigest()
         except (ValueError, TypeError, KeyError, ValidationError, OverflowError):
             raise CompanionDecisionError('JEV_INPUT_INVALID') from None
         if len(_json({'input': value}).encode('utf-8')) > _MAX_INPUT_BYTES:
             raise CompanionDecisionError('JEV_INPUT_TOO_LARGE')
-        return cls(encoded, tuple(sources), when, input_revision, digest, speech_enabled)
+        return cls(encoded, tuple(sources), when, input_revision, digest, speech_enabled,
+                   bedtime_offer=bedtime_offer,
+                   daily_video_json=_json(daily) if daily is not None else None)
 
     @property
     def input(self):
         return json.loads(self.input_json)
+
+    @property
+    def daily_video_experience(self):
+        return json.loads(self.daily_video_json) if self.daily_video_json is not None else None
+
+    @classmethod
+    def from_record(cls, record):
+        """Rebuild the bounded original input; the decision verifies its digest."""
+        try:
+            value, sources = record['input'], record['source_id_map']
+            _validate_input(value)
+            turn = cls.create(
+                messages=[dict(source_id=sources[row['id']], role=row['role'], text=row['text'])
+                          for row in value['messages']],
+                current_source_id=sources[value['current_turn_id']],
+                capabilities=value['capabilities'], environment=value['environment'],
+                forbidden_kinds=value['forbidden_kinds'], as_of=record['as_of'],
+                input_revision=record['input_revision'], speech_enabled='speech_request' in record,
+                bedtime_offer='speech_offer' in record,
+                daily_video_experience=record.get('daily_video_experience'))
+            if turn.input_json != _json(value):
+                raise ValueError('stored input IDs changed')
+            return turn
+        except (ValueError, TypeError, KeyError, ValidationError, OverflowError):
+            raise CompanionDecisionError('JEV_INPUT_INVALID') from None
 
 
 @dataclass(frozen=True)
@@ -179,6 +244,9 @@ class FrozenCompanionDecision:
     metering_json: str | None = None
     profile: str = 'full'
     speech_json: str | None = None
+    speech_offer: str | None = None
+    daily_video_json: str | None = None
+    input_json: str | None = field(default=None, repr=False)
 
     @classmethod
     def from_response(cls, turn, response):
@@ -186,29 +254,42 @@ class FrozenCompanionDecision:
             _validate_response(turn.input, response)
             if turn.speech_enabled and 'speech_request' not in response:
                 raise ValueError('missing speech decision')
+            if turn.bedtime_offer and 'speech_offer' not in response:
+                raise ValueError('missing bedtime decision')
             encoded = _json(response['plan'])
         except (ValueError, TypeError, KeyError, ValidationError, OverflowError):
             raise CompanionDecisionError('JEV_RESPONSE_INVALID') from None
         metering = _json({name: response[name] for name in ('usage', 'api_calls', 'latency_ms')})
         return cls(encoded, turn.input_digest, turn.source_ids, turn.input_revision, turn.as_of,
                    metering_json=metering, profile=response.get('evaluation', {}).get('profile', 'full'),
-                   speech_json=_json(_speech_request(response.get('speech_request'))) if turn.speech_enabled else None)
+                   speech_json=_json(_speech_request(response.get('speech_request'))) if turn.speech_enabled else None,
+                   speech_offer=_speech_offer(response['speech_offer']) if turn.bedtime_offer else None,
+                   daily_video_json=turn.daily_video_json, input_json=turn.input_json)
 
     @classmethod
     def from_record(cls, turn, record, *, profile='full'):
-        """Restore only against the caller's freshly rebuilt complete turn."""
+        """Restore only against a validated complete turn with the same digest."""
         try:
             fields = {'schema_version', 'plan', 'model', 'input_digest', 'source_id_map', 'input_revision', 'as_of'}
-            if (not isinstance(record, dict) or set(record) - {'metering', 'evaluation', 'speech_request'} != fields
+            if (not isinstance(record, dict) or set(record) - {
+                    'metering', 'evaluation', 'speech_request', 'speech_offer', 'daily_video_experience', 'input'} != fields
                     or record['schema_version'] != 'companion-decision/1' or record['model'] != MODEL
                     or record['input_digest'] != turn.input_digest or record['as_of'] != turn.as_of
                     or type(record['input_revision']) is not type(turn.input_revision)
                     or record['input_revision'] != turn.input_revision
                     or record['source_id_map'] != dict(turn.source_ids)):
                 raise ValueError('record does not match frozen turn')
+            if 'input' in record and _json(record['input']) != turn.input_json:
+                raise ValueError('record input does not match frozen turn')
+            if _daily_video_experience(record.get('daily_video_experience')) != turn.daily_video_experience:
+                raise ValueError('record daily video capability mismatch')
             _validate_evaluation(record)
             if turn.speech_enabled and 'speech_request' not in record:
                 raise ValueError('missing speech decision')
+            if turn.bedtime_offer and 'speech_offer' not in record:
+                raise ValueError('missing bedtime decision')
+            if 'speech_offer' in record:
+                _speech_offer(record['speech_offer'])
             record_profile = record.get('evaluation', {}).get('profile', 'full')
             if profile not in ('full', 'single_delivery') or record_profile == 'single_delivery' and profile != record_profile:
                 raise ValueError('decision evaluation profile mismatch')
@@ -227,7 +308,10 @@ class FrozenCompanionDecision:
             raise CompanionDecisionError('JEV_RESPONSE_INVALID') from None
         return cls(encoded, turn.input_digest, turn.source_ids, turn.input_revision, turn.as_of,
                    metering_json=_json(metering) if metering is not None else None, profile=record_profile,
-                   speech_json=_json(_speech_request(record.get('speech_request'))) if 'speech_request' in record else None)
+                   speech_json=_json(_speech_request(record.get('speech_request'))) if 'speech_request' in record else None,
+                   speech_offer=record.get('speech_offer') if turn.bedtime_offer else None,
+                   daily_video_json=turn.daily_video_json,
+                   input_json=turn.input_json if 'input' in record else None)
 
     @property
     def plan(self):
@@ -248,6 +332,12 @@ class FrozenCompanionDecision:
             result['evaluation'] = dict(profile=self.profile, not_evaluated=['control'])
         if self.speech_json is not None:
             result['speech_request'] = json.loads(self.speech_json)
+        if self.speech_offer is not None:
+            result['speech_offer'] = self.speech_offer
+        if self.daily_video_json is not None:
+            result['daily_video_experience'] = json.loads(self.daily_video_json)
+        if self.input_json is not None:
+            result['input'] = json.loads(self.input_json)
         return result
 
     def writer_projection(self):
@@ -263,6 +353,7 @@ class FrozenCompanionDecision:
 class CompanionDecisionResult:
     decision: FrozenCompanionDecision | None = None
     error_code: str | None = None
+    failure_context: dict = field(default_factory=dict)
 
     def __post_init__(self):
         if ((self.decision is None) == (self.error_code is None)
@@ -277,6 +368,9 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 def _endpoint(value):
     from original_client_relay_api import RELAY_BASE
+    from runtime.official_endpoints import LEGACY_API_BASE
+    if value == LEGACY_API_BASE + '/companion/decide':
+        return RELAY_BASE + '/companion/decide'
     if value == RELAY_BASE + '/companion/decide' and value.startswith('https://'):
         return value
     parsed = urllib.parse.urlsplit(value)
@@ -327,7 +421,8 @@ class JevDecisionPort:
         self._opener = urllib.request.build_opener(*handlers)
 
     def request_headers(self, body_digest):
-        headers = {'Content-Type': 'application/json', 'X-Olivia-Usage-Id': body_digest}
+        headers = {'Content-Type': 'application/json', 'X-Olivia-Usage-Id': body_digest,
+                   'X-Olivia-Request-Id': str(uuid.uuid4())}
         if self.endpoint.startswith('https://'):
             from .jev_billing import cloud_request_headers
             headers.update(cloud_request_headers(body_digest))
@@ -339,7 +434,9 @@ class JevDecisionPort:
 
     def _packet(self, turn):
         return {'input': turn.input, **({'profile': self.profile} if self.profile != 'full' else {}),
-                **({'speech_experience': True} if turn.speech_enabled else {})}
+                **({'speech_experience': True} if turn.speech_enabled else {}),
+                **({'bedtime_offer': True} if turn.bedtime_offer else {}),
+                **({'daily_video_experience': turn.daily_video_experience} if turn.daily_video_json is not None else {})}
 
     def _request(self, turn):
         value = turn.input
@@ -349,19 +446,43 @@ class JevDecisionPort:
             raise CompanionDecisionError('JEV_INPUT_TOO_LARGE')
         headers = self.request_headers(hashlib.sha256(body).hexdigest())
         request = urllib.request.Request(self.endpoint, data=body, headers=headers, method='POST')
-        with self._opener.open(request, timeout=self.timeout_seconds) as response:
-            if response.status != 200:
-                raise CompanionDecisionError('JEV_HTTP_ERROR')
-            if response.headers.get_content_type() != 'application/json':
-                raise CompanionDecisionError('JEV_RESPONSE_INVALID')
-            raw = response.read(_MAX_RESPONSE_BYTES + 1)
-        if len(raw) > _MAX_RESPONSE_BYTES:
-            raise CompanionDecisionError('JEV_RESPONSE_INVALID')
+        return self.json_response(request)
+
+    def json_response(self, request):
+        stage = 'request'
         try:
+            with self._opener.open(request, timeout=self.timeout_seconds) as response:
+                stage = 'http_response'
+                if response.status != 200:
+                    raise CompanionDecisionError('JEV_HTTP_ERROR')
+                if response.headers.get_content_type() != 'application/json':
+                    raise CompanionDecisionError('JEV_RESPONSE_INVALID')
+                raw = response.read(_MAX_RESPONSE_BYTES + 1)
+            if len(raw) > _MAX_RESPONSE_BYTES:
+                raise CompanionDecisionError('JEV_RESPONSE_INVALID')
+            stage = 'response_json'
             return json.loads(raw.decode('utf-8'), object_pairs_hook=_pairs,
                               parse_constant=_nonfinite)
-        except (ValueError, UnicodeError, RecursionError):
-            raise CompanionDecisionError('JEV_RESPONSE_INVALID') from None
+        except urllib.error.HTTPError as exc:
+            status, code = exc.code, _http_error_code(exc)
+            stage = 'http_response'
+            self._raise_transport_failure(request, code, stage, status, exc)
+        except CompanionDecisionError as exc:
+            self._raise_transport_failure(request, exc.code, stage, None, exc)
+        except (TimeoutError, urllib.error.URLError) as exc:
+            code = 'JEV_TIMEOUT' if isinstance(exc, TimeoutError) or isinstance(getattr(exc, 'reason', None), TimeoutError) else 'JEV_UNAVAILABLE'
+            self._raise_transport_failure(request, code, stage, None, exc)
+        except (OSError, http.client.HTTPException) as exc:
+            self._raise_transport_failure(request, 'JEV_UNAVAILABLE', stage, None, exc)
+        except (ValueError, UnicodeError, RecursionError) as exc:
+            self._raise_transport_failure(request, 'JEV_RESPONSE_INVALID', stage, None, exc)
+
+    def _raise_transport_failure(self, request, code, stage, status, exc):
+        from runtime.diagnostics.failure_context import record_jev_failure
+        failure = CompanionDecisionError(code)
+        failure.failure_context = record_jev_failure(exc, code, stage,
+            request_id=request.get_header('X-olivia-request-id'), http_status=status)
+        raise failure from exc
 
     async def decide(self, turn):
         if not isinstance(turn, FrozenCompanionTurn):
@@ -375,7 +496,8 @@ class JevDecisionPort:
             await settle_receipt(billing, hashlib.sha256(_json(self._packet(turn)).encode('utf-8')).hexdigest())
             return CompanionDecisionResult(decision=decision)
         except CompanionDecisionError as error:
-            code = error.code
+            return CompanionDecisionResult(error_code=error.code,
+                failure_context=getattr(error, 'failure_context', {}))
         except urllib.error.HTTPError as error:
             code = _http_error_code(error)
         except TimeoutError:
@@ -415,10 +537,16 @@ def _speech_request(value):
     return validate_intent(value)
 
 
+def _speech_offer(value):
+    if value not in ('none', 'bedtime', 'clarify'):
+        raise ValueError('invalid bedtime decision')
+    return value
+
+
 def _validate_response(request, value):
     expected = {'schema_version', 'tasks', 'plan', 'contract_valid', 'status', 'fallback', 'action_executed',
                 'model', 'backend', 'production_approved', 'latency_ms', 'api_calls', 'usage'}
-    if (not isinstance(value, dict) or set(value) - {'evaluation', 'speech_request'} != expected
+    if (not isinstance(value, dict) or set(value) - {'evaluation', 'speech_request', 'speech_offer'} != expected
             or value['schema_version'] != 'companion-shadow/1' or value['model'] != MODEL
             or value['backend'] != 'jev' or value['contract_valid'] is not True
             or value['status'] != 'valid_contract' or value['fallback'] is not False
@@ -429,6 +557,8 @@ def _validate_response(request, value):
             or type(value['usage']['input_tokens']) is not int or value['usage']['input_tokens'] < 0):
         raise ValueError('invalid complete envelope')
     _speech_request(value.get('speech_request'))
+    if 'speech_offer' in value:
+        _speech_offer(value['speech_offer'])
     _validate_evaluation(value)
     _validate_plan(request, value['plan'])
     if _json(value['tasks']) != _json(_task_projection(value['plan'])):

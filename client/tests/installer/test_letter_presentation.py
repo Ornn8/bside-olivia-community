@@ -28,7 +28,7 @@ def test_one_call_body_never_contains_signature_or_sticker(monkeypatch):
     from runtime.reply import reply_pipeline
     from runtime.reply.reply_reviewer import NullReviewer
     monkeypatch.setattr(reply_pipeline, 'weighted_candidates',
-                        lambda allowed, history, *, limit: ('linli-07',))
+                        lambda allowed, history, *, limit, rng=None: ('linli-07',))
     class Writer:
         calls = 0
         async def run(self, request):

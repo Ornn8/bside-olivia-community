@@ -44,6 +44,8 @@ def generate(kind, data, output, *, environment=None, assets=None):
         duration = _media_duration_seconds(path, required_streams=('0:a:0', '0:v:0') if kind in ('video', 'lipsync') else ('0:a:0',), ffmpeg_path=Path(ffmpeg) if ffmpeg else None)
         if duration is None or duration <= 0: raise CloudError('GPU_OUTPUT_INVALID', 502)
         metadata['duration_seconds'] = duration
-    task = run_sync(lambda: asyncio.run(api.generate(kind, data, output, assets=assets, validate=validate)))
+    receipt = Path(output).with_name(Path(output).stem + '-remote-order.private.json') if kind in ('video', 'lipsync') else None
+    task = run_sync(lambda: asyncio.run(api.generate(kind, data, output, assets=assets,
+        validate=validate, **({'receipt_path': receipt} if receipt is not None else {}))))
     return {**metadata, 'remote_task_id': task['task_id'],
             'audio_provider': 'remote', 'visual_provider': 'remote' if kind in ('video','lipsync') else ''}

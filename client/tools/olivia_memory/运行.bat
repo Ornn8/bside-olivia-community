@@ -1,41 +1,39 @@
 @echo off
-setlocal enabledelayedexpansion
+setlocal disabledelayedexpansion
 
 rem ============================================================
 rem  Launcher for olivia_memory.py
 rem
-rem  KEEP THIS FILE PURE ASCII.
+rem  KEEP THIS FILE PURE ASCII.  A .bat with non-ASCII text is
+rem  read with the wrong code page on some machines; cmd then
+rem  splits the lines apart and runs the fragments as commands.
+rem  NEVER add "chcp" to this file.  And keep ")" out of the echo
+rem  text inside an "if (" block - an unescaped ")" ends the block.
 rem
-rem  Why: the console code page differs between machines (some are
-rem  65001/UTF-8, some are 936/GBK). A .bat containing non-ASCII text
-rem  gets mis-read on the other kind, and cmd then splits lines apart
-rem  and tries to run the fragments as commands.
+rem  All Chinese output comes from olivia_memory.py, which detects
+rem  the console encoding and matches it.
 rem
-rem  An earlier version was UTF-8 with "chcp 65001". On a machine where
-rem  chcp did not take effect, the rem/echo lines were torn apart and
-rem  executed as garbage commands. ASCII-only text cannot break that way.
+rem  Python search order:
+rem    0) the Python remembered from last time (python_path.txt)
+rem    1) python / python3 on PATH           (WindowsApps skipped)
+rem    2) the py launcher on PATH
+rem    3) the Python shipped with Olivia
+rem    4) WindowsApps python                 (last resort)
+rem    5) otherwise: ask the user to drag the Olivia folder in
 rem
-rem  NEVER add "chcp" to this file. Also: inside an "if (" block an
-rem  unescaped ")" ends the block early and silently breaks the script,
-rem  so keep brackets out of the echo text below.
-rem
-rem  All Chinese output comes from olivia_memory.py, which detects the
-rem  console encoding and matches it.
+rem  Step 3 checks two folder levels, because the install is often
+rem  nested:  X:\SomeFolder\OliviaSomething\runtime\python-*\python.exe
+rem  Keep recursive discovery below each matched candidate root.
 rem ============================================================
 
 rem ---- 0) olivia_memory.py must sit next to this .bat ----
-rem   The usual way to hit this: double-clicking the .bat straight from
-rem   inside a zip viewer. 7-Zip and friends unpack only the .bat to a
-rem   temp folder, the .py is not there, and Python then reports a very
-rem   confusing "can't open file ...\Temp\7zXXXX\olivia_memory.py".
-rem   Say it plainly instead.
 if not exist "%~dp0olivia_memory.py" (
   echo.
   echo   olivia_memory.py is not next to this .bat.
   echo.
   echo   Most likely you opened the zip and double-clicked the .bat
   echo   inside the archive viewer. Only the .bat gets unpacked to a
-  echo   temp folder, so the other two files are missing.
+  echo   temp folder, so the other files are missing.
   echo.
   echo   Extract the whole folder first, then open that folder and
   echo   run the .bat from there.
@@ -45,67 +43,113 @@ if not exist "%~dp0olivia_memory.py" (
 )
 
 set "PY="
-set "CANDS="
+set "REMEMBER=%~dp0python_path.txt"
 
-rem ---- 1) python / python3 on PATH ----
-rem   The WindowsApps entries are skipped here: on a machine with no real
-rem   Python they are only a stub that opens the Microsoft Store. A machine
-rem   that DOES have the Store Python gets a second chance in step 5.
-for /f "delims=" %%P in ('where python 2^>nul ^| find /i /v "WindowsApps"') do set CANDS=!CANDS! "%%P"
-for /f "delims=" %%P in ('where python3 2^>nul ^| find /i /v "WindowsApps"') do set CANDS=!CANDS! "%%P"
+rem ---- reuse the Python that worked last time ----
+if exist "%REMEMBER%" call :remember
+if defined PY goto :run
 
-rem ---- 2) the Python launcher py.exe on PATH ----
-rem   Plenty of people install Python and end up with only "py" on the
-rem   path, no "python". py.exe is the official launcher and finds the
-rem   newest installed Python.
-for /f "delims=" %%P in ('where py 2^>nul') do set CANDS=!CANDS! "%%P"
+rem ---- 1) python / python3 on PATH (WindowsApps skipped) ----
+for /f "delims=" %%P in ('where python 2^>nul ^| find /i /v "WindowsApps"') do call :try "%%~P"
+if not defined PY for /f "delims=" %%P in ('where python3 2^>nul ^| find /i /v "WindowsApps"') do call :try "%%~P"
 
-rem ---- 3) the python shipped with Olivia ----
-rem   the runtime folder name contains a version number,
-rem   so search recursively and filter by "python-"
-for %%D in (C D E F G H I J K) do for /d %%R in ("%%D:\*Olivia*") do for /f "delims=" %%P in ('dir /s /b "%%~fR\python.exe" 2^>nul ^| find /i "python-"') do set CANDS=!CANDS! "%%~fP"
-for /d %%R in ("%LOCALAPPDATA%\*Olivia*") do for /f "delims=" %%P in ('dir /s /b "%%~fR\python.exe" 2^>nul ^| find /i "python-"') do set CANDS=!CANDS! "%%~fP"
+rem ---- 2) the py launcher ----
+if not defined PY for /f "delims=" %%P in ('where py 2^>nul') do call :try "%%~P"
+if defined PY goto :run
 
-rem ---- 4) take the first candidate that really runs ----
-for %%P in (%CANDS%) do if not defined PY (
-  "%%~P" -c "import sqlite3, json" >nul 2>&1
-  if not errorlevel 1 set "PY=%%~P"
-)
+rem ---- 3) the Python shipped with Olivia ----
+rem   level 1:  X:\*Olivia*
+for %%D in (C D E F G H I J K L M N) do if exist "%%D:\" for /d %%R in ("%%D:\*Olivia*") do call :check "%%~fR"
+if defined PY goto :run
+rem   level 2:  X:\*\*Olivia*
+for %%D in (C D E F G H I J K L M N) do if exist "%%D:\" for /d %%A in ("%%D:\*") do for /d %%R in ("%%~fA\*Olivia*") do call :check "%%~fR"
+rem   and under the user profile
+if not defined PY if defined LOCALAPPDATA for /d %%R in ("%LOCALAPPDATA%\*Olivia*") do call :check "%%~fR"
 
-rem ---- 5) last resort: the Microsoft Store Python ----
-rem   It lives under WindowsApps, which step 1 skipped. Only tried when
-rem   nothing else worked. Running a candidate is what tells a real Python
-rem   from the plain stub: the real one imports fine, the stub does not.
-if defined PY goto :have_python
-for /f "delims=" %%P in ('where python 2^>nul ^| find /i "WindowsApps"') do call :try_python "%%~P"
-:have_python
+rem ---- 4) the Microsoft Store python, last resort ----
+if not defined PY for /f "delims=" %%P in ('where python 2^>nul ^| find /i "WindowsApps"') do call :try "%%~P"
 
-if not defined PY (
-  echo.
-  echo   Python not found.  /  No usable Python.
-  echo.
-  echo   Try one of these:
-  echo     1. Put this folder next to your Olivia install folder, then run again.
-  echo     2. Double-click olivia_memory.py directly - if Windows opens it with
-  echo        a Python launcher, that works just as well.
-  echo     3. Install Python 3 and tick "Add Python to PATH". A Microsoft Store
-  echo        Python works too.
-  echo     4. Run it by hand:   python olivia_memory.py   or   py olivia_memory.py
-  echo.
-  pause
-  exit /b 1
-)
+if defined PY goto :run
 
-echo   Using Python: %PY%
+rem ---- 5) nothing found: ask for the Olivia folder ----
+echo.
+echo   No usable Python was found on this computer.
+echo.
+echo   Please drag your Olivia install folder into this window
+echo   and press Enter.  It is the folder that contains
+echo   "install", "runtime" and "launcher" side by side.
+echo.
+set "OLIV="
+set /p "OLIV=  Folder: "
+set "OLIV=%OLIV:"=%"
+if not defined OLIV goto :giveup
+call :check "%OLIV%"
+if defined PY goto :run
+echo.
+echo   Still nothing under that folder. These were tried:
+echo     "%OLIV%\python.exe"
+echo     "%OLIV%\runtime\python-*\python.exe"
+echo     "%OLIV%\python-*\python.exe"
+echo.
+goto :giveup
+
+:run
+echo.
+echo   Found Python: "%PY%"
+(echo "%PY%")>"%REMEMBER%" 2>nul
+echo.
 "%PY%" "%~dp0olivia_memory.py" %*
-
 echo.
 pause
 endlocal
 exit /b 0
 
-:try_python
+:giveup
+echo   The tool cannot run until a Python is available.
+echo.
+echo   Option 1: Install Python 3 from python.org and tick
+echo             "Add python.exe to PATH", then run this again.
+echo   Option 2: Run the tool by hand with a Python you already
+echo             have, for example:
+echo               python olivia_memory.py
+echo.
+pause
+endlocal
+exit /b 1
+
+rem ------------------------------------------------------------
+rem  :check <folder>
+rem    The folder may be the Olivia root, its runtime folder, or
+rem    the folder holding python.exe itself. All three are tried,
+rem    so it does not matter which one the user drags in.
+rem ------------------------------------------------------------
+:check
+if defined PY exit /b 0
+if exist "%~1\python.exe" call :try "%~1\python.exe"
+if defined PY exit /b 0
+for /d %%F in ("%~1\runtime\python-*") do if not defined PY call :try "%%~fF\python.exe"
+if defined PY exit /b 0
+for /d %%F in ("%~1\python-*") do if not defined PY call :try "%%~fF\python.exe"
+if defined PY exit /b 0
+for /f "delims=" %%P in ('dir /s /b "%~1\python.exe" 2^>nul ^| find /i "python-"') do if not defined PY call :try "%%~P"
+exit /b 0
+
+rem ------------------------------------------------------------
+rem  :try <path to a python executable>
+rem    Accepts it only if it really imports what the tool needs.
+rem    That is what tells a real Python apart from the Microsoft
+rem    Store stub, which exists on many machines and does not.
+rem ------------------------------------------------------------
+:try
 if defined PY exit /b 0
 "%~1" -c "import sqlite3, json" >nul 2>&1
 if not errorlevel 1 set "PY=%~1"
+exit /b 0
+
+rem  Read the cache outside a block, without expanding literal exclamation marks.
+:remember
+set "OLD="
+set /p OLD=<"%REMEMBER%"
+set "OLD=%OLD:"=%"
+if defined OLD call :try "%OLD%"
 exit /b 0

@@ -1273,3 +1273,18 @@ def test_extract_player_rejects_zip_slip_and_outside_output_root(tmp_path: Path)
         package.writestr("safe/file.txt", "synthetic")
     with pytest.raises(ValueError):
         extract_player.safe_extract_zip(safe_archive, tmp_path.parent / "outside", allowed_root=tmp_path)
+
+
+def test_new_media_files_are_not_allowed_in_the_public_repository(tmp_path):
+    """Images, audio and video live on the operator's server; only already
+    published sticker and installer assets stay tracked."""
+    import baseline_hardening_scan as scan
+    allowed = [tmp_path / 'client/runtime/letter_stickers/linli-272.gif', tmp_path / 'client/installer/assets/olivia.ico']
+    blocked = [tmp_path / 'client/runtime/letter_stickers/linli-273.png', tmp_path / 'client/runtime/wardrobe/mori-01.png',
+               tmp_path / 'docs/demo.mp4']
+    for path in allowed + blocked:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b'x')
+    findings = scan.scan_large_files(tmp_path, allowed + blocked)
+    assert sorted(item.split(':')[0] for item in findings) == sorted(
+        path.relative_to(tmp_path).as_posix() for path in blocked)

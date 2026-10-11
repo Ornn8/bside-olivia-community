@@ -199,10 +199,13 @@ def test_choice_uses_existing_extraction_and_is_durable(tmp_path):
         asyncio.run(runtime.consume_exchange('reply:test:2', '微信吧', '好啊。', occurred_at=now))
 
 
-def test_preview_invitation_requires_explicit_local_configuration(tmp_path):
+def test_preview_invitation_follows_letters_default_and_local_configuration(tmp_path):
     from runtime.personal_chat.contact_invitation import preview_configured
-    assert not preview_configured(tmp_path, {})
+    from runtime.reply.proactive_letters import write_json
+    assert preview_configured(tmp_path, {})              # letters are on by default
     assert not preview_configured(None, {})
+    write_json(tmp_path / 'proactive/settings.json', {'enabled': False})
+    assert not preview_configured(tmp_path, {})          # an explicit choice after 2.2.7 is kept
     path = tmp_path / 'personal-chat/config.json'
     path.parent.mkdir()
     path.write_text('{}', encoding='utf-8')

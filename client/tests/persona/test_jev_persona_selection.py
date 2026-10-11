@@ -156,3 +156,53 @@ def test_bad_development_configuration_does_not_fall_back_to_legacy(monkeypatch)
         persona_snapshot=snapshot(), persona_mode='text_letter'))
     assert not gateway.calls
     assert '仅保留核心人格' in str(output) and '她有自己的主见和边界。' in str(output)
+
+
+def test_persona_and_history_selection_share_frozen_input_and_overlap(monkeypatch):
+    monkeypatch.delenv('OLIVIA_JEV_DECISION_URL', raising=False)
+    async def scenario():
+        persona_started, history_started = asyncio.Event(), asyncio.Event()
+        messages = list(core_messages())
+        messages.insert(-1, {'role': 'assistant', 'content': '[历史消息 ' + json.dumps({
+            'source': 'reply:older', 'event_id': 'reply:older:linli', 'actor': 'linli',
+            'evidence_kind': 'statement_only', 'truncated': False}) + ']\n我在读书。'})
+        class ConcurrentDuties(Duties):
+            async def evaluate(self, kind, packet):
+                persona_started.set()
+                await asyncio.wait_for(history_started.wait(), .3)
+                assert packet['current_message'] == messages[-1]['content']
+                return await super().evaluate(kind, packet)
+        gateway = Gateway({'selected_ids': [], 'dependencies': []})
+        original = gateway.complete_structured_scoped
+        async def complete(*args, **kwargs):
+            history_started.set()
+            await asyncio.wait_for(persona_started.wait(), .3)
+            return await original(*args, **kwargs)
+        gateway.complete_structured_scoped = complete
+        port = ConcurrentDuties(['taste.reading'])
+        output = await select_history_messages(messages, gateway, max_input_chars=20000,
+            persona_snapshot=snapshot(), persona_mode='text_letter', persona_decision_port=port)
+        assert len(port.calls) == len(gateway.calls) == 1
+        assert '她喜欢读有关时间的书。' in str(output) and output[-1] == messages[-1]
+    asyncio.run(scenario())
+
+
+def test_cancelled_history_selection_joins_persona_child(monkeypatch):
+    monkeypatch.delenv('OLIVIA_JEV_DECISION_URL', raising=False)
+    async def scenario():
+        started, stopped = asyncio.Event(), asyncio.Event()
+        class WaitingDuties:
+            async def evaluate(self, *args):
+                started.set()
+                try:
+                    await asyncio.Future()
+                finally:
+                    stopped.set()
+        task = asyncio.create_task(select_history_messages(core_messages(), Gateway({}), max_input_chars=20000,
+            persona_snapshot=snapshot(), persona_mode='text_letter', persona_decision_port=WaitingDuties()))
+        await asyncio.wait_for(started.wait(), .3)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert stopped.is_set()
+    asyncio.run(scenario())

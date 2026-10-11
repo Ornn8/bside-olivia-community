@@ -252,6 +252,33 @@ def test_program_patch_omits_media_tool_and_preserves_offline_tool(tmp_path, mon
     assert tool.read_bytes() == b'offline-ffmpeg'
 
 
+def test_patch_omits_images_but_keeps_catalog_and_downloaded_user_assets(tmp_path):
+    source, _ = _clean_payload_repo(tmp_path)
+    for relative in ('runtime/letter_stickers/linli-01.png','runtime/letter_stickers/linli-272.GIF',
+                     'installer/assets/wardrobe.webp','installer/assets/wechat-payment.jpeg'):
+        path=source/relative;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(b'fixture-image')
+    metadata=source/'runtime/letter_stickers/catalog.json'
+    metadata.write_text('[]\n')
+    _run_git(source,'add','.')
+    _run_git(source,'commit','-m','synthetic image payload')
+    from installer.full_patch import copy_project_payload
+    fresh=tmp_path/'fresh-installer'
+    copy_project_payload(source,fresh)
+    assert (fresh/'runtime/letter_stickers/linli-01.png').read_bytes()==b'fixture-image'
+    assert not (fresh/'runtime/letter_stickers/linli-272.GIF').exists()
+    package=tmp_path/'without-images.oliviapatch'
+    result=build_component_package(source,package,version='0.1.2',expected_source_commit=_run_git(source,'rev-parse','HEAD'))
+    with zipfile.ZipFile(package) as archive:
+        assert not any(Path(name).suffix.lower() in component_package.IMAGE_SUFFIXES for name in archive.namelist())
+        assert archive.read('payload/runtime/letter_stickers/catalog.json')==b'[]\n'
+        assert 'payload/runtime/image_assets.json' in archive.namelist()
+    install=_managed_installation(tmp_path)
+    saved=install/'data/image-assets/stickers/verified/linli-01.png'
+    saved.parent.mkdir(parents=True);saved.write_bytes(b'already-downloaded')
+    apply_component_update(install,package,expected_manifest_sha256=result['manifest_sha256'])
+    assert saved.read_bytes()==b'already-downloaded'
+
+
 def test_rejects_dirty_or_wrong_source_before_writing_outputs(tmp_path: Path) -> None:
     source, commit = _clean_payload_repo(tmp_path)
     package = tmp_path / "update.oliviapatch"

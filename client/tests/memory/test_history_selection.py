@@ -129,3 +129,13 @@ def test_unexpected_failure_names_the_step_and_exception(monkeypatch):
     assert checks[-1]['status'] == 'unavailable' and checks[-1]['reason'] == 'error_select_RuntimeError'
     assert trace.project({'event': 'history_recall', 'reason': 'error_select_RuntimeError'})['reason'] == 'error_select_RuntimeError'
     assert 'reason' not in trace.project({'event': 'history_recall', 'reason': 'error_select_C:/secret'})
+
+
+def test_a_day_the_user_named_survives_an_empty_selection():
+    groups = [[{'citation': 'old:0', 'speaker': 'user', 'occurred_at': '2026-08-26', 'text': '今晚一起过生日',
+                'provenance': {'requested_reference': 'date'}}],
+              [{'citation': 'old:1', 'speaker': 'user', 'occurred_at': '2026-09-01', 'text': '食堂吃面'}]]
+    messages = ({'role': 'system', 'content': '人设\n' + _block(groups)},
+                {'role': 'user', 'content': '还记得8月26号那天吗'})
+    result = run(Gateway({'selected_ids': []}), messages)
+    assert '今晚一起过生日' in result[0]['content'] and '食堂吃面' not in result[0]['content']

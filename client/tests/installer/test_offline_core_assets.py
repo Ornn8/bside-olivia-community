@@ -385,6 +385,9 @@ def test_dependency_probe_runs_real_python_png_roundtrip(tmp_path: Path) -> None
     function = "function Test-ManagedServerDependencies" + source.split(
         "function Test-ManagedServerDependencies", 1
     )[1].split("\n}\n", 1)[0] + "\n}\n"
+    function = ("function ConvertTo-ExtendedPath" + source.split(
+        "function ConvertTo-ExtendedPath", 1
+    )[1].split("\n}\n", 1)[0] + "\n}\n" + function)
     script = tmp_path / "real-dependency-probe.ps1"
     python_literal = "'" + sys.executable.replace("'", "''") + "'"
     script.write_text(function + "if (-not (Test-ManagedServerDependencies -PythonExe "

@@ -318,6 +318,10 @@
       "MEDIA_JOB_INTERRUPTED": {
         "status": "UNAVAILABLE",
         "retryable": true
+      },
+      "GPU_RECOVERY_REQUIRED": {
+        "status": "UNAVAILABLE",
+        "retryable": true
       }
     }
   },

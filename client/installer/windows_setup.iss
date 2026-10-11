@@ -28,23 +28,37 @@ LicenseFile={#PayloadRoot}\LICENSE
 SetupIconFile={#PayloadRoot}\installer\assets\olivia.ico
 DisableProgramGroupPage=yes
 SetupLogging=yes
+AllowNoIcons=yes
+#ifdef OriginalClientPayload
+DiskSpanning=yes
+DiskSliceSize=1500000000
+#endif
 
 [Languages]
 Name: "chinesesimp"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Files]
-Source: "{#PayloadRoot}\*"; Excludes: "offline\video-runtime\*"; DestDir: "{tmp}\OliviaPayload"; Flags: recursesubdirs createallsubdirs dontcopy noencryption ignoreversion
+#ifdef OriginalClientPayload
+Source: "{#PayloadRoot}\*"; Excludes: "offline\video-runtime\*,offline\original-client\*,\LICENSE"; DestDir: "{code:GetPayloadRoot}"; Flags: recursesubdirs createallsubdirs ignoreversion deleteafterinstall
+Source: "{#PayloadRoot}\offline\original-client\*"; Excludes: "*.mp3,*.mp4"; DestDir: "{code:GetPayloadRoot}\offline\original-client"; Flags: recursesubdirs createallsubdirs ignoreversion deleteafterinstall
+Source: "{#PayloadRoot}\offline\original-client\*.mp3"; DestDir: "{code:GetPayloadRoot}\offline\original-client"; Flags: recursesubdirs createallsubdirs ignoreversion deleteafterinstall nocompression
+Source: "{#PayloadRoot}\offline\original-client\*.mp4"; DestDir: "{code:GetPayloadRoot}\offline\original-client"; Flags: recursesubdirs createallsubdirs ignoreversion deleteafterinstall nocompression
+#else
+Source: "{#PayloadRoot}\*"; Excludes: "offline\video-runtime\*,\LICENSE"; DestDir: "{code:GetPayloadRoot}"; Flags: recursesubdirs createallsubdirs ignoreversion deleteafterinstall
+#endif
+; Run the transaction only after the entire payload has been extracted.
+Source: "{#PayloadRoot}\LICENSE"; DestDir: "{code:GetPayloadRoot}"; Flags: ignoreversion deleteafterinstall; AfterInstall: InstallPayload
 
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加选项："
 
 [Icons]
-Name: "{userprograms}\Olivia 本地版"; Filename: "{sys}\wscript.exe"; Parameters: "//B //Nologo ""{code:GetInstallRoot}\install\START.vbs"""; WorkingDir: "{code:GetInstallRoot}\install"; IconFilename: "{code:GetInstallRoot}\install\local_backend\installer\assets\olivia.ico"
-Name: "{userdesktop}\Olivia 本地版"; Filename: "{sys}\wscript.exe"; Parameters: "//B //Nologo ""{code:GetInstallRoot}\install\START.vbs"""; WorkingDir: "{code:GetInstallRoot}\install"; IconFilename: "{code:GetInstallRoot}\install\local_backend\installer\assets\olivia.ico"; Tasks: desktopicon
+Name: "{userprograms}\Olivia 本地版"; Filename: "{sys}\wscript.exe"; Parameters: "//B //Nologo ""{code:GetInstallRoot}\install\START.vbs"""; WorkingDir: "{code:GetInstallRoot}\install"; IconFilename: "{code:GetInstallRoot}\install\local_backend\installer\assets\olivia.ico"; Check: InstallCompleted and not WizardNoIcons
+Name: "{userdesktop}\Olivia 本地版"; Filename: "{sys}\wscript.exe"; Parameters: "//B //Nologo ""{code:GetInstallRoot}\install\START.vbs"""; WorkingDir: "{code:GetInstallRoot}\install"; IconFilename: "{code:GetInstallRoot}\install\local_backend\installer\assets\olivia.ico"; Tasks: desktopicon; Check: InstallCompleted and not WizardNoIcons
 
 [Run]
-Filename: "{sys}\wscript.exe"; Parameters: "//B //Nologo ""{code:GetInstallRoot}\install\START.vbs"""; Description: "立即启动 Olivia"; WorkingDir: "{code:GetInstallRoot}\install"; Flags: postinstall nowait skipifsilent
+Filename: "{sys}\wscript.exe"; Parameters: "//B //Nologo ""{code:GetInstallRoot}\install\START.vbs"""; Description: "立即启动 Olivia"; WorkingDir: "{code:GetInstallRoot}\install"; Flags: postinstall nowait skipifsilent; Check: InstallCompleted
 
 [Code]
 var
@@ -54,24 +68,51 @@ var
   SetupResultPath: String;
   LastInstallPhase: String;
   InstallSucceeded: Boolean;
+  PayloadDirectory: String;
+  PayloadParent: String;
+  OwnPayloadParent: Boolean;
+  PreviousTemp: String;
+  PreviousTmp: String;
+  FailureMessage: String;
   FailureDetailsButton: TNewButton;
-  CloseAndRetryButton: TNewButton;
-  CloseRequested: Boolean;
 
-procedure CloseAndRetry(Sender: TObject);
+function GetFileAttributesW(const FileName: String): LongWord;
+  external 'GetFileAttributesW@kernel32.dll stdcall';
+function SetEnvironmentVariableW(const Name, Value: String): Boolean;
+  external 'SetEnvironmentVariableW@kernel32.dll stdcall';
+
+function RunInstallation: String; forward;
+
+function InstallCompleted: Boolean;
 begin
-  CloseRequested := True;
-  WizardForm.NextButton.OnClick(WizardForm.NextButton);
+  Result := InstallSucceeded;
 end;
 
 procedure ShowFailureDetails(Sender: TObject);
 begin
-  MsgBox('这些信息仅供技术支持定位问题，无需自行处理。' + #13#10 +
-    '错误编号：' + StableInstallCode + #13#10 + '发生步骤：' + LastInstallPhase,
+  MsgBox('错误编号：' + StableInstallCode + #13#10 + '发生步骤：' + LastInstallPhase,
     mbInformation, MB_OK);
 end;
 
-function RunInstallation: String; forward;
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  if (CurPageID = wpFinished) and (FailureMessage <> '') then
+  begin
+    WizardForm.FinishedHeadingLabel.Caption := '安装未完成';
+    WizardForm.FinishedLabel.Caption := FailureMessage + #13#10 + #13#10 +
+      '处理后请重新运行安装器，无需卸载已有程序。';
+    WizardForm.FinishedLabel.Height := ScaleY(180);
+    WizardForm.RunList.Visible := False;
+    FailureDetailsButton.Visible := True;
+  end;
+end;
+
+function GetCustomSetupExitCode: Integer;
+begin
+  Result := 0;
+  if FailureMessage <> '' then
+    Result := 7;
+end;
 
 function InstallPhaseCaption(const Phase: String): String;
 begin
@@ -210,6 +251,8 @@ procedure InitializeWizard;
 var
   PreviousRoot: String;
 begin
+  PreviousTemp := GetEnv('TEMP');
+  PreviousTmp := GetEnv('TMP');
   InstallProgressPage := CreateOutputProgressPage(
     '正在安装 Olivia 本地版',
     '正在为你准备使用所需的文件，请稍候。'
@@ -233,24 +276,14 @@ begin
     if FileExists(AddBackslash(PreviousRoot) + 'install\.olivia-full-patch.json') then
       InstallDirPage.Values[0] := PreviousRoot;
   FailureDetailsButton := TNewButton.Create(WizardForm);
-  FailureDetailsButton.Parent := WizardForm.ReadyPage;
-  FailureDetailsButton.Left := WizardForm.ReadyMemo.Left;
-  FailureDetailsButton.Top := WizardForm.ReadyMemo.Top + WizardForm.ReadyMemo.Height - ScaleY(30);
+  FailureDetailsButton.Parent := WizardForm.FinishedPage;
+  FailureDetailsButton.Left := WizardForm.FinishedLabel.Left;
+  FailureDetailsButton.Top := WizardForm.FinishedLabel.Top + ScaleY(185);
   FailureDetailsButton.Width := ScaleX(130);
   FailureDetailsButton.Height := ScaleY(26);
   FailureDetailsButton.Caption := '查看技术详情';
   FailureDetailsButton.OnClick := @ShowFailureDetails;
   FailureDetailsButton.Visible := False;
-  CloseAndRetryButton := TNewButton.Create(WizardForm);
-  CloseAndRetryButton.Parent := WizardForm.ReadyPage;
-  CloseAndRetryButton.Left := FailureDetailsButton.Left + FailureDetailsButton.Width + ScaleX(12);
-  CloseAndRetryButton.Top := FailureDetailsButton.Top;
-  CloseAndRetryButton.Width := ScaleX(180);
-  CloseAndRetryButton.Height := FailureDetailsButton.Height;
-  CloseAndRetryButton.Caption := '关闭 Olivia 并重试';
-  CloseAndRetryButton.OnClick := @CloseAndRetry;
-  CloseAndRetryButton.Visible := False;
-  WizardForm.ReadyMemo.Height := WizardForm.ReadyMemo.Height - ScaleY(38);
 end;
 
 function GetInstallRoot(Param: String): String;
@@ -258,33 +291,44 @@ begin
   Result := InstallDirPage.Values[0];
 end;
 
-function NextButtonClick(CurPageID: Integer): Boolean;
+function GetPayloadRoot(Param: String): String;
+begin
+  if PayloadDirectory <> '' then
+    Result := PayloadDirectory
+  else
+    Result := AddBackslash(ExpandFileName(InstallDirPage.Values[0])) +
+      '.olivia-setup-' + ExtractFileName(ExpandConstant('{tmp}')) + '\OliviaPayload';
+end;
+
+function SafeSetupDirectory(Path: String): Boolean;
 var
-  FailureMessage: String;
+  Attributes: LongWord;
+  Parent: String;
+begin
+  Result := True;
+  while Path <> '' do
+  begin
+    Attributes := GetFileAttributesW(Path);
+    if (Attributes <> $FFFFFFFF) and
+      (((Attributes and $400) <> 0) or ((Attributes and $10) = 0)) then
+    begin
+      Result := False;
+      Exit;
+    end;
+    Parent := ExtractFileDir(Path);
+    if Parent = Path then
+      Exit;
+    Path := Parent;
+  end;
+end;
+
+function NextButtonClick(CurPageID: Integer): Boolean;
 begin
   Result := True;
   if (CurPageID = InstallDirPage.ID) and (Trim(InstallDirPage.Values[0]) = '') then
   begin
     MsgBox('请选择 Olivia 的保存位置。', mbError, MB_OK);
     Result := False;
-  end;
-  if (CurPageID = wpReady) and not WizardSilent and not InstallSucceeded then
-  begin
-    FailureDetailsButton.Visible := False;
-    CloseAndRetryButton.Visible := False;
-    FailureMessage := RunInstallation;
-    if FailureMessage <> '' then
-    begin
-      Result := False;
-      WizardForm.PageNameLabel.Caption := '安装未完成';
-      WizardForm.PageDescriptionLabel.Caption := '请按下面的说明处理后重试。';
-      WizardForm.ReadyLabel.Visible := False;
-      WizardForm.ReadyMemo.Text := FailureMessage + #13#10 + #13#10 +
-        '处理后点击“重试安装”；更换位置请点击“上一步”。不需要卸载已有程序。';
-      WizardForm.NextButton.Caption := '重试安装';
-      FailureDetailsButton.Visible := True;
-      CloseAndRetryButton.Visible := StableInstallCode = 'INSTALL_APPLICATION_RUNNING';
-    end;
   end;
 end;
 
@@ -296,39 +340,27 @@ var
   ExecSucceeded: Boolean;
   DiagnosticContent: AnsiString;
   ResolvedProductRoot: AnsiString;
-  CloseThisAttempt: Boolean;
 begin
-  CloseThisAttempt := CloseRequested;
-  CloseRequested := False;
   Result := '';
   StableInstallCode := '';
-  SetupResultPath := ExpandConstant('{tmp}\olivia-setup-result.txt');
+  SetupResultPath := AddBackslash(PayloadParent) + 'olivia-setup-result.txt';
   DeleteFile(SetupResultPath);
   DeleteFile(SetupResultPath + '.diagnostic.json');
   ExitCode := -1;
-  InstallProgressPage.SetText('正在解包安装文件…', '请保持窗口开启。');
+  InstallProgressPage.SetText('正在安装 Olivia…', '请保持窗口开启。');
   InstallProgressPage.SetProgress(0, 1);
   InstallProgressPage.Show;
   try
-    try
-      ExtractTemporaryFiles('{tmp}\OliviaPayload\*');
-    except
-      StableInstallCode := 'SETUP_PAYLOAD_EXTRACT_FAILED';
-      Log('Olivia installer code: ' + StableInstallCode);
-      Result := '安装文件未能解压。请确认磁盘有足够空间后重试；如果仍然失败，请重新下载完整安装包。';
-      Exit;
-    end;
-
     PowerShell := ExpandConstant('{sysnative}\WindowsPowerShell\v1.0\powershell.exe');
     Params := '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' +
-      AddQuotes(ExpandConstant('{tmp}\OliviaPayload\installer\Install.ps1')) +
-      ' -PayloadRoot ' + AddQuotes(ExpandConstant('{tmp}\OliviaPayload')) +
+      AddQuotes(AddBackslash(PayloadDirectory) + 'installer\Install.ps1') +
+      ' -PayloadRoot ' + AddQuotes(PayloadDirectory) +
       ' -Destination ' + AddQuotes(InstallDirPage.Values[0]) +
-      ' -OfflineAssetsRoot ' + AddQuotes(ExpandConstant('{tmp}\OliviaPayload\offline')) +
+      ' -OfflineAssetsRoot ' + AddQuotes(AddBackslash(PayloadDirectory) + 'offline') +
       ' -SetupResultPath ' + AddQuotes(SetupResultPath) +
       ' -NonInteractive' +
       ' -SkipShortcut';
-    if CloseThisAttempt then
+    if ExpandConstant('{param:CloseRunningApplication|0}') = '1' then
       Params := Params + ' -CloseRunningApplication';
 #ifdef VideoRuntimePayload
     Params := Params +
@@ -342,8 +374,17 @@ begin
         ExpandConstant('{src}\Olivia-video-offline-private')
       );
 #endif
+#ifdef OriginalClientPayload
+    Params := Params + ' -OfficialRoot ' +
+      AddQuotes(AddBackslash(PayloadDirectory) + 'offline\original-client');
+#else
     if Trim(ExpandConstant('{param:OfficialRoot|}')) <> '' then
       Params := Params + ' -OfficialRoot ' + AddQuotes(ExpandConstant('{param:OfficialRoot|}'));
+#endif
+#ifdef MemoryOfflinePayload
+    Params := Params + ' -MemoryOfflinePackagePath ' +
+      AddQuotes(AddBackslash(PayloadDirectory) + 'offline\memory\Olivia-memory-offline.zip');
+#endif
 
     try
       ExecSucceeded := ExecAndLogOutput(
@@ -376,11 +417,11 @@ begin
       if LoadStringFromFile(SetupResultPath + '.diagnostic.json', DiagnosticContent) then
         Log('Olivia installer diagnostic: ' + String(DiagnosticContent));
       if StableInstallCode = 'INSTALL_APPLICATION_RUNNING' then
-        Result := 'Olivia 还在运行。请先退出 Olivia，再点击“重试安装”。'
+        Result := 'Olivia 还在运行。请先退出 Olivia，再运行安装器重试。'
       else if StableInstallCode = 'INSTALL_PROCESS_CHECK_FAILED' then
         Result := '暂时无法确认 Olivia 是否已退出，安装尚未开始。请关闭 Olivia 后重试；如果仍然失败，请通过“查看技术详情”联系支持。'
       else if StableInstallCode = 'OFFLINE_CORE_RUNTIME_PARENT_INVALID' then
-        Result := '这个位置不能用于安装。请返回上一步，选择普通文件夹，例如 D:\Olivia；不要直接选择整个磁盘或文件夹快捷链接。'
+        Result := '这个位置不能用于安装。请重新运行安装器，选择普通文件夹，例如 D:\Olivia；不要直接选择整个磁盘或文件夹快捷链接。'
       else if (Pos('ROLLBACK', StableInstallCode) > 0) or (Pos('TRANSACTION', StableInstallCode) > 0) then
         Result := '上次安装没有正常结束，程序暂时无法自动恢复。请保留现有目录，通过“查看技术详情”联系支持；不要卸载或删除数据。'
       else if StableInstallCode = 'PATCH_PAYLOAD_REFRESH_FAILED' then
@@ -393,25 +434,25 @@ begin
       else if StableInstallCode = 'OFFICIAL_INSTALL_NOT_FOUND' then
         Result := '未自动找到完整的正版游戏文件。请确认 Steam 已安装 Olivia，并在 Steam 中验证游戏文件完整性，然后重试；无需手动选择游戏目录。'
       else if StableInstallCode = 'INSTALL_ROOT_OVERLAPS_OFFICIAL' then
-        Result := '本地版安装目录与正版游戏目录重叠。请返回上一步，为本地版选择独立目录，例如 D:\Olivia。'
+        Result := '本地版安装目录与正版游戏目录重叠。请重新运行安装器，为本地版选择独立目录，例如 D:\Olivia。'
       else if StableInstallCode = 'OFFICIAL_INSTALL_PATH_REPARSE_POINT' then
         Result := '自动检测到的正版游戏目录经过了链接或重定向，暂不支持此位置。请通过 Steam 的存储管理将游戏移动到普通目录后重试。'
       else if StableInstallCode = 'SETUP_FILE_PERMISSION_DENIED' then
         Result := '无法读取或写入安装所需文件。请确认目录访问权限，并检查安全软件的拦截记录；无需删除现有数据。'
       else if StableInstallCode = 'SETUP_FILE_IN_USE' then
-        Result := '安装所需文件正在被占用。请关闭原版游戏及 Olivia 后点击重试；无需重新下载安装包。'
+        Result := '安装所需文件正在被占用。请关闭原版游戏及 Olivia 后重新运行安装器；无需重新下载安装包。'
       else if StableInstallCode = 'SETUP_FILE_MISSING' then
         Result := '安装所需文件缺失。请检查正版游戏完整性及安全软件隔离记录；安装日志已记录失败阶段。'
       else if StableInstallCode = 'SETUP_DISK_FULL' then
-        Result := '安装盘或临时目录所在盘空间不足。请释放空间后重试；不要删除信件与记忆目录。'
+        Result := '所选安装盘空间不足。请释放空间后重试；不要删除信件与记忆目录。'
       else if StableInstallCode = 'SETUP_PATH_TOO_LONG' then
-        Result := '安装文件路径过长。请返回上一步选择较短的目录，例如 D:\Olivia。'
+        Result := '安装文件路径过长。请重新运行安装器，选择较短的目录，例如 D:\Olivia。'
       else if StableInstallCode = 'SETUP_PATCH_FILE_IN_USE' then
         Result := '安装文件正在被占用。请关闭旧版 Olivia 后重试；不要删除信件和记忆目录。'
       else if StableInstallCode = 'SETUP_PATCH_PERMISSION_DENIED' then
         Result := '安装时无法写入或访问文件。请确认目标目录可写、旧版 Olivia 已关闭，并检查安全软件的拦截记录。请保留安装日志。'
       else if StableInstallCode = 'SETUP_PATCH_DISK_FULL' then
-        Result := '安装写入时系统报告空间不足。失败后回滚会释放部分空间，因此现在看到的剩余空间可能已增加。请保留安装日志，核对安装盘及临时目录所在盘。'
+        Result := '安装写入时系统报告空间不足。失败后回滚会释放部分空间，因此现在看到的剩余空间可能已增加。请保留安装日志，核对所选安装盘。'
       else if StableInstallCode = 'SETUP_PATCH_FILE_MISSING' then
         Result := '安装过程中所需文件不存在。请保留安装日志，并检查原版游戏文件和安全软件的隔离记录。'
       else if StableInstallCode = 'SETUP_PATCH_PATH_TOO_LONG' then
@@ -419,17 +460,98 @@ begin
       else if StableInstallCode = 'SETUP_PATCH_COPY_FAILED' then
         Result := '复制客户端文件失败。请关闭原版游戏和 Olivia 后重试，并保留安装日志以确认具体原因。'
       else
-        Result := '这次安装没有完成。请点击“重试安装”；如果仍然失败，可通过“查看技术详情”联系支持。不要卸载已有程序。';
+        Result := '这次安装没有完成。请重新运行安装器；如果仍然失败，请保留安装日志联系支持。不要卸载已有程序。';
     end;
   finally
     InstallProgressPage.Hide;
   end;
 end;
 
+procedure InstallPayload;
+begin
+  FailureMessage := RunInstallation;
+  if FailureMessage <> '' then
+    Log('Olivia installer transaction failed; completion and launch are disabled.');
+end;
+
+function CleanupPayload: Boolean;
+begin
+  SetEnvironmentVariableW('TEMP', PreviousTemp);
+  SetEnvironmentVariableW('TMP', PreviousTmp);
+  Result := True;
+  { Delete only the directory created by this setup, never the product/data root.
+    DelTree does not follow reparse points inside the owned directory. }
+  if OwnPayloadParent then
+  begin
+    if SafeSetupDirectory(ExtractFileDir(PayloadParent)) then
+      Result := DelTree(PayloadParent, True, True, True)
+    else
+      Result := False;
+  end;
+  if Result then
+  begin
+    OwnPayloadParent := False;
+    PayloadDirectory := '';
+    PayloadParent := '';
+  end;
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  SelectedRoot: String;
 begin
   Result := '';
-  { Silent setup skips the interactive retry handler; retain its failure exit code. }
-  if not InstallSucceeded then
-    Result := RunInstallation;
+  if not CleanupPayload then
+  begin
+    Result := '无法清理本次安装的暂存目录。请退出安装器后重试。';
+    Exit;
+  end;
+  if Trim(InstallDirPage.Values[0]) = '' then
+  begin
+    Result := '请选择 Olivia 的保存位置。';
+    Exit;
+  end;
+  SelectedRoot := ExpandFileName(InstallDirPage.Values[0]);
+  while (Length(SelectedRoot) > 3) and (SelectedRoot[Length(SelectedRoot)] = '\') do
+    Delete(SelectedRoot, Length(SelectedRoot), 1);
+  if (ExtractFileDir(SelectedRoot) = SelectedRoot) or
+    not SafeSetupDirectory(SelectedRoot) then
+  begin
+    Result := '请选择普通文件夹，例如 D:\Olivia；不要选择整个磁盘或文件夹快捷链接。';
+    Exit;
+  end;
+  { Match Install.ps1's existing-install normalization before choosing staging:
+    the source must never be extracted inside the managed install/ destination. }
+  while (CompareText(ExtractFileName(SelectedRoot), 'install') = 0) and
+    (FileExists(AddBackslash(SelectedRoot) + '.olivia-full-patch.json') or
+     FileExists(AddBackslash(SelectedRoot) + 'data\state.json') or
+     (CompareText(SelectedRoot, ExpandConstant('{localappdata}\BSideOliviaLocal\install')) = 0)) do
+    SelectedRoot := ExtractFileDir(SelectedRoot);
+  if ExtractFileDir(SelectedRoot) = SelectedRoot then
+  begin
+    Result := '请选择普通文件夹，例如 D:\Olivia；不要选择整个磁盘。';
+    Exit;
+  end;
+  InstallDirPage.Values[0] := SelectedRoot;
+  PayloadDirectory := GetPayloadRoot('');
+  PayloadParent := ExtractFileDir(PayloadDirectory);
+  if not ForceDirectories(SelectedRoot) or not CreateDir(PayloadParent) then
+  begin
+    Result := '无法在所选目录解包。请确认安装目录可写并有足够空间，再重试。';
+    Exit;
+  end;
+  OwnPayloadParent := True;
+  if not SetEnvironmentVariableW('TEMP', PayloadParent) or
+    not SetEnvironmentVariableW('TMP', PayloadParent) then
+  begin
+    Result := '无法准备安装临时目录。请重新运行安装器。';
+    Exit;
+  end;
+  Log('Olivia installer payload directory: ' + PayloadDirectory);
+end;
+
+procedure DeinitializeSetup;
+begin
+  if not CleanupPayload then
+    Log('Olivia installer staging cleanup incomplete: ' + PayloadParent);
 end;

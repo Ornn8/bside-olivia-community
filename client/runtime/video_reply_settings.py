@@ -12,6 +12,51 @@ REPLY_ROUTES = ("voice_reply", "singing_video", "voice_song_video")
 DEFAULT_ROUTE_VIDEOS = {"voice_reply": False, "singing_video": True, "voice_song_video": True}
 REPLY_TIERS = ("text", "audio", "video")
 DEFAULT_IMAGE = {"enabled": True, "resolution": "1K"}
+_IMAGE_MODEL_ID = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$')
+
+
+def image_model_capability(capabilities):
+    """The cloud advertises only tested models with approved retail prices."""
+    image = capabilities.get('image') if isinstance(capabilities, dict) else None
+    if not isinstance(image, dict) or 'models' not in image:
+        return None  # Old servers keep their existing default-image behavior.
+    models, seen = [], set()
+    items = image['models']
+    if not isinstance(items, list) or len(items) > 32:
+        return {'models': []}
+    for item in items:
+        if (not isinstance(item, dict) or not isinstance(item.get('id'), str)
+                or not _IMAGE_MODEL_ID.fullmatch(item['id']) or item['id'] in seen
+                or not isinstance(item.get('display_name'), str) or not 1 <= len(item['display_name'].strip()) <= 80
+                or not isinstance(item.get('resolutions'), list) or not item['resolutions']
+                or any(value not in ('1K', '2K', '4K') for value in item['resolutions'])
+                or len(set(item['resolutions'])) != len(item['resolutions'])):
+            return {'models': []}
+        seen.add(item['id'])
+        model = {key: deepcopy(item[key]) for key in ('id', 'display_name', 'resolutions')}
+        if 'price_ranges_cents' in item:
+            prices = item['price_ranges_cents']
+            if (not isinstance(prices, dict) or set(prices) != set(item['resolutions'])
+                    or any(not isinstance(value, list) or len(value) != 2
+                           or any(type(amount) is not int for amount in value)
+                           or not 0 <= value[0] <= value[1] <= 2**53 - 1
+                           for value in prices.values())):
+                return {'models': []}
+            model['price_ranges_cents'] = deepcopy(prices)
+        models.append(model)
+    result = {'models': models}
+    if isinstance(image.get('default_model'), str) and image['default_model'] in seen:
+        result['default_model'] = image['default_model']
+    return result
+
+
+def require_image_model(image, capabilities):
+    if 'model' not in image:
+        return
+    catalog = image_model_capability(capabilities)
+    if not catalog or not any(item['id'] == image['model'] and image.get('resolution') in item['resolutions']
+                              for item in catalog['models']):
+        raise VideoReplySettingsError('IMAGE_MODEL_UNAVAILABLE', status=503)
 
 def tier_preferences(tier):
     if not isinstance(tier, str) or tier not in REPLY_TIERS:
@@ -88,7 +133,33 @@ class VideoReplySettingsStore:
             if self._committed.state != 'available':
                 return {'enabled': False, 'resolution': '1K'}
             # Photos are on until the user turns them off; an explicit choice is stored and kept.
-            return dict(self._document.get('settings', {}).get('image', DEFAULT_IMAGE))
+            image = dict(self._document.get('settings', {}).get('image', DEFAULT_IMAGE))
+            style = self._document.get('settings', {}).get('wardrobe', {'style_id': 'original'})['style_id']
+            if style != 'original': image['wardrobe_style'] = style
+            return image
+    def wardrobe_snapshot(self):
+        with self._lock:
+            if self._committed.state != 'available': raise VideoReplySettingsError(_UNAVAILABLE)
+            return dict(self._document.get('settings', {}).get('wardrobe', {'style_id': 'original'}))
+    def mutate_wardrobe(self, request_id, value):
+        from runtime.wardrobe import validate
+        request = self._request(request_id)
+        try: value = validate(value)
+        except ValueError: raise VideoReplySettingsError('WARDROBE_STYLE_INVALID', status=400) from None
+        with self._lock:
+            if self._committed.state != 'available': raise VideoReplySettingsError(_UNAVAILABLE)
+            old = self._ledger(self._document).get(request)
+            if old is not None:
+                if old.get('wardrobe') != value: raise VideoReplySettingsError('VIDEO_REPLY_SETTING_REQUEST_CONFLICT', status=409)
+                return {'status': 'DUPLICATE', 'wardrobe': value}
+            candidate = deepcopy(self._document)
+            candidate['settings']['wardrobe'] = value
+            candidate.setdefault('ledger', {})[request] = {'enabled': self._committed.enabled,
+                'wardrobe': value, 'result': {'status': 'APPLIED'}}
+            try: self._writer(self.path, self._encode(candidate))
+            except (OSError, UnicodeError, TypeError, ValueError): raise VideoReplySettingsError(_UNAVAILABLE) from None
+            self._document = candidate
+            return {'status': 'APPLIED', 'wardrobe': dict(value)}
     def mutate_image(self, request_id, image):
         request = self._request(request_id)
         self._validate_image(image)
@@ -107,8 +178,10 @@ class VideoReplySettingsStore:
             return {'status': 'APPLIED', 'image': dict(image)}
     @staticmethod
     def _validate_image(image):
-        if (not isinstance(image, dict) or set(image) != {'enabled', 'resolution'}
-                or type(image['enabled']) is not bool or image['resolution'] not in ('1K', '2K', '4K')):
+        if (not isinstance(image, dict) or not {'enabled', 'resolution'} <= set(image)
+                or set(image) - {'enabled', 'resolution', 'model'}
+                or type(image['enabled']) is not bool or image['resolution'] not in ('1K', '2K', '4K')
+                or ('model' in image and (not isinstance(image['model'], str) or not _IMAGE_MODEL_ID.fullmatch(image['model'])))):
             raise VideoReplySettingsError('VIDEO_REPLY_SETTING_PAYLOAD_INVALID', status=400)
     def tier_snapshot(self):
         routes, videos = self.routes_snapshot(), self.videos_snapshot()
@@ -161,7 +234,7 @@ class VideoReplySettingsStore:
             ledger = self._ledger(self._document); old = ledger.get(request)
             if old is not None:
                 if not isinstance(old, Mapping) or type(old.get("enabled")) is not bool: raise VideoReplySettingsError(_UNAVAILABLE)
-                if "routes" in old: raise VideoReplySettingsError("VIDEO_REPLY_SETTING_REQUEST_CONFLICT", status=409)
+                if "routes" in old or "wardrobe" in old: raise VideoReplySettingsError("VIDEO_REPLY_SETTING_REQUEST_CONFLICT", status=409)
                 if old["enabled"] is not enabled: raise VideoReplySettingsError("VIDEO_REPLY_SETTING_REQUEST_CONFLICT", status=409)
                 result = old.get("result")
                 if not isinstance(result, Mapping): raise VideoReplySettingsError(_UNAVAILABLE)
@@ -195,6 +268,9 @@ class VideoReplySettingsStore:
         return ledger
     @classmethod
     def _validate(cls, document: Mapping[str, object]) -> None:
+        if 'wardrobe' in document.get('settings', {}):
+            from runtime.wardrobe import validate
+            validate(document['settings']['wardrobe'])
         if 'image' in document.get('settings', {}): cls._validate_image(document['settings']['image'])
         tier = document.get("settings", {}).get("tier")
         if tier is not None:

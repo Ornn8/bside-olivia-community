@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import io
 import json
@@ -423,6 +424,7 @@ class _Layer:
 @pytest.mark.parametrize("failure,expected", [
     (PermissionError(13, "secret-user-path"), "MEM0_CAPABILITY_PERMISSION_DENIED"),
     (OSError(28, "secret-user-path"), "MEM0_CAPABILITY_DISK_SPACE_LOW"),
+    (OSError(errno.ENAMETOOLONG, "secret-user-path"), "MEM0_CAPABILITY_PATH_TOO_LONG"),
     (RuntimeError("MEM0_RUNTIME_VERIFY_FAILED"), "MEM0_RUNTIME_VERIFY_FAILED"),
     (RuntimeError("secret-token"), "MEM0_CAPABILITY_INSTALL_FAILED"),
 ])
@@ -443,6 +445,7 @@ def test_install_preserves_safe_failure_and_stage(failure, expected):
 @pytest.mark.parametrize("stderr,expected", [
     ("ERROR: [WinError 5] Access is denied: C:/Users/secret", "MEM0_CAPABILITY_PERMISSION_DENIED"),
     ("ERROR: [Errno 28] No space left on device", "MEM0_CAPABILITY_DISK_SPACE_LOW"),
+    ("ERROR: [WinError 206] filename too long: C:/Users/secret", "MEM0_CAPABILITY_PATH_TOO_LONG"),
     ("ERROR: THESE PACKAGES DO NOT MATCH THE HASHES", "MEM0_RUNTIME_HASH_MISMATCH"),
     ("ERROR: No matching distribution found for private-package", "MEM0_RUNTIME_PACKAGE_UNAVAILABLE"),
 ])
@@ -1069,7 +1072,7 @@ def test_managed_runtime_installs_from_verified_wheelhouse_without_an_index(
 
     assert len(calls) == 1
     assert "--no-index" in calls[0]
-    assert calls[0][calls[0].index("--find-links") + 1] == str(wheelhouse)
+    assert os.path.samefile(calls[0][calls[0].index("--find-links") + 1], wheelhouse)
     assert "--index-url" not in calls[0]
     assert layer.last_source == "offline-package"
     assert layer.ready() is True

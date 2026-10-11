@@ -1,4 +1,4 @@
-"""Shared, fail-closed uninstall target validation for managed installs."""
+"""Shared path validation and native filesystem access for managed installs."""
 
 from __future__ import annotations
 
@@ -28,6 +28,14 @@ PRESERVED_PATHS = ("data", "logs", "third-party", "downloads", "profile")
 EMPTY_OWNED_PARENT_PATHS = ("runtime",)
 
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x0400
+
+
+def native_path(path: Path | str) -> str:
+    """Convert a validated filesystem path without requiring long-path opt-in."""
+    value = os.path.abspath(path)
+    if os.name == "nt" and not value.startswith("\\\\?\\"):
+        return "\\\\?\\UNC\\" + value[2:] if value.startswith("\\\\") else "\\\\?\\" + value
+    return value
 
 
 def _is_reparse_point(path: Path) -> bool:
@@ -159,6 +167,7 @@ __all__ = [
     "MARKER_NAME",
     "OWNED_PATHS",
     "PRESERVED_PATHS",
+    "native_path",
     "remove_owned_targets",
     "safe_managed_target",
     "safe_owned_targets",

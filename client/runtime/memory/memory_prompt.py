@@ -157,7 +157,7 @@ class MemoryPromptBuilder:
         if self.conversation_memory is not None:
             from .companion_memory_context import CompanionMemoryPromptBuilder
 
-            return CompanionMemoryPromptBuilder(
+            companion = CompanionMemoryPromptBuilder(
                 self.memory,
                 self.conversation_memory,
                 user_id=self.conversation_memory_user_id,
@@ -168,7 +168,10 @@ class MemoryPromptBuilder:
                     self.legacy_budget,
                 ),
                 memory_lifecycle=self.memory_lifecycle,
-            ).build(
+            )
+            if getattr(self, 'diary', None) is not None:
+                companion.attach_diary(self.diary)
+            return companion.build(
                 query,
                 max_chars=budget,
                 exclude_source_ids=excluded,

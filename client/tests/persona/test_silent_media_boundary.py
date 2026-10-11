@@ -1,5 +1,6 @@
 """Reconsidering a silent proposal cannot execute pending long speech."""
 import asyncio
+import json
 from copy import deepcopy
 from types import SimpleNamespace
 
@@ -66,9 +67,11 @@ def test_reconsidered_silence_keeps_pending_intent_without_authoring_long_speech
 
 def test_speech_body_cannot_gain_execution_from_reconsidered_silent_plan():
     result, _ = run_pending_speech(envelope(text='好，今天先聊聊。', delivery='text', speech=SCRIPT))
-    assert result.state is ReplyState.FAILED
-    assert result.error_code == 'PERSONAL_CHAT_DECISION_INVALID'
-    assert result.decision_rejection_reason == 'MEDIA_WITHOUT_PLAN'
+    assert result.state is ReplyState.COMPLETED and result.error_code is None
+    assert json.loads(result.text)['text'] == '好，今天先聊聊。'
+    assert 'speech' not in json.loads(result.text)
+    assert result.companion_decision['plan']['proposal']['steps'] == []
+    assert result.companion_decision['plan']['understanding']['requirements'][0]['fulfillment'] == 'pending'
 
 
 def test_backend_revalidates_pending_speech_before_queuing_file(monkeypatch, tmp_path):

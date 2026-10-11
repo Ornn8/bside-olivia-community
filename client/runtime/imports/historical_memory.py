@@ -107,7 +107,7 @@ class HistoricalRelationshipAssessment:
                 raise ValueError(f"{field_name} is invalid")
         if (
             not isinstance(self.evidence_indexes, tuple)
-            or not 1 <= len(self.evidence_indexes) <= 8
+            or len(self.evidence_indexes) > 8
             or len(set(self.evidence_indexes)) != len(self.evidence_indexes)
             or any(type(value) is not int or value < 1 for value in self.evidence_indexes)
         ):
@@ -191,17 +191,77 @@ def _assessment_failure(exc, metrics):
     return HistoricalRelationshipError(error, failure_context=context)
 
 
+_SCORE_FIELDS = ('familiarity', 'trust', 'comfort', 'closeness', 'tension')
+_STAGE_ORDER = ('unknown', 'acquaintance', 'familiar', 'close', 'committed')
+# Ordered import judges how far each batch moves the running state. Scoring a
+# five-letter batch from zero kept everyday batches low while a single explicit
+# line could still lift the stage, e.g. stage "close" with every score low.
+# Old letters alone must not fill the relationship either: history moves each
+# score only toward a ceiling inside the "medium" band (70 is "high" and, on
+# three scores, contact eligibility), with smaller steps the closer it gets.
+# Live correspondence keeps its own growth above it.
+HISTORY_CEILING = 60
+_STEPS = {'same': 0.0, 'up_small': 0.1, 'up': 0.2, 'up_big': 0.35}
+_STEP_CRITERIA = {
+    'same': '本批没有新的相关证据，或只是平常往来：保持 previous_state 的值',
+    'up_small': '本批有少量相关证据，略有加深',
+    'up': '本批有明确的相关证据，明显加深',
+    'up_big': '本批有大量、持续的直接证据，大幅加深',
+}
+_FIELD_MEANING = {
+    'familiarity': '熟悉：彼此了解生活、习惯与往来的程度',
+    'trust': '信任：愿意托付、坦白和相信对方的程度',
+    'comfort': '自在：相处放松、可以随意表达的程度',
+    'closeness': '亲近：情感上的靠近与在意',
+    'tension': '紧张：争执、误会、隔阂与不安',
+}
+
+
+def _previous_scores(previous):
+    if not isinstance(previous, dict):
+        return None
+    values = {field: previous.get(field) for field in _SCORE_FIELDS}
+    if any(type(value) is not int or not 0 <= value <= 100 for value in values.values()):
+        return None
+    return values
+
+
 def _semantic_assessment_input(messages, evidence_indexes):
-    state = {'policy': messages[0]['content'], 'history': json.loads(messages[1]['content'])}
-    questions = {field: {'instructions': '依照policy和有来源的双方历史判断' + field + '，0到100的绝对值；证据不明保守，不因信件数量加分。',
-                        'criteria': {str(i): i for i in range(101)}}
-                 for field in ('familiarity', 'trust', 'comfort', 'closeness', 'tension')}
+    history = json.loads(messages[1]['content'])
+    state = {'policy': messages[0]['content'], 'history': history}
+    if _previous_scores(history.get('previous_state')) is not None:
+        questions = {field: {'instructions': '依照policy和有来源的双方历史，判断本批原文让' + _FIELD_MEANING[field]
+                             + '在 history.previous_state 的累计值上变化多少。previous_state 已包含此前全部信件，'
+                             '本批没提到不代表减弱；只按双方原文证据加深，不因信件数量加分。',
+                             'criteria': dict(_STEP_CRITERIA)}
+                     for field in _SCORE_FIELDS}
+    else:
+        questions = {field: {'instructions': '依照policy和有来源的双方历史判断' + field + '，0到100的绝对值；证据不明保守，不因信件数量加分。',
+                            'criteria': {str(i): str(i) for i in range(101)}}
+                     for field in _SCORE_FIELDS}
     questions['stage'] = {'instructions': '双方原文确认的关系阶段，不凭单方表白、亲密分数或昵称推断身份或权限。',
                           'criteria': {s:s for s in ('unknown', 'acquaintance', 'familiar', 'close')}}
     for index in sorted(evidence_indexes):
         questions['e' + str(index)] = {'instructions': '历史序号' + str(index) + '是否是本次关系判断的必要证据？',
                                      'criteria': {'yes':'是','no':'否'}}
     return state, questions
+
+
+def _semantic_scores(choices, previous_state):
+    previous = _previous_scores(previous_state)
+    if previous is None:
+        return {field: int(choices[field]) for field in _SCORE_FIELDS}
+    return {field: previous[field] + max(0, round(_STEPS[choices[field]] * (HISTORY_CEILING - previous[field])))
+            for field in _SCORE_FIELDS}
+
+
+def _semantic_stage(choice, previous_state):
+    """An ordered import never lowers a stage an earlier batch already reached."""
+    earlier = previous_state.get('relationship_stage') if isinstance(previous_state, dict) else None
+    earlier = getattr(earlier, 'value', earlier)
+    if earlier in _STAGE_ORDER and _STAGE_ORDER.index(earlier) > _STAGE_ORDER.index(choice):
+        return earlier
+    return choice
 
 
 async def assess_historical_relationship(
@@ -261,8 +321,8 @@ async def assess_historical_relationship(
             state, questions = _semantic_assessment_input(messages, evidence_indexes)
             choices = await semantic_port.ask(state, questions, purpose='historical-relationship')
             metrics['failure_stage'] = 'result_validation'
-            payload = {k:int(choices[k]) for k in ('familiarity', 'trust', 'comfort', 'closeness', 'tension')}
-            payload.update(relationship_stage=choices['stage'],
+            payload = _semantic_scores(choices, previous_state)
+            payload.update(relationship_stage=_semantic_stage(choices['stage'], previous_state),
                            evidence_indexes=[i for i in sorted(evidence_indexes) if choices['e'+str(i)] == 'yes'])
             response = SimpleNamespace(text=json.dumps(payload))
         else:
@@ -333,7 +393,8 @@ def _bounded_assessment_messages(
         "Return one JSON object and nothing else with exactly: relationship_stage "
         "(unknown|acquaintance|familiar|close), integer familiarity/trust/comfort/"
         "closeness/tension from 0 to 100, and evidence_indexes (1-8 unique valid "
-        "indexes present below). Prefer conservative values when evidence is ambiguous."
+        "indexes present below, or [] when none supports a relationship update). "
+        "Prefer conservative values when evidence is ambiguous."
     )
     if previous_state is not None:
         instruction += (
@@ -422,6 +483,10 @@ def apply_historical_private_world(
         ordered = tuple(sorted(ordered, key=lambda item: (item.occurred_at, item.source_record_id)))
     if not ordered or not isinstance(assessment, HistoricalRelationshipAssessment):
         raise ValueError("historical assessment input is invalid")
+    # A valid abstention completes this batch without inventing evidence or
+    # applying any unsupported scores/stage, including during restart backfill.
+    if not assessment.evidence_indexes:
+        return "no_evidence"
     evidence_refs = tuple(
         ordered[index - 1].memory_source_id for index in assessment.evidence_indexes
     )

@@ -9,10 +9,14 @@ reduction, candidate decisions, and persistence remain owned by their services.
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import json
+import logging
 import re
 import sqlite3
+import time
 from typing import Mapping, Protocol, Sequence, runtime_checkable
 from urllib.parse import urlsplit
 
@@ -26,6 +30,7 @@ MEMORY_PATH = "/toy/companion/memory"
 PRIVATE_WORLD_PATH = "/toy/companion/private-world"
 DAILY_LIFE_PATH = PRIVATE_WORLD_PATH + "/life"
 _DAILY_LIFE_KEY = web.AppKey("original_daily_life", object)
+_DAILY_LIFE_DIAGNOSTICS_KEY = web.AppKey("original_daily_life_diagnostics", object)
 CANDIDATES_PATH = "/toy/companion/private-world/candidates"
 _BACKEND_KEY = web.AppKey("original_companion_read_backend", object)
 _TRUSTED_ORIGINS_KEY = web.AppKey("original_companion_trusted_origins", frozenset)
@@ -550,8 +555,84 @@ async def _private_world(request: web.Request) -> web.Response:
         return _error("COMPANION_READ_UNAVAILABLE", 503, origin=origin)
 
 
+def _validate_life_snapshot(value) -> None:
+    # Match the existing UI contract, without requiring optional projections.
+    if (not isinstance(value, dict) or value.get('schema_version') != 'olivia.daily-life.v1'
+            or any(not isinstance(value.get(key), list) for key in ('projects', 'shared', 'moments'))):
+        raise ValueError('DAILY_LIFE_RESPONSE_INVALID')
+
+
+def daily_life_health(life) -> dict:
+    from runtime.diagnostics.failure_context import daily_life_failure
+    if not isinstance(life, DailyLifeRuntime):
+        return {'state': 'unavailable', 'error_code': 'DAILY_LIFE_UNAVAILABLE',
+                'failure_stage': 'initialization', 'endpoint': 'daily_life'}
+    stage = 'read'
+    try:
+        value = life.snapshot(datetime.now(timezone.utc), read_only=True)
+        stage = 'response'
+        _validate_life_snapshot(value)
+        return {'state': 'available'}
+    except Exception as exc:
+        return {'state': 'unavailable', **daily_life_failure(exc, stage)}
+
+
+def daily_life_diagnostic_snapshot(app: web.Application) -> tuple[dict, ...]:
+    records = app.get(_DAILY_LIFE_DIAGNOSTICS_KEY)
+    return tuple(dict(row) for row in records.copy()) if records is not None else ()
+
+
+def _record_life_failure(app, event, fields) -> None:
+    from runtime.diagnostics.failure_context import project_daily_life_failure
+    record = {'event': event, **project_daily_life_failure(fields), 'recorded_at_ms': int(time.time() * 1000)}
+    records = app.get(_DAILY_LIFE_DIAGNOSTICS_KEY)
+    if records is not None:
+        # Repeated polling of one failure must not fill logs with the same error.
+        if records:
+            previous = {k:v for k,v in records[-1].items() if k != 'recorded_at_ms'}
+            current = {k:v for k,v in record.items() if k != 'recorded_at_ms'}
+            if previous == current and 0 <= record['recorded_at_ms'] - records[-1]['recorded_at_ms'] < 60000:
+                return
+        records.append(record)
+    logging.getLogger(__name__).warning('%s', json.dumps(record, sort_keys=True))
+
+
+async def _life_frontend_diagnostic(request: web.Request) -> web.Response:
+    from runtime.diagnostics.failure_context import DAILY_LIFE_ENDPOINTS, DAILY_LIFE_EXCEPTION_TYPES
+    origin = None
+    try:
+        origin = _authorize(request)
+        headers = _headers(origin)
+        headers.update({'Access-Control-Allow-Methods': 'POST, OPTIONS',
+                        'Access-Control-Allow-Headers': 'Content-Type, X-Olivia-Companion-Action'})
+        if request.method == 'OPTIONS':
+            return web.Response(status=204, headers=headers)
+        if request.headers.get('X-Olivia-Companion-Action') != 'confirmed':
+            raise OriginalClientCompanionAPIError('COMPANION_CONFIRMATION_REQUIRED', status=403)
+        if request.content_type != 'application/json' or request.content_length is None or request.content_length > 512:
+            raise OriginalClientCompanionAPIError('DAILY_LIFE_DIAGNOSTIC_INVALID', status=400)
+        body = await request.json()
+        if (not isinstance(body, dict) or set(body) - {'failure_stage', 'endpoint', 'exception_type', 'http_status', 'method'}
+                or body.get('failure_stage') not in ('request', 'response', 'render')
+                or body.get('endpoint') not in DAILY_LIFE_ENDPOINTS
+                or body.get('exception_type') not in DAILY_LIFE_EXCEPTION_TYPES
+                or ('http_status' in body and (type(body['http_status']) is not int or not 100 <= body['http_status'] <= 599))
+                or ('method' in body and body['method'] not in ('GET', 'POST'))):
+            raise OriginalClientCompanionAPIError('DAILY_LIFE_DIAGNOSTIC_INVALID', status=400)
+        body['error_code'] = {'request':'DAILY_LIFE_REQUEST_FAILED', 'response':'DAILY_LIFE_RESPONSE_INVALID',
+                              'render':'DAILY_LIFE_RENDER_FAILED'}[body['failure_stage']]
+        _record_life_failure(request.app, 'daily_life_frontend_failed', body)
+        return web.json_response({'schema_version':'olivia.daily-life-diagnostic.v1', 'status':'RECORDED'}, headers=headers)
+    except OriginalClientCompanionAPIError as exc:
+        return _error(exc.code, exc.status, origin=origin)
+    except (ValueError, TypeError):
+        return _error('DAILY_LIFE_DIAGNOSTIC_INVALID', 400, origin=origin)
+
+
 async def _daily_life(request: web.Request) -> web.Response:
     origin = None
+    stage = 'initialization'
+    endpoint = 'daily_life_history' if request.query.get('history') == '1' else 'daily_life'
     try:
         origin = _authorize(request)
         headers = _headers(origin)
@@ -561,15 +642,20 @@ async def _daily_life(request: web.Request) -> web.Response:
             return web.Response(status=204, headers=headers)
         life = request.app.get(_DAILY_LIFE_KEY)
         if not isinstance(life, DailyLifeRuntime):
+            _record_life_failure(request.app, 'daily_life_failed', dict(failure_stage=stage,
+                endpoint=endpoint, error_code='DAILY_LIFE_UNAVAILABLE', http_status=503, method=request.method))
             return _error("DAILY_LIFE_UNAVAILABLE", 503, origin=origin)
+        stage = 'read'
         if request.method == "GET" and request.query.get("history") == "1":
             try:
                 result = await asyncio.to_thread(life.store.history, before=request.query.get("before"))
             except ValueError:
                 return _error("DAILY_LIFE_CURSOR_INVALID", 400, origin=origin)
+            stage = 'response'
             return web.json_response(result, headers=headers)
         now = datetime.now(timezone.utc)
         if request.method == "POST":
+            stage = 'request'
             if request.headers.get("X-Olivia-Companion-Action") != "confirmed":
                 return _error("COMPANION_CONFIRMATION_REQUIRED", 403, origin=origin)
             if request.content_type != "application/json":
@@ -580,11 +666,17 @@ async def _daily_life(request: web.Request) -> web.Response:
             if body != {}:
                 return _error("DAILY_LIFE_REQUEST_INVALID", 400, origin=origin)
             life.schedule_refresh(now, recheck_projects=True)
+        stage = 'read'
         result = await asyncio.to_thread(life.snapshot, now)
+        stage = 'response'
+        _validate_life_snapshot(result)
         return web.json_response(result, headers=headers)
     except OriginalClientCompanionAPIError as exc:
         return _error(exc.code, exc.status, origin=origin)
-    except (OSError, RuntimeError, ValueError, TypeError, sqlite3.Error):
+    except Exception as exc:
+        from runtime.diagnostics.failure_context import daily_life_failure
+        _record_life_failure(request.app, 'daily_life_failed', dict(method=request.method,
+            **daily_life_failure(exc, stage, endpoint=endpoint, http_status=503)))
         return _error("DAILY_LIFE_UNAVAILABLE", 503, origin=origin)
 
 
@@ -653,9 +745,12 @@ def mount_original_companion_read_api(
     app[_BACKEND_KEY] = backend
     app[_TRUSTED_ORIGINS_KEY] = origins
     app[_DAILY_LIFE_KEY] = daily_life
+    app[_DAILY_LIFE_DIAGNOSTICS_KEY] = deque(maxlen=20)
     app.router.add_route("GET", DAILY_LIFE_PATH, _daily_life)
     app.router.add_route("POST", DAILY_LIFE_PATH, _daily_life)
     app.router.add_route("OPTIONS", DAILY_LIFE_PATH, _daily_life)
+    app.router.add_route('POST', DAILY_LIFE_PATH + '/diagnostic', _life_frontend_diagnostic)
+    app.router.add_route('OPTIONS', DAILY_LIFE_PATH + '/diagnostic', _life_frontend_diagnostic)
     if daily_life is not None:
         async def close_life(_app):
             await daily_life.close()

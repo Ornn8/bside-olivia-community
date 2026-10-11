@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 import asyncio
+import os
+from pathlib import Path
 import re
+import subprocess
+import time
 from urllib.parse import urlsplit
 
 from aiohttp import web
@@ -13,10 +17,12 @@ from runtime.diagnostics.support_bundle import DiagnosticBundleError, build_diag
 
 
 DIAGNOSTIC_EXPORT_PATH = "/toy/diagnostics/export"
+DIAGNOSTIC_SAVE_PATH = "/toy/diagnostics/save"
 DIAGNOSTIC_EXPORT_SCHEMA = "olivia.diagnostic-export.v1"
 _MOUNTED_KEY = web.AppKey("original_client.diagnostics_mounted", bool)
 _ORIGINS_KEY = web.AppKey("original_client.diagnostics_origins", frozenset)
 _SOURCE_KEY = web.AppKey("original_client.diagnostics_source", object)
+_FOLDER_KEY = web.AppKey("original_client.diagnostics_folder", object)
 _LOCAL_ORIGIN_RE = re.compile(r"^https?://(?:127\.0\.0\.1|localhost|\[::1\]):[0-9]{1,5}$")
 
 
@@ -95,18 +101,80 @@ def _authorize(request: web.Request) -> str:
     return origin
 
 
+async def _bundle(request: web.Request) -> bytes:
+    source = request.app[_SOURCE_KEY]
+    if not callable(source):
+        raise DiagnosticExportAPIError("DIAGNOSTIC_EXPORT_UNAVAILABLE", 503)
+    values = await asyncio.to_thread(source)
+    if not isinstance(values, Mapping):
+        raise DiagnosticExportAPIError("DIAGNOSTIC_EXPORT_UNAVAILABLE", 503)
+    from runtime.diagnostics.recall_trace import snapshot
+    return build_diagnostic_bundle({**values, "recall_tail": snapshot()})
+
+
+def downloads_folder() -> Path:
+    """The user's Downloads folder (Windows known folder, else ~/Downloads)."""
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+        import uuid as _uuid
+        class GUID(ctypes.Structure):
+            _fields_ = [("data", ctypes.c_byte * 16)]
+        folder = GUID()
+        folder.data[:] = _uuid.UUID("374DE290-123F-4565-9164-39C4925E467B").bytes_le
+        path = ctypes.c_wchar_p()
+        if ctypes.windll.shell32.SHGetKnownFolderPath(ctypes.byref(folder), 0, None, ctypes.byref(path)) == 0:
+            try:
+                return Path(path.value)
+            finally:
+                ctypes.windll.ole32.CoTaskMemFree(path)
+    return Path.home() / "Downloads"
+
+
+def _write_bundle(bundle: bytes, folder: Path) -> Path:
+    folder.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    target = folder / f"olivia-diagnostic-bundle-{stamp}.zip"
+    index = 1
+    while target.exists():
+        index += 1
+        target = folder / f"olivia-diagnostic-bundle-{stamp}-{index}.zip"
+    staging = target.with_suffix(".zip.partial")
+    staging.write_bytes(bundle)
+    staging.replace(target)
+    return target
+
+
+def _reveal(path: Path) -> None:
+    if os.name == "nt":
+        try:
+            subprocess.Popen(["explorer", "/select,", str(path)])
+        except OSError:
+            pass
+
+
+async def _save(request: web.Request) -> web.Response:
+    """Write the bundle straight into Downloads and show it, without the webview's download manager."""
+    origin: str | None = None
+    try:
+        origin = _authorize(request)
+        bundle = await _bundle(request)
+        target = await asyncio.to_thread(_write_bundle, bundle, request.app[_FOLDER_KEY]())
+        _reveal(target)
+        return web.json_response({"schema_version": DIAGNOSTIC_EXPORT_SCHEMA, "status": "SAVED",
+                                  "file_name": target.name, "folder": str(target.parent)},
+                                 headers=_headers(origin))
+    except DiagnosticExportAPIError as exc:
+        return _error(exc.code, exc.status, origin=origin)
+    except (DiagnosticBundleError, OSError, RuntimeError, TypeError, ValueError):
+        return _error("DIAGNOSTIC_EXPORT_UNAVAILABLE", 503, origin=origin)
+
+
 async def _export(request: web.Request) -> web.Response:
     origin: str | None = None
     try:
         origin = _authorize(request)
-        source = request.app[_SOURCE_KEY]
-        if not callable(source):
-            raise DiagnosticExportAPIError("DIAGNOSTIC_EXPORT_UNAVAILABLE", 503)
-        values = await asyncio.to_thread(source)
-        if not isinstance(values, Mapping):
-            raise DiagnosticExportAPIError("DIAGNOSTIC_EXPORT_UNAVAILABLE", 503)
-        from runtime.diagnostics.recall_trace import snapshot
-        bundle = build_diagnostic_bundle({**values, "recall_tail": snapshot()})
+        bundle = await _bundle(request)
         return web.Response(
             body=bundle,
             content_type="application/zip",
@@ -126,6 +194,7 @@ def mount_original_client_diagnostics_api(
     source: Callable[[], Mapping[str, object]],
     *,
     trusted_origins: Sequence[str] = (),
+    folder: Callable[[], Path] = downloads_folder,
 ) -> None:
     """Mount the download endpoint once before the legacy catch-all route."""
 
@@ -138,11 +207,14 @@ def mount_original_client_diagnostics_api(
     app[_ORIGINS_KEY] = frozenset(_trusted_origin(value) for value in trusted_origins)
     app[_SOURCE_KEY] = source
     app[_MOUNTED_KEY] = True
+    app[_FOLDER_KEY] = folder
     app.router.add_get(DIAGNOSTIC_EXPORT_PATH, _export)
+    app.router.add_post(DIAGNOSTIC_SAVE_PATH, _save)
 
 
 __all__ = [
     "DIAGNOSTIC_EXPORT_PATH",
+    "DIAGNOSTIC_SAVE_PATH",
     "DIAGNOSTIC_EXPORT_SCHEMA",
     "DiagnosticExportAPIError",
     "mount_original_client_diagnostics_api",

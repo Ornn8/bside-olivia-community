@@ -15,7 +15,59 @@ from runtime.reply.reply_reviewer import (
     ReviewerScores, ReviewerViolation, ReviewResult, ReviewStatus, ReviewVerdict,
     TrustedCharacterReply, TrustedReviewEvidence,
 )
-from runtime.reply.stage_recovery import StageRecovery, canonical_hash
+from runtime.reply.stage_recovery import StageRecovery, WriterRecoveryStore, canonical_hash
+
+
+def test_private_writer_store_expiry_capacity_and_context_binding(tmp_path, monkeypatch):
+    import runtime.reply.stage_recovery as module
+    from contextlib import closing
+    import sqlite3
+    clock = [100000.0]
+    monkeypatch.setattr(module.time, 'time', lambda: clock[0])
+    store = WriterRecoveryStore(tmp_path)
+    candidate = ReplyResult('synthetic', ReplyState.COMPLETED, text='private candidate')
+    store.save('old', 'context-a', candidate)
+    assert WriterRecoveryStore(tmp_path).load('old', 'context-a').text == candidate.text
+    assert store.load('old', 'context-b') is None
+    clock[0] += 86401
+    assert store.load('old', 'context-a') is None
+    for i in range(65):
+        clock[0] += 1
+        store.save(str(i), 'context-a', candidate)
+    with closing(sqlite3.connect(store.path)) as connection:
+        assert connection.execute('SELECT COUNT(*) FROM candidates').fetchone()[0] == 64
+    assert store.load('0', 'context-a') is None
+    assert store.load('64', 'context-a').text == candidate.text
+
+
+def test_corrupt_private_store_cannot_block_generation(tmp_path):
+    store = WriterRecoveryStore(tmp_path)
+    store.path.parent.mkdir()
+    store.path.write_bytes(b'not a sqlite database')
+    cache = StageRecovery('context', lambda: True, writer_store=store, storage_key='synthetic')
+    assert cache.get_writer() is None
+    result = ReplyResult('synthetic', ReplyState.COMPLETED, text='fresh candidate')
+    assert cache.put_writer(result, token=cache.token())
+    assert cache.get_writer().text == 'fresh candidate'
+    cache.invalidate()
+
+
+def test_private_candidate_never_enters_diagnostic_exports(tmp_path):
+    import io
+    import zipfile
+    from runtime.diagnostics.support_bundle import build_diagnostic_bundle
+    from tests.http.test_diagnostic_support_bundle import _source
+    store = WriterRecoveryStore(tmp_path)
+    private = 'PRIVATE-UNAPPROVED-WRITER-CANDIDATE'
+    store.save('synthetic', 'context', ReplyResult('synthetic', ReplyState.COMPLETED, text=private))
+    source = _source()
+    source['tasks']['items'][0].update(reply_text=private, candidate=private,
+        recovery_path=str(store.path), degraded_stages={'decision': 'JEV_UNAVAILABLE'})
+    with zipfile.ZipFile(io.BytesIO(build_diagnostic_bundle(source))) as archive:
+        assert not any('candidate' in name for name in archive.namelist())
+        exported = '\n'.join(archive.read(name).decode('utf-8') for name in archive.namelist())
+    assert private not in exported and str(store.path) not in exported
+    assert 'JEV_UNAVAILABLE' in exported
 
 
 ORIGINAL = '昨天你说过要爬泰山。'

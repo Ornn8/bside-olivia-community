@@ -61,6 +61,20 @@ def test_failed_draft_falls_back_and_does_not_retry_every_refresh(tmp_path):
     day_plan._FAILED_AT.clear()
 
 
+def test_slow_reasoning_draft_is_still_accepted(tmp_path, monkeypatch):
+    # Drafts routinely take minutes; waiting only 60 s discarded paid, finished plans.
+    store = DailyLifeStore(tmp_path / 'life.db')
+    day_plan._FAILED_AT.clear()
+    waited = []
+    real_wait_for = asyncio.wait_for
+    async def recording_wait_for(call, timeout):
+        waited.append(timeout)
+        return await real_wait_for(call, timeout)
+    monkeypatch.setattr(day_plan.asyncio, 'wait_for', recording_wait_for)
+    assert asyncio.run(day_plan.ensure(store, Gateway(), now=NOW, persona='')) is not None
+    assert waited == [day_plan.PLAN_TIMEOUT_SECONDS] and waited[0] >= 240
+
+
 @pytest.mark.parametrize('bad', ['{"activities": [], "meals": {}}', '[[image:linli-01]]'])
 def test_invalid_draft_is_rejected(bad):
     with pytest.raises(Exception):

@@ -14,7 +14,7 @@ import zipfile
 from pathlib import Path, PurePosixPath
 
 from installer.component_update import ComponentUpdateError, _validate_relative_path
-from installer.full_patch import PatchInstallError, copy_project_payload, stage_startup_video
+from installer.full_patch import IMAGE_SUFFIXES, PatchInstallError, copy_project_payload, stage_startup_video
 
 
 PACKAGE_SCHEMA = "olivia.component-package.v1"
@@ -165,7 +165,8 @@ def _payload_files(root: Path) -> list[Path]:
             if path.is_symlink():
                 raise ComponentPackageBuildError("UPDATE_PAYLOAD_UNSAFE")
             continue
-        files.append(path)
+        if path.suffix.lower() not in IMAGE_SUFFIXES:
+            files.append(path)
     return sorted(files, key=lambda item: item.relative_to(root).as_posix())
 
 
@@ -219,7 +220,7 @@ def build_component_package(
         )
         payload = staging / "payload"
         try:
-            copy_project_payload(exported_source, payload)
+            copy_project_payload(exported_source, payload, include_base_stickers=False)
             stage_startup_video(payload, startup_video, startup_video_sha256)
         except PatchInstallError as exc:
             raise ComponentPackageBuildError(str(exc)) from exc

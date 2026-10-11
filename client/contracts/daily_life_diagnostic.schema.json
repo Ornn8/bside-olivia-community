@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "olivia.daily-life-diagnostic.request.v1",
+  "title": "Finite world page failure report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["failure_stage", "endpoint", "exception_type"],
+  "properties": {
+    "failure_stage": {"enum": ["request", "response", "render"]},
+    "endpoint": {"enum": ["daily_life", "daily_life_history", "companion_status"]},
+    "exception_type": {
+      "enum": ["Error", "SyntaxError", "RangeError", "ReferenceError", "AbortError", "KeyError", "JSONDecodeError", "OSError", "PermissionError", "FileNotFoundError", "ImportError", "ModuleNotFoundError", "OperationalError", "DatabaseError", "IntegrityError", "ProgrammingError", "TimeoutError", "TypeError", "ValueError", "AttributeError", "RuntimeError", "OTHER"]
+    },
+    "method": {"enum": ["GET", "POST"]},
+    "http_status": {"type": "integer", "minimum": 100, "maximum": 599}
+  }
+}

@@ -132,8 +132,10 @@ def _validate_item(item, source):
 class CharacterEmotionStore:
     """Source records and reversible appraisals in the per-user life database."""
 
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, *, initialize: bool = True):
         self.path = Path(path)
+        if not initialize:
+            return
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._db() as db:
             db.executescript("""

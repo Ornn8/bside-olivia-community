@@ -238,3 +238,16 @@ def test_real_builder_trace_is_local_and_respects_tombstones_and_pause(tmp_path)
     assert not paused.records
     assert dict(paused.source_status)['trace'] == 'disabled'
     assert not backend.calls
+
+
+def test_asked_about_letter_is_not_pushed_out_by_current_life_pointers():
+    from runtime.memory.memory_port import NullMemoryPort
+    from runtime.memory.memory_prompt import MemoryPromptBuilder
+    asked = record('reply:birthday:1', text='8月26日一起过生日，小猫咪唱了两首生日歌，约好这天是纪念日。')
+    others = tuple(record(f'reply:search:{i}', text='我们聊过许多普通的事情。') for i in range(4))
+    pointers = tuple(record(f'reply:life:{i}', text='她最近一直在练那首曲子，进度还差最后一段。' * 3) for i in range(8))
+    recall = deepen_recall(TraceBuilder(pointers, ()), RecallResult(records=(asked, *others)),
+                           query='还记得我们一起过生日吗', source_ids=tuple(f'reply:life:{i}' for i in range(8)))
+    rendered = MemoryPromptBuilder(NullMemoryPort(), max_tokens=10000).render(recall, max_chars=1500)
+    assert asked in rendered.references
+    assert any(r in rendered.references for r in pointers)  # pointers still follow the best matches

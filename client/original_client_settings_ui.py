@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import base64
 from pathlib import Path
 
 
-SETTINGS_UI_VERSION = "p03.original-settings-manage.v55"
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v58"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
@@ -65,6 +64,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const VIDEO_CAPABILITY_PATH = "/toy/capabilities/video";
   const VIDEO_CAPABILITY_ACTION_PATH = "/toy/capabilities/video/action";
   const DIAGNOSTIC_EXPORT_PATH = "/toy/diagnostics/export";
+  const DIAGNOSTIC_SAVE_PATH = "/toy/diagnostics/save";
   const LOCAL_LETTER_IMPORT_PATH = "/toy/letter/legacy/local-import";
   const OFFICIAL_IMPORT_CONFIRM_ATTR = "data-olivia-companion-official-import-confirm";
   const MEMORY_CORRECT_PATH = "/toy/companion/memory/correct";
@@ -193,7 +193,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         this.setOpen(false);
         if(['SKIPPED','NOT_REQUESTED'].includes(data?.imageStatus)){this.replaceChildren();return;}
         if(data?.imageStatus==='FAILED'){
-          const reasons={GPU_NOT_CONFIGURED:'请先连接 Olivia 账户。',GPU_AUTH_FAILED:'照片服务验证失败，请检查 Olivia 账户。',GPU_INSUFFICIENT_BALANCE:'云端余额不足，请检查云服务余额。',GPU_BILLING_CONSENT_REQUIRED:'请先在设置中确认使用云端服务。',IMAGE_DEPENDENCY_MISSING:'照片组件不完整，请更新或修复客户端。'};
+          const reasons={GPU_NOT_CONFIGURED:'请先连接 Olivia 账户。',GPU_AUTH_FAILED:'照片服务验证失败，请检查 Olivia 账户。',GPU_INSUFFICIENT_BALANCE:'云端余额不足，请检查云服务余额。',GPU_BILLING_CONSENT_REQUIRED:'请先在设置中确认使用云端服务。',IMAGE_DEPENDENCY_MISSING:'照片组件不完整，请更新或修复客户端。',IMAGE_WARDROBE_UNAVAILABLE:'照片服务暂不支持所选穿衣风格。请在衣橱选回原版日常后重试。',IMAGE_WARDROBE_NOT_APPLIED:'照片服务未确认这次换装，请稍后重试。'};
           const code=/^[A-Z][A-Z0-9_]{0,95}$/.test(data.imageErrorCode||'')?data.imageErrorCode:'';
           this.textContent='照片这次没能附上。'+(reasons[code]||'');this.title=code;return;
         }
@@ -394,8 +394,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const timeoutMs = path === VIDEO_CAPABILITY_PATH || path === VIDEO_REPLY_SETTINGS_PATH
       ? 300000
       : path === MEMORY_PATH ? 45000
-      : path === STATUS_PATH || path === PROACTIVE_STATUS_PATH ? 15000 : 5000;
+      : path === DAILY_LIFE_PATH || path === STATUS_PATH || path === PROACTIVE_STATUS_PATH ? 15000 : 5000;
     const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+    let failureStage = 'request', httpStatus;
     try {
       const response = await fetch(endpoint, {
         method: "GET",
@@ -404,6 +405,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         headers: { "Accept": "application/json" },
         signal: controller.signal,
       });
+      httpStatus = response.status; failureStage = 'response';
       const responseBody = await response.json();
       const payload = (path === VIDEO_REPLY_SETTINGS_PATH
           || path === LOCAL_LETTER_IMPORT_PATH
@@ -436,12 +438,18 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         : payload && ["READY", "PAUSED", "UNAVAILABLE"].includes(payload.status);
       if (!response.ok || !valid) {
         const error = new Error("unavailable");
+        failureStage = response.ok ? 'response' : 'request';
         error.code = payload && typeof payload.error_code === "string"
           ? payload.error_code
           : "COMPANION_READ_UNAVAILABLE";
         throw error;
       }
       return payload;
+    } catch (error) {
+      if (path === DAILY_LIFE_PATH || path === STATUS_PATH) {
+        error.dailyLifeStage = failureStage; error.httpStatus = httpStatus;
+      }
+      throw error;
     } finally {
       window.clearTimeout(timeout);
     }
@@ -545,6 +553,27 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     }
   };
 
+  // The app writes the file itself: some webviews leave blob downloads as unnamed .tmp files.
+  const requestDiagnosticSave = async () => {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 20000);
+    try {
+      const response = await fetch(new URL(DIAGNOSTIC_SAVE_PATH, apiBase), {
+        method: "POST", cache: "no-store", credentials: "omit", signal: controller.signal,
+      });
+      let payload = null;
+      try { payload = await response.json(); } catch (_error) { payload = null; }
+      if (!response.ok || !payload || payload.status !== "SAVED" || typeof payload.file_name !== "string") {
+        const error = new Error("diagnostic-save-unavailable");
+        error.code = payload && typeof payload.error_code === "string" ? payload.error_code : "DIAGNOSTIC_EXPORT_UNAVAILABLE";
+        throw error;
+      }
+      return payload;
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  };
+
   const requestMutation = async (path, body) => {
     const endpoint = new URL(path, apiBase);
     const controller = new AbortController();
@@ -558,6 +587,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       ? 300000
       : 8000;
     const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+    let failureStage = 'request', httpStatus;
     try {
       const response = await fetch(endpoint, {
         method: "POST",
@@ -571,10 +601,15 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         body: JSON.stringify(body),
         signal: controller.signal,
       });
+      httpStatus = response.status;
       let responseBody = null;
       try {
         responseBody = await response.json();
       } catch (_error) {
+        if (path === DAILY_LIFE_PATH) {
+          failureStage = 'response';
+          throw _error;
+        }
         responseBody = null;
       }
       const payload = (path === VIDEO_REPLY_SETTINGS_PATH
@@ -586,6 +621,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         : responseBody;
       if (!response.ok || !payload || typeof payload.status !== "string") {
         const error = new Error("mutation-unavailable");
+        failureStage = response.ok ? 'response' : 'request';
         error.code = payload && typeof payload.error_code === "string"
           ? payload.error_code
           : "COMPANION_MUTATION_UNAVAILABLE";
@@ -595,9 +631,24 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         throw error;
       }
       return payload;
+    } catch (error) {
+      if (path === DAILY_LIFE_PATH) {
+        error.dailyLifeStage = failureStage; error.httpStatus = httpStatus;
+      }
+      throw error;
     } finally {
       window.clearTimeout(timeout);
     }
+  };
+
+  const reportDailyLifeFailure = (error, stage, endpoint = 'daily_life', method = 'GET') => {
+    const kinds = ['Error','TypeError','SyntaxError','RangeError','ReferenceError','AbortError'];
+    const body = {endpoint, method, failure_stage: error?.dailyLifeStage || stage,
+      exception_type: kinds.includes(error?.name) ? error.name : 'OTHER'};
+    if (Number.isInteger(error?.httpStatus) && error.httpStatus >= 100 && error.httpStatus <= 599) body.http_status = error.httpStatus;
+    // Only finite metadata reaches the loopback backend; diagnostics never
+    // replace the original error or include its message, stack, URL or payload.
+    void requestMutation(DAILY_LIFE_PATH + '/diagnostic', body).catch(() => {});
   };
 
   const requestSetup = async (path, body = null) => {
@@ -1517,12 +1568,15 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       const show = async (index) => {
         if (pending || !alive() || !archive.isConnected) return;
         pending = true;
+        let failureStage = 'request';
         feedback.textContent = "读取历史片段…";
         try {
           const before = cursors[index];
           const result = await requestJson(DAILY_LIFE_PATH, {history: 1, before});
           if (!alive() || !archive.isConnected) return;
+          failureStage = 'response';
           if (result.schema_version !== "olivia.daily-life.history.v1" || !Array.isArray(result.moments)) throw new Error("DAILY_LIFE_INVALID");
+          failureStage = 'render';
           const navigation = document.createElement("div");
           navigation.style.cssText = "display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:12px";
           const previous = button("上一页", () => show(page - 1));
@@ -1536,6 +1590,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           feedback.textContent = result.moments.length ? "每页最多 8 条，按时间从新到旧。" : "还没有历史片段。";
           loaded = true;
         } catch (_error) {
+          reportDailyLifeFailure(_error, failureStage, 'daily_life_history');
           feedback.replaceChildren(text("span", "历史暂时没能读取，已显示的内容仍然保留。 ", "text-text-secondary text-caption-m"), button("重试读取历史", () => show(index)));
         } finally { pending = false; }
       };
@@ -1903,19 +1958,26 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       if (busy || !alive()) return;
       busy = true;
       let refreshing = false;
+      let failureStage = 'request', method = refresh ? 'POST' : 'GET';
       if (refresh && relationship.open) relationship.refresh();
       try {
         let payload = await (refresh ? requestMutation(DAILY_LIFE_PATH, {}) : requestJson(DAILY_LIFE_PATH));
         if (!alive()) return;
+        failureStage = 'render';
         draw(payload);
         if (!attempted && payload.stale && !payload.refreshing && !payload.error_code) {
           attempted = true;
+          failureStage = 'request'; method = 'POST';
           payload = await requestMutation(DAILY_LIFE_PATH, {});
           if (!alive()) return;
+          failureStage = 'render';
           draw(payload);
         }
         refreshing = payload.refreshing;
       } catch (_error) {
+        const stage = _error.message === 'DAILY_LIFE_INVALID' ? 'response' : failureStage;
+        if (failureStage === 'render') _error.httpStatus = 200;
+        reportDailyLifeFailure(_error, stage, 'daily_life', method);
         if (alive()) {
           status.textContent = "近况暂时无法读取，请稍后重试。";
           if (panel.children.length <= 2) panel.replaceChildren(heading, status, button("重试", () => load()));
@@ -1969,6 +2031,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     account.setAttribute("role", "status");
     const controls = actions(); controls.style.cssText = "display:flex;flex-wrap:wrap;gap:12px";
     const billing = document.createElement("section");
+    const models = document.createElement("section");
     const identity = document.createElement("section");
     identity.className = "olivia-account-key";
     const key = setupInput("我的 Olivia Key", "password");
@@ -1987,7 +2050,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       key.input.value = result.key_prefix ? result.key_prefix + "…" : "";
       copy.hidden = !result.configured;
       billing.replaceChildren();
-      if (result.configured) mountRelayBalance(billing);
+      models.replaceChildren();
+      if (result.configured) { mountRelayModels(models); mountRelayBalance(billing); }
     };
     const run = async (action, payload = {}) => {
       if (busy) return;
@@ -2011,8 +2075,121 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     claim.hidden=reveal.hidden=copy.hidden=true;
     controls.append(claim,reveal,copy);
     identity.append(key.wrapper,controls,account);
-    panel.append(identity,billing);
+    panel.append(identity,models,billing);
     void refresh().catch(()=>{account.textContent="账户读取失败，请关闭后重试。";});
+  };
+
+  const mountRelayModels = (panel) => {
+    const box = document.createElement("section");
+    box.setAttribute("data-olivia-relay-models", "");
+    box.style.cssText = "display:grid;gap:12px;margin:24px 0;min-width:0";
+    const title = text("h3", "回信模型", "text-text-title text-title-m");
+    const description = text("p", "以 Claude Sonnet 5.5 为 1 倍。输入和输出分别计费，实际消费取决于用量；短请求可能受最低计费规则影响。", "text-text-secondary text-body-m");
+    const list = document.createElement("fieldset");
+    list.style.cssText = "margin:0;padding:0;border:0;min-width:0";
+    const legend = text("legend", "选择回信模型");
+    legend.style.cssText = "position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)";
+    const status = text("p", "正在读取可用模型…", "text-text-secondary text-body-m");
+    status.setAttribute("role", "status");
+    const controls = actions();
+    let active = "", selected = "", busy = false;
+    const radios = [];
+    const apply = button("使用所选模型", async () => {
+      if (busy || !selected || selected === active) return;
+      busy = true; apply.disabled = true; radios.forEach(input => { input.disabled = true; });
+      status.textContent = "正在切换模型…";
+      try {
+        const result = await requestSetup("/toy/relay/action", {action:"select_model", model:selected});
+        active = result.selected_model;
+        status.textContent = "已保存，下一次发送使用所选模型。";
+      } catch (_) {
+        status.textContent = "切换失败，仍使用原来的模型。请稍后重试。";
+      } finally {
+        busy = false; apply.disabled = selected === active;
+        radios.forEach(input => { input.disabled = false; });
+      }
+    });
+    apply.disabled = true;
+    controls.append(apply);
+    box.append(title, description, list, controls, status);
+    list.append(legend); panel.append(box);
+    void requestSetup("/toy/relay/action", {action:"models"}).then(data => {
+      if (!box.isConnected) return;
+      active = selected = data.selected_model;
+      const rows = Array.isArray(data.models) ? data.models : [];
+      for (const item of rows) {
+        const row = document.createElement("label");
+        row.className = "olivia-model-row";
+        row.style.cssText = "display:grid;grid-template-columns:20px minmax(0,1fr) auto;align-items:center;gap:12px;padding:14px 0;border-bottom:1px solid #383b42;cursor:pointer";
+        const radio = document.createElement("input");
+        radio.type = "radio"; radio.name = "olivia-reply-model"; radio.value = item.id;
+        radio.checked = item.id === active;
+        radio.style.cssText = "margin:0;accent-color:#ded3bd;width:16px;height:16px";
+        radio.addEventListener("change", () => { selected = radio.value; apply.disabled = busy || selected === active; });
+        radios.push(radio);
+        const name = text("span", item.display_name, "text-text-title text-body-m");
+        name.style.cssText = "overflow-wrap:anywhere;line-height:1.5";
+        const detail = document.createElement("span");
+        detail.style.cssText = "display:grid;gap:4px;min-width:0";
+        detail.append(name);
+        if (item.description) {
+          const intro = text("span", item.description, "text-text-secondary text-body-m");
+          intro.style.cssText = "font-size:13px;line-height:1.65;overflow-wrap:anywhere";
+          detail.append(intro);
+        }
+        const ratio = value => Number(value).toLocaleString("zh-CN", {maximumFractionDigits:2});
+        const ratios = text("span", `输入 ${ratio(item.input_multiplier)}× · 输出 ${ratio(item.output_multiplier)}×`, "text-text-secondary text-body-m");
+        ratios.className += " olivia-model-multipliers";
+        ratios.style.cssText = "font-variant-numeric:tabular-nums;font-size:13px;line-height:1.5";
+        row.append(radio, detail, ratios); list.append(row);
+      }
+      status.textContent = rows.length ? "选择后点击「使用所选模型」，下一次发送生效。" : "暂无可用模型，请稍后重新打开账户页面。";
+      if (rows.length) mountModelRoutes(box, rows, data.routes || {});
+    }).catch(() => { status.textContent = "模型列表读取失败，请稍后重新打开账户页面。"; });
+  };
+
+  const mountModelRoutes = (box, rows, saved) => {
+    const section = document.createElement("section");
+    section.setAttribute("data-olivia-model-routes", "");
+    section.style.cssText = "display:grid;gap:12px;margin-top:12px;min-width:0";
+    const title = text("h3", "按用途选择模型", "text-text-title text-title-m");
+    const description = text("p", "QQ 聊天、写信、写日记可以分别用不同的模型，按各自模型的价格计费。选「跟随回信模型」就用上面选中的模型。", "text-text-secondary text-body-m");
+    const status = text("p", "", "text-text-secondary text-body-m");
+    status.setAttribute("role", "status");
+    const uses = [["qq", "QQ 聊天"], ["letter", "写信（回信和主动来信）"], ["diary", "日记和回忆录"]];
+    const selects = {};
+    const grid = document.createElement("div");
+    grid.style.cssText = "display:grid;grid-template-columns:minmax(0,1fr);gap:10px;min-width:0";
+    for (const [use, label] of uses) {
+      const row = document.createElement("label");
+      row.style.cssText = "display:grid;gap:6px;min-width:0";
+      const select = document.createElement("select");
+      select.className = "rounded-3 border border-grey-5 bg-transparent px-4 py-2.5 text-text-body text-body-m";
+      select.setAttribute("aria-label", label);
+      select.append(new Option("跟随回信模型", ""));
+      for (const item of rows) select.append(new Option(item.display_name, item.id));
+      select.value = typeof saved[use] === "string" && rows.some(item => item.id === saved[use]) ? saved[use] : "";
+      selects[use] = select;
+      row.append(text("span", label, "text-text-title text-body-m"), select);
+      grid.append(row);
+    }
+    const controls = actions();
+    let busy = false;
+    const save = button("保存用途设置", async () => {
+      if (busy) return;
+      busy = true; save.disabled = true; status.textContent = "正在保存…";
+      const routes = {};
+      for (const [use] of uses) routes[use] = selects[use].value || null;
+      try {
+        await requestSetup("/toy/relay/action", {action:"select_routes", routes});
+        status.textContent = "已保存，下一次发送生效。";
+      } catch (_) {
+        status.textContent = "保存失败，仍使用原来的设置。请稍后重试。";
+      } finally { busy = false; save.disabled = false; }
+    });
+    controls.append(save);
+    section.append(title, description, grid, controls, status);
+    box.append(section);
   };
 
   const mountRelayBalance = (panel) => {
@@ -2071,7 +2248,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       }
       if (order.state === "expired") {
         status.textContent = "付款金额已过期，请勿继续付款。";
-        orderView.append(text("p", "此付款金额已过期，请勿继续付款。已付款但未到账，请联系管理员核对。", "text-text-secondary text-body-m")); enabled(); return;
+        orderView.append(text("p", "此付款金额已过期，请勿再按它付款。还没付款：点「获取付款金额」重新生成即可。已经付款但没到账：请不要重复付款，联系管理员核对。", "text-text-secondary text-body-m")); enabled(); return;
       }
       active = order;
       select.value = String(Math.round(Number(order.credit_yuan)*100));
@@ -2081,17 +2258,25 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       const countdown = text("p", "", "text-text-secondary text-body-m");
       countdown.setAttribute("aria-live", "off");
       const qr = document.createElement("img");
-      qr.src = "__OLIVIA_WECHAT_PAYMENT_QR__";
+      qr.src = new URL('/toy/images/ui/wechat-payment', apiBase).href;
       qr.alt = "微信收款码，收款人 Ornn，请按订单显示金额付款";
       qr.style.cssText = "display:block;width:280px;max-width:100%;height:auto;margin:12px auto;border-radius:12px";
-      const paid = text("p", `请用微信扫描下方收款码，准确支付 ${amount}（含小数），请勿取整。到账余额 ¥${credit}。`, "text-text-secondary text-body-m");
+      const paid = document.createElement("ol");
+      paid.className = "text-text-secondary text-body-m";
+      paid.style.cssText = "margin:0;padding-left:1.4em;display:grid;gap:6px";
+      for (const step of [
+        "打开微信「扫一扫」，扫描下方收款码。",
+        `付款金额填 ${amount}，带小数、一分不差。这几分钱的差别是用来自动认出你的付款的，到账按 ¥${credit} 计算。`,
+        "付完留在这个页面，通常 1 分钟内自动到账，不用截图，也不用联系客服。"]) {
+        const item = document.createElement("li"); item.textContent = step; paid.append(item);
+      }
       orderView.append(pay, paid, qr, countdown);
       status.textContent = `付款金额 ${amount}，到账余额 ¥${credit}。`;
       const deadline = Date.now() + Math.max(0, order.expires_at-data.server_time)*1000;
       const tick = () => {
         if (!box.isConnected || serial !== generation) return;
         const seconds = Math.max(0, Math.ceil((deadline-Date.now())/1000));
-        countdown.textContent = `有效时间 ${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,"0")} · 正在等待微信到账通知`;
+        countdown.textContent = `请在 ${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,"0")} 内付款 · 正在等待微信到账通知`;
         if (!seconds) { pay.textContent="付款金额已过期，请勿继续付款。"; qr.remove(); paid.hidden=true; active=null; enabled(); return; }
         window.setTimeout(tick,1000);
       };
@@ -2126,6 +2311,15 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     recharge.style.marginTop="12px";
     box.append(title,metrics,balance,usage,unifiedHistory,recharge,controls,orderView,status);
     panel.append(box);
+    let telemetryPageRecorded = false;
+    const recordRechargePage = () => {
+      if (!box.isConnected || telemetryPageRecorded) return;
+      if (!document.hidden && box.getClientRects?.().length) {
+        telemetryPageRecorded = true;
+        void requestSetup('/toy/telemetry/action',{action:'recharge_page'}).catch(()=>{});
+      } else window.setTimeout(recordRechargePage,1000);
+    };
+    recordRechargePage();
     void run(async()=>{await readBalance();drawOrder(await call({action:"order_status"}));});
     const refreshVisibleBalance = async () => {
       if (!box.isConnected) return;
@@ -2529,8 +2723,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       const isAudio=song.media_type === "audio";
       const url = new URL(`/toy/local-songs/media/${song.id}.${isAudio ? "wav" : "mp4"}`, apiBase).href;
       return {
-        id: String(1000000000000000 + parseInt(song.id.slice(0, 12), 16)),
-        itemId: String(1000000000000000 + parseInt(song.id.slice(0, 12), 16)), itemType: 3, name: song.name,
+        id: String(song.native_id),
+        itemId: String(song.native_id), itemType: 3, name: song.name,
+        eventId: String(song.native_id),
         nameKey: "local_" + song.id, styleType: "Local Performance",
         styleTypeDisplayName: "本地演奏", performanceType: "Solo", source: "songlist",
         videoUrl: isAudio ? "" : url, mediaUrl: url, coverUrl: "", iconUrl: "", audioUrl: isAudio ? url : "",
@@ -2550,7 +2745,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           onFailure: () => { clearTimeout(timer); fail(new Error("LOCAL_SONG_NATIVE_FAILED")); },
         });
       });
-      const check = () => native("checkLocalSongs", {songs: imported.map((song, index) => ({...song, eventId: String(index + 1)}))});
+      const check = () => native("checkLocalSongs", {songs: imported});
       const status = await check();
       const missing = imported.filter((song) => !status.songs?.some((item) => String(item.songId) === song.id && item.exist));
       if (missing.length) {
@@ -2724,6 +2919,25 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   // The lite client's mailbox is the original /collection view. Keep both
   // destinations inside the main window: desktop widgets can be off-screen.
   const WORLD_ROUTE = '#/world';
+  const WARDROBE_ROUTE = '#/world/wardrobe';
+  const ITEMS_ROUTE = '#/world/items';
+  const DIARY_ROUTE = '#/world/diary';
+  const CAMERAS_ROUTE = '#/world/cameras';
+  const PETS_ROUTE = '#/world/pets';
+  const diaryState = {checkedAt: 0, unseen: 0};
+  const refreshDiaryBadge = async (force=false) => {
+    if(!force&&Date.now()-diaryState.checkedAt<300000)return;
+    diaryState.checkedAt=Date.now();
+    try{
+      const page=await routeRequest('/toy/diary?limit=1');diaryState.unseen=Number(page?.unseen)||0;
+      for(const target of document.querySelectorAll?.('[data-diary-badge]')||[]){
+        let dot=target.querySelector('[data-diary-unseen]');
+        if(diaryState.unseen>0&&!dot){dot=document.createElement('span');dot.setAttribute('data-diary-unseen','');dot.setAttribute('aria-label','有新日记');
+          Object.assign(dot.style,{width:'7px',height:'7px',borderRadius:'50%',background:'#e58a7a',marginLeft:'6px',display:'inline-block'});target.append(dot);}
+        if(diaryState.unseen===0)dot?.remove();
+      }
+    }catch(_){/* The badge is optional; navigation must never depend on it. */}
+  };
   const mountWorldPage = (page) => {
     page.dataset.oliviaWorldPage='';page.setAttribute('aria-label','世界');
     const style=document.createElement('style');style.textContent=`
@@ -2733,7 +2947,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       [data-world-main]{overflow-y:auto;overflow-x:hidden;background:#191a1c;border-radius:12px;padding:28px 32px;min-height:0;flex:1;display:block;box-sizing:border-box;scrollbar-width:thin}
       [data-world-main] p{line-height:1.7;margin:8px 0}
       [data-world-main] h3{font-size:26px;margin:0}[data-world-main] h4{font-size:21px;margin:0}
-      [data-world-main] button,.olivia-world-header button{border:1px solid #686a70;border-radius:999px;background:transparent;color:#ded9d1;padding:9px 18px;font:inherit;cursor:pointer}
+      .olivia-world-tools{display:flex;justify-content:flex-end;margin:12px 0}
+      [data-world-main] button,.olivia-world-tools button{border:1px solid #686a70;border-radius:999px;background:transparent;color:#ded9d1;padding:9px 18px;font:inherit;cursor:pointer}
       [data-world-main] summary{cursor:pointer;line-height:1.7}
       [data-world-main] article{background:transparent!important;padding:12px 0!important}
       .olivia-world-heading{display:flex;justify-content:space-between;align-items:center;gap:16px}
@@ -2776,10 +2991,16 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       @media(max-width:580px){.olivia-world-columns{grid-template-columns:1fr}.olivia-world-aside{padding:20px 0 0;border-left:0;border-top:1px solid #383a3e}.olivia-world-tabs{gap:20px}.olivia-world-heading{align-items:flex-start}.olivia-world-heading .olivia-world-line{align-items:flex-start}[data-world-main]{padding:18px}.olivia-world-meta{gap:8px}}
     `;
     const header=document.createElement('header');header.className='olivia-world-header';header.append(text('h1','世界'));
+    const wardrobeEntry=button('物品栏',()=>openItems());wardrobeEntry.setAttribute('data-olivia-items-entry','');
+    wardrobeEntry.setAttribute('aria-label','打开林离的物品栏');wardrobeEntry.setAttribute('data-diary-badge','');
+    setTimeout(()=>void refreshDiaryBadge(true),0);
+    // The top row is shared with the native tabs and the account controls; keep it to the title.
+    const tools=document.createElement('div');tools.className='olivia-world-tools';tools.append(wardrobeEntry);
     const panel=document.createElement('section');panel.dataset.worldMain='';
-    page.replaceChildren(style,header,panel);
+    page.replaceChildren(style,header,tools,panel);
     panel.append(text('p','正在读取林离的生活……'));
-    void requestJson(STATUS_PATH).then(payload=>{if(page.isConnected)return renderPrivateWorldPanel(panel,payload.capabilities?.private_world)}).catch(()=>{
+    void requestJson(STATUS_PATH).then(payload=>{if(page.isConnected)return renderPrivateWorldPanel(panel,payload.capabilities?.private_world)}).catch(error=>{
+      reportDailyLifeFailure(error, 'request', 'companion_status');
       if(page.isConnected)panel.replaceChildren(text('p','近况暂时无法读取。'),button('重试',()=>mountWorldPage(page)));
     });
   };
@@ -2798,9 +3019,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   };
   const mountMainNavigation = () => {
     const route = window.location.hash.split("?")[0];
-    const world=window.location.hash===WORLD_ROUTE;
+    const world=route===WORLD_ROUTE||route.startsWith(WORLD_ROUTE+'/');
     let nav = document.querySelector("[data-olivia-main-navigation]");
-    if (route !== "#/studio" && route !== "#/collection" && route !== WORLD_ROUTE) {
+    if (route !== "#/studio" && route !== "#/collection" && !world) {
       nav?.remove();
       return;
     }
@@ -2812,9 +3033,10 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         position: "fixed", top: "60px", left: "120px", zIndex: "20",
         display: "flex", gap: "8px", WebkitAppRegion: "no-drag",
       });
-      for (const [label, href] of [["信箱", "#/collection"], ["世界", WORLD_ROUTE], ["曲库", "#/studio"]]) {
+      for (const [label, href] of [["信箱", "#/collection"], ["世界", WORLD_ROUTE], ["物品栏", ITEMS_ROUTE], ["曲库", "#/studio"]]) {
         const link = text("a", label, "text-body-m");
         link.href = href;
+        if (href === ITEMS_ROUTE) link.setAttribute("data-diary-badge", "");
         link.addEventListener('click',event=>{
           if(event.button!==0||event.ctrlKey||event.metaKey||event.shiftKey||event.altKey)return;
           const router=window.__oliviaNativeView?.router;if(!router)return;
@@ -2830,9 +3052,15 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       }
       document.body.append(nav);
     }
-    nav.style.left='120px';
+    // A longer sub-page title (拍摄设备) would sit under the fixed navigation.
+    const title=world&&route!==WORLD_ROUTE?document.querySelector('main header h1'):null;
+    const titleText=title&&document.createRange();titleText?.selectNodeContents(title);
+    const titleEnd=titleText?Math.ceil(titleText.getBoundingClientRect().right)+16:0;
+    nav.style.left=Math.max(120,titleEnd)+'px';
+    if(world)void refreshDiaryBadge();
     for (const link of nav.querySelectorAll("a")) {
-      const active = link.getAttribute("href") === (world?WORLD_ROUTE:route);
+      const current = route===WORLD_ROUTE ? WORLD_ROUTE : world ? ITEMS_ROUTE : route;
+      const active = link.getAttribute("href") === current;
       if (active) link.setAttribute("aria-current", "page");
       else link.removeAttribute("aria-current");
       link.style.color = active ? "#111827" : "#d1d5db";
@@ -2975,6 +3203,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] [aria-pressed] { background:transparent !important;border:0 !important;border-radius:0 !important;border-bottom:2px solid transparent !important;padding:10px 4px !important; }
           [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] [aria-pressed="true"] { border-bottom-color:#ded3bd !important;color:#f1ece2 !important; }
           @media(max-width:700px) {
+            [data-olivia-relay-models] .olivia-model-row { grid-template-columns:20px minmax(0,1fr) !important;gap:4px 12px !important; }
+            [data-olivia-relay-models] .olivia-model-multipliers { grid-column:2; }
             [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] .olivia-account-key { grid-template-columns:minmax(0,1fr); }
             [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] .olivia-account-metrics { grid-template-columns:repeat(2,minmax(0,1fr));gap:16px; }
           }
@@ -3174,13 +3404,14 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     singing_video: "唱歌",
     voice_song_video: "说话＋唱歌",
   };
-  const routeRequest = async (path, body) => {
+  // Writes the user starts from a button carry the companion confirmation the local server requires.
+  const routeRequest = async (path, body, {confirmed = false} = {}) => {
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 330000);
     try {
       const response = await fetch(new URL(path, apiBase), {
         method: body ? "POST" : "GET", cache: "no-store", credentials: "omit",
-        headers: { "Content-Type": "application/json", "Accept": "application/json" },
+        headers: { "Content-Type": "application/json", "Accept": "application/json", ...(confirmed ? {[CONFIRM_HEADER]: CONFIRM_VALUE} : {}) },
         ...(body ? { body: JSON.stringify(body) } : {}), signal: controller.signal,
       });
       const payload = await response.json();
@@ -3443,10 +3674,20 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const body = typeof config.data === "string" ? JSON.parse(config.data) : config.data;
     if (!body || (!resending && (typeof body.content !== "string" || !body.content.trim()))) return config;
     let preview;
-    const editor=!resending && coverComposer?.isConnected && coverComposer.value===body.content ? composerCovers.get(coverComposer) : null;
+    const composerInput=coverComposer;
+    const editor=!resending && composerInput?.isConnected && composerInput.value===body.content ? composerCovers.get(composerInput) : null;
+    const composerMode=editor?.mode;
     let attachment=null;
     try{if(editor && editor.mode!=='letter')attachment=editor.materialForSend()}
     catch(error){error.config=config;throw error}
+    const requireUnchangedComposer=()=>{
+      if(!attachment)return;
+      let current;
+      try{if(editor.mode===composerMode)current=editor.materialForSend()}catch{}
+      if(!composerInput.isConnected || composerInput.value!==body.content || JSON.stringify(current)!==JSON.stringify(attachment)){
+        throw Object.assign(new Error('回信形式或歌曲内容已变更，请确认后重新寄出。草稿已保留。'),{config,code:'ERR_CANCELED',__CANCEL__:true});
+      }
+    };
     try { do { preview = await routeRequest("/toy/letter/route-preview", {...(resending ? {letter_id:body.letter_id || body.letterId} : {content: body.content}),
       ...(attachment?.original_output ? {original_output:attachment.original_output,music_options:attachment.music_options} :
         attachment ? {cover_source_id:attachment.cover_source_id,cover_output:attachment.cover_output} : {})});
@@ -3500,6 +3741,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         : fallback)) + (code ? `（${code}）` : "") + "信件尚未寄出。";
       throw error;
     }
+    requireUnchangedComposer();
     let once;
     let videoOnce;
     if (preview.image_enabled && !await confirmAction(
@@ -3525,14 +3767,16 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     let quote={paid:false};
     const originalCharge=!preview.requires_cover_audio&&['singing_video','voice_song_video','musical_video'].includes(preview.reply_mode);
     try{if(preview.reply_mode!=='text_letter')quote=await requestSetup('/toy/generation/action',{action:'billing_quote',video:preview.video_enabled===true,original:originalCharge});}
-    catch(error){error.config=config;error.message=error.code==='GPU_CLIENT_UPDATE_REQUIRED'?'请重启客户端以更新原创收费确认。草稿已保留。':error.code==='GPU_INSUFFICIENT_BALANCE'?'Olivia 可用余额不足。语音或翻唱需预留 ¥1，原创单曲需预留 ¥3，视频需预留 ¥5，请先充值。草稿已保留。':'无法核对云端生成费用，请检查云端连接后重试。草稿已保留。';throw error;}
+    catch(error){error.config=config;error.message=error.code==='GPU_CLIENT_UPDATE_REQUIRED'?'请重启客户端以更新原创收费确认。草稿已保留。':error.code==='GPU_INSUFFICIENT_BALANCE'?'Olivia 可用余额不足，无法预留本次生成费用，请先充值。草稿已保留。':'无法核对云端生成费用，请检查云端连接后重试。草稿已保留。';throw error;}
     if(quote.paid){
       const cap=(quote.max_charge_cents/100).toFixed(2);
-      const priceDetail=originalCharge?'原创音乐按时长定价 ¥2–3，含小幅随机浮动，最终不超过 ¥3；视频另含视频费用，以本次总上限为准。':'成功后按实际占用结算。';
-      if(!await confirmAction(`本次云端生成将从 Olivia 余额预留 ¥${cap}，本次最多收费 ¥${cap}。${priceDetail}多余预留释放；失败全退。回信文字另按 Token 计费。确认寄出？`)){
+      const musicPrice=quote.original_music_retail_price;
+      const priceDetail=originalCharge?(musicPrice?`原创单曲每首 ¥${(musicPrice.min_cents/100).toFixed(2)}–${(musicPrice.max_cents/100).toFixed(2)}，提交时锁定随机报价；视频另含视频费用，以本次总上限为准。`:'原创音乐按时长定价 ¥2–3，含小幅随机浮动，最终不超过 ¥3；视频另含视频费用，以本次总上限为准。'):'成功后按实际占用结算。';
+      if(!await confirmAction(`本次生成${preview.video_enabled===true?'视频回信':'音频回信'}。云端生成将从 Olivia 余额预留 ¥${cap}，本次最多收费 ¥${cap}。${priceDetail}多余预留释放；失败全退。回信文字另按 Token 计费。确认寄出？`)){
         throw Object.assign(new Error('已取消发送，草稿保留。'),{config,code:'ERR_CANCELED',__CANCEL__:true});
       }
     }
+    requireUnchangedComposer();
     if (once) material.route_allow_once = once;
     if (videoOnce) material.route_video_once = videoOnce;
     config.data = {...body, material};
@@ -3649,21 +3893,47 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const choices = document.createElement("div"); choices.setAttribute("role", "radiogroup"); choices.setAttribute("aria-label", "回信能力档位");
     const labels = {text:"纯文字",audio:"文字＋声音",video:"文字＋声音＋视频"};
     const descriptions = {text:"通过文字回信。",audio:"可回复文字，也可用说话、唱歌或两者组合的音频。",video:"文字、声音和视频都可使用，由本次内容决定。"};
-    let selected = null, busy = false, imageEnabled = false, imageResolution = '1K';
+    let selected = null, busy = false, imageEnabled = false, imageResolution = '1K', imageModel = '', imageCapability = null;
     const imageControls = document.createElement('div'); imageControls.style.cssText='display:flex;gap:8px;align-items:center;flex-wrap:wrap';
     const imageToggle = button('图片',()=>{if(busy)return;imageEnabled=!imageEnabled;void persist();});
     imageToggle.setAttribute('aria-label','允许林离回复图片');
     const imageSizes = document.createElement('select'); imageSizes.setAttribute('aria-label','图片分辨率');
-    for(const value of ['1K','2K','4K']){const option=document.createElement('option');option.value=value;option.textContent=value;imageSizes.append(option);}
     imageSizes.addEventListener('change',()=>{imageResolution=imageSizes.value;void persist();});
-    imageControls.append(imageToggle,imageSizes);
-    const imageHelp=text('p','图片仅云端生成，可随文字或语音回信，也适用于 QQ，每次最多 1 张。1K／2K／4K 基准价为 ¥0.50／¥0.80／¥1.10，每单随机浮动 ±10%（¥0.45–0.55／¥0.72–0.88／¥0.99–1.21）。提交时锁定并预留本单价格，重试不变价，失败释放预留。不进行图片质检；用于记忆的图片识别仍按中转用量计费。实际像素随构图变化。','text-text-secondary text-caption-m');
+    const imageModelLabel=document.createElement('label');imageModelLabel.append(text('span','图片模型'));
+    const imageModels=document.createElement('select');imageModels.setAttribute('aria-label','图片模型');imageModelLabel.append(imageModels);
+    const selectedImageModel=()=>imageCapability?.models?.find(item=>item.id===(imageModel||imageCapability.default_model));
+    const modelResolutions=()=>selectedImageModel()?.resolutions||['1K','2K','4K'];
+    const imagePriceLabel=range=>range[0]===range[1]?`¥${(range[0]/100).toFixed(2)}`:`¥${(range[0]/100).toFixed(2)}–¥${(range[1]/100).toFixed(2)}`;
+    const fillOptions=(select,items,value)=>{
+      select.textContent='';
+      for(const item of items){const option=document.createElement('option');option.value=item.id;option.textContent=item.label;option.disabled=item.disabled===true;select.append(option);}
+      select.value=value;
+    };
+    imageModels.addEventListener('change',()=>{
+      imageModel=imageModels.value;
+      const resolutions=modelResolutions();if(!resolutions.includes(imageResolution))imageResolution=resolutions[0];
+      void persist();
+    });
+    imageControls.append(imageToggle,imageModelLabel,imageSizes);
+    const imageHelp=text('p','','text-text-secondary text-caption-m');
     const nodes = {};
     const detail = text("p", "", "text-text-secondary text-body-m font-regular");
     const status = text("p", "正在读取设置…", "text-text-secondary text-caption-m font-regular"); status.setAttribute("role", "status");
     const render = () => {
       imageToggle.disabled=busy || selected===null;imageToggle.setAttribute('aria-pressed',String(imageEnabled));
-      imageSizes.hidden=!imageEnabled;imageSizes.disabled=busy;imageSizes.value=imageResolution;imageHelp.hidden=!imageEnabled;
+      const models=imageCapability?.models||[];
+      imageModelLabel.hidden=!imageEnabled||models.length===0;imageModels.disabled=busy||selected===null;
+      const options=[{id:'',label:'服务默认'},...models.map(item=>({id:item.id,label:item.display_name}))];
+      if(imageModel&&!models.some(item=>item.id===imageModel))options.push({id:imageModel,label:'当前模型暂不可用',disabled:true});
+      fillOptions(imageModels,options,imageModel);
+      const prices=selectedImageModel()?.price_ranges_cents;
+      const resolutions=modelResolutions(),sizes=resolutions.map(id=>({id,label:prices?.[id]?`${id} · ${imagePriceLabel(prices[id])}${prices[id][0]===prices[id][1]?'（固定）':''}`:id}));
+      if(!resolutions.includes(imageResolution))sizes.push({id:imageResolution,label:imageResolution+'（当前模型不可用）',disabled:true});
+      fillOptions(imageSizes,sizes,imageResolution);
+      const range=prices?.[imageResolution];
+      const imagePriceHelp=range?(range[0]===range[1]?`当前分辨率固定价 ${imagePriceLabel(range)} / 张，无随机浮动。`:`当前分辨率每张 ${imagePriceLabel(range)}，每单小幅随机浮动。`):'费用按模型和分辨率确定，每单小幅随机浮动。';
+      imageHelp.textContent='图片仅云端生成，可随文字或语音回信，也适用于 QQ，每次最多 1 张。'+imagePriceHelp+'提交时锁定并预留本单报价，重试不变价，失败释放预留。用于记忆的图片识别另按中转用量计费。实际像素随构图变化。';
+      imageSizes.hidden=!imageEnabled;imageSizes.disabled=busy||selected===null;imageHelp.hidden=!imageEnabled;
       Object.entries(nodes).forEach(([key,node])=>{
         node.disabled=busy || selected===null; node.setAttribute("aria-checked",String(selected===key));
       });
@@ -3677,7 +3947,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     // Every choice saves immediately; a failed save restores what is stored.
     const persist=async()=>{
       busy=true;render();
-      try { await routeRequest("/toy/settings/reply-routes",{request_id:videoReplyRequestId(),tier:selected,image:{enabled:imageEnabled,resolution:imageResolution}});
+      try { await routeRequest("/toy/settings/reply-routes",{request_id:videoReplyRequestId(),tier:selected,image:{enabled:imageEnabled,resolution:imageResolution,...(imageModel?{model:imageModel}:{})}});
         status.textContent="已保存。已接收的信件继续按原设置处理。";busy=false;render(); }
       catch (_) { busy=false;await hydrate();status.textContent="没有保存成功，已恢复为原来的设置，请重试。"; }
     };
@@ -3686,6 +3956,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         const result=await routeRequest("/toy/settings/reply-routes");
         selected=result.tier || (Object.values(result.routes||{}).some(Boolean) ? "video" : "text");
         imageEnabled=result.image?.enabled===true;imageResolution=result.image?.resolution||'1K';
+        imageModel=result.image?.model||'';imageCapability=result.image_capability||null;
         if(!labels[selected]) throw Error("invalid tier");
         status.textContent=result.tier_configured===false ? "当前沿用旧设置，点选一个档位即统一生效。" : "";
       } catch (_) { selected=null;status.textContent="设置读取失败，请稍后重新打开设置页。"; }
@@ -3695,13 +3966,599 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     refreshVideoReplySetting=()=>container.isConnected ? hydrate() : Promise.resolve(); void hydrate();
   };
 
+  const wardrobeStyle = () => {
+    const style=document.createElement('style');style.textContent=`
+      [data-olivia-wardrobe-page]{width:100%;height:100%;min-height:0;display:flex;flex-direction:column;gap:20px;color:#e9e3d8;-webkit-app-region:no-drag}
+      .ow-page-header{height:40px;display:flex;align-items:center;flex-shrink:0}
+.ow-page-header h1{font-size:30px;margin:0;font-weight:700}
+.ow-breadcrumb{display:flex;gap:14px;align-items:center;min-height:40px;flex-shrink:0;font-size:14px;color:#bcb5aa}
+      .ow-breadcrumb a{display:inline-flex;gap:8px;align-items:center;color:#e9e3d8;text-decoration:none;padding:8px 0}
+      .ow-breadcrumb svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.6}
+      [data-olivia-wardrobe]{--ow-paper:#e4d8c3;--ow-muted:#b9b1a5;box-sizing:border-box;background:#1b1c1e;color:#e9e3d8;padding:28px 36px;min-height:0;overflow-y:auto;overflow-x:hidden;flex:1;border-radius:12px}
+      [data-olivia-wardrobe] *{box-sizing:border-box}
+      [data-olivia-wardrobe] h1,[data-olivia-wardrobe] h2,[data-olivia-wardrobe] p{margin:0}
+      .ow-heading{display:flex;justify-content:space-between;gap:24px;align-items:flex-start;padding-bottom:22px;border-bottom:1px solid #49443c}
+      .ow-heading h1{font-size:32px;font-weight:500;line-height:1.4;letter-spacing:.02em}
+      .ow-heading p{font-size:14px;line-height:1.8;color:var(--ow-muted);margin-top:10px;max-width:52ch}
+      .ow-current{font-size:13px;line-height:1.7;color:var(--ow-muted);text-align:right;min-width:120px;padding-top:5px}
+      .ow-current strong{display:block;font-size:16px;font-weight:500;color:var(--ow-paper);margin-top:4px}
+      .ow-interior{display:grid;grid-template-columns:220px minmax(0,1fr);gap:40px;margin-top:24px}
+      .ow-rail{display:flex;flex-direction:column;gap:0;position:relative;align-self:start}
+      [data-olivia-wardrobe] button{font:inherit;cursor:pointer;-webkit-app-region:no-drag}
+      [data-olivia-wardrobe] .ow-style{display:flex;align-items:center;gap:14px;width:100%;min-height:64px;padding:10px 12px;background:transparent;color:#c4bcae;text-align:left;border:0;border-bottom:1px solid #3c3b37;border-radius:0}
+      .ow-style svg{width:26px;height:26px;flex-shrink:0;fill:none;stroke:currentColor;stroke-width:1.35;stroke-linecap:round;stroke-linejoin:round}
+      .ow-style strong{display:block;font-size:16px;font-weight:500;line-height:1.6}
+      .ow-style small{display:block;font-size:11px;color:#a9a297;line-height:1.5;min-height:16px}
+      [data-olivia-wardrobe] .ow-style[aria-selected=true]{background:var(--ow-paper);color:#29251e}
+      .ow-style[aria-selected=true] small{color:#5c5447}
+      [data-olivia-wardrobe] .ow-style:hover:not(:disabled):not([aria-selected=true]){background:#272725;color:#eee7dc}
+      .ow-look{min-width:0;padding-top:8px}
+      .ow-look-header{display:flex;justify-content:space-between;gap:20px;align-items:center}
+      .ow-look h2{font-size:30px;line-height:1.4;font-weight:500;letter-spacing:.02em;color:var(--ow-paper)}
+      .ow-swatches{display:flex;gap:7px;flex-shrink:0}
+      .ow-swatches span{width:22px;height:22px;border-radius:50%;outline:1px solid #fff2;outline-offset:2px}
+      .ow-description{font-size:14px;color:var(--ow-muted);line-height:1.8;margin-top:14px!important;max-width:55ch;min-height:44px}
+      .ow-pieces{margin:26px 0 0;padding:0}
+      .ow-piece{display:grid;grid-template-columns:80px minmax(0,1fr);gap:18px;padding:18px 0;border-top:1px solid #3c3b37}
+      .ow-piece dt{font-size:12px;line-height:1.9;color:var(--ow-muted)}
+      .ow-piece dd{margin:0;font-size:16px;line-height:1.6;color:#e9e3d8;overflow-wrap:anywhere}
+      .ow-today{margin-top:18px!important;font-size:13px;line-height:1.8;color:var(--ow-paper)}
+      .ow-gallery{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;margin-top:22px}
+      .ow-gallery:has(.ow-garment:only-child){grid-template-columns:minmax(0,320px)}
+      .ow-garment{margin:0;min-width:0}.ow-garment img{display:block;width:100%;aspect-ratio:3/4;object-fit:contain;background:#f7f6f2;border-radius:8px}
+      .ow-garment figcaption{padding-top:9px;color:var(--ow-muted);font-size:12px;line-height:1.6;overflow-wrap:anywhere}
+      .ow-purchase{margin-top:10px;border:1px solid #7e7465;border-radius:6px;background:transparent;color:inherit;padding:8px 12px;font:inherit;cursor:pointer}.ow-purchase:disabled{opacity:.6;cursor:default}
+      .ow-image-error{aspect-ratio:3/4;display:flex;align-items:center;justify-content:center;background:#292927;color:var(--ow-muted);font-size:13px;border-radius:8px;padding:12px}
+      @media(max-width:900px){.ow-gallery{grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}}
+      .ow-footer{margin-top:20px;padding-top:20px;border-top:1px solid #49443c;display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+      [data-olivia-wardrobe] .ow-apply{background:var(--ow-paper);color:#28241f;border:0;border-radius:8px;padding:12px 26px;min-height:46px;font-size:15px;font-weight:600}
+      [data-olivia-wardrobe] .ow-apply:hover:not(:disabled){background:#f0e4cf}
+      [data-olivia-wardrobe] .ow-apply:disabled{background:#33312c;color:#ccc2b0;cursor:default}
+      .ow-footer p{font-size:12px;line-height:1.8;color:var(--ow-muted);max-width:42ch}
+      .ow-feedback{display:flex;align-items:center;gap:18px;margin-top:20px;min-height:24px}
+      .ow-feedback p{font-size:13px;line-height:1.8;color:#d4c8b5}
+      [data-olivia-wardrobe] .ow-retry{padding:8px 12px;color:var(--ow-paper);background:transparent;border:1px solid #6d6558;border-radius:8px;flex-shrink:0}
+      [data-olivia-wardrobe] button:focus-visible,.ow-breadcrumb a:focus-visible{outline:2px solid #e4d8c3;outline-offset:4px}
+      [data-olivia-wardrobe] .ow-style:disabled{opacity:.55;cursor:wait}
+      [data-olivia-wardrobe] [hidden]{display:none!important}
+      @media(max-width:900px){[data-olivia-wardrobe]{padding:26px}.ow-interior{grid-template-columns:180px minmax(0,1fr);gap:26px}.ow-heading h1{font-size:28px}.ow-look h2{font-size:26px}}
+      @media(max-width:650px){[data-olivia-wardrobe]{padding:24px 20px}.ow-heading{gap:12px;flex-direction:column;padding-bottom:20px}.ow-current{text-align:left;padding:0;display:flex;gap:12px;align-items:center}.ow-current strong{margin:0;font-size:14px}.ow-interior{grid-template-columns:1fr;gap:24px;margin-top:20px}.ow-rail{flex-direction:row;overflow-x:auto;padding:0 0 8px;scrollbar-width:thin}.ow-rail .ow-style{width:auto;flex-shrink:0;padding:10px 14px;min-height:60px;border-bottom:0}.ow-style svg{width:20px;height:20px}.ow-style strong{font-size:14px}.ow-look{padding:0}.ow-pieces{margin-top:18px}.ow-piece{padding:18px 0;grid-template-columns:64px minmax(0,1fr);gap:12px}.ow-look h2{font-size:25px}.ow-feedback{align-items:flex-start}}
+    `;return style;
+  };
+
+  const STICKER_PACK_PAGE = "bside-moon.cn/stickers.html";
+  const mountStickerPacks = (section) => {
+    const row = document.createElement("div");
+    row.className = "olivia-group-row";
+    const copy = document.createElement("div");
+    copy.className = "flex flex-col gap-1";
+    const state = text("span", "表情包：正在读取……", "text-text-body text-body-m");
+    const detail = text("span", "", "text-text-secondary text-body-m");
+    copy.append(state, detail);
+    const stickerPackRequest = async (action) => {
+      const response = await fetch(new URL("/toy/sticker-packs" + action, apiBase), {
+        method: action ? "POST" : "GET", cache: "no-store", credentials: "omit",
+        headers: { "Accept": "application/json", "Content-Type": "application/json", [CONFIRM_HEADER]: CONFIRM_VALUE },
+        ...(action ? { body: "{}" } : {}),
+      });
+      const result = await response.json();
+      const data = result && result.data;
+      if (!response.ok || !data || !Array.isArray(data.packs)) throw new Error("STICKER_PACK_FOLDER_UNAVAILABLE");
+      return data;
+    };
+    const render = (data) => {
+      const ready = data.packs.filter((pack) => pack.installed === pack.total).map((pack) => pack.name);
+      state.textContent = ready.length
+        ? `表情包：线稿（自带）、${ready.join("、")}`
+        : "表情包：线稿（自带）";
+      detail.textContent = `更多风格可在 ${STICKER_PACK_PAGE} 下载，解压到表情包文件夹后，林离在 QQ 里就会使用。文件夹：${data.folder}`;
+    };
+    const open = button("打开表情包文件夹", async () => {
+      try { render(await stickerPackRequest("/open")); }
+      catch (_error) { detail.textContent = "无法打开表情包文件夹，请稍后重试。"; }
+    });
+    row.append(copy, open);
+    section.append(row);
+    stickerPackRequest("").then(render).catch(() => { state.textContent = "表情包：线稿（自带）"; });
+  };
+
+  const mountWardrobeSetting = (section) => {
+    const panel=document.createElement('section');panel.setAttribute('data-olivia-wardrobe','');
+    const heading=document.createElement('header');heading.className='ow-heading';
+    const intro=document.createElement('div');intro.append(text('h1','林离的衣橱'),text('p','你指定喜欢的风格，具体搭配交给林离。'));
+    const current=document.createElement('div');current.className='ow-current';current.append(text('span','当前风格'));
+    const currentLabel=text('strong','读取中');current.append(currentLabel);heading.append(intro,current);
+    const interior=document.createElement('div');interior.className='ow-interior';
+    const rail=document.createElement('div');rail.className='ow-rail';rail.setAttribute('role','tablist');rail.setAttribute('aria-label','穿衣风格');rail.setAttribute('aria-orientation','vertical');
+    const compact=window.matchMedia('(max-width:650px)');
+    const syncOrientation=()=>rail.setAttribute('aria-orientation',compact.matches?'horizontal':'vertical');
+    compact.addEventListener('change',syncOrientation);syncOrientation();
+    panel._wardrobeCleanup=()=>compact.removeEventListener('change',syncOrientation);
+    const look=document.createElement('section');look.className='ow-look';look.id='olivia-wardrobe-look';look.setAttribute('role','tabpanel');look.setAttribute('aria-label','搭配详情');
+    const lookHeader=document.createElement('div');lookHeader.className='ow-look-header';
+    const title=text('h2','正在打开衣橱');const swatches=document.createElement('div');swatches.className='ow-swatches';swatches.setAttribute('aria-hidden','true');lookHeader.append(title,swatches);
+    const description=text('p','','ow-description');const pieces=document.createElement('dl');pieces.className='ow-pieces';
+    const today=text('p','','ow-today');const gallery=document.createElement('div');gallery.className='ow-gallery';gallery.setAttribute('aria-label','风格参考搭配');
+    const footer=document.createElement('div');footer.className='ow-footer';
+    const apply=button('正在读取',()=>{void persist();});apply.className='ow-apply';
+    footer.append(apply,text('p','选定风格后立即生效。已经提交的生成任务保留原穿搭。'));
+    look.append(lookHeader,description,today,footer,gallery,pieces);interior.append(rail,look);
+    const feedback=document.createElement('div');feedback.className='ow-feedback';
+    const status=text('p','正在读取衣橱…');status.setAttribute('role','status');
+    const retry=button('重新读取',()=>{void load();});retry.className='ow-retry';retry.hidden=true;feedback.append(status,retry);
+    let selected=null,preview=null,busy=false,styles=[],daily=null,purchases=null;const tabs=[];
+    const purchaseNote=text('p','');intro.append(purchaseNote);
+    const render=()=>{
+      const saved=styles.find(style=>style.style_id===selected),outfit=styles.find(style=>style.style_id===preview);
+      currentLabel.textContent=saved?.label||'尚未读取';
+      purchaseNote.textContent=purchases?'服装每件 ¥5，一次解锁长期使用；还可自选免费领取 '+purchases.free_remaining+' / 3 件。原版日常免费。':'';
+      for(const tab of tabs){tab.disabled=busy;tab.setAttribute('aria-selected',String(tab.dataset.style===preview));tab.tabIndex=tab.dataset.style===preview?0:-1;tab.querySelector('small').textContent=tab.dataset.style===selected?'已选择':tab.dataset.style===preview?'正在查看':'';}
+      if(outfit){
+        look.setAttribute('aria-labelledby','ow-style-'+outfit.style_id);
+        title.textContent=outfit.label;description.textContent=outfit.description;pieces.replaceChildren();swatches.replaceChildren();
+        gallery.replaceChildren();
+        const chosen=styles.flatMap(style=>style.looks||[]).find(item=>item.look_id===daily?.look_id);
+        today.textContent=daily?'今天的穿搭：'+(chosen?.label||daily.look_id):selected==='original'?'今天沿用原版日常。':'林离会在下一张人物照片中挑选今天的搭配。';
+        for(const item of outfit.looks||[]){
+          const figure=document.createElement('figure');figure.className='ow-garment';
+          const image=document.createElement('img');image.alt=item.label;image.loading='lazy';image.src=item.image_url;
+          image.addEventListener('error',()=>{image.replaceWith(text('span','参考图暂未加载，请重新读取。','ow-image-error'));},{once:true});
+          const caption=text('figcaption',item.label+(daily?.look_id===item.look_id?' · 今日穿搭':''));figure.append(image,caption);gallery.append(figure);
+          if(purchases){
+            const owned=purchases.owned.includes(item.look_id);
+            let armed=false;const cap=purchases.free_remaining>0?0:500;
+            const claim=button(owned?'已拥有':cap===0?'免费领取':'¥5 解锁',()=>{
+              if(!armed){armed=true;claim.textContent=cap===0?'确认免费领取':'确认购买 · ¥5';status.textContent=cap===0?'领取「'+item.label+'」会占用一个免费自选名额。':'购买「'+item.label+'」将从余额扣除 ¥5，解锁后长期可用。';return;}
+              void acquire(item,cap);
+            });
+            claim.disabled=busy||owned;claim.className='ow-purchase';figure.append(claim);
+          }
+        }
+        gallery.hidden=!(outfit.looks||[]).length;
+        for(const [i,value] of (outfit.pieces||[]).entries()){const row=document.createElement('div');row.className='ow-piece';row.append(text('dt',['上装','下装','鞋履与配饰'][i]||'搭配'),text('dd',value));pieces.append(row);}
+        for(const color of outfit.colors||[]){if(!/^#[0-9a-f]{6}$/i.test(color))continue;const swatch=document.createElement('span');swatch.style.backgroundColor=color;swatches.append(swatch);}
+      }
+      apply.disabled=busy||selected===null||preview===selected||Boolean(purchases&&preview!=='original'&&!(outfit?.looks||[]).some(item=>purchases.owned.includes(item.look_id)));
+      apply.textContent=busy?'正在保存…':preview===selected&&selected!==null?'已指定此风格':'指定这个风格';retry.disabled=busy;
+    };
+    const browse=value=>{preview=value;render();};
+    const acquire=async(item,cap)=>{
+      if(busy||!purchases||purchases.owned.includes(item.look_id))return;
+      busy=true;render();status.textContent='正在解锁…';
+      try{
+        const result=await routeRequest('/toy/world/wardrobe',{request_id:videoReplyRequestId(),look_id:item.look_id,max_charge_cents:cap},{confirmed:true});
+        purchases=result.purchases;daily=result.daily_outfit||null;selected=result.wardrobe.style_id;
+        status.textContent='已解锁「'+item.label+'」，可以指定此风格供林离搭配。';
+      }catch(_){status.textContent='未确认解锁成功，请重新读取衣橱。余额不足请先充值；免费名额若已用完，需要另行确认 ¥5 购买。';retry.hidden=false;}
+      finally{busy=false;render();}
+    };
+    rail.addEventListener('keydown',event=>{
+      if(!['ArrowRight','ArrowLeft','ArrowDown','ArrowUp','Home','End'].includes(event.key)||busy||!tabs.length)return;
+      event.preventDefault();const index=tabs.findIndex(tab=>tab.dataset.style===preview);
+      const next=event.key==='Home'?0:event.key==='End'?tabs.length-1:(index+(['ArrowRight','ArrowDown'].includes(event.key)?1:-1)+tabs.length)%tabs.length;
+      browse(tabs[next].dataset.style);tabs[next].focus();
+    });
+    const persist=async()=>{
+      if(busy||selected===null||preview===selected)return;
+      const value=preview;busy=true;render();status.textContent='正在保存风格…';
+      try{
+        const result=await routeRequest('/toy/world/wardrobe',{request_id:videoReplyRequestId(),style_id:value},{confirmed:true});
+        if(!styles.some(style=>style.style_id===result.wardrobe?.style_id))throw Error('invalid wardrobe');
+        selected=result.wardrobe.style_id;daily=result.daily_outfit||null;
+        status.textContent=selected===value?'风格已生效，林离会按新风格挑选搭配。':'当前风格已由其他客户端更新，请重新读取。';
+      }catch(_){status.textContent='没有保存成功，当前风格仍是'+(styles.find(style=>style.style_id===selected)?.label||'原来的风格')+'。可以重新尝试。';}
+      finally{busy=false;render();}
+    };
+    const load=async()=>{
+      if(busy)return;busy=true;render();status.textContent='正在读取衣橱…';
+      try{
+        const result=await routeRequest('/toy/world/wardrobe');
+        if(!Array.isArray(result.wardrobe_styles)||!result.wardrobe_styles.some(style=>style.style_id===result.wardrobe?.style_id))throw Error('invalid wardrobe');
+        styles=result.wardrobe_styles;selected=preview=result.wardrobe.style_id;daily=result.daily_outfit||null;purchases=result.purchases||null;tabs.length=0;rail.replaceChildren();
+        for(const style of styles){
+          const tab=button('',()=>browse(style.style_id));tab.className='ow-style';tab.dataset.style=style.style_id;tab.id='ow-style-'+style.style_id;
+          tab.setAttribute('role','tab');tab.setAttribute('aria-controls',look.id);tab.setAttribute('aria-label',style.label);
+          const icon=document.createElementNS('http://www.w3.org/2000/svg','svg');icon.setAttribute('viewBox','0 0 28 28');icon.setAttribute('aria-hidden','true');
+          const path=document.createElementNS('http://www.w3.org/2000/svg','path');path.setAttribute('d','M11 7a3 3 0 1 1 5 2l-2 2v3L3 21q-1 2 2 2h18q3 0 2-2l-11-7');icon.append(path);
+          const copy=document.createElement('span');copy.append(text('strong',style.label),text('small',''));tab.append(icon,copy);tabs.push(tab);rail.append(tab);
+        }
+        status.textContent='';retry.hidden=true;
+      }catch(_){selected=null;status.textContent='云端衣橱暂时无法读取。请确认已连接 Olivia 账户，再重新读取。';retry.hidden=false;}
+      finally{busy=false;render();}
+    };
+    panel.append(heading,interior,feedback);section.append(wardrobeStyle(),panel);render();void load();
+    return panel;
+  };
+
+  const goWorld = path => {
+    const router=window.__oliviaNativeView?.router;
+    if(router)void router.push(path);else window.location.hash='#'+path;
+  };
+  const openItems = () => goWorld('/world/items');
+  const itemsBreadcrumb = current => {
+    const breadcrumb=document.createElement('nav');breadcrumb.className='ow-breadcrumb';breadcrumb.setAttribute('aria-label','所在位置');
+    const link=(label,path)=>{const a=text('a',label);a.href='#'+path;
+      a.addEventListener('click',event=>{if(event.button!==0||event.ctrlKey||event.metaKey||event.shiftKey||event.altKey)return;event.preventDefault();goWorld(path);});return a;};
+    breadcrumb.append(link('返回世界','/world'),text('span','/'));
+    if(current)breadcrumb.append(link('物品栏','/world/items'),text('span','/'),text('span',current));
+    else breadcrumb.append(text('span','物品栏'));
+    return breadcrumb;
+  };
+  const mountItemsPage = page => {
+    page.setAttribute('data-olivia-items-page','');page.setAttribute('aria-label','林离的物品栏');
+    const style=document.createElement('style');style.textContent=`
+      [data-olivia-items-page]{width:100%;height:100%;color:#ded9d1;display:flex;flex-direction:column;gap:16px;-webkit-app-region:no-drag}
+      [data-olivia-items-page] h1{font-size:30px;margin:0;font-weight:700}
+      .oi-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px;background:#191a1c;border-radius:12px;padding:24px}
+      .oi-card{display:flex;flex-direction:column;gap:8px;text-align:left;border:1px solid #383a3e;border-radius:12px;background:#1f2023;color:#ded9d1;padding:20px;font:inherit;cursor:pointer;min-height:120px}
+      .oi-card:hover{background:#25262a}.oi-card strong{font-size:20px;display:flex;align-items:center}
+      .oi-card span{color:#acb0b4;font-size:14px;line-height:1.6}
+      .ow-breadcrumb{display:flex;gap:10px;align-items:center;color:#acb0b4;font-size:14px}.ow-breadcrumb a{color:#ded9d1;text-decoration:none}
+    `;
+    const header=document.createElement('header');header.append(text('h1','物品栏'));
+    const grid=document.createElement('section');grid.className='oi-grid';
+    for(const [title,copy,path,label] of [['衣橱','给她挑每天的穿搭风格。','/world/wardrobe','打开林离的衣橱'],
+        ['拍摄设备','你送她的相机，她拍照时会自己挑着用。','/world/cameras','打开林离的拍摄设备'],
+        ['宠物','领养一只猫陪她，会慢慢长大，也会出现在她的照片里。','/world/pets','打开林离的宠物'],
+        ['日记本','她每天写给你看的日记和以前的回忆。','/world/diary','打开林离的日记本']]){
+      const card=document.createElement('button');card.type='button';card.className='oi-card';card.setAttribute('aria-label',label);
+      const heading=text('strong',title);if(path==='/world/diary')heading.setAttribute('data-diary-badge','');
+      card.append(heading,text('span',copy));card.addEventListener('click',()=>goWorld(path));grid.append(card);
+    }
+    page.replaceChildren(style,header,itemsBreadcrumb(),grid);
+    void refreshDiaryBadge(true);
+  };
+  const openWardrobe = () => {
+    const router=window.__oliviaNativeView?.router;
+    if(router)void router.push('/world/wardrobe');else window.location.hash=WARDROBE_ROUTE;
+  };
+  const mountWardrobePage = page => {
+    page.setAttribute('data-olivia-wardrobe-page','');page.setAttribute('aria-label','林离的衣橱');
+    const breadcrumb=itemsBreadcrumb('衣橱');breadcrumb.setAttribute('aria-label','衣橱位置');
+    const header=document.createElement('header');header.className='ow-page-header';header.append(text('h1','衣橱'));
+    page.replaceChildren(header,breadcrumb);mountWardrobeSetting(page);
+  };
+  const diaryStyle = () => {
+    const style=document.createElement('style');style.textContent=`
+      [data-olivia-diary-page]{width:100%;height:100%;min-height:0;color:#ded9d1;display:flex;flex-direction:column;gap:20px;-webkit-app-region:no-drag}
+      .od-header{height:40px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
+      .od-header h1{font-size:30px;margin:0;font-weight:700}
+      .od-main{overflow-y:auto;background:#191a1c;border-radius:12px;padding:24px 32px;min-height:0;flex:1;box-sizing:border-box;scrollbar-width:thin}
+      .od-main button{border:1px solid #686a70;border-radius:999px;background:transparent;color:#ded9d1;padding:8px 18px;font:inherit;cursor:pointer}
+      .od-main button:hover:not(:disabled){background:#ffffff08}.od-main button:disabled{opacity:.5;cursor:wait}
+      .od-tools{display:flex;justify-content:space-between;align-items:center;gap:16px;color:#acb0b4;font-size:13px;margin-bottom:12px}
+      .od-card{display:block;width:100%;text-align:left;border:0!important;border-bottom:1px solid #383a3e!important;border-radius:0!important;padding:18px 4px!important}
+      .od-card-top{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+      .od-card time{color:#acb0b4;font-size:13px}.od-card strong{font-size:18px}
+      .od-mood{font-size:12px;color:#b6c8b0;border:1px solid #4b5a48;border-radius:999px;padding:1px 8px}
+      .od-new{width:8px;height:8px;border-radius:50%;background:#e58a7a;display:inline-block}
+      .od-card p{color:#acb0b4;margin:8px 0 0;line-height:1.6}
+      .od-entry h2{font-size:24px;margin:6px 0 4px}.od-entry .od-body p{line-height:1.9;margin:0 0 12px;font-size:16px}
+      .od-comments{border-top:1px solid #383a3e;margin-top:24px;padding-top:16px;display:grid;gap:10px}
+      .od-comment{background:#222327;border-radius:10px;padding:10px 14px;line-height:1.6}
+      .od-comment small{display:block;color:#8f9398;font-size:12px}
+      .od-main textarea{width:100%;box-sizing:border-box;min-height:72px;background:#111214;color:#ded9d1;border:1px solid #4a4c51;border-radius:10px;padding:10px;font:inherit;resize:vertical}
+      .od-actions{display:flex;gap:12px;justify-content:space-between;align-items:center;margin-top:10px}
+      .od-empty{color:#acb0b4;line-height:1.8;padding:40px 0;text-align:center}
+      .od-status{color:#acb0b4;font-size:13px;min-height:20px}
+    `;return style;
+  };
+  const diaryDate = day => {
+    const [y,m,d]=day.split('-').map(Number);
+    if(!d)return `${y}年${m}月 回忆`;
+    const week='日一二三四五六'[new Date(y,m-1,d).getDay()];
+    return `${m}月${d}日 星期${week}`;
+  };
+  const mountDiaryPage = page => {
+    page.setAttribute('data-olivia-diary-page','');page.setAttribute('aria-label','她的日记');
+    const header=document.createElement('header');header.className='od-header';header.append(text('h1','日记本'));
+    const main=document.createElement('section');main.className='od-main';
+    page.replaceChildren(diaryStyle(),header,itemsBreadcrumb('日记本'),main);
+    let pageNo=1,entries=[],total=0,enabled=true;
+    const status=document.createElement('p');status.className='od-status';status.setAttribute('role','status');
+    const showList=async(append=false)=>{
+      if(!append){main.replaceChildren(text('p','正在翻开日记本……','od-empty'));pageNo=1;entries=[];}
+      try{
+        const data=await routeRequest('/toy/diary?page='+pageNo+'&limit=20');
+        entries=[...entries,...data.entries];total=data.total;enabled=data.enabled!==false;
+      }catch(_){main.replaceChildren(text('p','日记暂时打不开。','od-empty'),button('重试',()=>showList()));return;}
+      if(!page.isConnected)return;
+      const tools=document.createElement('div');tools.className='od-tools';
+      const note=text('span',enabled?'她每天凌晨会把前一天和你的事写下来；电脑没开的话，下次打开时补上。':'写日记已暂停。');
+      const toggle=button(enabled?'暂停写日记':'继续写日记',async()=>{
+        toggle.disabled=true;
+        try{const result=await routeRequest('/toy/diary/settings',{enabled:!enabled},{confirmed:true});enabled=result.enabled;showList();}
+        catch(_){toggle.disabled=false;status.textContent='没有保存成功，可以重新尝试。';}
+      });
+      const memoir=button('整理以前的回忆',()=>showMemoir());
+      const buttons=document.createElement('span');buttons.style.cssText='display:flex;gap:10px';buttons.append(memoir,toggle);
+      tools.append(note,buttons);
+      const list=document.createElement('div');
+      if(!entries.length)list.append(text('p','她还没写日记。和她聊过天之后，第二天凌晨或你下次打开时，她会把那天写下来。','od-empty'));
+      for(const entry of entries){
+        const card=document.createElement('button');card.type='button';card.className='od-card';
+        const top=document.createElement('div');top.className='od-card-top';
+        if(!entry.seen){const dot=document.createElement('span');dot.className='od-new';dot.setAttribute('aria-label','未读');top.append(dot);}
+        const time=text('time',diaryDate(entry.day));time.setAttribute('datetime',entry.day);
+        top.append(time,text('strong',entry.title));
+        if(entry.mood)top.append(text('span',entry.mood,'od-mood'));
+        if(entry.commented)top.append(text('span','已留言','od-mood'));
+        card.append(top,text('p',entry.excerpt+(entry.short?'':'…')));
+        card.addEventListener('click',()=>showEntry(entry.day));
+        list.append(card);
+      }
+      main.replaceChildren(tools,list,status);
+      if(entries.length<total)main.append(button('更早的日记',()=>{pageNo+=1;showList(true);}));
+    };
+    const showMemoir=async()=>{
+      main.replaceChildren(text('p','正在清点以前的信……','od-empty'));
+      let info;
+      try{info=await routeRequest('/toy/diary/memoir');}
+      catch(_){main.replaceChildren(text('p','暂时清点不了以前的信。','od-empty'),button('返回',()=>showList()));return;}
+      if(!page.isConnected)return;
+      const box=document.createElement('section');box.className='od-entry';
+      box.append(button('返回日记本',()=>showList()),text('h2','整理以前的回忆'));
+      if(info.running){
+        box.append(text('p',`她正在翻以前的信，已经写好 ${info.done} / ${info.total} 个月。可以先离开这里，写好的会出现在日记本里。`));
+        main.replaceChildren(box);setTimeout(()=>{if(page.isConnected&&main.contains(box))showMemoir();},5000);return;
+      }
+      if(!info.months.length){box.append(text('p','以前的信都已经整理好了。'));main.replaceChildren(box);return;}
+      const words=Math.max(1,Math.round(info.chars/10000));
+      box.append(text('p',`她会把以前每个月和你的信、聊天各写成一篇回忆，一共 ${info.months.length} 个月，约 ${words} 万字的旧信。`),
+        text('p','按你选的回信模型计费，费用大致相当于让她回 '+Math.max(1,Math.ceil(info.chars/6000))+' 封长信。记下的约定、纪念日和称呼，以后聊天时她都会记得。'));
+      if(info.failed)box.append(text('p',`上次有 ${info.failed} 个月没写成，可以再试一次。`));
+      const start=button('开始整理',async()=>{
+        start.disabled=true;
+        try{await routeRequest('/toy/diary/memoir/start',{months:info.months.map(m=>m.month)},{confirmed:true});showMemoir();}
+        catch(_){start.disabled=false;status.textContent='没有开始成功，可以重新尝试。';box.append(status);}
+      });
+      box.append(start);main.replaceChildren(box);
+    };
+    const showEntry=async day=>{
+      main.replaceChildren(text('p','正在翻到这一页……','od-empty'));
+      let entry;
+      if(!/^\d{4}-\d{2}(-\d{2})?$/.test(day))return showList();
+      try{entry=await routeRequest('/toy/diary/entry?day='+day);}
+      catch(_){main.replaceChildren(text('p','这一页暂时打不开。','od-empty'),button('返回',()=>showList()));return;}
+      if(!page.isConnected)return;
+      void refreshDiaryBadge(true);
+      const article=document.createElement('article');article.className='od-entry';
+      const back=button('返回日记本',()=>showList());
+      const time=text('time',diaryDate(entry.day));time.style.color='#acb0b4';
+      const body=document.createElement('div');body.className='od-body';
+      for(const paragraph of entry.body.split(/\n+/).filter(Boolean))body.append(text('p',paragraph));
+      article.append(back,document.createElement('br'),time,text('h2',entry.title),body);
+      const comments=document.createElement('section');comments.className='od-comments';
+      comments.append(text('strong','你的留言'));
+      for(const comment of entry.comments){const item=document.createElement('div');item.className='od-comment';
+        item.append(text('span',comment.text),text('small',new Date(comment.written_at).toLocaleString()));comments.append(item);}
+      const input=document.createElement('textarea');input.maxLength=500;input.placeholder='给她留句话，她下次和你说话时会看到';
+      const actions=document.createElement('div');actions.className='od-actions';
+      const send=button('留言',async()=>{
+        if(!input.value.trim())return;send.disabled=true;
+        try{await routeRequest('/toy/diary/comment',{day:entry.day,text:input.value},{confirmed:true});showEntry(entry.day);}
+        catch(_){send.disabled=false;status.textContent='留言没有保存成功，可以重新尝试。';}
+      });
+      let armed=false;
+      const remove=button('删除这篇',async()=>{
+        // Two clicks: the first explains what deleting forgets.
+        if(!armed){armed=true;remove.textContent='确认删除';status.textContent='删除后她也会忘掉这天记下的约定和小事。再点一次确认删除。';return;}
+        remove.disabled=true;
+        try{await routeRequest('/toy/diary/delete',{day:entry.day},{confirmed:true});showList();}
+        catch(_){remove.disabled=false;status.textContent='没有删除成功，可以重新尝试。';}
+      });
+      actions.append(remove,send);comments.append(input,actions,status);
+      main.replaceChildren(article,comments);
+    };
+    void showList();
+  };
+  const mountCamerasPage = page => {
+    page.setAttribute('data-olivia-cameras-page','');page.setAttribute('aria-label','林离的拍摄设备');
+    const style=document.createElement('style');style.textContent=`
+      [data-olivia-cameras-page]{width:100%;height:100%;min-height:0;color:#ded9d1;display:flex;flex-direction:column;gap:16px;-webkit-app-region:no-drag}
+      [data-olivia-cameras-page] h1{font-size:30px;margin:0;font-weight:700}
+      .oc-main{overflow-y:auto;background:#191a1c;border-radius:12px;padding:24px;min-height:0;flex:1;box-sizing:border-box;scrollbar-width:thin}
+      .oc-note{color:#acb0b4;font-size:13px;margin:0 0 16px;line-height:1.7}
+      .oc-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px}
+      .oc-card{border:1px solid #383a3e;border-radius:12px;background:#1f2023;padding:18px;display:flex;flex-direction:column;gap:8px}
+      .oc-card img{width:100%;aspect-ratio:4/3;object-fit:contain;background:#f4f1ec;border-radius:8px}
+      .oc-card strong{font-size:18px}.oc-card small{color:#acb0b4}
+      .oc-card ul{margin:0;padding-left:18px;color:#c9c5be;font-size:13px;line-height:1.7}
+      .oc-card p{margin:0;color:#acb0b4;font-size:14px;line-height:1.6}
+      .oc-card button{align-self:flex-start;border:1px solid #686a70;border-radius:999px;background:transparent;color:#ded9d1;padding:8px 18px;font:inherit;cursor:pointer}
+      .oc-card button:disabled{opacity:.6;cursor:default}.oc-owned{color:#b6c8b0;font-size:13px}
+      .oc-status{color:#acb0b4;font-size:13px;min-height:20px}
+      .ow-breadcrumb{display:flex;gap:10px;align-items:center;color:#acb0b4;font-size:14px}.ow-breadcrumb a{color:#ded9d1;text-decoration:none}
+    `;
+    const header=document.createElement('header');header.append(text('h1','拍摄设备'));
+    const main=document.createElement('section');main.className='oc-main';
+    const status=document.createElement('p');status.className='oc-status';status.setAttribute('role','status');
+    page.replaceChildren(style,header,itemsBreadcrumb('拍摄设备'),main);
+    const render=data=>{
+      const grid=document.createElement('div');grid.className='oc-grid';
+      for(const camera of data.cameras){
+        const card=document.createElement('article');card.className='oc-card';
+        const image=document.createElement('img');image.alt=camera.name;image.src=new URL('/toy/images/ui/camera-'+camera.id,apiBase).href;
+        image.addEventListener('error',()=>image.remove());
+        card.append(image,text('strong',camera.name),text('small',camera.year+' 年 · '+camera.summary));
+        const specs=document.createElement('ul');for(const spec of camera.specs)specs.append(text('li',spec));
+        card.append(specs,text('p','她会在这时候用：'+camera.use));
+        if(camera.owned){card.append(text('span','已送给她','oc-owned'));}
+        else{
+          let armed=false;
+          const give=button('送给她 · ¥'+(camera.price_cents/100).toFixed(2),async()=>{
+            if(!armed){armed=true;give.textContent='确认送出（¥'+(camera.price_cents/100).toFixed(2)+'）';status.textContent='会从账户余额扣除，送出后一直归她。';return;}
+            give.disabled=true;
+            try{const result=await routeRequest('/toy/world/gifts',{item:camera.id},{confirmed:true});
+              status.textContent=result.already_owned?'她已经有这台了，没有重复扣费。':'送出了！她下次拍照时就可能用上它。';render(result);}
+            catch(error){give.disabled=false;armed=false;give.textContent='送给她 · ¥'+(camera.price_cents/100).toFixed(2);
+              status.textContent=String(error?.message||'').includes('BALANCE')?'余额不足，请先在右上角「账户」充值。':'没有送出成功，没有扣费，可以重新尝试。';}
+          });
+          card.append(give);
+        }
+        grid.append(card);
+      }
+      const note=text('p','送她一台相机，它就一直是她的。她拍照时会按场合挑：在家随手多用手机，出门、纪念日或想拍好看的照片时会拿出你送的相机。'
+        +(typeof data.balance_cents==='number'?' 账户余额 ¥'+(data.balance_cents/100).toFixed(2)+'。':''),'oc-note');
+      main.replaceChildren(note,grid,status);
+    };
+    main.append(text('p','正在打开她的设备柜……','oc-note'));
+    void routeRequest('/toy/world/gifts').then(data=>{if(page.isConnected)render(data);})
+      .catch(()=>{if(page.isConnected)main.replaceChildren(text('p','拍摄设备暂时打不开。','oc-note'),button('重试',()=>mountCamerasPage(page)));});
+  };
+  const mountPetsPage = page => {
+    page.setAttribute('data-olivia-pets-page','');page.setAttribute('aria-label','林离的猫');
+    const style=document.createElement('style');style.textContent=`
+      [data-olivia-pets-page]{width:100%;height:100%;min-height:0;color:#ded9d1;display:flex;flex-direction:column;gap:16px;-webkit-app-region:no-drag}
+      [data-olivia-pets-page] h1{font-size:30px;margin:0;font-weight:700}
+      [data-olivia-pets-page] h2{font-size:18px;margin:8px 0 12px;font-weight:700}
+      .op-main{overflow-y:auto;background:#191a1c;border-radius:12px;padding:24px;min-height:0;flex:1;box-sizing:border-box;scrollbar-width:thin}
+      .op-note{color:#acb0b4;font-size:13px;margin:0 0 16px;line-height:1.7}
+      .op-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:16px;margin-bottom:20px}
+      .op-card{border:1px solid #383a3e;border-radius:12px;background:#1f2023;padding:18px;display:flex;flex-direction:column;gap:8px}
+      .op-card img{width:100%;aspect-ratio:3/4;object-fit:cover;background:#f4f1ec;border-radius:8px}
+      .op-card.op-item img{aspect-ratio:1/1;object-fit:contain}
+      .op-card strong{font-size:18px}.op-card small{color:#acb0b4}
+      .op-card p{margin:0;color:#acb0b4;font-size:14px;line-height:1.6}
+      .op-card input{border:1px solid #4a4c52;border-radius:8px;background:#151618;color:#ded9d1;padding:8px 10px;font:inherit}
+      .op-card button{align-self:flex-start;border:1px solid #686a70;border-radius:999px;background:transparent;color:#ded9d1;padding:8px 18px;font:inherit;cursor:pointer}
+      .op-card button:disabled{opacity:.6;cursor:default}.op-owned{color:#b6c8b0;font-size:13px}
+      .op-status{color:#acb0b4;font-size:13px;min-height:20px}
+      .ow-breadcrumb{display:flex;gap:10px;align-items:center;color:#acb0b4;font-size:14px}.ow-breadcrumb a{color:#ded9d1;text-decoration:none}
+    `;
+    const header=document.createElement('header');header.append(text('h1','宠物'));
+    const main=document.createElement('section');main.className='op-main';
+    const status=document.createElement('p');status.className='op-status';status.setAttribute('role','status');
+    page.replaceChildren(style,header,itemsBreadcrumb('宠物'),main);
+    const yuan=cents=>'¥'+(cents/100).toFixed(2);
+    const picture=(path,alt)=>{
+      const image=document.createElement('img');image.alt=alt;image.loading='lazy';
+      image.src=new URL('/toy/images/ui/'+path,apiBase).href;
+      image.addEventListener('error',()=>image.remove());return image;
+    };
+    const failure=error=>String(error?.message||'').includes('BALANCE')?'余额不足，请先在右上角「账户」充值。':'没有成功，没有扣费，可以重新尝试。';
+    const confirmed=(label,confirmText,hint,action)=>{
+      let armed=false;
+      const control=button(label,async()=>{
+        if(!armed){armed=true;control.textContent=confirmText;status.textContent=hint;return;}
+        control.disabled=true;
+        try{await action();}
+        catch(error){control.disabled=false;armed=false;control.textContent=label;status.textContent=failure(error);}
+      });
+      return control;
+    };
+    const render=data=>{
+      const nodes=[text('p','领养一只猫陪她：'+yuan(data.adopt_cents)+'，最多 '+data.max_pets+' 只。猫粮不用买，她每天都会喂；'
+        +'你也可以让她多喂几次（每天最多 '+data.feeds_per_day+' 次），常常多喂会把它养得圆滚滚。'
+        +'猫会慢慢长大，正好在她身边时会出现在她的照片里。'
+        +(typeof data.balance_cents==='number'?' 账户余额 '+yuan(data.balance_cents)+'。':''),'op-note')];
+      if(data.pets.length){
+        nodes.push(text('h2','她的猫'));
+        const grid=document.createElement('div');grid.className='op-grid';
+        for(const pet of data.pets){
+          const card=document.createElement('article');card.className='op-card';
+          const growth=pet.next_stage_in===null?'已经长大了。':'再过 '+pet.next_stage_in+' 天就长大一点。';
+          card.append(picture('pet-'+(pet.image||pet.breed+'-'+pet.stage),pet.name),text('strong',pet.name),
+            text('small',pet.breed_name+' · '+pet.stage_name+' · '+pet.personality_name+' · '+pet.build_name),
+            text('p',growth+' 这会儿在'+pet.room+'。'));
+          const left=pet.feeds_left_today;
+          const feed=button(left?'让她喂一下（今天还能喂 '+left+' 次）':'今天已经喂饱了',async()=>{
+            feed.disabled=true;
+            try{const result=await routeRequest('/toy/world/pets',{action:'feed',breed:pet.breed},{confirmed:true});
+              status.textContent=result.fed?'她给「'+pet.name+'」加了一顿。':'今天已经喂饱了，明天再来。';render(result);}
+            catch(error){feed.disabled=false;status.textContent='没喂上，可以再试一次。';}
+          });
+          feed.disabled=!left;
+          card.append(feed);grid.append(card);
+        }
+        nodes.push(grid);
+        nodes.push(text('h2','猫用品'));
+        const shop=document.createElement('div');shop.className='op-grid';
+        for(const item of data.items){
+          const card=document.createElement('article');card.className='op-card op-item';
+          card.append(picture('pet-item-'+item.id,item.name),text('strong',item.name),
+            text('small',item.kind==='wear'?'穿戴在猫身上':'摆在她家里'),text('p',item.summary));
+          if(item.owned){card.append(text('span','已经买了，会出现在她的照片里','op-owned'));}
+          else{
+            card.append(confirmed('买给它 · '+yuan(item.price_cents),'确认购买（'+yuan(item.price_cents)+'）',
+              '会从账户余额扣除，买一次一直都在。',async()=>{
+                const result=await routeRequest('/toy/world/pets',{action:'item',item:item.id},{confirmed:true});
+                status.textContent='买好了！'+item.name+'会出现在她的照片里。';render(result);
+              }));
+          }
+          shop.append(card);
+        }
+        nodes.push(shop);
+      }
+      const owned=new Set(data.pets.map(pet=>pet.breed));
+      const available=data.breeds.filter(breed=>!owned.has(breed.id));
+      if(available.length&&data.pets.length<data.max_pets){
+        nodes.push(text('h2','领养'));
+        const grid=document.createElement('div');grid.className='op-grid';
+        for(const breed of available){
+          const card=document.createElement('article');card.className='op-card';
+          const name=document.createElement('input');name.maxLength=8;name.placeholder='给它起个名字（8 字以内）';name.setAttribute('aria-label','给'+breed.name+'起名字');
+          card.append(picture('pet-'+(breed.image||breed.id+'-1'),breed.name),text('strong',breed.name),text('small',breed.stages.join(' → ')),text('p',breed.summary),name);
+          let armed=false;
+          const label='领养 · '+yuan(data.adopt_cents);
+          const adopt=button(label,async()=>{
+            const chosen=name.value.trim();
+            if(!chosen){status.textContent='先给它起个名字吧。';name.focus();return;}
+            if(!armed){armed=true;adopt.textContent='确认领养「'+chosen+'」（'+yuan(data.adopt_cents)+'）';status.textContent='会从账户余额扣除。';return;}
+            adopt.disabled=true;
+            try{const result=await routeRequest('/toy/world/pets',{action:'adopt',breed:breed.id,name:chosen},{confirmed:true});
+              status.textContent='「'+chosen+'」到家了！';render(result);}
+            catch(error){adopt.disabled=false;armed=false;adopt.textContent=label;
+              status.textContent=String(error?.message||'').includes('GPU_REQUEST_INVALID')?'名字里不能有特殊符号，换一个试试。':failure(error);}
+          });
+          name.addEventListener('input',()=>{if(armed){armed=false;adopt.textContent=label;}});
+          card.append(adopt);grid.append(card);
+        }
+        nodes.push(grid);
+      }
+      main.replaceChildren(...nodes,status);
+    };
+    main.append(text('p','正在看看她的猫……','op-note'));
+    void routeRequest('/toy/world/pets').then(data=>{if(page.isConnected)render(data);})
+      .catch(()=>{if(page.isConnected)main.replaceChildren(text('p','宠物暂时打不开。','op-note'),button('重试',()=>mountPetsPage(page)));});
+  };
+  const installNativeDiaryRoute = () => {
+    const native=window.__oliviaNativeView;
+    if(!native?.router||!native.h||native.router.hasRoute('olivia-diary'))return;
+    native.router.addRoute({path:'/world/diary',name:'olivia-diary',component:{
+      name:'OliviaDiaryView',render(){return native.h('main',{class:'mx-full h-full'})},mounted(){mountDiaryPage(this.$el)},
+    }});
+    if(!native.router.hasRoute('olivia-items'))native.router.addRoute({path:'/world/items',name:'olivia-items',component:{
+      name:'OliviaItemsView',render(){return native.h('main',{class:'mx-full h-full'})},mounted(){mountItemsPage(this.$el)},
+    }});
+    if(!native.router.hasRoute('olivia-cameras'))native.router.addRoute({path:'/world/cameras',name:'olivia-cameras',component:{
+      name:'OliviaCamerasView',render(){return native.h('main',{class:'mx-full h-full'})},mounted(){mountCamerasPage(this.$el)},
+    }});
+    if(window.location.hash===DIARY_ROUTE)void native.router.replace('/world/diary');
+    if(window.location.hash===ITEMS_ROUTE)void native.router.replace('/world/items');
+    if(!native.router.hasRoute('olivia-pets'))native.router.addRoute({path:'/world/pets',name:'olivia-pets',component:{
+      name:'OliviaPetsView',render(){return native.h('main',{class:'mx-full h-full'})},mounted(){mountPetsPage(this.$el)},
+    }});
+    if(window.location.hash===CAMERAS_ROUTE)void native.router.replace('/world/cameras');
+    if(window.location.hash===PETS_ROUTE)void native.router.replace('/world/pets');
+  };
+  const installNativeWardrobeRoute = () => {
+    const native=window.__oliviaNativeView;
+    if(!native?.router||!native.h||native.router.hasRoute('olivia-wardrobe'))return;
+    native.router.addRoute({path:'/world/wardrobe',name:'olivia-wardrobe',component:{
+      name:'OliviaWardrobeView',render(){return native.h('main',{class:'mx-full h-full'})},mounted(){mountWardrobePage(this.$el)},
+      beforeUnmount(){this.$el.querySelector('[data-olivia-wardrobe]')?._wardrobeCleanup?.()},
+    }});
+    if(window.location.hash===WARDROBE_ROUTE)void native.router.replace('/world/wardrobe');
+  };
+
   const mountMusicSettings = (section, composer=false) => {
     const panel=document.createElement("section");
     panel.setAttribute("data-olivia-music-settings","true");
     panel.style.cssText="border-top:1px solid #8884;padding-top:24px;display:flex;flex-direction:column;gap:16px";
     if(!composer)panel.append(text("h3","原创音乐","text-title-m"),text("p","调整下一首原创歌曲。保留演唱风格和参考音色，不影响翻唱。","text-text-secondary text-body-m"));
     const form=document.createElement("form");form.style.cssText="display:flex;flex-direction:column;gap:16px";
-    const fields={};let defaults=null,busy=false;
+    const fields={};let defaults=null,busy=false,limits=null;
     const field=(parent,name,label,type,help)=>{
       const row=document.createElement("label");row.style.cssText="display:flex;flex-direction:column;gap:8px";
       const input=document.createElement(type==="textarea"?"textarea":type==="select"?"select":"input");
@@ -3721,23 +4578,46 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const advanced=document.createElement('details');advanced.append(text('summary','进阶音乐参数'));form.append(advanced);
     const title=field(advanced,'title','歌曲标题','text','留空使用默认标题');title.maxLength=80;
     const duration=field(advanced,'duration','目标时长（秒）','number','留空随机 180–270 秒；填写 180–270，实际时长以生成结果为准。');duration.min=180;duration.max=270;duration.step=1;
+    const automatic=button('改为服务自动时长',()=>{if(!busy){duration.value='';applyLimits();status.textContent='已改为服务自动时长，保存后生效。';}});automatic.hidden=true;duration.parentElement.after(automatic);
     const negative=field(advanced,'negative_tags','避免的风格或元素','textarea','例如：重金属、尖锐高音；多个项目用逗号分隔。');negative.maxLength=1000;
     for(const [name,label,help] of [['style_weight','风格遵循度','0–1，越高越贴近音乐描述；留空使用服务默认值。'],['weirdness_constraint','创意偏离度','0–1，越高越允许偏离常规；留空使用服务默认值。']]){const input=field(advanced,name,label,'number',help);input.min=0;input.max=1;input.step=0.01;}
     const status=text("p","正在读取音乐设置…","text-text-secondary text-body-m");status.setAttribute("role","status");
     const controls=actions();
-    const fill=options=>{for(const [name,input] of Object.entries(fields)){if(input.type==="checkbox")input.checked=options[name];else input.value=options[name]??"";}};
-    const setBusy=value=>{busy=value;for(const el of form.querySelectorAll("input,textarea,select,button"))el.disabled=value;};
+    const applyLimits=()=>{
+      caption.maxLength=limits?.style||1000;
+      caption.parentElement.firstElementChild.textContent=limits?'音乐描述（最多 '+limits.style+' 个字符）':'音乐描述';
+      duration.disabled=busy||limits?.duration_control===false;
+      duration.style.opacity=limits?.duration_control===false?'0.55':'';
+      duration.parentElement.querySelector('small').textContent=limits?.duration_control===false?'当前服务自动决定时长，不支持目标秒数。已保存的数值会保留，请明确改为服务自动时长。':'留空随机 180–270 秒；填写 180–270，实际时长以生成结果为准。';
+      automatic.hidden=limits?.duration_control!==false||duration.value==='';automatic.disabled=busy;
+    };
+    const conflicts=()=>{
+      const errors=[];
+      if(limits&&caption.value.length>limits.style)errors.push('已保存的音乐描述超过 '+limits.style+' 个字符，内容已保留，请自行缩短后保存。');
+      if(limits?.duration_control===false&&duration.value!=='')errors.push('当前服务不支持已保存的目标时长，请点击“改为服务自动时长”后保存。');
+      return errors;
+    };
+    const fill=options=>{for(const [name,input] of Object.entries(fields)){if(input.type==="checkbox")input.checked=options[name];else input.value=options[name]??"";}applyLimits();};
+    const setBusy=value=>{busy=value;for(const el of form.querySelectorAll("input,textarea,select,button"))el.disabled=value;applyLimits();};
+    const readOptions=()=>{
+      if(busy||!defaults)throw Error('音乐参数尚未读取，请稍候或重新打开写信窗口。');
+      const errors=conflicts();if(errors.length)throw Error(errors.join(' '));
+      if(!form.reportValidity())throw Error('请检查音乐参数。');
+      const options={};for(const [name,input] of Object.entries(fields))options[name]=input.type==='checkbox'?input.checked:input.type==='number'?(input.value.trim()===''?null:Number(input.value)):input.value;
+      return options;
+    };
     const load=async()=>{
       if(busy)return;setBusy(true);
       try{if(!setupSessionToken)await requestSetup(SETUP_STATUS_PATH);
-        const result=await requestSetup("/toy/generation/action",{action:"music_settings_status"});defaults=result.defaults;
-        const durationHint=result.original_music_provider==='suno_v6'?"默认目标时长随机为3–4分半，可在进阶设置指定，实际时长以生成结果为准。原创单曲按时长收费 ¥2–3，含小幅随机浮动，最高 ¥3。":result.original_music_provider==='unavailable'?"暂时无法确认服务时长，请连接后重新读取。":"当前服务沿用约 110 秒原创方案。";
-        fill(result.options||defaults);status.textContent=result.error_code?"原设置无法读取，请检查参数。":durationHint+"音乐描述随"+(composer?"这封信":"下一首原创歌曲")+"生效。";
+        const result=await requestSetup("/toy/generation/action",{action:"music_settings_status"});defaults=result.defaults;limits=result.original_music_input_limits||null;
+        const musicPrice=result.original_music_retail_price;
+        const durationHint=limits?.duration_control===false?'当前服务自动决定原创歌曲时长，实际时长以生成结果为准。'+(musicPrice?`原创单曲每首 ¥${(musicPrice.min_cents/100).toFixed(2)}–${(musicPrice.max_cents/100).toFixed(2)}，提交时锁定随机报价。`:''):result.original_music_provider==='suno_v6'?"默认目标时长随机为3–4分半，可在进阶设置指定，实际时长以生成结果为准。原创单曲按时长收费 ¥2–3，含小幅随机浮动，最高 ¥3。":result.original_music_provider==='unavailable'?"暂时无法确认服务时长，请连接后重新读取。":"当前服务沿用约 110 秒原创方案。";
+        fill(result.options||defaults);status.textContent=result.error_code?"原设置无法读取，请检查参数。":conflicts().join(' ')||durationHint+"音乐描述随"+(composer?"这封信":"下一首原创歌曲")+"生效。";
       }catch(_){status.textContent="音乐设置读取失败，请重新读取。";}finally{setBusy(false);save.disabled=!defaults;}
     };
     const save=button("保存音乐设置",async()=>{
-      if(busy||!defaults||!form.reportValidity())return;
-      const options={};for(const [name,input] of Object.entries(fields))options[name]=input.type==="checkbox"?input.checked:input.type==="number"?(input.value.trim()===""?null:Number(input.value)):input.value;
+      if(busy||!defaults)return;
+      let options;try{options=readOptions();}catch(error){status.textContent=error.message;return;}
       setBusy(true);
       try{await requestSetup("/toy/generation/action",{action:"music_settings_save",options});status.textContent="已保存，对下一首原创歌曲生效。";}
       catch(_){status.textContent="保存失败，请检查参数后重试；原设置未改动。";}finally{setBusy(false);}
@@ -3746,7 +4626,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     controls.append(button("恢复推荐参数",()=>{if(!busy&&defaults){fill(defaults);status.textContent=composer?"已恢复推荐参数。":"已填入推荐参数，保存后生效。";}}));
     if(!composer)controls.append(button("重新读取",load));
     form.addEventListener("submit",event=>event.preventDefault());form.append(controls,status);panel.append(form);section.append(panel);void load();
-    return {read:()=>{if(busy||!defaults)throw Error('音乐参数尚未读取，请稍候或重新打开写信窗口。');if(!form.reportValidity())throw Error('请检查音乐参数。');const options={};for(const [name,input] of Object.entries(fields))options[name]=input.type==='checkbox'?input.checked:input.type==='number'?(input.value.trim()===""?null:Number(input.value)):input.value;return options;}};
+    return {read:readOptions};
   };
 
   const mountDiagnosticExport = (section) => {
@@ -3761,17 +4641,27 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       setButtonsBusy([exportButton], true);
       state.textContent = "正在生成诊断包…";
       try {
-        const blob = await requestDiagnosticExport();
-        const url = URL.createObjectURL(blob);
-        const download = document.createElement("a");
-        download.href = url;
-        download.download = "olivia-diagnostic-bundle.zip";
-        download.style.display = "none";
-        document.body.append(download);
-        download.click();
-        download.remove();
-        window.setTimeout(() => URL.revokeObjectURL(url), 0);
-        state.textContent = "诊断包已保存到本地下载位置。";
+        // Ask where to save first, while the click still counts as a user action.
+        let handle = null;
+        if (typeof window.showSaveFilePicker === "function") {
+          try {
+            handle = await window.showSaveFilePicker({suggestedName: "olivia-diagnostic-bundle.zip",
+              types: [{description: "诊断包", accept: {"application/zip": [".zip"]}}]});
+          } catch (error) {
+            if (error && error.name === "AbortError") { state.textContent = "已取消导出。"; return; }
+            handle = null;  // No picker here: the app saves to Downloads below.
+          }
+        }
+        if (handle) {
+          const blob = await requestDiagnosticExport();
+          const writable = await handle.createWritable();
+          await writable.write(blob);
+          await writable.close();
+          state.textContent = `诊断包已保存为「${handle.name}」。`;
+        } else {
+          const saved = await requestDiagnosticSave();
+          state.textContent = `诊断包已保存到「下载」文件夹：${saved.file_name}，已为你打开所在位置。`;
+        }
       } catch (error) {
         const code = error && typeof error.code === "string"
           ? error.code
@@ -3783,7 +4673,41 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       }
     });
     row.append(copy, exportButton);
-    section.append(text("div", "诊断与反馈", "text-text-body text-title-m"), row);
+    section.append(text("div", "诊断与反馈", "text-text-body text-title-m"), row, mountImproveSetting());
+  };
+
+  const mountImproveSetting = () => {
+    const box=document.createElement("div");box.setAttribute("data-olivia-improve","");
+    box.className="flex flex-col gap-2 px-0 py-3 rounded-3";
+    const title=text("div","帮助改进 Olivia","text-text-body text-body-m font-medium");
+    const explain=text("div","开启后，从开启那一刻起，你和她的信件与聊天（你的话和她的回复，语音以文字形式）会匿名上传，"
+      +"只用来分析整体回复风格、改进她的表现，不对外提供，也不用来识别你。上传前会在本机去掉号码、链接、邮箱和账号；"
+      +"你自己写进信里的人名、地名可能保留。上传不带你的账户 Key，只带一个随机编号；数据加密保存 180 天。"
+      +"图片和其他非文字内容不上传。随时可以关闭，或删除已上传的内容。","text-text-secondary text-caption-m font-regular");
+    const state=text("div","","text-text-secondary text-caption-m font-regular");
+    const actions=document.createElement("div");actions.style.cssText="display:flex;gap:10px;flex-wrap:wrap";
+    let current={enabled:false,uploaded:0};
+    const toggle=button("开启",async()=>{
+      toggle.disabled=true;
+      try{current=await routeRequest("/toy/improve/settings",{enabled:!current.enabled},{confirmed:true});render();}
+      catch(_){state.textContent="没有保存成功，可以重新尝试。";}finally{toggle.disabled=false;}
+    });
+    let armed=false;
+    const forget=button("删除已上传的内容",async()=>{
+      if(!armed){armed=true;forget.textContent="确认删除";state.textContent="会请服务器删除这台电脑上传过的全部内容，并关闭帮助改进。再点一次确认。";return;}
+      forget.disabled=true;
+      try{current=await routeRequest("/toy/improve/forget",{},{confirmed:true});armed=false;forget.textContent="删除已上传的内容";render();state.textContent="已删除，并已关闭帮助改进。";}
+      catch(_){state.textContent="暂时连不上服务器，删除没有完成，请稍后再试。";}finally{forget.disabled=false;}
+    });
+    const render=()=>{
+      toggle.textContent=current.enabled?"关闭帮助改进":"开启帮助改进";
+      state.textContent=current.enabled?`已开启，已匿名上传 ${current.uploaded||0} 段对话。`:"未开启，不会上传任何内容。";
+      forget.hidden=!current.enabled&&!current.uploaded;
+    };
+    actions.append(toggle,forget);box.append(title,explain,state,actions);
+    void routeRequest("/toy/improve").then(value=>{current=value;render();}).catch(()=>{state.textContent="暂时读不到这项设置。";});
+    render();
+    return box;
   };
 
   const showLocalImportProgress = (state, home) => {
@@ -3819,11 +4743,11 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const refresh = async () => {
       try {
         const result = await requestJson(LOCAL_LETTER_IMPORT_PATH, {relationship:"1"});
-        const count = `${result.processed || 0} / ${result.total || 0} 封`;
-        state.textContent = result.status === "RUNNING" ? `历史关系评估中：${count}，按顺序每五封评估一次。`
+        const count = `${result.processed || 0} / ${result.total || 0} 组`;
+        state.textContent = result.status === "RUNNING" ? `历史关系评估中：${count}，按顺序每五组往返记录评估一次。`
           : result.status === "FAILED" ? `历史关系评估暂停：${count}。已保存的原文不受影响，可重试剩余批次。`
           : result.status === "PENDING" ? `历史关系等待评估：${count}。请配置可用的大模型后点击重试。`
-          : result.status === "APPLIED" ? `历史关系已评估：${count}。重复信件不重复评估。`
+          : result.status === "APPLIED" ? `历史关系已评估：${count}。重复记录不重复评估。`
           : "历史关系评估暂不可用。";
         setDiagnosticDetails(state, result.status === "FAILED" ? result.error_code : null);
         // The evaluation runs by itself; the button is only for a paused or waiting run.
@@ -3843,7 +4767,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     });
     retry.hidden = true;
     section.append(text("div", "历史关系", "text-text-body text-title-m"),
-      text("p", "原文保存后会按顺序每五封往返信件评估关系，调用已配置的大模型并消耗额度。失败后暂停，重试会接着未完成的批次。", "text-text-secondary text-body-m font-regular"), state, retry);
+      text("p", "原文保存后会按顺序每五组完整往返信件或聊天评估关系，调用已配置的大模型并消耗额度。只有单方文字的记录不评估关系；失败后暂停，重试会接着未完成的批次。", "text-text-secondary text-body-m font-regular"), state, retry);
     void refresh();
   };
 
@@ -3870,25 +4794,27 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   };
 
   const mountLetterBackup = (section) => {
-    const state = text("div", "备份包含双方文字原文、时间和信件类型，不含音视频附件。请自行保管信件内容。", "text-text-secondary text-body-m font-regular");
+    const state = text("div", "备份包含信件、QQ／微信聊天的文字和时间。QQ／微信只保存已确认发出的回复；不含图片或音视频附件。请自行保管内容。", "text-text-secondary text-body-m font-regular");
     state.setAttribute("aria-live", "polite");
     const controls = actions();
     const file = document.createElement("input");
     file.type = "file"; file.accept = ".json,.soul,application/json"; file.hidden = true;
     file.addEventListener("cancel", event => event.stopPropagation());
-    const save = button("导出信件备份", async () => {
+    const save = button("导出信件与聊天备份", async () => {
       setButtonsBusy([save, restore], true);
-      state.textContent = "正在导出信件原文……";
+      state.textContent = "正在导出信件与聊天原文……";
       try {
         const result = await requestMutation("/toy/letter/backup/export", {});
-        if (result.status !== "READY" || result.backup?.schema_version !== "olivia.letters.v1") throw Error("invalid backup");
+        if (result.status !== "READY" || result.backup?.schema_version !== "olivia.letters.v1" || !Array.isArray(result.backup.letters)) throw Error("invalid backup");
         const blob = new Blob([JSON.stringify(result.backup, null, 2)], {type:"application/json;charset=utf-8"});
         const url = URL.createObjectURL(blob), link = document.createElement("a");
         link.href = url; link.download = `Olivia-letters-${new Date().toISOString().slice(0,10)}.json`;
         document.body.append(link); link.click(); link.remove();
         window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-        state.textContent = `已导出 ${result.backup.letters.length} 封信件，请在下载位置查看。`;
-      } catch (_) { state.textContent = "信件导出失败，请重试。原信件未改变。"; }
+        const qq = result.backup.letters.filter(row => row.channel === "qq").length;
+        const wechat = result.backup.letters.filter(row => row.channel === "wechat").length;
+        state.textContent = `已导出 ${result.backup.letters.length - qq - wechat} 封信件、${qq} 条 QQ 和 ${wechat} 条微信聊天记录，请在下载位置查看。`;
+      } catch (_) { state.textContent = "备份导出失败，请重试。原记录未改变。"; }
       finally { setButtonsBusy([save, restore], false); }
     });
     const restore = button("选择文件导入", () => file.click());
@@ -3897,24 +4823,26 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       setButtonsBusy([save, restore], true);
       try {
         const backup = await readLetterBackupFile(selected);
-        if (!await confirmAction("导入所选文件中的信件？支持灵离 .soul、原版 letter_pairs.json 和 Olivia 信件备份。只导入双方文字，.soul 内的音视频不会上传或导入；重复信件跳过，已有信件不覆盖。随后按顺序每五封调用模型评估关系并消耗额度，已有进度保留。")) return;
-        state.textContent = "正在保存信件原文，无需等待大模型……";
+        if (!await confirmAction("导入所选文件中的信件与聊天记录？支持灵离 .soul、原版 letter_pairs.json 和 Olivia 文字备份；QQ／微信记录需来自 Olivia 备份。只读保存文字，不回发旧消息，不导入图片或音视频；重复记录跳过，已有记录不覆盖。随后每五组完整往返记录调用模型评估关系并消耗额度，已有进度保留。")) return;
+        state.textContent = "正在保存信件与聊天原文，无需等待大模型……";
         const result = await requestMutation("/toy/letter/backup/import", {backup});
         if (result.status !== "APPLIED") throw Error("import failed");
-        state.textContent = `已导入 ${result.inserted} 封，重复 ${result.duplicates} 封。正在刷新信箱。`;
+        state.textContent = `已导入 ${result.inserted} 条记录，重复 ${result.duplicates} 条。正在刷新历史记录。`;
         window.setTimeout(() => window.location.reload(), 800);
-      } catch (_) { state.textContent = "导入未完成。请选择完整的 .soul、letter_pairs.json 或 Olivia 信件备份（文字清单最大 16 MB）；可再次导入，重复信件会跳过。"; }
+      } catch (_) { state.textContent = "导入未完成。请选择完整的 .soul、letter_pairs.json 或 Olivia 文字备份（文字清单最大 16 MB）；可再次导入，重复记录会跳过。"; }
       finally { file.value = ""; setButtonsBusy([save, restore], false); }
     });
     controls.append(save, restore, file);
-    section.append(text("div", "导入与导出信件", "text-text-body text-title-m"),
-      text("p", "已有灵离 .soul 或 JSON 备份、换电脑恢复：点“选择文件导入”。.soul 只读取文字，不导入音视频。没有单独保存文件：可在下方从原版目录读取。", "text-text-secondary text-body-m font-regular"), state, controls);
+    section.append(text("div", "导入与导出信件及聊天", "text-text-body text-title-m"),
+      text("p", "Olivia JSON 备份可恢复信件与 QQ／微信文字聊天；.soul 和 letter_pairs.json 只恢复文件内的信件文字。换电脑请先导出备份，再点“选择文件导入”。没有单独保存文件时，可在下方从原版目录读取信件。", "text-text-secondary text-body-m font-regular"), state, controls);
   };
 
   const mountLetterMaintenance = (section) => {
     const box = document.createElement("details");
     box.className = "olivia-letter-maintenance";
-    box.append(text("summary", "信件对比与整理"));
+    const summaryNode = text("summary", "信件对比与整理");
+    summaryNode.style.cssText = "cursor:pointer;padding:8px 0;color:var(--tp-text-body);font-size:18px;font-weight:var(--tp-font-weight-medium)";
+    box.append(summaryNode);
     const style = text("style", `
       .olivia-letter-maintenance{margin:24px 0;border-top:1px solid #424242;padding-top:20px;color:inherit}
       .olivia-letter-maintenance summary{cursor:pointer;font-weight:600;padding:8px 0;font-size:18px}
@@ -3922,7 +4850,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       .olivia-letter-maintenance .lm-controls{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0}
       .olivia-letter-maintenance .lm-row{padding:18px 0;border-top:1px solid #424242}
       .olivia-letter-maintenance .lm-pair{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:20px;margin:12px 0}
-      .olivia-letter-maintenance .lm-copy{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.7;max-height:260px;overflow:auto;margin:8px 0}
+      .olivia-letter-maintenance .lm-copy{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.7;max-height:260px;overflow:auto;margin:8px 0;color:var(--tp-text-body)}
       .olivia-letter-maintenance .lm-column{min-width:0}
       .olivia-letter-maintenance label{display:flex;flex-wrap:wrap;align-items:center;gap:10px}
       .olivia-letter-maintenance select{background:#242424;color:#eee;border:1px solid #777;border-radius:6px;padding:8px;max-width:100%}
@@ -3930,8 +4858,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       .olivia-letter-maintenance [hidden]{display:none!important}
       .olivia-letter-maintenance button:disabled,.olivia-letter-maintenance select:disabled{opacity:.5;cursor:default}
     `);
-    const help = text("p", "先检查，再选择要整理的信件。可以对比 .soul 或 JSON 备份、修复时间和顺序、收起重复信与失败信。整理只影响信箱显示，不改原文或长期记忆，也不调用模型；可在这里恢复。");
-    const status = text("p", "尚未检查。检查当前信箱无需选择文件。");
+    const help = text("p", "先检查，再选择要整理的信件。可以对比 .soul 或 JSON 备份、修复时间和顺序、收起重复信与失败信。整理只影响信箱显示，不改原文或长期记忆，也不调用模型；可在这里恢复。", "text-text-secondary text-body-m font-regular");
+    const status = text("p", "尚未检查。检查当前信箱无需选择文件。", "text-text-secondary text-body-m font-regular");
     status.setAttribute("aria-live", "polite");
     const controls = actions(); controls.className = "lm-controls";
     const results = document.createElement("div"), pager = actions(); pager.className = "lm-controls";
@@ -3963,7 +4891,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         if (!Number.isNaN(parsed.getTime())) date = parsed.toLocaleString("zh-CN", {timeZone:"Asia/Shanghai"}) + "（北京时间）";
       }
       const content = text("div", `你的信：\n${row.content || "（空）"}\n\n回信：\n${row.reply_text || "（空）"}`, "lm-copy");
-      col.append(text("strong", title), text("p", date), content);
+      col.append(text("strong", title, "text-text-body text-label-l"), text("p", date, "text-text-secondary text-body-m font-regular"), content);
       if (row.truncated) {
         const full = button("查看完整正文", async () => {
           full.disabled = true;
@@ -3981,14 +4909,14 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       results.replaceChildren(); selectors = [];
       for (const item of plan.items) {
         const row = document.createElement("div"); row.className = "lm-row";
-        row.append(text("strong", labels[item.kind] || item.kind));
+        row.append(text("strong", labels[item.kind] || item.kind, "text-text-body text-label-l"));
         const pair = document.createElement("div"); pair.className = "lm-pair";
         const sourceLeft = ["missing", "source_near", "ambiguous"].includes(item.kind);
         pair.append(column(item.left, sourceLeft ? "备份中的信件" : "信箱中的信件"));
         if (item.right) pair.append(column(item.right, ["same", "time"].includes(item.kind) ? "备份中的信件" : "信箱中的另一封"));
         row.append(pair);
         if (item.options.length) {
-          const label = text("label", "处理方式"), select = document.createElement("select");
+          const label = text("label", "处理方式", "text-text-secondary text-body-m"), select = document.createElement("select");
           const skip = text("option", "保持原样"); skip.value = ""; select.append(skip);
           item.options.forEach(option => { const el = text("option", option.label); el.value = option.id; select.append(el); });
           select.addEventListener("change", sync); selectors.push(select); label.append(select); row.append(label);
@@ -4161,8 +5089,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const reply = settingsGroup("reply", "林离怎么回复", "回信方式、图片和主动写信");
     mountVideoReplySetting(reply);
     if (window.__oliviaNativeView) mountProactiveSetting(reply);
-    const chat = settingsGroup("chat", "QQ / 微信", "绑定后可以在 QQ 或微信里和林离聊天");
-    const letters = settingsGroup("letters", "信件与记忆", "导入、导出信件，查看长期记忆");
+    mountStickerPacks(reply);
+    const chat = settingsGroup("chat", "QQ", "绑定后可以在 QQ 里和林离聊天");
+    const letters = settingsGroup("letters", "信件与记忆", "备份信件与聊天，查看长期记忆");
     const memoryRow = document.createElement("div");
     memoryRow.className = "olivia-group-row";
     memoryRow.append(text("span", "长期记忆：查看、搜索和更正林离记住的事", "text-text-body text-body-m"),
@@ -4407,6 +5336,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     window.requestAnimationFrame(() => {
       scheduled = false;
       installNativeWorldRoute();
+      installNativeWardrobeRoute();
+      installNativeDiaryRoute();
       constrainLetterInputs();
       applyProactiveSendGate();
       mountMainNavigation();
@@ -4570,6 +5501,7 @@ BOOTSTRAP_JAVASCRIPT = r'''
         const cloudErrors={GPU_TLS_FAILED:'云端证书校验失败，请更新补丁并检查电脑时间。',GPU_CONNECTION_TIMEOUT:'云端连接超时，本次生成已停止等待。',GPU_CONNECT_FAILED:'无法连接云端，本次生成未完成。',GPU_CONNECTION_FAILED:'云端连接中断，本次生成未完成。',GPU_AUTH_FAILED:'云端 Key 验证失败，请检查 Olivia 账户。',GPU_QUEUE_FULL:'云端队列已满，本次任务未进入队列。',GPU_TASK_TIMEOUT:'云端任务等待超时，已停止等待。',GPU_TASK_FAILED:'云端生成失败。',GPU_DOWNLOAD_FAILED:'生成结果下载失败。',GPU_SHARED_SCENE_MISSING:'视频素材与云端不匹配，请联系管理员。',MEDIA_JOB_INTERRUPTED:'上次生成已中断，未自动重复提交。'};
         cloudErrors.GPU_INSUFFICIENT_BALANCE='Olivia 可用余额不足，本次媒体任务未入队。请充值后重试。';
         cloudErrors.GPU_BILLING_CONSENT_REQUIRED='请更新收费版客户端，确认费用上限后再生成。';
+        cloudErrors.GPU_RECOVERY_REQUIRED='上次视频订单需要恢复核对，未重新提交或重复扣费，请导出诊断包。';
         if(['FAILED','UNAVAILABLE'].includes(data.status)) {
           const code=typeof data.error_code==='string'&&/^[A-Z][A-Z0-9_]{0,95}$/.test(data.error_code)?data.error_code:'';
           status.textContent=(cloudErrors[code]||errors[code]||'本次媒体生成未完成。')+' 文字回信已保留。'+(code?`（${code}）`:'');
@@ -4657,12 +5589,5 @@ BOOTSTRAP_JAVASCRIPT = r'''
   customElements.define('olivia-letter-audio',LetterAudio);
 })();
 ''' + BOOTSTRAP_JAVASCRIPT
-
-BOOTSTRAP_JAVASCRIPT = BOOTSTRAP_JAVASCRIPT.replace(
-    "__OLIVIA_WECHAT_PAYMENT_QR__",
-    "data:image/jpeg;base64," + base64.b64encode(
-        (Path(__file__).parent / "installer/assets/wechat-payment.jpeg").read_bytes()
-    ).decode("ascii"),
-)
 
 __all__ = ["BOOTSTRAP_JAVASCRIPT", "SETTINGS_UI_VERSION"]

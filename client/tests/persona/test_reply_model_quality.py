@@ -836,7 +836,14 @@ def test_reviewer_classifies_layer_failure(
         )
     result, reviewer = _run_diagnostic_review(gateway, candidate)
 
-    assert result.error_code == "REVIEWER_UNAVAILABLE"
+    if layer in {'focus_response', 'autonomy_life'}:
+        assert result.verdict is ReviewVerdict.PASS
+        assert result.error_code is None
+        expected_warning = ('FOCUS_REVIEW_UNAVAILABLE' if layer == 'focus_response'
+                            else 'AUTONOMY_REVIEW_UNAVAILABLE')
+        assert [(item.code, item.severity) for item in result.violations] == [(expected_warning, 'soft')]
+    else:
+        assert result.error_code == "REVIEWER_UNAVAILABLE"
     assert reviewer.last_failure_diagnostics == (
         ReviewFailureDiagnostic(ReviewFailureStage.LAYER, reason, layer),
     )
@@ -3210,3 +3217,72 @@ def test_quality_model_default_timeout_allows_slow_configured_provider(
     assert overridden_rewriter.reasoning_timeout_seconds is None
     assert overridden_reviewer.adapter.transport.gateway.config.model == "qwen3.7-flash"
     assert overridden_reviewer.adapter.config.model == "qwen3.7-flash"
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    (
+        ("纯文本正文", "纯文本正文"),
+        ('{"text": "解包后的正文"}', "解包后的正文"),
+        ("```\n块内正文\n```", "块内正文"),
+        ("```json\n块内正文\n```", "块内正文"),
+    ),
+)
+def test_rewrite_unwraps_supported_text_wrappers(monkeypatch, raw, expected):
+    monkeypatch.setattr(quality_module, "_complete_text", lambda *a, **k: raw)
+    rewriter = GatewayPersonaRewriter(SimpleNamespace(), ROOT / "missing-persona.json", 2)
+    result = rewriter.rewrite_with_messages(
+        "Draft.", _context(), (), ({"role": "user", "content": "Synthetic input."},)
+    )
+    assert result == expected
+
+
+@pytest.mark.parametrize(
+    "raw",
+    (
+        '{"text": ""}',
+        '{"text": 123}',
+        '{"text": "正文", "extra": 1}',
+        '{"text": ',
+    ),
+)
+def test_rewrite_rejects_malformed_or_unsupported_wrappers(monkeypatch, raw):
+    monkeypatch.setattr(quality_module, "_complete_text", lambda *a, **k: raw)
+    rewriter = GatewayPersonaRewriter(SimpleNamespace(), ROOT / "missing-persona.json", 2)
+    with pytest.raises(RuntimeError, match="REWRITE_OUTPUT"):
+        rewriter.rewrite_with_messages(
+            "Draft.", _context(), (), ({"role": "user", "content": "Synthetic input."},)
+        )
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    (
+        ('```\n{"text": "解包后的正文"}\n```', "解包后的正文"),
+        ('```json\n{"text": "解包后的正文"}\n```', "解包后的正文"),
+    ),
+)
+def test_rewrite_unwraps_fenced_json_body(monkeypatch, raw, expected):
+    monkeypatch.setattr(quality_module, "_complete_text", lambda *a, **k: raw)
+    rewriter = GatewayPersonaRewriter(SimpleNamespace(), ROOT / "missing-persona.json", 2)
+    result = rewriter.rewrite_with_messages(
+        "Draft.", _context(), (), ({"role": "user", "content": "Synthetic input."},)
+    )
+    assert result == expected
+
+
+@pytest.mark.parametrize(
+    "raw",
+    (
+        '```\n{"analysis": "不应输出的分析"}\n```',
+        '```\n{"text": "正文", "analysis": "x"}\n```',
+        '```\n{"text": 123}\n```',
+        '```\n{"text": ""}\n```',
+        '```\n{"text": \n```',
+    ),
+)
+def test_rewrite_rejects_fenced_json_wrappers(monkeypatch, raw):
+    monkeypatch.setattr(quality_module, "_complete_text", lambda *a, **k: raw)
+    rewriter = GatewayPersonaRewriter(SimpleNamespace(), ROOT / "missing-persona.json", 2)
+    with pytest.raises(RuntimeError, match="REWRITE_OUTPUT"):
+        rewriter.rewrite_with_messages(
+            "Draft.", _context(), (), ({"role": "user", "content": "Synthetic input."},)
+        )

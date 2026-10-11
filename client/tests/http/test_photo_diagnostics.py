@@ -2,6 +2,8 @@ import io
 import json
 import zipfile
 
+import pytest
+
 from original_client_server import _recent_diagnostic_tasks
 from runtime.diagnostics.support_bundle import build_diagnostic_bundle
 
@@ -38,7 +40,8 @@ def test_pending_photo_is_not_evicted_by_newer_completed_letters():
     assert _recent_diagnostic_tasks(rows)[0] is photo
 
 
-def test_live_collector_exports_pending_photo_as_active():
+@pytest.mark.parametrize('primary_image', [False, True])
+def test_live_collector_keeps_photo_active_without_hiding_optional_voice(primary_image):
     from original_client_server import _diagnostic_source
     from original_client_companion_api import CompanionCapability, CompanionReadStatus
     class Backend:
@@ -48,14 +51,20 @@ def test_live_collector_exports_pending_photo_as_active():
         def diagnostic_status_history(self): return ()
     collect = _diagnostic_source(Backend(), setup_service=None, launcher_tail_provider=None,
         runtime_tail_provider=None, task_snapshot_provider=lambda: [dict(
-            letter_id='private-secret', letter_status='COMPLETED', reply_mode='text_letter',
+            letter_id='private-secret', letter_status='COMPLETED', reply_mode='voice_reply',
+            companion_delivery='image' if primary_image else 'audio_speech',
+            media_status='COMPLETED', reply_video_enabled=False,
+            reply_audio_url='http://127.0.0.1:8876/toy/media/synthetic.wav',
             image_reply_settings={'enabled': True, 'resolution': '2K'}, image_status='GENERATING',
             image_phase='download', image_cloud_status='succeeded', image_cloud_task_id='a'*32,
             reply_text='private-secret', content='private-secret')])
     source = collect()
     assert source['tasks']['pending'] == 1
     item = source['tasks']['items'][0]
-    assert item['reply_published'] is False and item['text_available'] is False
+    assert item['reply_published'] is (not primary_image)
+    assert item['text_available'] is (not primary_image)
+    assert item['audio_available'] is (not primary_image)
+    assert item['image_available'] is False
     assert item['stage'] == 'image_generation'
     with zipfile.ZipFile(io.BytesIO(build_diagnostic_bundle(source))) as archive:
         raw = archive.read('tasks.json')

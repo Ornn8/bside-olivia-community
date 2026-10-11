@@ -43,9 +43,10 @@ def test_history_is_not_an_action_permission_and_does_not_grant_one(mode, home_a
     assert permissions["current_home_access"] == {"allowed": home_allowed}
     assert permissions["physical_contact"] == {"ceiling": "none", "granted": "none"}
     assert text in system
-    assert "历史角色明确承认" in system
+    assert "按可定位原话的说话人、含义、条件和时间承接历史" in system
     assert "计划不等于完成" in system
-    assert "不自动授予当前" in system
+    assert "原话真实只证明说过；否定、假设与实际发生须区分" in system
+    assert "承接历史不自动授予入家、身体接触等当前行动权限，也不升级关系阶段" in system
     assert behavior.to_dict() == before
     assert behavior.relationship_stage is RelationshipStage.UNKNOWN
 

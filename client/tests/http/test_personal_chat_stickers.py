@@ -56,6 +56,39 @@ def test_qq_selected_sticker_sends_real_asset_once_after_text():
     asyncio.run(run())
 
 
+def test_downloaded_sticker_path_is_sent_and_download_failure_keeps_text(tmp_path):
+    async def run(fail):
+        rows, sent, fetched = [], [], []
+        async def generate(event, row):
+            row['sticker_id']='linli-01'
+            return '好呀'
+        async def send(text):
+            sent.append(('text',text))
+        async def download(key):
+            assert rows[0]['delivery_status']=='DELIVERED'
+            assert rows[0]['sticker_delivery_status']=='DOWNLOADING'
+            fetched.append(key)
+            if fail:
+                raise RuntimeError('download unavailable')
+            file=tmp_path/'local-copy.png';file.write_bytes(b'fixture')
+            return file
+        async def image(path):
+            assert path==tmp_path/'local-copy.png' and rows[0]['sticker_delivery_status']=='SENDING'
+            sent.append(('image',path.name))
+        async def commit(row): pass
+        send.image=image
+        service=PersonalChatService(rows,lambda:None,generate,commit,{'qq':('bot','owner')},sticker_asset=download)
+        event=PersonalMessage('qq','bot','owner','1','嘿')
+        await service.handle(event,send)
+        await service.handle(event,send)
+        assert fetched==['linli-01']
+        assert sent==[('text','好呀')] + ([] if fail else [('image','local-copy.png')])
+        assert rows[0]['sticker_delivery_status']==('FAILED' if fail else 'DELIVERED')
+        assert rows[0]['delivery_status']=='DELIVERED'
+    asyncio.run(run(False))
+    asyncio.run(run(True))
+
+
 @pytest.mark.parametrize('channel', ['wechat', 'qq'])
 def test_image_failure_does_not_undo_text_memory_or_resend_on_replay(channel):
     async def run():

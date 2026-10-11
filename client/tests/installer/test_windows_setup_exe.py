@@ -316,6 +316,7 @@ def _voice_setup_fixture(tmp_path: Path, monkeypatch) -> tuple[Path, Path, Path]
     installer = source / "installer"
     installer.mkdir(parents=True)
     (installer / "Install.ps1").write_text("install", encoding="utf-8")
+    (installer / "patch_local_login.py").write_text("# synthetic helper", encoding="utf-8")
     (installer / "activate_private_video.py").write_text(
         "# private video activation entrypoint\n", encoding="utf-8"
     )
@@ -337,6 +338,7 @@ def _voice_setup_fixture(tmp_path: Path, monkeypatch) -> tuple[Path, Path, Path]
         "installer.build_windows_setup._git_tracked_files",
         lambda _source: {
             "installer/Install.ps1",
+            "installer/patch_local_login.py",
             "installer/activate_private_video.py",
             "installer/runtime-requirements.txt",
             "installer/video-capability-manifest.json",
@@ -375,6 +377,7 @@ def test_prepare_setup_payload_copies_only_tracked_release_files_and_offline_ass
     (source / "tests").mkdir()
     (source / "docs").mkdir()
     (source / "installer" / "Install.ps1").write_text("install", encoding="utf-8")
+    (source / "installer/patch_local_login.py").write_text("# synthetic helper", encoding="utf-8")
     (source / "installer" / "assets").mkdir()
     (source / "installer" / "assets" / "olivia.ico").write_bytes(b"icon")
     requirements = b"locked requirements"
@@ -398,6 +401,7 @@ def test_prepare_setup_payload_copies_only_tracked_release_files_and_offline_ass
         "installer.build_windows_setup._git_tracked_files",
         lambda _source: {
             "installer/Install.ps1",
+            "installer/patch_local_login.py",
             "installer/assets/olivia.ico",
             "installer/runtime-requirements.txt",
             *BUILD_CONTROL_FILES,
@@ -442,6 +446,8 @@ def test_shipped_setup_payload_imports_startup_helpers(tmp_path, monkeypatch):
     offline, payload, installed = (tmp_path / name for name in ('offline', 'payload', 'installed'))
     _offline_fixture(offline, (ROOT / 'installer/runtime-requirements.txt').read_bytes())
     monkeypatch.setattr('installer.build_windows_setup._git_dirty_files', lambda root: set())
+    tracked = _git_tracked_files(ROOT)
+    monkeypatch.setattr(setup_builder, '_git_tracked_files', lambda _root: tracked | {'installer/patch_local_login.py'})
     prepare_setup_payload(ROOT, offline, payload, validate_schema=False)
     copy_project_payload(payload, installed)
     for name in ('user_data_root.py', 'repair_image_dependency.py'):
@@ -627,6 +633,7 @@ def test_prepare_private_payload_requires_video_activation_entrypoint(
         "installer.build_windows_setup._git_tracked_files",
         lambda _source: {
             "installer/Install.ps1",
+            "installer/patch_local_login.py",
             "installer/runtime-requirements.txt",
             "installer/video-capability-manifest.json",
             *BUILD_CONTROL_FILES,
@@ -1116,8 +1123,8 @@ def test_private_inno_payload_reads_large_runtime_beside_setup_without_tmp_extra
     script = (ROOT / "installer/windows_setup.iss").read_text(encoding="utf-8")
     assert "#ifdef VideoRuntimePayload" in script
     assert "#ifdef VideoOfflinePayload" in script
-    assert "DiskSpanning=yes" not in script
-    assert "DiskSliceSize=" not in script
+    assert "#ifdef OriginalClientPayload\nDiskSpanning=yes" in script
+    assert "DiskSpanning=yes\nDiskSliceSize=1500000000\n#endif" in script
     assert 'Source: "{#PayloadRoot}\\offline\\video-runtime\\*"' not in script
     assert "-VideoRuntimePath" in script
     assert "{src}\\Olivia-video-runtime-private.zip" in script
@@ -1691,6 +1698,7 @@ def test_setup_rejects_git_selected_audio_and_video_payloads(
         "installer.build_windows_setup._git_tracked_files",
             lambda _source: {
                 "installer/Install.ps1",
+                "installer/patch_local_login.py",
                 "installer/activate_private_video.py",
                 "installer/runtime-requirements.txt",
                 *BUILD_CONTROL_FILES,
@@ -1728,12 +1736,14 @@ def test_prepare_setup_payload_rejects_dirty_tracked_release_file(
     requirements = b"locked requirements"
     (source / "installer" / "runtime-requirements.txt").write_bytes(requirements)
     (source / "installer" / "Install.ps1").write_text("install", encoding="utf-8")
+    (source / "installer/patch_local_login.py").write_text("# synthetic helper", encoding="utf-8")
     (source / "local_server.py").write_text("dirty", encoding="utf-8")
     _offline_fixture(offline, requirements)
     monkeypatch.setattr(
         "installer.build_windows_setup._git_tracked_files",
         lambda _source: {
             "installer/Install.ps1",
+            "installer/patch_local_login.py",
             "installer/runtime-requirements.txt",
             *BUILD_CONTROL_FILES,
             "local_server.py",
@@ -1804,11 +1814,13 @@ def test_prepare_setup_payload_rejects_dirty_setup_build_control_file(
     requirements = b"locked requirements"
     (source / "installer" / "runtime-requirements.txt").write_bytes(requirements)
     (source / "installer" / "Install.ps1").write_text("install", encoding="utf-8")
+    (source / "installer/patch_local_login.py").write_text("# synthetic helper", encoding="utf-8")
     _offline_fixture(offline, requirements)
     monkeypatch.setattr(
         "installer.build_windows_setup._git_tracked_files",
         lambda _source: {
             "installer/Install.ps1",
+            "installer/patch_local_login.py",
             "installer/runtime-requirements.txt",
             *BUILD_CONTROL_FILES,
         },
@@ -1832,12 +1844,14 @@ def test_prepare_setup_payload_rejects_tampered_offline_assets(
     requirements = b"locked requirements"
     (source / "installer" / "runtime-requirements.txt").write_bytes(requirements)
     (source / "installer" / "Install.ps1").write_text("install", encoding="utf-8")
+    (source / "installer/patch_local_login.py").write_text("# synthetic helper", encoding="utf-8")
     _offline_fixture(offline, requirements)
     (offline / "wheelhouse" / "core.whl").write_bytes(b"tampered")
     monkeypatch.setattr(
         "installer.build_windows_setup._git_tracked_files",
         lambda _source: {
             "installer/Install.ps1",
+            "installer/patch_local_login.py",
             "installer/runtime-requirements.txt",
             *BUILD_CONTROL_FILES,
         },
@@ -1860,11 +1874,13 @@ def test_prepare_setup_payload_rejects_reparse_parent(
     requirements = b"locked requirements"
     (source / "installer" / "runtime-requirements.txt").write_bytes(requirements)
     (source / "installer" / "Install.ps1").write_text("install", encoding="utf-8")
+    (source / "installer/patch_local_login.py").write_text("# synthetic helper", encoding="utf-8")
     _offline_fixture(offline, requirements)
     monkeypatch.setattr(
         "installer.build_windows_setup._git_tracked_files",
         lambda _source: {
             "installer/Install.ps1",
+            "installer/patch_local_login.py",
             "installer/runtime-requirements.txt",
         },
     )
@@ -1927,11 +1943,13 @@ def test_inno_wrapper_is_current_user_offline_and_delegates_to_install_ps1() -> 
     assert "SetupResultPath" in script
     assert "OLIVIA_SETUP_ERROR=" in script
     assert "OFFICIAL_INSTALL_AMBIGUOUS" in script
-    assert "上一步" in script
+    assert "重新运行安装器" in script
     assert ".diagnostic.json" in script
     assert "Olivia installer diagnostic:" in script
     assert "function PrepareToInstall" in script
-    assert "dontcopy noencryption" in script
+    assert 'DestDir: "{code:GetPayloadRoot}"' in script
+    assert "ExtractTemporaryFiles" not in script
+    assert "AfterInstall: InstallPayload" in script
     assert "OfficialDirPage" not in script
     assert "BrowseForFolder" not in script
     assert "{param:InstallRoot|" in script

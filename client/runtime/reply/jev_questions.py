@@ -3,11 +3,10 @@ import asyncio
 import hashlib
 import json
 import os
-import urllib.error
 import urllib.request
 
-from .companion_decision import JevDecisionPort, _json, _pairs, _nonfinite, _http_error_code
-from .jev_billing import billing_headers, settle_receipt_sync
+from .companion_decision import JevDecisionPort, _json
+from .jev_billing import settle_receipt_sync
 from .jev_semantic_service import _decision_detail
 
 from .jev_limits import JEV_MAX_INPUT_BYTES as SEMANTIC_REQUEST_MAX_BYTES
@@ -36,21 +35,7 @@ class JevQuestionsPort:
         headers = self.transport.request_headers(digest)
         req = urllib.request.Request(self.transport.endpoint.rsplit('/', 1)[0] + '/semantic-decisions',
                                      data=body, headers=headers, method='POST')
-        try:
-            with self.transport._opener.open(req, timeout=self.transport.timeout_seconds) as response:
-                if response.status != 200 or response.headers.get_content_type() != 'application/json':
-                    raise ValueError('JEV_RESPONSE_INVALID')
-                raw = response.read(262145)
-        except urllib.error.HTTPError as error:
-            raise ValueError(_http_error_code(error)) from None
-        except (TimeoutError, urllib.error.URLError, OSError):
-            raise ValueError('JEV_UNAVAILABLE') from None
-        if len(raw) > 262144:
-            raise ValueError('JEV_RESPONSE_INVALID')
-        try:
-            value = json.loads(raw, object_pairs_hook=_pairs, parse_constant=_nonfinite)
-        except (ValueError, TypeError):
-            raise ValueError('JEV_RESPONSE_INVALID') from None
+        value = self.transport.json_response(req)
         if not isinstance(value, dict):
             raise ValueError('JEV_RESPONSE_INVALID')
         billing = value.pop('billing', None)

@@ -120,3 +120,13 @@ asyncio.run(main())
     result = subprocess.run([sys.executable, '-c', script], env=env,
                             capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_letters_default_on_and_old_default_off_migrates_once(tmp_path):
+    from runtime.reply.proactive_letters import load_settings, write_json
+    assert load_settings(tmp_path)['enabled'] is True
+    old = tmp_path / 'old'
+    write_json(old / 'proactive/settings.json', {'enabled': False, 'allow_voice': False})
+    assert load_settings(old) == {'enabled': True, 'allow_voice': False, 'login_check_enabled': False}
+    write_json(old / 'proactive/settings.json', {'enabled': False, 'allow_voice': False})  # user turns it off again
+    assert load_settings(old)['enabled'] is False

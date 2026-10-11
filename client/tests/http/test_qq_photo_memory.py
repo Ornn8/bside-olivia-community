@@ -33,7 +33,7 @@ def test_vision_uses_selected_olivia_cloud_account_not_text_provider(monkeypatch
     server = SimpleNamespace(letters_adapter=SimpleNamespace(
         config=SimpleNamespace(base_url='https://api.deepseek.com/v1', api_key_env=''),
         gateway=SimpleNamespace(_key=lambda: 'synthetic-deepseek-secret')))
-    assert vision._vision_connection(server) == ('https://175.24.191.6/v1', 'olivia-synthetic-photo-account')
+    assert vision._vision_connection(server) == ('https://api.bside-moon.cn/v1', 'olivia-synthetic-photo-account')
     monkeypatch.setenv('OLIVIA_GPU_API_URL', 'https://custom.example')
     assert vision._vision_connection(server) == ('https://api.deepseek.com/v1', 'synthetic-deepseek-secret')
 

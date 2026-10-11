@@ -2711,6 +2711,7 @@ def test_contract_and_fixture_artifacts_are_versioned_and_sanitized() -> None:
             "GPU_SHARED_SCENE_MISSING": {"status": "UNAVAILABLE", "retryable": True},
             "GPU_NOT_CONFIGURED": {"status": "UNAVAILABLE", "retryable": True},
             "GPU_CAPABILITY_UNAVAILABLE": {"status": "UNAVAILABLE", "retryable": True},
+                "GPU_RECOVERY_REQUIRED": {"status": "UNAVAILABLE", "retryable": True},
             "MEDIA_JOB_INTERRUPTED": {"status": "UNAVAILABLE", "retryable": True},
             "COVER_SOURCE_REQUIRED": {"status": "FAILED", "retryable": False},
             "COVER_LYRICS_REQUIRED": {"status": "FAILED", "retryable": False},

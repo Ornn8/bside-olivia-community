@@ -47,6 +47,103 @@ class _Server:
         self.persist_calls += 1
 
 
+@pytest.mark.parametrize('saved,expected', [
+    ({'managed': True, 'account': '12345', 'owner': '54321'}, 200),
+    ({'managed': False, 'account': '12345', 'owner': '54321'}, 400),
+    ({'managed': True, 'account': '12345', 'owner': 'abc'}, 400),
+    ({'managed': True, 'account': '12345', 'owner': '12345'}, 400),
+    ({'managed': True, 'account': 'abc', 'owner': '54321'}, 400),
+    ({}, 400),
+])
+def test_explicit_saved_owner_reconnect_validates_saved_binding(tmp_path, monkeypatch, saved, expected):
+    import original_client_setup_api
+    from types import SimpleNamespace
+    from runtime.personal_chat import setup, napcat_installer
+    monkeypatch.setattr(setup, '_selected_channels', lambda server: {'qq'})
+    monkeypatch.setattr(setup, '_read_config', lambda server: {'qq': saved.copy()})
+    monkeypatch.setattr(napcat_installer, 'managed_connection', lambda root: ('ws://127.0.0.1:3001', 'synthetic-token-123456'))
+    monkeypatch.setattr(napcat_installer, 'account_config_ready', lambda *args: True)
+    monkeypatch.setattr(napcat_installer, 'remember_account', lambda *args: None)
+    monkeypatch.setattr(napcat_installer, 'public_status', lambda *args: {})
+    monkeypatch.setattr(setup, '_contact_access', lambda server: {})
+    monkeypatch.setattr(original_client_setup_api, '_dpapi_protect', lambda value: 'ciphertext')
+    probes, writes = [], []
+    async def probe(url, token, account=None):
+        probes.append(account)
+        assert account == '12345'
+        return account
+    monkeypatch.setattr(setup, '_qq_probe', probe)
+    monkeypatch.setattr(setup, '_write_config', lambda server, config: writes.append(config))
+    app = web.Application()
+    server = _Server(tmp_path)
+    setup.install_setup_routes(app, server)
+    app[setup._SETUP]['qq'] = {'state': 'CONNECTED'}
+    async def scenario():
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post(setup.QQ_CONFIGURE_PATH,
+                headers={setup.CONFIRM_HEADER: setup.CONFIRM_VALUE},
+                json={'managed': True, 'reuse_saved_owner': True})
+            assert response.status == expected
+            public = setup._public_status(SimpleNamespace(app=app), server)
+            assert public['qq'].get('can_reuse_owner', False) == (expected == 200)
+            assert '54321' not in json.dumps(public)
+            if expected == 200:
+                assert writes[0]['qq']['owner'] == '54321'
+                assert probes == ['12345']
+            else:
+                assert app[setup._SETUP]['qq'] == {'state': 'CONNECTED'}
+                assert not writes and not probes
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('body', [
+    {'managed': False, 'reuse_saved_owner': True},
+    {'managed': True, 'reuse_saved_owner': True, 'owner': '65432'},
+    {'managed': True, 'owner': ''},
+])
+def test_saved_owner_reconnect_requires_unambiguous_explicit_action(tmp_path, monkeypatch, body):
+    from runtime.personal_chat import setup
+    monkeypatch.setattr(setup, '_selected_channels', lambda server: {'qq'})
+    monkeypatch.setattr(setup, '_read_config', lambda server:
+                        {'qq': {'managed': True, 'account': '12345', 'owner': '54321'}})
+    app = web.Application()
+    setup.install_setup_routes(app, _Server(tmp_path))
+    app[setup._SETUP]['qq'] = {'state': 'CONNECTED'}
+    async def scenario():
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post(setup.QQ_CONFIGURE_PATH,
+                headers={setup.CONFIRM_HEADER: setup.CONFIRM_VALUE}, json=body)
+            assert response.status == 400
+            assert (await response.json())['error'] == 'QQ_SETUP_INVALID'
+            assert app[setup._SETUP]['qq'] == {'state': 'CONNECTED'}
+            assert not (tmp_path / 'personal-chat/qq.dpapi').exists()
+    asyncio.run(scenario())
+
+
+def test_saved_owner_reconnect_rejects_changed_bot_without_writing(tmp_path, monkeypatch):
+    from runtime.personal_chat import setup, napcat_installer
+    saved = {'managed': True, 'account': '12345', 'owner': '54321'}
+    monkeypatch.setattr(setup, '_selected_channels', lambda server: {'qq'})
+    monkeypatch.setattr(setup, '_read_config', lambda server: {'qq': saved})
+    monkeypatch.setattr(napcat_installer, 'managed_connection', lambda root: ('ws://127.0.0.1:3001', 'synthetic-token-123456'))
+    async def probe(url, token, expected=None):
+        assert expected == '12345'
+        raise RuntimeError('QQ_ACCOUNT_MISMATCH')
+    monkeypatch.setattr(setup, '_qq_probe', probe)
+    app = web.Application()
+    setup.install_setup_routes(app, _Server(tmp_path))
+    async def scenario():
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post(setup.QQ_CONFIGURE_PATH,
+                headers={setup.CONFIRM_HEADER: setup.CONFIRM_VALUE},
+                json={'managed': True, 'reuse_saved_owner': True})
+            assert response.status == 400
+            assert (await response.json())['error'] == 'QQ_ACCOUNT_MISMATCH'
+            assert saved == {'managed': True, 'account': '12345', 'owner': '54321'}
+            assert not (tmp_path / 'personal-chat/qq.dpapi').exists()
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize('change,expected', [('', 'CONNECTED'), ('owner','READY_RESTART'),
     ('url','READY_RESTART'), ('token','READY_RESTART'), ('unverified','READY_RESTART')])
 def test_connected_setup_clears_restart_only_for_exact_loaded_binding(tmp_path, monkeypatch, change, expected):

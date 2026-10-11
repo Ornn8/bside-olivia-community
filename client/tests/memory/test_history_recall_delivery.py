@@ -399,3 +399,24 @@ def test_first_import_rebinds_existing_index_worker_without_replaying_delivery(t
     finally:
         runtime.stop_conversation_memory_runtime()
         archive.close()
+
+
+def test_mailbox_restored_date_reaches_the_recall_index(tmp_path):
+    # The official import has no date; the user restored 2026-08-26 in mailbox
+    # maintenance. A question naming that day must read the letter by its date.
+    from runtime.imports.letter_maintenance import key
+    from runtime.memory.conversation_memory_delivery import ConversationMemoryDeliveryCommitter
+    from runtime.memory.conversation_memory_outbox import CanonicalMemoryOutbox
+    from datetime import timedelta
+    archive = seed_archive(tmp_path, stamp=None)
+    row = archive.list_legacy()[0]
+    restored = datetime(2026, 8, 26, 4, tzinfo=timezone.utc)
+    (tmp_path / 'state.json').write_text(json.dumps({'letters': [], 'personal_chats': [], 'letter_maintenance': {
+        key(row): {'created_at': restored.timestamp(), 'order': 0}}}), encoding='utf-8')
+    index = IndexedMemory(tmp_path / 'index')
+    outbox = CanonicalMemoryOutbox(tmp_path / 'state.json', tmp_path / 'outbox.sqlite3',
+                                   ConversationMemoryDeliveryCommitter(index), archive_memory=archive)
+    asyncio.run(outbox._index_archive_originals())
+    day = datetime(2026, 8, 26, tzinfo=timezone(timedelta(hours=8)))
+    found = index._originals.sources_in_range('local-user', day, day + timedelta(days=1), '围巾')
+    assert {r.text for r in found} >= {'外婆的围巾上缝着一颗铜纽扣。', '那颗铜纽扣我记住了。'}

@@ -23,9 +23,44 @@
         },
         {
             "$ref": "#/$defs/error"
+        },
+        {
+            "$ref": "#/$defs/image_request"
+        },
+        {
+            "$ref": "#/$defs/tier_request"
         }
     ],
     "$defs": {
+        "image_setting": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["enabled", "resolution"],
+            "properties": {
+                "enabled": {"type": "boolean"},
+                "resolution": {"enum": ["1K", "2K", "4K"]},
+                "model": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"}
+            }
+        },
+        "image_request": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["request_id", "image"],
+            "properties": {
+                "request_id": {"type": "string", "pattern": "^video_reply_setting:[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$"},
+                "image": {"$ref": "#/$defs/image_setting"}
+            }
+        },
+        "tier_request": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["request_id", "tier"],
+            "properties": {
+                "request_id": {"type": "string", "pattern": "^video_reply_setting:[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$"},
+                "tier": {"enum": ["text", "audio", "video"]},
+                "image": {"$ref": "#/$defs/image_setting"}
+            }
+        },
         "available": {
             "type": "object",
             "additionalProperties": false,

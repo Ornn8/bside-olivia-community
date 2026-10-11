@@ -89,6 +89,7 @@ def test_directed_delivery_error_schema_is_stable() -> None:
             "GPU_SHARED_SCENE_MISSING": {"status": "UNAVAILABLE", "retryable": True},
             "GPU_NOT_CONFIGURED": {"status": "UNAVAILABLE", "retryable": True},
             "GPU_CAPABILITY_UNAVAILABLE": {"status": "UNAVAILABLE", "retryable": True},
+            "GPU_RECOVERY_REQUIRED": {"status": "UNAVAILABLE", "retryable": True},
             "MEDIA_JOB_INTERRUPTED": {"status": "UNAVAILABLE", "retryable": True},
             "COVER_SOURCE_REQUIRED": {"status": "FAILED", "retryable": False},
         "COVER_LYRICS_REQUIRED": {"status": "FAILED", "retryable": False},
