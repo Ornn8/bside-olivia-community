@@ -909,7 +909,9 @@ class LetterAdapter:
         from runtime.diagnostics.reply_telemetry import timing
         with timing('world_local'):
             packet = self.daily_life.store.reply_candidates(now=now)
+            # Selection reads only the last exchanges; archive search and notes are not built for it.
             packet['recent_dialogue'] = selection_dialogue(self.recent_letter_fragments(content, now=now, selection_only=True))
+            packet['scope'] = str(getattr(self.daily_life.store, 'path', ''))
         # Freeze the turn's local inputs before concurrent emotion evaluation
         # can update the store while selection awaits its provider.
         addressing = self.daily_life.store.addressing_profile(now=now)
@@ -957,14 +959,16 @@ class LetterAdapter:
         source = _CURRENT_LETTER_MEMORY_SOURCE.get()
         if not isinstance(content, str) or not content.strip() or not source:
             return emotion.view(now)
-        from runtime.memory.received_user_originals import received_originals
+        from runtime.memory.received_user_originals import received_originals, rows_sharing_originals
         # Revision belongs to delivery, not to the immutable received message.
         identifier = source.removeprefix('reply:').rsplit(':', 1)[0]
         rows = [*store.letters, *store.personal_chats]
         current = [row for row in rows if row.get('letter_id') == identifier]
         # The letter being resent in place may still read FAILED; it is this turn's input.
         identities = {item.source_id for item in received_originals(current, include_undelivered=True)}
-        receipts = tuple(sorted((item for item in received_originals(rows, include_undelivered=True)
+        # Only rows that index this turn's originals can change their receipts.
+        related = rows_sharing_originals(rows, current)
+        receipts = tuple(sorted((item for item in received_originals(related, include_undelivered=True)
             if item.source_id in identities and item.occurred_at <= now
             and item.user_message in content), key=lambda item: item.occurred_at))
         return await emotion.evaluate_received(receipts, now=now)

@@ -1,12 +1,17 @@
 """Evidence-bound character appraisals; no world or relationship authority."""
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
+from collections import OrderedDict
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+from itertools import islice
 from pathlib import Path
 import sqlite3
+import threading
+import time
 
 
 # A fictional continuity parameter, not a measured psychological recovery rate.
@@ -129,6 +134,318 @@ def _validate_item(item, source):
         raise ValueError("EMOTION_APPRAISAL_INVALID")
 
 
+def _parse_row(source_raw, order, raw, version, basis_raw):
+    source, item, basis = _checked_source(source_raw, order=order), json.loads(raw), json.loads(basis_raw)
+    _validate_item(item, source)
+    dependencies = basis.get("dependencies", {})
+    if _hash({"source": source, "appraisal": item, "dependencies": dependencies}) != version:
+        raise ValueError("EMOTION_STORED_EVIDENCE_INVALID")
+    return {**item, "occurred_at": source["occurred_at"], "source_order": order,
+            "version": version, "_dependencies": dependencies}
+
+
+def _chunks(values, size=500):
+    for start in range(0, len(values), size):
+        yield values[start:start + size]
+
+
+_CONTEXT_ITEMS = 2 * _VIEW_LIMIT
+# Stored rows are hashed again, from scratch, at least this often (seconds).
+_LEDGER_MAX_AGE = 900.0
+_LEDGER_LIMIT = 8
+
+
+class _Projection:
+    """Append-only form of the projection of accepted appraisals.
+
+    Records arrive in durable order. Adding one touches only what it can change
+    (the chain it withdraws, the concerns it names) instead of replaying the
+    whole list; a record that flips an earlier one refolds the concerns once.
+    """
+
+    def __init__(self):
+        self.items, self.stamps = [], []
+        self.by_id, self.children, self.waiting, self.parent, self.active = {}, {}, {}, {}, {}
+        self.live, self.live_stamps, self.position = [], [], {}
+        self.concerns, self.rank, self.open_ids = OrderedDict(), {}, set()
+
+    def add(self, item, stamp):
+        identity = item["source_id"]
+        self.items.append(item)
+        self.stamps.append(stamp)
+        self.by_id[identity] = item
+        self.children[identity] = self.waiting.pop(identity, [])
+        for child in self.children[identity]:
+            self.parent[child] = identity
+        revised = item["revises"]["source_id"] if item["revises"] else None
+        if revised is not None:
+            if revised in self.by_id:
+                self.children[revised].append(identity)
+                self.parent[identity] = revised
+            else:
+                self.waiting.setdefault(revised, []).append(identity)
+        node = identity
+        for _ in range(len(self.by_id)):
+            if node not in self.parent:
+                break
+            node = self.parent[node]
+            if node == identity:  # Any new cycle passes through the new record.
+                raise ValueError("EMOTION_STORED_EVIDENCE_INVALID")
+        self.active[identity] = not any(self.active[child] for child in self.children[identity])
+        flipped, node = False, identity
+        while node in self.parent:
+            above = self.parent[node]
+            alive = not any(self.active[child] for child in self.children[above])
+            if alive == self.active[above]:
+                break
+            self.active[above], flipped, node = alive, True, above
+        if flipped:
+            self._refold()
+        elif self.active[identity]:
+            self._admit(item, stamp)
+
+    def _admit(self, item, stamp):
+        self.position[item["source_id"]] = len(self.live)
+        self.live.append(item)
+        self.live_stamps.append(stamp)
+        touched = set()
+        for change in _concern_changes(item["concern"]):
+            old = self.concerns.get(change["id"])
+            contributors = list(old["source_ids"]) if old and old["status"] == "open" else []
+            if change["action"] == "open":
+                contributors.append(item["source_id"])
+            else:
+                contributors = []
+            self.rank.setdefault(change["id"], len(self.rank))
+            self.concerns[change["id"]] = dict(
+                id=change["id"], summary=change["summary"], status=change["action"],
+                source_ids=contributors, occurred_at=item["occurred_at"], source_order=item["source_order"],
+                version=_hash([old["version"] if old else None, item["version"]]))
+            (self.open_ids.add if change["action"] == "open" else self.open_ids.discard)(change["id"])
+            touched.add(change["id"])
+        # The order is the last change's (occurred_at, source_order); one record's own
+        # changes tie and keep the order in which the concerns first appeared.
+        for key in sorted(touched, key=self.rank.__getitem__):
+            self.concerns.move_to_end(key)
+
+    def _refold(self):
+        items, stamps = self.items, self.stamps
+        self.live, self.live_stamps, self.position = [], [], {}
+        self.concerns, self.rank, self.open_ids = OrderedDict(), {}, set()
+        for item, stamp in zip(items, stamps):
+            if self.active[item["source_id"]]:
+                self._admit(item, stamp)
+
+    def live_version(self, identity):
+        item = self.by_id.get(identity)
+        return item["version"] if item is not None and self.active[identity] else None
+
+    def concern_version(self, identity):
+        concern = self.concerns.get(identity)
+        return concern["version"] if concern else None
+
+    def context(self, stamp):
+        """The bounded concerns and prior appraisals an appraisal at stamp reads."""
+        count = len(self.live)
+        recent = datetime.fromisoformat(stamp) - REACTION_WINDOW
+        chosen = set(range(max(bisect_left(self.live_stamps, recent), count - _CONTEXT_ITEMS), count))
+        chosen.update(sorted(self.position[key] for identity in self.open_ids
+                             for key in self.concerns[identity]["source_ids"]
+                             if key in self.position)[-_CONTEXT_ITEMS:])
+        tail = list(islice(reversed(self.concerns.values()), _CONTEXT_ITEMS))
+        tail.reverse()
+        return dict(as_of=stamp, concerns=[CharacterEmotionStore._public_concern(c) for c in tail],
+                    prior_appraisals=[CharacterEmotionStore._public(self.live[i])
+                                      for i in sorted(chosen)[-_CONTEXT_ITEMS:]])
+
+
+class _StateView:
+    """Live records, concerns and stale sources up to a time, with an optional context."""
+    __slots__ = ("live", "live_stamps", "concerns", "stale", "context", "_by_id")
+
+    def __init__(self, live, live_stamps, concerns, stale, context=None):
+        self.live, self.live_stamps, self.concerns = live, live_stamps, concerns
+        self.stale, self.context, self._by_id = stale, context, None
+
+    def record(self, identity):
+        if self._by_id is None:
+            self._by_id = {item["source_id"]: item for item in self.live}
+        return self._by_id.get(identity)
+
+    def public(self, identity):
+        record = self.record(identity)
+        return CharacterEmotionStore._public(record) if record is not None else None
+
+
+class _Unusable(Exception):
+    """The ledger cannot stand in for the reference replay on this data."""
+
+
+_ROWS = ("SELECT s.rowid,s.source_id,s.occurred_at,s.payload,a.payload,a.version,a.basis "
+         "FROM character_emotion_appraisals a JOIN character_emotion_sources s ON s.source_id=a.source_id")
+_FINGERPRINT = ("SELECT COUNT(*),COALESCE(MAX(rowid),0),(SELECT version FROM character_emotion_appraisals "
+                "WHERE rowid=(SELECT MAX(rowid) FROM character_emotion_appraisals)) FROM character_emotion_appraisals")
+
+
+class _Ledger:
+    """Verified appraisal records in durable order, replayed once.
+
+    Whether a record is accepted depends only on the records before it, so any
+    time or source cut is a prefix of one replay. The ledger is derived from the
+    stored rows alone and syncs to them on every use: rows added after the last
+    record are replayed on their own, anything else is replayed from the first
+    row that differs. Data it cannot model falls back to the reference replay.
+    A row is parsed and hashed only when its stored text is new to the ledger;
+    unchanged rows are compared as text, which is as strong as hashing them again.
+    """
+
+    def __init__(self):
+        self.lock = threading.RLock()
+        self.fingerprint = self.refused = None
+        self.built = 0.0
+        self.known = {}
+        self._clear()
+
+    def _clear(self):
+        self.idents, self.records, self.stamps, self.columns, self.keys = [], [], [], [], []
+        self.verdicts, self.stale = [], []
+        self.projection = _Projection()
+
+    def sync(self, db):
+        aged = time.monotonic() - self.built > _LEDGER_MAX_AGE
+        for _ in range(3):
+            seen = tuple(db.execute(_FINGERPRINT).fetchone())
+            if seen == self.fingerprint and not aged:
+                return
+            if seen == self.refused and not aged:
+                raise _Unusable
+            try:
+                rebuilt = self._advance(db, seen, aged)
+            except sqlite3.Error:
+                self._clear()
+                self.fingerprint = None
+                raise
+            except Exception:
+                self._clear()
+                self.fingerprint, self.refused = None, seen
+                raise _Unusable from None
+            if tuple(db.execute(_FINGERPRINT).fetchone()) == seen:
+                self.fingerprint, self.refused = seen, None
+                if rebuilt:
+                    self.built = time.monotonic()
+                return
+            self._clear()  # Rows moved while they were read.
+            self.fingerprint = None
+        raise _Unusable
+
+    def _advance(self, db, seen, aged):
+        """True when every stored row was read again."""
+        old = self.fingerprint
+        if old is not None and not aged and seen[1] > old[1] and self._append(db, old, seen):
+            return False
+        self._rebuild(db)
+        return True
+
+    def _append(self, db, old, seen):
+        extra = db.execute("SELECT COUNT(*) FROM character_emotion_appraisals WHERE rowid>?", (old[1],)).fetchone()[0]
+        if seen[0] - extra != old[0]:
+            return False
+        if old[0]:
+            kept = db.execute("SELECT version FROM character_emotion_appraisals WHERE rowid=?", (old[1],)).fetchone()
+            if kept is None or kept[0] != old[2]:
+                return False
+        rows = db.execute(_ROWS + " WHERE a.rowid>? ORDER BY s.occurred_at,s.rowid", (old[1],)).fetchall()
+        if rows and self.keys and (rows[0][2], rows[0][0]) <= self.keys[-1]:
+            return False
+        self._extend(rows)
+        return True
+
+    def _rebuild(self, db):
+        rows = [tuple(row) for row in db.execute(_ROWS + " ORDER BY s.occurred_at,s.rowid")]
+        keep = 0
+        for keep, (new, old) in enumerate(zip(rows, self.idents)):
+            if new != old:
+                break
+        else:
+            keep = min(len(rows), len(self.idents))
+        if keep < len(self.records):
+            del self.idents[keep:], self.records[keep:], self.stamps[keep:], self.columns[keep:], self.keys[keep:]
+            del self.verdicts[keep:]
+            self.stale = [index for index in self.stale if index < keep]
+            self.projection = _Projection()
+            for record, stamp, accepted in zip(self.records, self.stamps, self.verdicts):
+                if accepted:
+                    self.projection.add(record, stamp)
+        self._extend(rows[keep:])
+        self.known = dict(zip(self.idents, self.records))
+
+    def _extend(self, rows):
+        for row in rows:
+            order, identity, column, source_raw, raw, version, basis_raw = row = tuple(row)
+            record = self.known.get(row) or _parse_row(source_raw, order, raw, version, basis_raw)
+            if record["occurred_at"] != column:
+                raise ValueError("EMOTION_STORED_EVIDENCE_INVALID")
+            self._replay(record, datetime.fromisoformat(column))
+            self.idents.append(row)
+            self.columns.append(column)
+            self.keys.append((column, order))
+
+    def _replay(self, record, stamp):
+        projection, dependencies = self.projection, record["_dependencies"]
+        accepted = True
+        if dependencies:
+            target, changes = record["revises"], _concern_changes(record["concern"])
+            accepted = not (
+                (target and projection.live_version(target["source_id"]) != dependencies.get("revised_version"))
+                or any(change["action"] == "resolve" and projection.concern_version(change["id"]) != (
+                        dependencies.get("concern_versions", {}).get(change["id"]) if isinstance(record["concern"], list)
+                        else dependencies.get("concern_version")) for change in changes)
+                or ("read_context" in dependencies
+                    and _hash(projection.context(record["occurred_at"])) != dependencies["read_context"]))
+        if not accepted:
+            self.stale.append(len(self.records))
+        self.records.append(record)
+        self.stamps.append(stamp)
+        self.verdicts.append(accepted)
+        if accepted:
+            projection.add(record, stamp)
+
+    def view(self, db, stamp, before, context_at):
+        with self.lock:
+            self.sync(db)
+            end = bisect_right(self.columns, stamp)
+            if before is not None:
+                end = min(end, bisect_left(self.keys, before))
+            projection = self.projection
+            if end < len(self.records):
+                projection = _Projection()
+                for record, moment, accepted in zip(self.records[:end], self.stamps[:end], self.verdicts[:end]):
+                    if accepted:
+                        projection.add(record, moment)
+            stale = {self.records[index]["source_id"] for index in self.stale[:bisect_left(self.stale, end)]}
+            return _StateView(list(projection.live), list(projection.live_stamps), OrderedDict(projection.concerns),
+                              stale, projection.context(context_at) if context_at is not None else None)
+
+
+_LEDGERS = OrderedDict()
+_LEDGERS_LOCK = threading.Lock()
+
+
+def _ledger_for(db):
+    try:
+        path = db.execute("PRAGMA database_list").fetchone()[2]
+    except (sqlite3.Error, IndexError, TypeError):
+        return None
+    if not path:
+        return None  # In-memory data has no identity to share.
+    with _LEDGERS_LOCK:
+        ledger = _LEDGERS.pop(path, None) or _Ledger()
+        _LEDGERS[path] = ledger
+        while len(_LEDGERS) > _LEDGER_LIMIT:
+            _LEDGERS.popitem(last=False)
+        return ledger
+
+
 class CharacterEmotionStore:
     """Source records and reversible appraisals in the per-user life database."""
 
@@ -182,18 +499,29 @@ class CharacterEmotionStore:
             db.execute("BEGIN IMMEDIATE")
             return self._record_source(db, _world_source(db, source_id))
 
-    def pending_source_ids(self, *, before: datetime | None = None, limit: int = 8) -> list[str]:
+    def pending_source_ids(self, *, before: datetime | None = None, limit: int = 8,
+                           after: datetime | None = None, until: datetime | None = None) -> list[str]:
+        """Oldest first; `after` (exclusive) and `until` (inclusive) bound the sources' times."""
         # The extra item is an overflow probe, never an expanded model batch.
         if type(limit) is not int or not 1 <= limit <= _BATCH_LIMIT + 1:
             raise ValueError("EMOTION_INPUT_INVALID")
         with self._db() as db:
             db.execute("BEGIN")
             stamp = _time(before) if before is not None else self._latest_time(db)
-            _, _, stale = self._state(db, stamp)
-            rows = db.execute("SELECT s.source_id,a.source_id FROM character_emotion_sources s LEFT JOIN character_emotion_appraisals a "
-                              "ON a.source_id=s.source_id WHERE s.occurred_at<=? ORDER BY s.occurred_at,s.rowid", (stamp,))
+            stale = self._state_view(db, stamp).stale
+            low = _time(after) if after is not None else ""
+            high = min(stamp, _time(until)) if until is not None else stamp
+            found = [(row[1], row[2], row[0]) for row in db.execute(
+                "SELECT s.source_id,s.occurred_at,s.rowid FROM character_emotion_sources s "
+                "WHERE s.occurred_at<=? AND s.occurred_at>? AND NOT EXISTS "
+                "(SELECT 1 FROM character_emotion_appraisals a WHERE a.source_id=s.source_id) "
+                "ORDER BY s.occurred_at,s.rowid LIMIT ?", (high, low, limit))]
             # Re-evaluation is durable: a stale completed row is pending again.
-            return [row[0] for row in rows if row[1] is None or row[0] in stale][:limit]
+            for chunk in _chunks(sorted(stale)):
+                found += [(row[1], row[2], row[0]) for row in db.execute(
+                    "SELECT source_id,occurred_at,rowid FROM character_emotion_sources WHERE occurred_at<=? "
+                    "AND occurred_at>? AND source_id IN (%s)" % ",".join("?" * len(chunk)), (high, low, *chunk))]
+            return [item[2] for item in sorted(found)][:limit]
 
     @staticmethod
     def _latest_time(db):
@@ -201,19 +529,10 @@ class CharacterEmotionStore:
 
     @staticmethod
     def _records(db, stamp):
-        records = []
-        for order, source_raw, raw, version, basis_raw in db.execute(
+        return [_parse_row(source_raw, order, raw, version, basis_raw) for order, source_raw, raw, version, basis_raw in db.execute(
                 "SELECT s.rowid,s.payload,a.payload,a.version,a.basis FROM character_emotion_appraisals a "
                 "JOIN character_emotion_sources s ON s.source_id=a.source_id WHERE s.occurred_at<=? "
-                "ORDER BY s.occurred_at,s.rowid", (stamp,)):
-            source, item, basis = _checked_source(source_raw, order=order), json.loads(raw), json.loads(basis_raw)
-            _validate_item(item, source)
-            dependencies = basis.get("dependencies", {})
-            if _hash({"source": source, "appraisal": item, "dependencies": dependencies}) != version:
-                raise ValueError("EMOTION_STORED_EVIDENCE_INVALID")
-            records.append({**item, "occurred_at": source["occurred_at"], "source_order": order,
-                            "version": version, "_dependencies": dependencies})
-        return records
+                "ORDER BY s.occurred_at,s.rowid", (stamp,))]
 
     @staticmethod
     def _key(item):
@@ -221,7 +540,7 @@ class CharacterEmotionStore:
 
     @staticmethod
     def _public(item):
-        return {key: value for key, value in item.items() if not key.startswith("_")}
+        return {key: value for key, value in item.items() if key[0] != "_"}
 
     @staticmethod
     def _public_concern(concern):
@@ -229,9 +548,10 @@ class CharacterEmotionStore:
                 "source_count": len(concern["source_ids"])}
 
     @classmethod
-    def _state(cls, db, stamp, *, before=None):
-        # ponytail: dependent transitions replay prefixes; checkpoint if measured
-        # histories make this quadratic worst case material. No model is called.
+    def _state_reference(cls, db, stamp, *, before=None):
+        """The whole-list replay: the definition the ledger must agree with."""
+        # ponytail: dependent transitions replay prefixes. Reads go through the
+        # ledger; this stays the definition, and the answer for data it cannot model.
         accepted, stale = [], set()
         for item in cls._records(db, stamp):
             if before is not None and cls._key(item) >= before:
@@ -255,6 +575,29 @@ class CharacterEmotionStore:
             accepted.append(item)
         live, concerns = cls._project(accepted)
         return live, concerns, stale
+
+    @classmethod
+    def _state_view(cls, db, stamp, *, before=None, context_at=None):
+        """Live records, concerns and stale sources up to stamp and before a key.
+
+        The context an appraisal at `context_at` reads is computed with the state,
+        because the shared ledger moves on as soon as the database does.
+        """
+        ledger = _ledger_for(db)
+        if ledger is not None:
+            try:
+                return ledger.view(db, stamp, before, context_at)
+            except _Unusable:
+                pass
+        live, concerns, stale = cls._state_reference(db, stamp, before=before)
+        ordered = OrderedDict(sorted(concerns.items(), key=lambda pair: (pair[1]["occurred_at"], pair[1]["source_order"])))
+        return _StateView(live, [datetime.fromisoformat(item["occurred_at"]) for item in live], ordered, stale,
+                          cls._context(live, concerns, context_at) if context_at is not None else None)
+
+    @classmethod
+    def _state(cls, db, stamp, *, before=None):
+        view = cls._state_view(db, stamp, before=before)
+        return view.live, dict(view.concerns), view.stale
 
     @staticmethod
     def _project(records):
@@ -318,7 +661,7 @@ class CharacterEmotionStore:
         with self._db() as db:
             db.execute("BEGIN")
             stamp = _time(now) if now is not None else self._latest_time(db)
-            live, concerns, stale = self._state(db, stamp)
+            state = self._state_view(db, stamp, context_at=stamp)
             sources = []
             for key in dict.fromkeys(source_ids):
                 row = db.execute("SELECT rowid,payload FROM character_emotion_sources WHERE source_id=?", (key,)).fetchone()
@@ -327,17 +670,17 @@ class CharacterEmotionStore:
                 source = _checked_source(row[1], key, row[0])
                 if source["occurred_at"] > stamp:
                     raise ValueError("EMOTION_SOURCE_UNAVAILABLE")
-                if key in stale or not db.execute("SELECT 1 FROM character_emotion_appraisals WHERE source_id=?", (key,)).fetchone():
+                if key in state.stale or not db.execute("SELECT 1 FROM character_emotion_appraisals WHERE source_id=?", (key,)).fetchone():
                     sources.append(source)
             sources.sort(key=self._key)
             if sum(len(source["text"]) for source in sources) > 200_000:
                 raise ValueError("EMOTION_INPUT_INVALID")
             contexts = {}
             for source in sources:
-                prior, previous, _ = self._state(db, source["occurred_at"], before=self._key(source))
-                contexts[source["source_id"]] = self._context(prior, previous, source["occurred_at"])
+                contexts[source["source_id"]] = self._state_view(
+                    db, source["occurred_at"], before=self._key(source), context_at=source["occurred_at"]).context
             value = dict(schema="olivia.character-emotion.input.v1", sources=sources,
-                         source_contexts=contexts, **self._context(live, concerns, stamp))
+                         source_contexts=contexts, **state.context)
             return {**value, "context_version": _hash(value)}
 
     def commit(self, assessment: dict, result: dict) -> bool:
@@ -375,43 +718,42 @@ class CharacterEmotionStore:
             # results. A concurrent earlier appraisal must not silently become
             # context the evaluator supposedly read.
             latest = max(stamp, self._latest_time(db))
-            _, _, initially_stale = self._state(db, latest)
+            initially_stale = self._state_view(db, latest).stale
             for key, source in sources.items():
                 old = db.execute("SELECT payload FROM character_emotion_appraisals WHERE source_id=?", (key,)).fetchone()
                 if old and key not in initially_stale:
                     continue
-                prior, previous, _ = self._state(db, source["occurred_at"], before=self._key(source))
-                if assessment["source_contexts"][key] != self._context(prior, previous, source["occurred_at"]):
+                prior = self._state_view(db, source["occurred_at"], before=self._key(source), context_at=source["occurred_at"])
+                if assessment["source_contexts"][key] != prior.context:
                     raise ValueError("EMOTION_CONTEXT_STALE")
             changed, batch_appraisals, batch_concerns = False, set(), set()
             for source in sorted(sources.values(), key=self._key):
                 key, item = source["source_id"], items[source["source_id"]]
                 latest = max(stamp, self._latest_time(db))
-                live, latest_concerns, stale = self._state(db, latest)
+                newest = self._state_view(db, latest)
                 old = db.execute("SELECT payload FROM character_emotion_appraisals WHERE source_id=?", (key,)).fetchone()
-                if old and key not in stale:
+                if old and key not in newest.stale:
                     if old[0] != _json(item):
                         raise ValueError("EMOTION_APPRAISAL_INVALID")
                     batch_appraisals.add(key)
                     batch_concerns.update(change['id'] for change in _concern_changes(item['concern']))
                     continue
-                historical, concerns, _ = self._state(db, source["occurred_at"], before=self._key(source))
-                active = {record["source_id"]: self._public(record) for record in historical}
-                latest_active = {record["source_id"]: self._public(record) for record in live}
+                historical = self._state_view(db, source["occurred_at"], before=self._key(source),
+                                              context_at=source["occurred_at"])
                 context = assessment["source_contexts"][key]
                 before_concerns = {record["id"]: record for record in context["concerns"]}
                 before_appraisals = {record["source_id"]: record for record in context["prior_appraisals"]}
                 # Bind every interpretation to its source-time context, including
                 # concern continuations. A later withdrawal cannot rewrite this
                 # earlier prefix; an unseen late earlier appraisal can.
-                dependencies = {"read_context": _hash(self._context(historical, concerns, source["occurred_at"]))}
+                dependencies = {"read_context": _hash(historical.context)}
                 changes, revision = _concern_changes(item["concern"]), item["revises"]
                 for change in changes:
-                    prior, current = before_concerns.get(change["id"]), concerns.get(change["id"])
+                    prior, current = before_concerns.get(change["id"]), historical.concerns.get(change["id"])
                     if change["id"] in batch_concerns:
                         prior = self._public_concern(current) if current else None
                     if change["action"] == "resolve":
-                        if prior != (self._public_concern(current) if current else None) or current != latest_concerns.get(change["id"]):
+                        if prior != (self._public_concern(current) if current else None) or current != newest.concerns.get(change["id"]):
                             raise ValueError("EMOTION_CONTEXT_STALE")
                         if not prior or prior["status"] != "open":
                             raise ValueError("EMOTION_APPRAISAL_INVALID")
@@ -420,21 +762,21 @@ class CharacterEmotionStore:
                         else:
                             dependencies["concern_version"] = current["version"]
                     elif (bool(prior) != bool(current)
-                          or not prior and change["id"] in latest_concerns):
+                          or not prior and change["id"] in newest.concerns):
                         # A newly received earlier item may extend a concern that already
                         # existed then, but cannot borrow one created in its future.
                         raise ValueError("EMOTION_CONTEXT_STALE")
                 if revision:
                     target = revision["source_id"]
-                    prior, current = before_appraisals.get(target), active.get(target)
+                    prior, current = before_appraisals.get(target), historical.public(target)
                     if target in batch_appraisals:
                         prior = current
                     if target in sources and self._key(sources[target]) >= self._key(source):
                         raise ValueError("EMOTION_CONTEXT_STALE")
                     if not prior:
-                        code = "EMOTION_CONTEXT_STALE" if target in latest_active else "EMOTION_APPRAISAL_INVALID"
+                        code = "EMOTION_CONTEXT_STALE" if newest.record(target) else "EMOTION_APPRAISAL_INVALID"
                         raise ValueError(code)
-                    if not current or prior != current or current != latest_active.get(target):
+                    if not current or prior != current or current != newest.public(target):
                         raise ValueError("EMOTION_CONTEXT_STALE")
                     dependencies["revised_version"] = current["version"]
                 record = (key, _json(item), _hash({"source": source, "appraisal": item, "dependencies": dependencies}),
@@ -454,28 +796,43 @@ class CharacterEmotionStore:
         stamp = _time(now)
         with self._db() as db:
             db.execute("BEGIN")
-            live, concerns, _ = self._state(db, stamp)
-            sources = {row[0]: json.loads(row[1]) for row in db.execute(
-                'SELECT source_id,payload FROM character_emotion_sources WHERE source_id IN (' +
-                ','.join('?' for _ in live) + ')', [item['source_id'] for item in live])} if live else {}
+            state = self._state_view(db, stamp)
+            recent = state.live[bisect_left(state.live_stamps, now - REACTION_WINDOW):]
+            reactions = [item for item in recent if item["reaction"] != "none"][-_VIEW_LIMIT:]
+            open_concerns = []
+            for concern in reversed(state.concerns.values()):
+                if concern["status"] == "open":
+                    open_concerns.append(concern)
+                    if len(open_concerns) == _VIEW_LIMIT:
+                        break
+            open_concerns.reverse()
+            # Only what the view shows needs its original wording.
+            wanted = sorted({item["source_id"] for item in reactions}
+                            | {key for concern in open_concerns for key in concern["source_ids"]})
+            sources = {}
+            for chunk in _chunks(wanted):
+                sources.update((row[0], json.loads(row[1])) for row in db.execute(
+                    "SELECT source_id,payload FROM character_emotion_sources WHERE source_id IN (%s)"
+                    % ",".join("?" * len(chunk)), chunk))
         from .emotion_wording import presentation_text
         # Retain original evidence and hashes. Repair only the public wording of
         # old appraisals which accidentally selected the internal JSON envelope.
-        for item in live:
-            source = sources.get(item['source_id'])
-            if source:
-                item['quote'] = presentation_text(source, item['quote'])
-        for concern in concerns.values():
-            for source_id in concern['source_ids']:
+        shown = []
+        for item in reactions:
+            source = sources.get(item["source_id"])
+            shown.append({**item, "quote": presentation_text(source, item["quote"]) if source else item["quote"]})
+        concerns = []
+        for concern in open_concerns:
+            summary = concern["summary"]
+            for source_id in concern["source_ids"]:
                 source = sources.get(source_id)
                 if source:
-                    concern['summary'] = presentation_text(source, concern['summary'], with_subject=True)
-        recent = [item for item in live if now - datetime.fromisoformat(item["occurred_at"]) <= REACTION_WINDOW]
+                    summary = presentation_text(source, summary, with_subject=True)
+            concerns.append(self._public_concern({**concern, "summary": summary}))
         return dict(reaction_subject="character", interpretation_only=True,
                     reactions=[{k: item[k] for k in ("source_id", "occurred_at", "quote", "reaction", "goal_or_need", "action_tendency")}
-                               for item in recent if item["reaction"] != "none"][-_VIEW_LIMIT:],
-                    concerns=[{k: self._public_concern(concern)[k] for k in ("id", "summary", "source_ids", "source_count", "occurred_at")}
-                              for concern in sorted(concerns.values(), key=lambda c: (c["occurred_at"], c["source_order"]))
-                              if concern["status"] == "open"][-_VIEW_LIMIT:],
+                               for item in shown],
+                    concerns=[{k: concern[k] for k in ("id", "summary", "source_ids", "source_count", "occurred_at")}
+                              for concern in concerns],
                     reported_affects=[dict(source_id=item["source_id"], occurred_at=item["occurred_at"], **item["reported_affect"])
                                       for item in recent if item["reported_affect"] is not None][-_VIEW_LIMIT:])

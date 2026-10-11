@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 import hashlib
 import json
 import sqlite3
+import time
 from types import SimpleNamespace
 
 from jsonschema import Draft202012Validator, ValidationError
@@ -17,6 +18,17 @@ from .daily_life import _time
 
 _BATCH_LIMIT = 8
 _CURRENT_LIMIT = 32
+# A reply appraises its own input together with what is still pending from the last
+# reaction window (life moments published since, a message whose appraisal failed):
+# appraising those afterwards would invalidate the fresh appraisal and cost a second
+# request. Older pending sources never wait on the reply; a background pass takes a
+# few at a time, at most once per interval.
+_REPLY_WINDOW = REACTION_WINDOW
+_BACKGROUND_LIMIT = 8
+_BACKGROUND_INTERVAL = 600.0
+# Each pass is a paid request. A backlog older than this is left unappraised rather
+# than billed for days to catch up on feelings about long-past messages.
+_BACKGROUND_HORIZON = timedelta(hours=48)
 _DIAGNOSTIC_CODES = frozenset({
     'JEV_INPUT_TOO_LARGE', 'JEV_EMOTION_EVIDENCE_TOO_LARGE',
     'JEV_EMOTION_EVIDENCE_INVALID', 'JEV_EMOTION_MISSING_EVIDENCE',
@@ -113,6 +125,9 @@ class CharacterEmotionRuntime:
         self.error_code = None
         self._inflight = {}
         self._current_affect = None
+        self._background = None
+        self._background_after = 0.0
+        self.background_error = None
 
     def _affect(self):
         if self._current_affect is None:
@@ -191,8 +206,7 @@ class CharacterEmotionRuntime:
         return view
 
     async def evaluate_received(self, receipts, *, now):
-        ids = []
-        unavailable = False
+        current, unavailable = [], False
         for record in receipts:
             if not isinstance(record, ReceivedOriginal):
                 continue
@@ -200,34 +214,72 @@ class CharacterEmotionRuntime:
                 if record.occurred_at > now:
                     continue
                 self.store.receive(record.source_id, record.user_message, occurred_at=record.occurred_at)
-                ids.append(record.source_id)
+                current.append(record.source_id)
             except Exception:
                 self.error_code = 'EMOTION_SOURCE_UNAVAILABLE'
                 unavailable = True
-        if ids:
+        current = list(dict.fromkeys(current))
+        if current:
             try:
                 # Life moments published since the last exchange are read now,
-                # in the same evaluation as this message, never in the background.
+                # in the same evaluation as this message.
                 self._discover_world(now)
                 # A failed earlier receipt remains causally relevant to the next
                 # reply. One overflow probe avoids silently keeping only an old
                 # prefix while dropping the clarification that follows it.
-                pending_ids = self.store.pending_source_ids(before=now, limit=_CURRENT_LIMIT + 1)
-                ids = list(dict.fromkeys(pending_ids + ids))
-                await self._evaluate(ids, now)
+                recent = self.store.pending_source_ids(before=now, limit=_CURRENT_LIMIT + 1, after=now - _REPLY_WINDOW)
+                await self._evaluate(list(dict.fromkeys(recent + current)), now, current=frozenset(current))
             except Exception:
                 self.error_code = 'EMOTION_SOURCE_UNAVAILABLE'
                 unavailable = True
+            self._start_background(now, skip=frozenset(current))
         await self._refresh_current_affect(now)
         view = self.view(now)
+        if current:
+            # Older pending sources do not make this reply's own input unprocessed.
+            view.pop('pending_current_input', None)
         try:
-            pending = any(self.store.assessment(ids[start:start + _CURRENT_LIMIT], now=now)['sources']
-                          for start in range(0, len(ids), _CURRENT_LIMIT))
+            pending = any(self.store.assessment(current[start:start + _CURRENT_LIMIT], now=now)['sources']
+                          for start in range(0, len(current), _CURRENT_LIMIT))
         except Exception:
             pending = True
         if unavailable or pending:
             view['pending_current_input'] = True
         return view
+
+    def _start_background(self, now, skip=frozenset()):
+        """Appraise older pending sources after the reply path, never inside it."""
+        if self._background is not None and not self._background.done():
+            return
+        if time.monotonic() < self._background_after:
+            return
+        self._background_after = time.monotonic() + _BACKGROUND_INTERVAL
+        self._background = asyncio.create_task(self._drain_background(now, skip))
+
+    async def _drain_background(self, now, skip):
+        """Its failures stay here: they never reach a reply or the stored error state."""
+        try:
+            # What this reply just attempted is not retried behind its back.
+            ids = [key for key in self.store.pending_source_ids(
+                before=now, limit=min(_CURRENT_LIMIT + 1, _BACKGROUND_LIMIT + len(skip)),
+                after=now - _BACKGROUND_HORIZON, until=now - _REPLY_WINDOW) if key not in skip]
+            ids = ids[:_BACKGROUND_LIMIT]
+            if not ids:
+                return
+            basis = self.store.assessment(ids, now=now)
+            if not basis['sources']:
+                return
+            # Source-relative context, not polling time, so one failed interpretation
+            # is not a fresh paid request on every pass.
+            key = hashlib.sha256(json.dumps({'sources': basis['sources'], 'contexts': basis['source_contexts']},
+                ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+            if self._refresh_retry(key, now):
+                return
+            self.background_error = None
+            await self._evaluate(ids, now, background=True)
+            self._refresh_retry(key, now, failed=self.background_error is not None)
+        except Exception as exc:
+            self.background_error = type(exc).__name__
 
     def _discover_world(self, now):
         # Limit automatic discovery to recent context. Registered pending
@@ -303,8 +355,13 @@ class CharacterEmotionRuntime:
     def _dialogue_at(self, when):
         """Bounded past speech, never current drafts or later deliveries."""
         candidates = []
+        # Local and UTC dates of one instant differ by at most a day.
+        first, last = (when - timedelta(days=2)).date().isoformat(), (when + timedelta(days=1)).date().isoformat()
         for row in self.dialogue_rows() if self.dialogue_rows else ():
             if row.get('read_only') or not row.get('letter_id'):
+                continue
+            marker = row.get('private_world_occurred_at')
+            if isinstance(marker, str) and marker[4:5] == marker[7:8] == '-' and not first <= marker[:10] <= last:
                 continue
             if (row.get('channel') or 'letter') not in {'letter', 'qq', 'wechat'}:
                 continue
@@ -341,7 +398,7 @@ class CharacterEmotionRuntime:
         except (AttributeError, OSError, sqlite3.Error, ValueError, TypeError):
             return {'as_of': _time(when), 'status': 'unavailable', 'items': []}
 
-    async def _evaluate(self, ids, now):
+    async def _evaluate(self, ids, now, *, current=None, background=False):
         ids = list(dict.fromkeys(ids))
         if len(ids) > _CURRENT_LIMIT:
             self.error_code = 'EMOTION_CURRENT_BATCH_TOO_LARGE'
@@ -364,7 +421,7 @@ class CharacterEmotionRuntime:
             completed = False
             processed = frozenset()
             try:
-                processed = frozenset(await self._evaluate_owned(selected, now) or ())
+                processed = frozenset(await self._evaluate_owned(selected, now, current, background) or ())
                 completed = True
             finally:
                 for key in selected:
@@ -373,11 +430,14 @@ class CharacterEmotionRuntime:
                 # take ownership, without cancelling or poisoning its future.
                 finished.set_result({'attempted': frozenset(selected), 'processed': processed} if completed else None)
 
-    async def _evaluate_owned(self, selected, now):
+    async def _evaluate_owned(self, selected, now, current=None, background=False):
         stage = 'prepare'
         try:
             from runtime.reply.jev_questions import configured_questions
             decision_port = configured_questions()
+            # A background pass appraises old sources only: it never reads or writes
+            # the present mood, which belongs to the reply that is current.
+            mood = decision_port is not None and not background
             correction = None
             retry_kind = 'stale'
             # Only local packet construction may try smaller source prefixes.
@@ -403,22 +463,26 @@ class CharacterEmotionRuntime:
                 if decision_port is not None:
                     from .jev_emotion import appraise, prepare, fits
                     from .current_affect import context, digest
-                    affect_factory = lambda: context(self.life_store.snapshot(now=now), self.store.view(now=now), self.persona())
-                    affect_packet = affect_factory()
-                    affect_digest = digest(affect_packet)
-                    affect_plan = self._affect().prepare(affect_packet, now=now)
-                    from .emotion_wording import published_wording
-                    for index, source in enumerate(sources):
-                        reason_key = f'batch_source_{index}'
-                        affect_plan['reasons'][reason_key] = published_wording(source)
-                        affect_plan['questions']['reason']['criteria'][reason_key] = {
-                            'batch_source': f's{index}', 'meaning': '本批来源的原文；用户表达不是外部世界事实'}
-                    packet['current_affect'] = {key: affect_plan[key] for key in ('state', 'questions')}
+                    if mood:
+                        affect_factory = lambda: context(self.life_store.snapshot(now=now), self.store.view(now=now), self.persona())
+                        affect_packet = affect_factory()
+                        affect_digest = digest(affect_packet)
+                        affect_plan = self._affect().prepare(affect_packet, now=now)
+                        from .emotion_wording import published_wording
+                        for index, source in enumerate(sources):
+                            reason_key = f'batch_source_{index}'
+                            affect_plan['reasons'][reason_key] = published_wording(source)
+                            affect_plan['questions']['reason']['criteria'][reason_key] = {
+                                'batch_source': f's{index}', 'meaning': '本批来源的原文；用户表达不是外部世界事实'}
+                        packet['current_affect'] = {key: affect_plan[key] for key in ('state', 'questions')}
                     prepared_plan = prepare(packet)
                     if not fits(prepared_plan):
                         if len(sources) <= 1:
                             raise ValueError('JEV_INPUT_TOO_LARGE')
-                        selected = [source['source_id'] for source in sources[:-1]]
+                        # What does not fit waits; the reply's own input is dropped last.
+                        spare = [source for source in sources if current is not None and source['source_id'] not in current]
+                        dropped = spare[0] if spare else sources[-1]
+                        selected = [source['source_id'] for source in sources if source is not dropped]
                         continue
                     async def complete(_messages, **_options):
                         nonlocal affect_choices, stage
@@ -446,7 +510,7 @@ class CharacterEmotionRuntime:
                     GatewayRequestScope.BACKGROUND_REASONING, default=self.timeout_seconds)
                 try:
                     stage = 'provider'
-                    if decision_port is not None and digest(affect_factory()) != affect_digest:
+                    if mood and digest(affect_factory()) != affect_digest:
                         raise ValueError('EMOTION_CONTEXT_STALE')
                     response = await asyncio.wait_for(complete(messages,
                         response_format=response_format, scope=GatewayRequestScope.BACKGROUND_REASONING,
@@ -469,7 +533,7 @@ class CharacterEmotionRuntime:
                     raise
                 try:
                     stage = 'context_validation'
-                    if decision_port is not None and digest(affect_factory()) != affect_digest:
+                    if mood and digest(affect_factory()) != affect_digest:
                         raise ValueError('EMOTION_CONTEXT_STALE')
                     if any(self._development_at(datetime.fromisoformat(source['occurred_at'])) !=
                            contexts[source['source_id']]['character_development'] for source in sources):
@@ -487,13 +551,17 @@ class CharacterEmotionRuntime:
                         correction, retry_kind = _appraisal_feedback(value, sources, contexts), 'validation'
                         continue
                     raise
-                self.error_code = None
-                if decision_port is not None and affect_choices is not None:
+                if not background:
+                    self.error_code = None
+                if mood and affect_choices is not None:
                     stage = 'current_affect'
                     await self._affect().refresh(decision_port, now=now, packet_factory=affect_factory,
                                                 prepared=affect_plan, choices=affect_choices,
                                                 expected_digest=digest(affect_factory()))
                 return [source['source_id'] for source in sources]
         except Exception as exc:
+            if background:
+                self.background_error = type(exc).__name__
+                return
             self._record_failure(exc, stage, now)
             self.error_code = 'EMOTION_EVALUATION_UNAVAILABLE'

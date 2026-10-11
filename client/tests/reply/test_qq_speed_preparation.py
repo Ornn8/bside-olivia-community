@@ -23,7 +23,8 @@ def test_large_world_trimming_does_not_reserialize_whole_catalog(monkeypatch):
             assert len(original(dict(state=state, questions=questions, purpose=purpose)).encode()) <= 30000
             assert 'r2999' in questions and 'r0' not in questions
             return {key: 'skip' for key in questions}
-    asyncio.run(world.select_world_context(Port(), packet, '合成问题'))
+    # The default candidate cap would hide the size trimming measured here, so lift it.
+    asyncio.run(world.select_world_context(Port(), packet, '合成问题', max_candidates=len(packet['records'])))
     assert len(serialized_catalogs) <= 3
 
 

@@ -35,6 +35,13 @@ RECENT_OBSERVATION_WINDOW = timedelta(hours=6)
 # Ended threads stay reply candidates this long; older ones remain in the
 # journal and in memory recall, but no longer grow every reply's world context.
 ENDED_THREAD_WINDOW = timedelta(days=7)
+# One world decision looks at this many of her own open projects (newest first,
+# dated commitments ahead of the rest) and keeps the earlier changes of the
+# newest few; older projects stay in the journal and in memory recall.
+WORLD_OPEN_PROJECTS = 16
+WORLD_HISTORY_PROJECTS = 6
+WORLD_FINISHED_PROJECTS = 6
+WORLD_FINISHED_WINDOW = timedelta(days=2)
 # Observation validity, not an inferred duration or proof of completion.
 _SHORT_ACTIVITY_MINUTES = {"meal": 60, "walk": 90, "errand": 90, "housework": 90}
 
@@ -150,6 +157,14 @@ def _recently_finished(item: dict, now: datetime) -> bool:
     if stamp.tzinfo is None:
         stamp = stamp.replace(tzinfo=timezone.utc)
     return now - stamp <= timedelta(days=_FINISHED_IDENTITY_DAYS)
+
+
+def _after(stamp: object, now: datetime) -> bool:
+    try:
+        value = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return (value if value.tzinfo else value.replace(tzinfo=timezone.utc)) > now
 
 
 def _time(value: datetime) -> str:
@@ -990,14 +1005,63 @@ class DailyLifeStore:
                 value["projects" if item["kind"] == "linli" else "shared"].append(disclosed)
         return value
 
+    def world_projects(self, now: datetime) -> tuple[list[dict], dict]:
+        """Her own projects for one world decision, however long the journal is.
+
+        Open projects are ranked dated commitments first, then newest update;
+        those the decision cannot pick (lapsed or transient) go last. Finished
+        ones appear only as recent identities. Earlier changes stay for the
+        newest few projects, which are the ones a decision actually advances.
+        """
+        finished = {"completed", "cancelled"}
+        with self._db() as db:
+            db.execute("BEGIN")
+            changes = {}
+            for item in self._project_changes_at(db, now, per_project=3):
+                changes.setdefault(item["id"], []).append(item)
+        latest = [history[-1] for history in changes.values() if history[-1]["kind"] == "linli"]
+        opened = [p for p in latest if p["status"] not in finished]
+        closed = [p for p in latest if p["status"] in finished]
+
+        def updated(project):
+            return str(project.get("updated_at") or "")
+
+        def rank(project):
+            pickable = not (project.get("deadline_expired") or project.get("time_scope") == "transient")
+            return (not pickable, not _after(project.get("deadline_at"), now))
+
+        opened.sort(key=lambda p: p["id"])
+        opened.sort(key=updated, reverse=True)
+        opened.sort(key=rank)
+        shown = opened[:WORLD_OPEN_PROJECTS]
+        recent = sorted((p for p in closed if _after(p.get("updated_at"), now - WORLD_FINISHED_WINDOW)),
+                        key=lambda p: (updated(p), p["id"]), reverse=True)[:WORLD_FINISHED_PROJECTS]
+        newest = {p["id"] for p in sorted(shown, key=updated, reverse=True)[:WORLD_HISTORY_PROJECTS]}
+        result = []
+        for item in shown:
+            disclosed = _project_evidence(item)
+            if item["id"] in newest:
+                disclosed["history"] = [_project_evidence(change) for change in changes[item["id"]]
+                                        if change["kind"] == "linli"]
+            result.append(disclosed)
+        for item in recent:
+            result.append({"id": item["id"], "title": item["title"], "status": item["status"],
+                           "evidence_kind": _project_evidence(item)["evidence_kind"]})
+        coverage = {"open_shown": len(shown), "open_omitted": len(opened) - len(shown),
+                    "finished_shown": len(recent), "finished_omitted": len(closed) - len(recent),
+                    "meaning": "仅列出最近更新的未结事项和近两天结束的事项身份；其余事项仍完整保留在账本里，"
+                               "未列出不表示不存在，已结束的不能当作新事项重开。"}
+        return result, coverage
+
     def reply_candidates(self, *, now: datetime) -> dict:
         """Authorized as-of facts, before any semantic ranking or reply budget."""
         with self._db() as db:
             db.execute('BEGIN')
-            snapshot = self._snapshot(db, now)
+            every = self._projects_at(db, now)
+            snapshot = self._snapshot(db, now, projects=list(every))
             from .character_development import view as development_view
             development = development_view(db, now)
-            projects = [_project_evidence(p) for p in _live_threads(self._projects_at(db, now), now)]
+            projects = [_project_evidence(p) for p in _live_threads(every, now)]
             observations = self._read_observations(db, now)
             last_reply = db.execute('SELECT MAX(replied_at) FROM life_rest_exchanges WHERE replied_at<=?', (_time(now),)).fetchone()[0]
             deliveries = [json.loads(r[0])['delivery'] for r in db.execute(
@@ -1302,11 +1366,11 @@ class DailyLifeStore:
             db.execute("BEGIN")
             return self._snapshot(db, now)
 
-    def _snapshot(self, db, now: datetime) -> dict:
+    def _snapshot(self, db, now: datetime, projects: list | None = None) -> dict:
         _time(now)
         current_row = db.execute("SELECT payload FROM life_moments WHERE kind='daily' AND occurred_at<=? ORDER BY occurred_at DESC, source_id DESC LIMIT 1", (_time(now),)).fetchone()
         rows = db.execute(f"SELECT source_id, occurred_at, kind, payload FROM life_moments WHERE {_VISIBLE} AND occurred_at<=? ORDER BY occurred_at DESC, source_id DESC LIMIT 12", (_time(now),)).fetchall()
-        projects = self._projects_at(db, now)
+        projects = self._projects_at(db, now) if projects is None else projects
         exchanges = [(datetime.fromisoformat(r[0]), datetime.fromisoformat(r[1])) for r in db.execute(
             "SELECT received_at, replied_at FROM life_rest_exchanges WHERE replied_at>=? AND received_at<=? ORDER BY received_at",
             (_time(now - timedelta(days=14)), _time(now)))]
