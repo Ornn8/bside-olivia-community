@@ -13,7 +13,7 @@ from runtime.personal_chat.service import PersonalChatService
 
 
 def environment(monkeypatch, tmp_path, *, action='send', medium='text', body=None, writer_hook=None):
-    from llm_gateway import GatewayResponse
+    from llm_gateway import GatewayRequestScope, GatewayResponse
     from runtime.personal_chat import backend
     from runtime.reply import companion_duties, companion_proactive
     from persona_assembly import UntrustedFragment
@@ -61,7 +61,8 @@ def environment(monkeypatch, tmp_path, *, action='send', medium='text', body=Non
         return response(value, decision)
     monkeypatch.setattr(port, '_request', request)
     monkeypatch.setattr(companion_proactive, 'configured_proactive', lambda: port)
-    async def complete(messages, **kwargs):
+    async def complete_scoped(messages, *, scope, **kwargs):
+        assert scope is GatewayRequestScope.PERSONAL_CHAT_JSON
         assert rows[0]['proactive_decision']['decision']['action'] == 'send'
         assert any(item and item[0].get('proactive_decision') for item in saves)
         writes.append(deepcopy(messages))
@@ -69,7 +70,7 @@ def environment(monkeypatch, tmp_path, *, action='send', medium='text', body=Non
         return GatewayResponse(text=body if body is not None else envelope(text='读到一句很喜欢的话，想跟你说说',
             delivery='voice' if medium == 'text' else 'text', sticker='linli-29', letter_invitation=True),
             request_id=kwargs.get('request_id') or 'proactive', provider='synthetic', model='synthetic')
-    provider.complete = complete
+    provider.complete_scoped = complete_scoped
     private = SimpleNamespace(relationship_stage='close', tension=0)
     server = SimpleNamespace(letters_adapter=adapter, reply_pipeline=pipeline,
         _llm_runtime_ready=lambda _: True, daily_life_runtime=SimpleNamespace(store=SimpleNamespace(
