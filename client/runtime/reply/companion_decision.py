@@ -126,7 +126,7 @@ def _validate_input(value):
 def _daily_video_experience(value):
     if value is None:
         return None
-    kinds = {'housework', 'walk', 'bath_finished', 'shopping', 'meal', 'wake_up'}
+    from runtime.personal_chat.daily_video import EVENT_KINDS
     if (not isinstance(value, dict) or set(value) != {'event_ids', 'event_kinds', 'max_seconds'}
             or type(value['max_seconds']) is not int or value['max_seconds'] != 15
             or not isinstance(value['event_ids'], list) or not 1 <= len(value['event_ids']) <= 6
@@ -134,7 +134,7 @@ def _daily_video_experience(value):
                        for item in value['event_ids'])
             or len(set(value['event_ids'])) != len(value['event_ids'])
             or not isinstance(value['event_kinds'], list) or not 1 <= len(value['event_kinds']) <= 6
-            or not all(isinstance(item, str) and item in kinds for item in value['event_kinds'])
+            or not all(isinstance(item, str) and item in EVENT_KINDS for item in value['event_kinds'])
             or len(set(value['event_kinds'])) != len(value['event_kinds'])):
         raise ValueError('invalid daily video experience')
     return json.loads(_json(value))

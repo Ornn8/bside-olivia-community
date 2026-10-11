@@ -787,7 +787,9 @@ class ReplyPipeline:
                 if degraded:
                     from runtime.personal_chat.decision import NEUTRAL_METADATA
                     required = {**NEUTRAL_METADATA, 'text_reason': None, 'sticker': None}
-                    if (not isinstance(envelope, dict) or any(envelope.get(k) != v for k, v in required.items())
+                    # decode accepts omitted neutral metadata. Check explicit
+                    # actions in the original envelope, including dropped ones.
+                    if (not isinstance(envelope, dict) or any(envelope.get(k, v) != v for k, v in required.items())
                             or envelope.get('speech') is not None or 'silence' in envelope
                             or envelope.get('letter_invitation') is True):
                         return PipelineResult(candidate.request_id, ReplyState.FAILED,

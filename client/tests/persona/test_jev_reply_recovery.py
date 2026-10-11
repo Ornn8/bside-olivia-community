@@ -19,6 +19,32 @@ from tests.http.test_personal_chat_decision import envelope
 NOW = datetime(2026, 10, 6, tzinfo=timezone.utc)
 
 
+@pytest.mark.parametrize('stage', ['decision', 'world'])
+@pytest.mark.parametrize('fields', [{}, {'delivery': 'text', 'skip': False}])
+def test_text_recovery_accepts_decoder_neutral_defaults(stage, fields, monkeypatch):
+    monkeypatch.delenv('OLIVIA_JEV_DECISION_URL', raising=False)
+    engine = Engine(json.dumps({'text': '收到你的消息了。', **fields}, ensure_ascii=False))
+    reviewer = Reviewer(ReviewVerdict.PASS)
+    async def world(text, *, now):
+        raise WorldSelectionError('JEV_TIMEOUT')
+    if stage == 'world':
+        engine.gateway = SimpleNamespace(adapter=SimpleNamespace(daily_life=object(),
+            prepare_daily_life_fragments=world))
+    pipeline = ReplyPipeline(engine, reviewer=reviewer, rewriter=UnavailableRewriter(),
+        discover_runtime_ports=False,
+        companion_decision_port=Port(error='JEV_TIMEOUT') if stage == 'decision' else None)
+    result = asyncio.run(invoke(pipeline, ReplyMode.FUTURE_IM, '你在吗？',
+        request=ReplyRequest(content='你在吗？', max_input_chars=40000) if stage == 'world' else None))
+    assert result.state is ReplyState.COMPLETED, (result.error_code, result.decision_rejection_reason)
+    assert result.companion_delivery == 'text'
+    assert result.degraded_stages == {stage: 'JEV_TIMEOUT'}
+    assert len(reviewer.seen) == 1
+    from runtime.personal_chat.decision import decode, NEUTRAL_METADATA
+    decision = decode(result.text, user='你在吗？', now=NOW.timestamp())
+    assert all(decision[key] == value for key, value in NEUTRAL_METADATA.items())
+    assert not decision.get('speech') and not decision.get('daily_video_request')
+
+
 async def invoke(pipeline, mode, raw, *, metadata=None, request=None):
     context = ReplyContext.create(mode, future_im_enabled=True, trusted_time=TrustedTime(NOW))
     token = CURRENT.set(dict(structured=True, channel='qq', raw_user_text=raw,

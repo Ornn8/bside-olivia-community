@@ -4910,7 +4910,16 @@ async def route(
             original = next((row for row in store.letters if row.get('letter_id') == body['letter_id']), None)
             if original is None:
                 return err(404, 'LETTER_NOT_FOUND', {})
-            if original.get('letter_status') != 'FAILED' or original.get('superseded_by') or original.get('origin') == 'proactive':
+            if original.get('origin') == 'proactive':
+                return err(409, 'LETTER_RESEND_NOT_ALLOWED', {})
+            if original.get('superseded_by'):
+                return err(410, 'LETTER_SUPERSEDED', {
+                    'status': 'SUPERSEDED', 'error_code': 'LETTER_SUPERSEDED',
+                    'replacement_letter_id': original['superseded_by'],
+                })
+            if original.get('letter_status') in {'PENDING', 'PROCESSING'}:
+                return err(409, 'LETTER_IN_PROGRESS', {'error_code': 'LETTER_IN_PROGRESS'})
+            if original.get('letter_status') != 'FAILED':
                 return err(409, 'LETTER_RESEND_NOT_ALLOWED', {})
             body = {**original.get('material', {}), 'content': original.get('content', '')}
         content = body.get("content")

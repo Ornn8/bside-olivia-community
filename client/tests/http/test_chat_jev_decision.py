@@ -64,6 +64,34 @@ def pipeline_result(*, timing='now', delivery='text', text=None, error=None, rec
         companion_timing=timing if record else None, companion_delivery=delivery if record else None)
 
 
+@pytest.mark.parametrize('api_style', ['chat_completions', 'responses'])
+def test_chat_requests_json_even_without_reasoning_support(monkeypatch, tmp_path, api_style):
+    from llm_gateway import GatewayConfig, GatewayRequestScope, OpenAICompatibleAdapter, supports_scoped_reasoning
+    config = GatewayConfig(provider='openai_compatible', base_url='https://provider.example/v1',
+                           model='claude-sonnet-5-5', api_style=api_style)
+    assert not supports_scoped_reasoning(config)
+    gateway = OpenAICompatibleAdapter(config)
+    server, row, *_ = server_fixture(monkeypatch, tmp_path, pipeline_result(record=False))
+    server.GatewayRequestScope = GatewayRequestScope
+    server.letters_adapter.config = config
+    calls = []
+    async def response(body, request_id, **kwargs):
+        calls.append(body)
+        requested = (body.get('text', {}).get('format') if api_style == 'responses'
+                     else body.get('response_format'))
+        assert requested == {'type': 'json_object'}
+        assert not {'enable_thinking', 'reasoning_effort'} & body.keys()
+        return {'choices': [{'finish_reason': 'stop', 'message': {'content': envelope(text='你好。')}}]}
+    monkeypatch.setattr(gateway, '_post_json', response)
+    async def run(request, context):
+        result = await gateway.complete_scoped(request.normalized_messages(),
+            request_id=request.request_id, scope=request.gateway_scope)
+        return pipeline_result(text=result.text, record=False)
+    server.reply_pipeline.run = run
+    assert asyncio.run(backend.generate(server, PersonalMessage('qq', 'bot', 'owner', '1', '你好'), row)) == '你好。'
+    assert len(calls) == 1
+
+
 def test_retry_freezes_only_turn_time_and_new_revision_resets_it(monkeypatch, tmp_path):
     from datetime import timedelta
     from runtime.personal_chat.service import _clear_draft
