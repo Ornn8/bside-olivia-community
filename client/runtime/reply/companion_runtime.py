@@ -7,6 +7,7 @@ from .reply_model_quality import _recent_dialogue
 
 
 TURN_CONTEXT = ContextVar('companion_decision_turn', default=None)
+_CONTEXT_RECOVERY = ContextVar('companion_context_recovery', default=None)
 
 
 class CompanionRuntimeError(RuntimeError):
@@ -72,8 +73,41 @@ def _decision_context(messages, required_sources=(), recent_turns=1):
     from runtime.personal_chat.context import READ_WINDOW
     recent = _recent_dialogue(messages)
     window = READ_WINDOW.get() or ()
+    if any(not isinstance(source, str) or not source for source in required_sources):
+        raise CompanionRuntimeError('JEV_CONTEXT_UNAVAILABLE', detail='required_source_invalid')
     required = set(required_sources)
     covered = set()
+
+    def original_for(source):
+        base = source.rsplit(':', 1)[0] if source.endswith((':user', ':linli')) else source
+        return next(((index, row) for index, row in enumerate(window)
+                     if base in (f"reply:{row.get('letter_id')}",
+                                 f"reply:{row.get('letter_id')}:{row.get('reply_revision', 1)}")), None)
+
+    def matches(row, source):
+        base = source.rsplit(':', 1)[0] if source.endswith((':user', ':linli')) else source
+        return row['event_id'] == source or row['source'] == base or row['source'].startswith(base + ':')
+
+    def satisfies(row, source):
+        role = 'assistant' if source.endswith(':linli') else 'user' if source.endswith(':user') else None
+        return matches(row, source) and (role is None or row['role'] == role)
+
+    def unavailable(source):
+        if not isinstance(source, str) or not source:
+            return 'required_source_invalid'
+        original = original_for(source)
+        if original is not None:
+            row = original[1]
+            assistant = source.endswith(':linli')
+            text = row.get('reply_text' if assistant else 'content')
+            if not isinstance(text, str) or not text.strip() or assistant and row.get('_received_only'):
+                return 'required_original_missing'
+            return None
+        evidence = [row for row in recent if satisfies(row, source)]
+        if any(not row.get('truncated') for row in evidence):
+            return None
+        return 'required_excerpt_incomplete' if evidence else 'required_source_missing'
+
     for index in range(len(window) - 1, -1, -1):
         record = window[index].get('companion_decision')
         if not isinstance(record, dict):
@@ -83,18 +117,25 @@ def _decision_context(messages, required_sources=(), recent_turns=1):
         sources = record.get('source_id_map')
         if not isinstance(requirements, list) or not isinstance(sources, dict):
             continue
-        for requirement in requirements:
+        for requirement_index, requirement in enumerate(requirements):
             if requirement.get('fulfillment') == 'pending':
-                required.update(sources[ref] for ref in requirement.get('evidence_turn_ids', ()) if ref in sources)
+                refs = requirement.get('evidence_turn_ids', ())
+                candidates = [sources.get(ref) for ref in refs]
+                reason = next((reason for source in candidates if (reason := unavailable(source))), None)
+                if reason is None and not candidates:
+                    reason = 'required_source_invalid'
+                if reason:
+                    recovery = _CONTEXT_RECOVERY.get()
+                    if recovery is not None:
+                        recovery.append(dict(requirement_index=requirement_index,
+                                             status='abandoned', reason=reason))
+                else:
+                    required.update(candidates)
         covered = {str(row.get('letter_id')) for row in window[:index + 1]}
         break
 
     if any(not isinstance(source, str) or not source for source in required):
         raise CompanionRuntimeError('JEV_CONTEXT_UNAVAILABLE', detail='required_source_invalid')
-
-    def matches(row, source):
-        base = source.rsplit(':', 1)[0] if source.endswith((':user', ':linli')) else source
-        return row['event_id'] == source or row['source'] == base or row['source'].startswith(base + ':')
 
     latest = {row['source'] for row in recent[-recent_turns:]}
     kept = [row for row in recent if row['source'] in latest
@@ -114,15 +155,14 @@ def _decision_context(messages, required_sources=(), recent_turns=1):
             row.update(text=text, truncated=False)
     # An excerpt whose original is gone is left out rather than failing the turn:
     # a failed turn stores no decision, so the next turn would see even more old
-    # uncovered rows and fail again. Evidence for pending requirements stays strict.
+    # uncovered rows and fail again. Only recoverable requirements remain protected.
     kept = [row for row in kept if not row.get('truncated') or any(matches(row, source) for source in required)]
     # Pending originals may predate the writer's bounded read window.
     restored = []
     for source in sorted(required):
-        if any(matches(row, source) for row in kept):
+        if any(satisfies(row, source) for row in kept):
             continue
-        original = next(((index, row) for index, row in enumerate(window)
-                         if source.startswith('reply:' + str(row.get('letter_id')) + ':')), None)
+        original = original_for(source)
         if original is None:
             raise CompanionRuntimeError('JEV_CONTEXT_UNAVAILABLE', detail='required_source_missing')
         index, original = original
@@ -139,7 +179,7 @@ def _decision_context(messages, required_sources=(), recent_turns=1):
 
 async def prepare_decision(port, messages, user_text, *, source_id, input_revision, as_of, kinds, cached=None,
                            required_sources=(), speech_enabled=False, bedtime_offer=False,
-                           daily_video_experience=None):
+                           daily_video_experience=None, record_context_recovery=None):
     from .companion_decision import FrozenCompanionTurn, FrozenCompanionDecision, MAX_MESSAGE_CHARS
     metadata = TURN_CONTEXT.get() or {}
     reuse = isinstance(cached, dict) and cached.get('input_revision') == input_revision
@@ -156,8 +196,15 @@ async def prepare_decision(port, messages, user_text, *, source_id, input_revisi
     if reuse:
         bedtime_offer = 'speech_offer' in cached
     sources = (*required_sources, *metadata.get('companion_context_sources', ()))
-    recent = (_decision_context(messages, sources, 4) if bedtime_offer
-              else _decision_context(messages, sources))
+    recovery = []
+    recovery_token = _CONTEXT_RECOVERY.set(recovery)
+    try:
+        recent = (_decision_context(messages, sources, 4) if bedtime_offer
+                  else _decision_context(messages, sources))
+    finally:
+        _CONTEXT_RECOVERY.reset(recovery_token)
+    if recovery and callable(record_context_recovery):
+        await record_context_recovery(recovery)
     if not isinstance(user_text, str) or not user_text.strip():
         raise CompanionRuntimeError('JEV_CONTEXT_UNAVAILABLE', detail='current_input_invalid')
     if any(row.get('truncated') for row in recent):

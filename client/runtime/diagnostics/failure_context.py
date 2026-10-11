@@ -81,6 +81,14 @@ DETAILS |= {
 DETAILS |= {'required_source_invalid', 'required_source_missing', 'required_original_missing',
             'required_excerpt_incomplete', 'current_input_invalid', 'decision_input_invalid',
             'decision_message_budget', 'decision_wire_budget', 'stored_decision_invalid', 'final_rules_budget'}
+CONTEXT_ERROR_CODES = {
+    'required_source_invalid': 'JEV_CONTEXT_SOURCE_INVALID',
+    'required_source_missing': 'JEV_CONTEXT_SOURCE_MISSING',
+    'required_original_missing': 'JEV_CONTEXT_ORIGINAL_MISSING',
+    'required_excerpt_incomplete': 'JEV_CONTEXT_EXCERPT_INCOMPLETE',
+    'current_input_invalid': 'JEV_CONTEXT_CURRENT_INPUT_INVALID',
+    'decision_input_invalid': 'JEV_CONTEXT_DECISION_INPUT_INVALID',
+}
 _CONTEXT_SIZES = ('input_chars', 'max_input_chars', 'input_bytes', 'max_input_bytes',
                   'message_count', 'largest_message_chars', 'max_message_chars',
                   'fixed_chars', 'optional_chars', 'current_input_chars', 'contract_chars',

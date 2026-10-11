@@ -525,7 +525,8 @@ class ReplyPipeline:
                     bedtime_offer=(context.mode is ReplyMode.FUTURE_IM and (chat_metadata or {}).get('channel') == 'qq'
                                    and (chat_metadata or {}).get('bedtime_offer_enabled') is True
                                    and not (chat_metadata or {}).get('proactive')),
-                    daily_video_experience=daily_experience))
+                    daily_video_experience=daily_experience,
+                    record_context_recovery=metadata.get('record_context_recovery')))
                 companion_decision = decision.record()
                 save_decision = metadata.get('save_companion_decision')
                 if callable(save_decision):

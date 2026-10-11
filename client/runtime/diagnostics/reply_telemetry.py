@@ -205,12 +205,19 @@ class Collector:
                               'DELIVERY_UNCONFIRMED': 'unknown'}.get(state, 'unknown')
                     if state == 'SENDING' and row.get('error_code'): status = 'unknown'
                     fields = dict(source=source, channel=channel, attempt=attempt, model=row.get('diagnostic_model', 'unknown'))
+                    error = row.get('error_code')
+                    context = row.get('generation_failure_context')
+                    if error == 'JEV_CONTEXT_UNAVAILABLE' and isinstance(context, dict):
+                        from .failure_context import CONTEXT_ERROR_CODES
+                        detail = context.get('failure_detail')
+                        if context.get('failure_stage') == 'decision_context' and isinstance(detail, str):
+                            error = CONTEXT_ERROR_CODES.get(detail, error)
                     current = dict(state=state, attempt=attempt, status=status)
                     if not previous:
                         self._insert(db, self._event('received', 'ok', **fields))
                     if any(previous.get(k) != v for k, v in current.items()):
                         current['changed_at'] = self.clock()
-                        self._insert(db, self._event('reply', status, error=row.get('error_code'), **fields))
+                        self._insert(db, self._event('reply', status, error=error, **fields))
                         if state in {'SENDING', 'DELIVERED', 'DELIVERY_UNCONFIRMED'}:
                             elapsed = int((self.clock()-previous['changed_at'])*1000) if previous.get('state')=='SENDING' and 'changed_at' in previous else None
                             self._insert(db, self._event('send', status, duration_ms=elapsed, error=row.get('error_code'), **fields))
