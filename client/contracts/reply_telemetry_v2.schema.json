@@ -17,6 +17,8 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
+        "if": {"required": ["daily_video_result"]},
+        "then": {"properties": {"stage": {"const": "media"}}},
         "required": [
           "event_id",
           "trace_id",

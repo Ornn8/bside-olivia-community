@@ -322,9 +322,10 @@ class Collector:
             events = [dict(json.loads(row[1]), seq=row[0]) for row in
                     db.execute('SELECT seq,payload FROM queue ORDER BY seq LIMIT 100')] if self.enabled else []
             for event in events:
-                if schema not in (2, 3):
+                if schema not in (2, 3) or event.get('stage') != 'media':
                     event.pop('daily_video_result', None)
-                elif 'daily_video_result' in event and event['daily_video_result'] not in DAILY_VIDEO_RESULTS:
+                elif 'daily_video_result' in event and (not isinstance(event['daily_video_result'], str)
+                        or event['daily_video_result'] not in DAILY_VIDEO_RESULTS):
                     event['daily_video_result'] = 'other'
                 if schema != 3 or not self.policy_version_supported:
                     event.pop('policy_version', None)

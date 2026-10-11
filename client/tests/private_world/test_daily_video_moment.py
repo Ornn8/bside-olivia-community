@@ -160,3 +160,150 @@ def test_parallel_candidate_reads_and_reservations_use_one_identity(tmp_path):
         assert offers[0] == offers[1]
         claims = list(pool.map(lambda request: store.reserve_daily_video_share(request, now=NOW), offers))
     assert sorted(claims) == [False, True]
+
+
+@pytest.mark.real_user_idle
+def test_failed_attempt_releases_limit_but_cools_down_from_failure(tmp_path):
+    start = NOW.replace(hour=11)
+    store = moment_store(tmp_path, start)
+    failed = request_for(store, start)
+    store.reserve_daily_video_share(failed, now=start)
+    failed_at = start+timedelta(minutes=5)
+    store.fail_daily_video_share(failed['event_id'], now=failed_at)
+    store.fail_daily_video_share(failed['event_id'], now=failed_at+timedelta(minutes=1))
+    assert worker_for(store).candidates(now=failed_at+timedelta(minutes=29, seconds=59)) == []
+    ids = {failed['event_id']}
+    for index in range(4):
+        now = failed_at+timedelta(minutes=30*(index+1))
+        request = request_for(store, now)
+        assert request['event_id'] not in ids
+        ids.add(request['event_id'])
+        store.reserve_daily_video_delivery(request, task_id=f'queued-{index}', now=now)
+    assert worker_for(store).candidates(now=failed_at+timedelta(minutes=150)) == []
+    with pytest.raises(ValueError, match='DAILY_VIDEO_SOURCE_UNAVAILABLE'):
+        store.reserve_daily_video_share(failed, now=failed_at+timedelta(minutes=150))
+
+
+@pytest.mark.real_user_idle
+def test_four_failed_attempts_do_not_exhaust_daily_limit(tmp_path):
+    start = NOW.replace(hour=11)
+    store = moment_store(tmp_path, start)
+    ids = []
+    for index in range(4):
+        now = start+timedelta(minutes=30*index)
+        request = request_for(store, now)
+        ids.append(request['event_id'])
+        store.reserve_daily_video_share(request, now=now)
+        store.fail_daily_video_share(request['event_id'], now=now)
+    assert request_for(store, start+timedelta(hours=2))['event_id'] not in ids
+
+
+@pytest.mark.parametrize('failure', ['author', 'cancel', 'source', 'scene', 'consent', 'queue'])
+def test_worker_releases_only_unqueued_attempt_after_failure(tmp_path, failure, monkeypatch):
+    import asyncio
+    from tests.http.test_daily_video import API, service, worker
+    store = moment_store(tmp_path)
+    request = request_for(store, NOW)
+    api = API()
+    now = [NOW]
+
+    async def scenario():
+        job = worker(tmp_path, store, service(), api)
+        job.clock = lambda: now[0]
+        job.scenes = worker_for(store).scenes
+        job.capabilities_at = time.monotonic()
+        job.moments = True
+
+        async def author(candidate):
+            now[0] += timedelta(minutes=5)
+            if failure == 'author':
+                raise ValueError('DAILY_VIDEO_AUTHOR_UNAVAILABLE')
+            if failure == 'cancel':
+                raise asyncio.CancelledError()
+            if failure == 'source':
+                return {**request, 'event_at': (NOW-timedelta(minutes=1)).isoformat()}
+            if failure == 'scene':
+                job.scenes = []
+            if failure == 'consent':
+                job.consent = lambda: False
+            if failure == 'queue':
+                monkeypatch.setattr(job, '_save', lambda row: (_ for _ in ()).throw(OSError('synthetic write failure')))
+            return request
+
+        with pytest.raises((ValueError, OSError, asyncio.CancelledError)):
+            await job.share(request, author)
+        assert job.get(request['event_id']) is None
+        assert api.calls == []
+        assert worker_for(store).candidates(now=NOW+timedelta(minutes=34, seconds=59)) == []
+        next_request = request_for(store, NOW+timedelta(minutes=35))
+        assert next_request['event_id'] != request['event_id']
+        with store._db() as db:
+            assert store._moment_budget(db, 'synthetic:reading', NOW+timedelta(minutes=35)) == (0, True)
+        await job.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('queued', [False, True])
+def test_restart_releases_interrupted_author_but_keeps_queued_budget(tmp_path, queued):
+    import asyncio
+    from tests.http.test_daily_video import API, service, worker
+    store = moment_store(tmp_path)
+    request = request_for(store, NOW)
+    store.reserve_daily_video_share(request, now=NOW)
+    job = worker(tmp_path, store, service(), API())
+    job._save_preparation(dict(event_id=request['event_id'], candidate=request, status='AUTHORING'))
+    if queued:
+        job._save(dict(event_id=request['event_id'], input=request, binding=job.binding,
+                      status='PENDING', delivery_status='PENDING', world_status='PENDING'))
+    asyncio.run(job.close())
+    from runtime.personal_chat.daily_video import DailyVideoWorker
+    restored = DailyVideoWorker(tmp_path/'jobs', service(), ('100', '200'), API, store, clock=lambda: NOW)
+    with store._db() as db:
+        assert store._moment_budget(db, 'synthetic:reading', NOW) == (int(queued), False)
+    asyncio.run(restored.close())
+
+
+def test_scheduling_failure_after_durable_queue_does_not_release_budget(tmp_path, monkeypatch):
+    import asyncio
+    from tests.http.test_daily_video import API, service, worker
+    store = moment_store(tmp_path)
+    request = request_for(store, NOW)
+    job = worker(tmp_path, store, service(), API())
+    job.clock = lambda: NOW
+    job.scenes, job.moments, job.capabilities_at = worker_for(store).scenes, True, time.monotonic()
+    monkeypatch.setattr(job, '_schedule', lambda row: (_ for _ in ()).throw(OSError('synthetic scheduling failure')))
+
+    async def author(candidate):
+        return request
+
+    with pytest.raises(OSError):
+        asyncio.run(job.share(request, author))
+    assert job.get(request['event_id']) is not None
+    with store._db() as db:
+        assert store._moment_budget(db, 'synthetic:reading', NOW) == (1, False)
+    asyncio.run(job.close())
+
+
+def test_delivery_reservation_cannot_be_released_as_an_unqueued_failure(tmp_path):
+    store = moment_store(tmp_path)
+    request = request_for(store, NOW)
+    store.reserve_daily_video_delivery(request, task_id='accepted-task', now=NOW)
+    store.fail_daily_video_share(request['event_id'], now=NOW+timedelta(minutes=5))
+    with store._db() as db:
+        assert store._moment_budget(db, 'synthetic:reading', NOW+timedelta(minutes=30)) == (1, True)
+
+
+def test_direct_enqueue_write_failure_releases_its_reservation(tmp_path, monkeypatch):
+    import asyncio
+    from tests.http.test_daily_video import API, service, worker
+    store = moment_store(tmp_path)
+    request = request_for(store, NOW)
+    job = worker(tmp_path, store, service(), API())
+    job.clock = lambda: NOW
+    monkeypatch.setattr(job, '_save', lambda row: (_ for _ in ()).throw(OSError('synthetic write failure')))
+    with pytest.raises(OSError):
+        asyncio.run(job.enqueue(request))
+    with store._db() as db:
+        assert store._moment_budget(db, 'synthetic:reading', NOW) == (0, False)
+    asyncio.run(job.close())

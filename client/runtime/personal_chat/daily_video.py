@@ -175,6 +175,7 @@ class DailyVideoWorker:
         self.last_input = time.monotonic()
         self.scenes, self.capabilities_at = [], 0
         self.moments = False
+        interrupted = []
         with sqlite3.connect(self.database) as db:
             db.execute('CREATE TABLE IF NOT EXISTS daily_video_jobs (event_id TEXT PRIMARY KEY, payload TEXT NOT NULL)')
             db.execute('CREATE TABLE IF NOT EXISTS daily_video_preparations (event_id TEXT PRIMARY KEY, payload TEXT NOT NULL)')
@@ -183,12 +184,20 @@ class DailyVideoWorker:
                 if row.get('status') == 'AUTHORING':
                     row['status'] = 'UNKNOWN'  # The paid writer may have completed before a crash.
                     db.execute('UPDATE daily_video_preparations SET payload=? WHERE event_id=?', (_json(row), event_id))
+                if row.get('status') == 'UNKNOWN' and row.get('candidate', {}).get('event_kind') == 'moment':
+                    if not db.execute('SELECT 1 FROM daily_video_jobs WHERE event_id=?', (event_id,)).fetchone():
+                        interrupted.append(event_id)
             # A process can die after platform acceptance but before saving ACK.
             for event_id, raw in db.execute('SELECT event_id,payload FROM daily_video_jobs').fetchall():
                 row = json.loads(raw)
                 if row.get('delivery_status') == 'SENDING':
                     row['delivery_status'] = 'UNKNOWN'
                     db.execute('UPDATE daily_video_jobs SET payload=? WHERE event_id=?', (_json(row), event_id))
+        if interrupted:
+            store = self.event_store() if callable(self.event_store) else self.event_store
+            if store is not None:
+                for event_id in interrupted:
+                    store.fail_daily_video_share(event_id, now=self.clock())
 
     def _consented(self):
         check = getattr(self, 'consent', None)
@@ -243,10 +252,15 @@ class DailyVideoWorker:
                 store = self.event_store() if callable(self.event_store) else self.event_store
                 if store is None:
                     raise ValueError('DAILY_VIDEO_SOURCE_UNAVAILABLE')
-                store.reserve_daily_video_share(value, now=self.clock())
+                claimed = store.reserve_daily_video_share(value, now=self.clock())
             row = dict(event_id=value['event_id'], input=value, binding=self.binding,
                        status='PENDING', delivery_status='PENDING', world_status='PENDING')
-            self._save(row)  # Durable before any network request is scheduled.
+            try:
+                self._save(row)  # Durable before any network request is scheduled.
+            except BaseException:
+                if value['event_kind'] == 'moment' and claimed and self.get(value['event_id']) is None:
+                    store.fail_daily_video_share(value['event_id'], now=self.clock())
+                raise
         self._schedule(row)
         return self.get(value['event_id'])
 
@@ -347,20 +361,22 @@ class DailyVideoWorker:
                 raise ValueError('DAILY_VIDEO_AUTHORING_UNKNOWN')
         try:
             value = validate_input(await author(dict(candidate)))
+            if any(value[key] != candidate[key] for key in _FIELDS - {'spoken_text'}):
+                raise ValueError('DAILY_VIDEO_SOURCE_UNAVAILABLE')
+            if store is None or not store.daily_video_can_prepare(value, now=self.clock()):
+                raise ValueError('DAILY_VIDEO_SOURCE_UNAVAILABLE')
+            if not self.scenes or candidate['event_kind'] == 'moment' and not self.moments:
+                raise ValueError('DAILY_VIDEO_CAPABILITY_UNAVAILABLE')
+            if not any(scene['scene_id'] == candidate['scene_id'] and scene_matches(scene, candidate)
+                       for scene in self.scenes):
+                raise ValueError('DAILY_VIDEO_SCENE_UNAVAILABLE')
+            return await self.enqueue(value)
         except BaseException:
+            if candidate['event_kind'] == 'moment' and self.get(candidate['event_id']) is None:
+                store.fail_daily_video_share(candidate['event_id'], now=self.clock())
             preparation['status'] = 'UNKNOWN'
             self._save_preparation(preparation)
             raise
-        if any(value[key] != candidate[key] for key in _FIELDS - {'spoken_text'}):
-            raise ValueError('DAILY_VIDEO_SOURCE_UNAVAILABLE')
-        if store is None or not store.daily_video_can_prepare(value, now=self.clock()):
-            raise ValueError('DAILY_VIDEO_SOURCE_UNAVAILABLE')
-        if not self.scenes or candidate['event_kind'] == 'moment' and not self.moments:
-            raise ValueError('DAILY_VIDEO_CAPABILITY_UNAVAILABLE')
-        if not any(scene['scene_id'] == candidate['scene_id'] and scene_matches(scene, candidate)
-                   for scene in self.scenes):
-            raise ValueError('DAILY_VIDEO_SCENE_UNAVAILABLE')
-        return await self.enqueue(value)
 
     async def intake_preparations(self):
         """Author real bath starts independently of new messages or the chat lock."""

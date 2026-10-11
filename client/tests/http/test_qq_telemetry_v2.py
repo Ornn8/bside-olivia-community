@@ -134,3 +134,31 @@ def test_daily_video_results_are_content_free_whitelisted_and_deduplicated(colle
     c.observe([row])
     assert [e['daily_video_result'] for e in c.batch(2) if 'daily_video_result' in e] == ['source_unavailable', 'photo_fallback']
     assert 'private' not in json.dumps(c.batch(2))
+
+
+@pytest.mark.parametrize('schema', [1, 2, 3])
+def test_daily_video_wire_field_is_media_only_even_for_persisted_events(collector_factory, schema):
+    expected = {'queued', 'source_unavailable', 'scene_unavailable', 'consent_required',
+                'capability_unavailable', 'photo_fallback', 'other'}
+    c = collector_factory()
+    c.account('synthetic')
+    for stage in ('reply', 'media'):
+        for result in (*sorted(expected), 'private content', {'private': 'content'}, [], None):
+            event = c._event(stage, 'ok')
+            event['daily_video_result'] = result
+            with c._db() as db:
+                c._insert(db, event)
+        c.emit(stage, 'ok', daily_video_result='queued')
+    batch = c.batch(schema)
+    assert all('daily_video_result' not in e for e in batch if schema == 1 or e['stage'] != 'media')
+    if schema in (2, 3):
+        results = [e['daily_video_result'] for e in batch if e['stage'] == 'media']
+        assert set(results) == expected
+        assert results[-5:] == ['other'] * 4 + ['queued']
+    assert 'private' not in json.dumps(batch)
+    if schema == 2:
+        contract = json.loads((Path(__file__).parents[2] / 'contracts/reply_telemetry_v2.schema.json').read_text())
+        jsonschema.validate({'schema': 2, 'events': batch}, contract)
+        invalid = {**next(e for e in batch if e['stage'] == 'reply'), 'daily_video_result': 'queued'}
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate({'schema': 2, 'events': [invalid]}, contract)

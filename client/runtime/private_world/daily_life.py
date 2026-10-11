@@ -376,6 +376,8 @@ class DailyLifeStore:
                     share_day TEXT NOT NULL, share_index INTEGER NOT NULL,
                     event_at TEXT NOT NULL, reserved_at TEXT,
                     UNIQUE(source_id, share_day, share_index));
+                CREATE TABLE IF NOT EXISTS life_video_failed_shares (
+                    event_id TEXT PRIMARY KEY, failed_at TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS life_baths (
                     source_id TEXT PRIMARY KEY, started_at TEXT NOT NULL,
                     completed_source_id TEXT UNIQUE, completed_at TEXT);
@@ -848,15 +850,27 @@ class DailyLifeStore:
 
     @staticmethod
     def _moment_budget(db, source_id, now):
-        stamps = [datetime.fromisoformat(row[0]) for row in db.execute(
-            'SELECT reserved_at FROM life_video_moments WHERE source_id=? AND reserved_at IS NOT NULL',
-            (source_id,))]
+        attempts = db.execute(
+            'SELECT m.reserved_at,f.failed_at FROM life_video_moments m '
+            'LEFT JOIN life_video_failed_shares f ON f.event_id=m.event_id '
+            'WHERE m.source_id=? AND m.reserved_at IS NOT NULL', (source_id,)).fetchall()
+        stamps = [datetime.fromisoformat(row[0]) for row in attempts if row[1] is None]
+        failures = [datetime.fromisoformat(row[1]) for row in attempts if row[1] is not None]
         legacy = db.execute('SELECT verified_at FROM life_media_reservations WHERE source_id=?', (source_id,)).fetchone()
         if legacy:
             stamps.append(datetime.fromisoformat(legacy[0]))
         today = now.astimezone(LOCAL).date()
         count = sum(stamp.astimezone(LOCAL).date() == today for stamp in stamps)
-        return count, not stamps or now - max(stamps) >= timedelta(minutes=30)
+        cooldowns = stamps + failures
+        return count, not cooldowns or now - max(cooldowns) >= timedelta(minutes=30)
+
+    def fail_daily_video_share(self, event_id, *, now):
+        """Release an unqueued attempt; retain its first failure time for cooldown."""
+        with self._db() as db:
+            db.execute('INSERT OR IGNORE INTO life_video_failed_shares '
+                       'SELECT event_id,? FROM life_video_moments WHERE event_id=? AND reserved_at IS NOT NULL '
+                       'AND NOT EXISTS (SELECT 1 FROM life_media_reservations WHERE source_id=event_id)',
+                       (_time(now), event_id))
 
     def reserve_daily_video_share(self, request, *, now):
         """Claim a share before paid work; concurrent callers cannot bypass its budget."""
@@ -865,6 +879,8 @@ class DailyLifeStore:
         with self._db() as db:
             db.execute('BEGIN IMMEDIATE')
             if not self._daily_video_event_matches(db, request, now):
+                raise ValueError('DAILY_VIDEO_SOURCE_UNAVAILABLE')
+            if db.execute('SELECT 1 FROM life_video_failed_shares WHERE event_id=?', (request['event_id'],)).fetchone():
                 raise ValueError('DAILY_VIDEO_SOURCE_UNAVAILABLE')
             share = db.execute('SELECT * FROM life_video_moments WHERE event_id=?', (request['event_id'],)).fetchone()
             if share is None or share['reserved_at']:
@@ -894,13 +910,14 @@ class DailyLifeStore:
         if count >= 4 or not ready:
             return None
         day = start.date().isoformat()
-        share = db.execute('SELECT event_id,event_at FROM life_video_moments '
-                           'WHERE source_id=? AND share_day=? AND share_index=?', (source_id, day, count+1)).fetchone()
-        if share is None:
-            event_id = 'moment:' + hashlib.sha256(_json([source_id, day, count+1]).encode()).hexdigest()
+        share = db.execute('SELECT event_id,event_at,share_index,reserved_at FROM life_video_moments '
+                           'WHERE source_id=? AND share_day=? ORDER BY share_index DESC LIMIT 1', (source_id, day)).fetchone()
+        if share is None or share['reserved_at'] is not None:
+            index = max(count, share['share_index'] if share else 0) + 1
+            event_id = 'moment:' + hashlib.sha256(_json([source_id, day, index]).encode()).hexdigest()
             share = (event_id, _time(now))
             db.execute('INSERT INTO life_video_moments VALUES (?,?,?,?,?,NULL)',
-                       (event_id, source_id, day, count+1, share[1]))
+                       (event_id, source_id, day, index, share[1]))
         return dict(event_id=share[0], source_id=source_id, event_at=share[1], event_kind='moment', location=item.get('location'),
                     detail=item.get('note', '')[:180], place=place)
 
