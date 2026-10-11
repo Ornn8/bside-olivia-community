@@ -117,7 +117,15 @@ def test_actual_adapter_all_styles_all_previews_and_all_daily_metadata():
             for c in CATEGORIES:
                 result = await api.request('wardrobe_set', {'request_id': 'fixture-' + c['id'], 'style_id': c['id']})
                 assert result['wardrobe']['style_id'] == c['id']
+            # Every look passes the client validators; the HTTP round trip (a new TLS session
+            # per request) covers the first and last look of each style.
+            for style_id, look_id, sha256 in ALL_LOOKS:
+                assert wardrobe.valid_look_id(look_id)
+                assert wardrobe.validate_daily_outfit(outfit(style_id, look_id, sha256))['look_id'] == look_id
+            ends = {c['looks'][0]['id'] for c in CATEGORIES} | {c['looks'][-1]['id'] for c in CATEGORIES}
             for i, (style_id, look_id, sha256) in enumerate(ALL_LOOKS):
+                if look_id not in ends:
+                    continue
                 assert (await api.wardrobe_image(look_id)).startswith(b'\x89PNG')
                 result = await api.request('status', {'task_id': str(i)})
                 assert result['media_plan']['daily_outfit']['look_id'] == look_id

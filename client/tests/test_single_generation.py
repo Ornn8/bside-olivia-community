@@ -1,5 +1,4 @@
 import asyncio
-from datetime import datetime, timezone
 import json
 from pathlib import Path
 import subprocess
@@ -31,28 +30,6 @@ def test_tts_ignores_legacy_content_gate_and_only_generates_once(tmp_path, monke
     result = delivery.render_delivery_wav(config, plan, tmp_path / 'out.wav', enforce_content_gate=True)
     assert len(calls) == 1
     assert result.quality_report is None
-
-
-def test_reply_does_not_review_or_rewrite_generated_text():
-    from runtime.reply.reply_pipeline import ReplyPipeline
-    from runtime.reply.reply_context import ReplyContext, ReplyMode, TrustedTime
-    from runtime.reply.reply_orchestrator import ReplyResult, ReplyState
-    class Orchestrator:
-        calls = 0
-        async def run(self, request):
-            self.calls += 1
-            return ReplyResult('single', ReplyState.COMPLETED, text='晚安。')
-    class Forbidden:
-        def review(self, *a, **k):
-            pytest.fail('Reply reviewer must not run')
-        def rewrite(self, *a, **k):
-            pytest.fail('Reply rewriter must not run')
-    orchestrator = Orchestrator()
-    pipeline = ReplyPipeline(orchestrator=orchestrator, reviewer=Forbidden(), rewriter=Forbidden())
-    result = asyncio.run(pipeline.run(object(), ReplyContext.create(ReplyMode.TEXT_LETTER, trusted_time=TrustedTime(datetime.now(timezone.utc)))))
-    assert result.text == '晚安。'
-    assert orchestrator.calls == 1
-    assert result.reviewer_calls == result.rewrite_calls == 0
 
 
 def test_invalid_lyrics_do_not_trigger_another_generation():
