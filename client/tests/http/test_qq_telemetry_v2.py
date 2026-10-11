@@ -24,6 +24,26 @@ def collector_factory():
     db.close()
 
 
+@pytest.mark.parametrize('detail,expected', [
+    ('required_source_missing', 'JEV_CONTEXT_SOURCE_MISSING'),
+    ('required_original_missing', 'JEV_CONTEXT_ORIGINAL_MISSING'),
+    ('required_source_invalid', 'JEV_CONTEXT_SOURCE_INVALID'),
+    ('required_excerpt_incomplete', 'JEV_CONTEXT_EXCERPT_INCOMPLETE'),
+    ('current_input_invalid', 'JEV_CONTEXT_CURRENT_INPUT_INVALID'),
+    ('decision_input_invalid', 'JEV_CONTEXT_DECISION_INPUT_INVALID'),
+    ('private arbitrary text', 'JEV_CONTEXT_UNAVAILABLE'),
+])
+def test_context_detail_becomes_finite_wire_code(collector_factory, detail, expected):
+    c = collector_factory()
+    c.account('synthetic')
+    c.observe([dict(letter_id='synthetic', channel='qq', created_at=c.clock(),
+        delivery_status='FAILED', generation_attempts=1, error_code='JEV_CONTEXT_UNAVAILABLE',
+        generation_failure_context={'failure_stage': 'decision_context', 'failure_detail': detail})])
+    event = next(e for e in c.batch(2) if e['stage'] == 'reply')
+    assert event['error_code'] == expected
+    assert detail not in json.dumps(event)
+
+
 def test_negotiation_downgrade_and_exact_ack_preserve_events(collector_factory):
     async def scenario():
         c = collector_factory()

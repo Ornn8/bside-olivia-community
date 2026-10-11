@@ -13,8 +13,8 @@ sys.path.insert(0, str(ROOT))
 def codes():
     from runtime.personal_chat.service import JEV_ERROR_CODES
     from runtime.personal_chat.backend import _generation_failure_code
-    from runtime.diagnostics.failure_context import CODES, REWRITE_ERROR_CODES
-    result = set(JEV_ERROR_CODES)
+    from runtime.diagnostics.failure_context import CODES, REWRITE_ERROR_CODES, CONTEXT_ERROR_CODES
+    result = set(JEV_ERROR_CODES) | set(CONTEXT_ERROR_CODES.values())
     for path in (ROOT / 'runtime/personal_chat').glob('*.py'):
         for node in ast.walk(ast.parse(path.read_text(encoding='utf-8'))):
             if (isinstance(node, ast.Constant) and isinstance(node.value, str)

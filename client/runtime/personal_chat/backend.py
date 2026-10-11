@@ -454,6 +454,19 @@ async def _generate_billed(server, event, row):
             raise RuntimeError('JEV_INPUT_SUPERSEDED')
         row['companion_decision'] = deepcopy(record)
         await persist_chat(server)
+    async def record_context_recovery(items):
+        if not turn_is_current():
+            raise RuntimeError('JEV_INPUT_SUPERSEDED')
+        row['companion_context_recovery'] = deepcopy(items)
+        await persist_chat(server)
+        from runtime.diagnostics.failure_context import CONTEXT_ERROR_CODES
+        from runtime.diagnostics.reply_telemetry import emit
+        for reason in sorted({item['reason'] for item in items}):
+            code = CONTEXT_ERROR_CODES[reason]
+            server._safe_log('companion_context_requirement_abandoned', error_code=code,
+                             count=sum(item['reason'] == reason for item in items))
+            emit('validation', 'skipped', source=row['letter_id'], channel=event.channel,
+                 error=code, attempt=row.get('generation_attempts', 0))
     async def proactive_decide(messages, world, emotion):
         from runtime.reply import proactive_runtime
         from runtime.reply.companion_runtime import CompanionRuntimeError
@@ -523,6 +536,7 @@ async def _generate_billed(server, event, row):
                                     and r.get('speech_delivery_status')=='DELIVERED' and isinstance(r.get('speech_script'),dict)
                                     and r['speech_script'].get('continuation_summary')),None),
                                 'save_companion_decision': save_companion_decision,
+                                'record_context_recovery': record_context_recovery,
                                 'decision_now': datetime.now(LOCAL).isoformat(),
                                 'due_followup': row.get('followup_quote'),
                                 'channel': event.channel, 'incoming_format': event.input_kind,

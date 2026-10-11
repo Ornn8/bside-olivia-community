@@ -32,7 +32,7 @@ def _clear_draft(row):
                 'letter_until', 'followup_at', 'followup_quote', 'listening_preference', 'requested_format',
                 'presentation_status', 'delivery_basis', 'voice_ready', 'quality_status', 'reviewer_calls', 'rewrite_calls',
                 'mailbox_notice_letter_id', 'decision_rejection_reason', 'semantic_shadow', 'expression_context',
-                'companion_decision', 'companion_timing', 'companion_delivery',
+                'companion_decision', 'companion_timing', 'companion_delivery', 'companion_context_recovery',
                 'speech_script', 'speech_intent', 'speech_status', 'speech_delivery_status', 'content_review',
                 'proactive_decision', 'proactive_basis', 'proactive_opportunity', 'generation_failure_notice',
                 'generation_context_at', 'stage_timing_seconds', 'stage_actual_calls', 'stage_cache_hits',

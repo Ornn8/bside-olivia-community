@@ -687,7 +687,7 @@ def _budget_id(prefix: str, source_id: str) -> str:
 def _im_presentation():
     from runtime.personal_chat.presentation import CURRENT
     value = CURRENT.get()
-    local_only = {'companion_decision', 'save_companion_decision', 'received_source_id', 'input_revision',
+    local_only = {'companion_decision', 'save_companion_decision', 'record_context_recovery', 'received_source_id', 'input_revision',
                   'proactive_decide', 'proactive_decision', 'turn_is_current',
                   'record_stage_timing', 'generation_attempts', 'daily_video_candidates', 'story_continuation',
                   'generation_run_id', 'generation_attempt_id', 'save_writer_checkpoint'}
