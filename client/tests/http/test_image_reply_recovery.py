@@ -441,3 +441,31 @@ def test_cancel_after_local_result_recovers_without_remote_submit(tmp_path, monk
         await image_reply.prepare(server, row, 'photo', 'Okay')
         assert row['image_status'] == 'COMPLETED' and len(calls['submits']) == 1
     asyncio.run(scenario())
+
+
+def test_delisted_saved_model_draws_with_the_service_default(tmp_path, monkeypatch):
+    async def scenario():
+        server, row, calls = setup(tmp_path, monkeypatch, failure=None)
+        base = remote_generation.RemoteGeneration
+        caps = {'kinds': ['image'], 'shared_assets': [],
+                'image': {'models': [{'id': 'approved-photo', 'display_name': 'Photo', 'resolutions': ['1K']}]}}
+        class Cloud(base):
+            async def request(self, action, data):
+                return caps if action == 'capabilities' else await super().request(action, data)
+        monkeypatch.setattr(remote_generation, 'RemoteGeneration', Cloud)
+        row['image_reply_settings'] = {'enabled': True, 'resolution': '1K', 'model': 'retired-photo'}
+        await image_reply._prepare_once(server, row, 'photo', 'Okay')
+        assert row['image_status'] == 'COMPLETED'
+        assert len(calls['submissions']) == 1 and 'model' not in calls['submissions'][0]['input']
+        assert row['image_reply_settings'] == {'enabled': True, 'resolution': '1K'}
+    asyncio.run(scenario())
+
+
+def test_delisted_fallback_uses_a_resolution_the_default_model_offers():
+    from runtime.video_reply_settings import delisted_fallback
+    catalog = {'models': [{'id': 'small', 'display_name': 'S', 'resolutions': ['1K']},
+                          {'id': 'large', 'display_name': 'L', 'resolutions': ['1K', '2K']}], 'default_model': 'small'}
+    assert delisted_fallback({'enabled': True, 'resolution': '2K', 'model': 'gone'}, catalog) == {'enabled': True, 'resolution': '1K'}
+    assert delisted_fallback({'enabled': False, 'resolution': '1K', 'model': 'gone'}, catalog) == {'enabled': False, 'resolution': '1K'}
+    assert delisted_fallback({'enabled': True, 'resolution': '2K', 'model': 'gone'}, {'models': catalog['models']}) == {
+        'enabled': True, 'resolution': '2K'}

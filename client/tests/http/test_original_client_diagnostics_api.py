@@ -449,9 +449,11 @@ def test_settings_ui_exposes_download_only_diagnostics_action() -> None:
 
     assert 'const DIAGNOSTIC_EXPORT_PATH = "/toy/diagnostics/export";' in script
     assert "response.blob()" in script
-    assert 'suggestedName: "olivia-diagnostic-bundle.zip"' in script
     assert 'const DIAGNOSTIC_SAVE_PATH = "/toy/diagnostics/save";' in script
-    assert "download.click()" not in script.split("const mountDiagnosticExport", 1)[1].split("const mountImproveSetting", 1)[0]
+    export_action = script.split("const mountDiagnosticExport", 1)[1].split("const mountImproveSetting", 1)[0]
+    assert "download.click()" not in export_action
+    # The system save dialog could open behind the app and leave the export waiting forever.
+    assert "showSaveFilePicker" not in export_action and "requestDiagnosticSave()" in export_action
     assert "诊断与反馈" in script
     assert "requestMutation(DIAGNOSTIC_EXPORT_PATH" not in script
 
