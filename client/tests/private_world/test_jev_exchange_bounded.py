@@ -298,3 +298,59 @@ def test_a_real_store_with_a_long_history_produces_a_small_request(tmp_path):
     payload, port = run(data)
     assert max(size for _, size in port.sizes) <= LIMIT
     assert payload['updates']
+
+
+class ManyUpdates(ScriptedPort):
+    """Nine independent updates: the first request says three slots are not enough, so the
+    second offers all twelve and the dependent questions follow for nine of them."""
+
+    def __init__(self, data):
+        super().__init__(data, slots=3)
+        user, reply = sentences(data['user_letter']), sentences(data['linli_reply'])
+        self.picks = [('u', user[3])] + [('r', reply[i]) for i in (2, 6, 1, 3, 4, 5, 7, 8)]
+
+    async def ask(self, state, questions, *, purpose):
+        answers = await super().ask(state, questions, purpose=purpose)
+        if 'capacity' in answers and len([call for call in self.calls if 'capacity' in call[1]]) == 1:
+            answers['capacity'] = 'unsupported'
+        return answers
+
+
+def test_rules_shared_by_every_update_slot_travel_once_per_request():
+    data = fx.build(letter_chars=1200, reply_chars=1500)
+    port = ManyUpdates(data)
+    payload = asyncio.run(extract(port, data, _EXCHANGE_LIFE_PROMPT, 'life:many'))
+    assert len(payload['updates']) == 9
+    (three, _, _), (twelve, twelve_questions, _) = [call for call in port.calls if call[2] == 'exchange-facts']
+    anchored = [call for call in port.calls if call[2] == 'exchange-anchored-facts']
+    # The quote rule is in the request once, and a slot's question only names it.
+    assert three['update_contract'] == twelve['update_contract'] == jev_exchange._UPDATE_CONTRACT
+    wire = json.dumps(twelve_questions, ensure_ascii=False)
+    assert jev_exchange._UPDATE_CONTRACT[:30] not in wire
+    for i in range(12):
+        instructions = twelve_questions[f'update_{i}_quote']['instructions']
+        assert f'第{i + 1}个' in instructions and 'update_contract' in instructions and len(instructions.encode()) < 200
+    # Twelve slots no longer need the allowance of a larger bound, and each added slot is small.
+    sizes = [size for name, size in port.sizes if name == 'exchange-facts']
+    assert sizes[1] <= LIMIT and (sizes[1] - sizes[0]) / 9 < 900, sizes
+    # Nine updates' dependent questions share one copy of each rule and fit one request.
+    (state, questions, _), = anchored
+    assert state['dependent_contract'] == jev_exchange._DEPENDENT_CONTRACT and 'update_contract' not in state
+    wire = json.dumps(questions, ensure_ascii=False)
+    for field, rule in jev_exchange._DEPENDENT_CONTRACT.items():
+        assert rule[:20] not in wire and json.dumps(state, ensure_ascii=False).count(rule[:20]) == 1
+        for i in range(9):
+            instructions = questions[f'update_{i}_{field}']['instructions']
+            assert f'dependent_contract.{field}' in instructions and f'事项{i + 1}' in instructions
+    assert len(port.sizes_of('exchange-anchored-facts')) == 1
+    assert port.sizes_of('exchange-anchored-facts')[0] <= LIMIT * jev_exchange.FULL_SLOTS_BOUND_FACTOR
+
+
+def test_a_request_without_update_questions_carries_no_update_rules():
+    data = fx.build(letter_chars=300, reply_chars=300, project_count=0, open_count=0, boundary_count=0)
+    data['user_letter'] += '我通常晚上十一点半睡觉，我这边是UTC+8。'
+    port = ScriptedPort(data, slots=0, routine=True)
+    asyncio.run(extract(port, data, _EXCHANGE_LIFE_PROMPT, 'life:no-update'))
+    state, questions, purpose = port.calls[1]
+    assert purpose == 'exchange-anchored-facts' and 'dependent_contract' not in state
+    assert all(not key.startswith('update_') for key in questions)

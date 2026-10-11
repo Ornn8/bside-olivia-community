@@ -295,8 +295,10 @@ def test_bound_evidence_options_show_complete_text_and_prioritize_conditions():
     result = asyncio.run(extract(port, data, '', 'life:bound-complete-proof'))
     state, questions, _ = port.calls[1]
     question = questions['update_0_evidence']
-    assert '最短' not in question['instructions']
-    assert '完整证明优先' in question['instructions']
+    # The rule text is written once in the request; the question names the rule it follows.
+    assert 'dependent_contract.evidence' in question['instructions']
+    assert '最短' not in question['instructions'] and '最短' not in state['dependent_contract']['evidence']
+    assert '完整证明优先' in state['dependent_contract']['evidence']
     for ref, meaning in question['criteria'].items():
         if ref == 'none':
             continue
@@ -311,7 +313,8 @@ def test_future_continuation_anchor_keeps_the_current_item_status_contract():
         'projects': [{'id': 'draft', 'title': '翻译这篇稿子', 'kind': 'linli', 'status': 'ongoing'}]}}
     port = BoundPort([('下个月再继续翻译。', 'p0', 'paused')])
     result = asyncio.run(extract(port, data, '', 'life:current-pause'))
-    instructions = port.calls[1][1]['update_0_status']['instructions']
+    assert 'dependent_contract.status' in port.calls[1][1]['update_0_status']['instructions']
+    instructions = port.calls[1][0]['dependent_contract']['status']
     assert '锚点只定位同一事项' in instructions
     assert '当前实际生效' in instructions
     assert '未来恢复' in instructions
@@ -384,7 +387,9 @@ def test_current_plan_contract_does_not_require_execution_or_an_old_status_chang
     result = asyncio.run(extract(port, data, '', 'life:current-future-plan'))
     status_question = port.calls[1][1]['update_0_status']
     assert '本轮明确安排或调整' in status_question['criteria']['planned']
-    assert '旧status为planned或paused' in status_question['instructions']
-    assert '不能仅因尚未执行或旧状态相同选none' in status_question['instructions']
+    rule = port.calls[1][0]['dependent_contract']['status']
+    assert 'dependent_contract.status' in status_question['instructions']
+    assert '旧status为planned或paused' in rule
+    assert '不能仅因尚未执行或旧状态相同选none' in rule
     assert result['updates'][0]['id'] == 'bench'
     assert result['updates'][0]['status'] == 'planned'
