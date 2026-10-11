@@ -156,6 +156,24 @@ def test_explicit_other_medium_does_not_receive_extra_daily_video(kind):
     assert '<daily_video_candidates>' not in str(engine.requests[0].messages)
 
 
+@pytest.mark.parametrize('kind', ['text', 'video_speech'])
+def test_current_moment_candidate_does_not_block_ordinary_chat(kind):
+    from runtime.reply.companion_decision import FrozenCompanionDecision, FrozenCompanionTurn
+    from tests.http.test_daily_video import payload
+    candidate = {**payload(), 'event_kind': 'moment', 'detail': '在窗边看书。', 'location': '住处'}
+    port = Port(plan(kind=kind))
+    result, engine = run(port, mode=ReplyMode.FUTURE_IM, daily=[candidate],
+        daily_selection=dict(event_id=candidate['event_id'], spoken_text='刚好看到这里。'),
+        kinds=['text', 'audio_speech', 'image', 'video_speech'])
+    assert result.state is ReplyState.COMPLETED, result.error_code
+    assert len(port.turns) == len(engine.requests) == 1
+    assert port.turns[0].daily_video_experience['event_kinds'] == ['moment']
+    record = json.loads(json.dumps(result.companion_decision))
+    restored = FrozenCompanionTurn.from_record(record)
+    assert FrozenCompanionDecision.from_record(restored, record).record() == record
+    assert ('daily_video' in json.loads(result.text)) == (kind == 'video_speech')
+
+
 @pytest.mark.parametrize('channel,daily', [('qq', ()), ('wechat', ('candidate',))])
 def test_daily_video_requires_qq_actual_candidate_gate(channel, daily):
     from tests.http.test_daily_video import payload
