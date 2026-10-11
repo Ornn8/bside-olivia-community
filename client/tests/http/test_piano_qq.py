@@ -98,13 +98,51 @@ def test_mp3_delivery_ack_memory_and_no_uncertain_replay(tmp_path, monkeypatch, 
 def test_piano_decision_is_frozen_and_optional():
     from runtime.reply.companion_decision import FrozenCompanionTurn, FrozenCompanionDecision, JevDecisionPort
     from tests.persona.test_companion_decision import input_args, envelope
-    turn = FrozenCompanionTurn.create(**input_args(), piano_experience=CAPS)
+    experience = {**CAPS, 'pieces': ['雨夜', '温柔的小曲']}
+    turn = FrozenCompanionTurn.create(**input_args(), piano_experience=experience)
     response = {**envelope(), 'piano_request': dict(source='original', piece_hint='夜曲', seconds=30)}
     record = FrozenCompanionDecision.from_response(turn, response).record()
     assert FrozenCompanionDecision.from_record(FrozenCompanionTurn.from_record(record), record).record() == record
-    assert JevDecisionPort('http://127.0.0.1:1/v1/companion/decide')._packet(turn)['piano_experience'] == CAPS
+    assert JevDecisionPort('http://127.0.0.1:1/v1/companion/decide')._packet(turn)['piano_experience'] == experience
     disabled = FrozenCompanionTurn.create(**input_args())
     assert 'piano_request' not in FrozenCompanionDecision.from_response(disabled, response).record()
+
+
+@pytest.mark.parametrize('count', [0, 1, 200, 201])
+def test_backend_advertises_saved_titles_in_upload_order(tmp_path, monkeypatch, count):
+    from runtime import piano_collection
+    from runtime.personal_chat.presentation import CURRENT
+    from tests.http.test_personal_chat_backend import (
+        test_backend_generate_uses_real_pipeline_persona_memory_and_world as run_backend,
+        ReplyPipeline,
+    )
+    owner = SimpleNamespace(_os=SimpleNamespace(environ={
+        'OLIVIA_GPU_API_URL': 'https://media.test', 'OLIVIA_GPU_API_KEY': 'synthetic'}),
+        _local_data_root=lambda: tmp_path)
+    titles = ['琴' * 60 if i == 0 else f'曲子 {i}' for i in range(count)]
+    with piano_collection.database(piano_collection.root(owner)) as db:
+        # Insert in reverse order to exercise the persisted upload ordering.
+        for i in reversed(range(count)):
+            db.execute('INSERT INTO pieces VALUES(?,?,?,?,NULL)',
+                       (f'{i:064x}', titles[i], f'2026-10-12T04:{i // 60:02}:{i % 60:02}+00:00', 'qq'))
+    saved = piano_collection.pieces(owner)
+    monkeypatch.setattr(piano_collection, 'pieces', lambda server: saved)
+    monkeypatch.setattr(piano_collection, 'context', lambda server: '')
+    async def caps(env): return CAPS
+    monkeypatch.setattr(piano, 'capabilities', caps)
+    original_run = ReplyPipeline.run
+    observed = []
+    async def inspect(self, request, context):
+        assert '[对方传给我的 MIDI 曲目' not in request.content
+        experience = CURRENT.get()['piano_experience']
+        assert experience['pieces'] == titles[:200]
+        assert all(1 <= len(title) <= 60 for title in experience['pieces'])
+        assert len(CURRENT.get()['piano_pieces']) == count
+        observed.append(experience)
+        return await original_run(self, request, context)
+    monkeypatch.setattr(ReplyPipeline, 'run', inspect)
+    run_backend(tmp_path, monkeypatch, None, 'plain', ('qq', '今天练琴了吗？', '练了一会儿。'))
+    assert len(observed) == 1
 
 
 def test_piano_background_deduplicates_by_owner():
