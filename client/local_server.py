@@ -609,6 +609,8 @@ _CURRENT_LETTER_MEMORY_SOURCE: ContextVar[str | None] = ContextVar(
     "current_letter_memory_source",
     default=None,
 )
+# The world step needs only the last exchanges of the dialogue, not archive search or notes.
+_RECENT_DIALOGUE_ONLY: ContextVar[bool] = ContextVar("recent_dialogue_only", default=False)
 _CURRENT_LETTER_RECEIPT: ContextVar[datetime | None] = ContextVar("current_letter_receipt", default=None)
 
 
@@ -907,7 +909,14 @@ class LetterAdapter:
         from runtime.reply.world_context_selection import select_world_context, selection_dialogue
         from runtime.personal_chat.presentation import CURRENT
         packet = self.daily_life.store.reply_candidates(now=now)
-        packet['recent_dialogue'] = selection_dialogue(self.recent_letter_fragments(content, now=now))
+        # Selection reads only the last exchanges; archive search and notes are not built for it.
+        token = _RECENT_DIALOGUE_ONLY.set(True)
+        try:
+            dialogue = self.recent_letter_fragments(content, now=now)
+        finally:
+            _RECENT_DIALOGUE_ONLY.reset(token)
+        packet['recent_dialogue'] = selection_dialogue(dialogue)
+        packet['scope'] = str(getattr(self.daily_life.store, 'path', ''))
         # Freeze the turn's local inputs before concurrent emotion evaluation
         # can update the store while selection awaits its provider.
         addressing = self.daily_life.store.addressing_profile(now=now)
@@ -954,14 +963,16 @@ class LetterAdapter:
         source = _CURRENT_LETTER_MEMORY_SOURCE.get()
         if not isinstance(content, str) or not content.strip() or not source:
             return emotion.view(now)
-        from runtime.memory.received_user_originals import received_originals
+        from runtime.memory.received_user_originals import received_originals, rows_sharing_originals
         # Revision belongs to delivery, not to the immutable received message.
         identifier = source.removeprefix('reply:').rsplit(':', 1)[0]
         rows = [*store.letters, *store.personal_chats]
         current = [row for row in rows if row.get('letter_id') == identifier]
         # The letter being resent in place may still read FAILED; it is this turn's input.
         identities = {item.source_id for item in received_originals(current, include_undelivered=True)}
-        receipts = tuple(sorted((item for item in received_originals(rows, include_undelivered=True)
+        # Only rows that index this turn's originals can change their receipts.
+        related = rows_sharing_originals(rows, current)
+        receipts = tuple(sorted((item for item in received_originals(related, include_undelivered=True)
             if item.source_id in identities and item.occurred_at <= now
             and item.user_message in content), key=lambda item: item.occurred_at))
         return await emotion.evaluate_received(receipts, now=now)
@@ -971,10 +982,13 @@ class LetterAdapter:
         from runtime.reply.conversation_context import conversation_context
         from runtime.personal_chat.context import READ_WINDOW
         rows = self.recent_letters() if READ_WINDOW.get() is None and self.recent_letters is not None else ()
+        recent_only = _RECENT_DIALOGUE_ONLY.get()
         recent, historical = conversation_context(rows, query=content,
-            now=now, excluded_sources=self._memory_source_exclusions())
+            now=now, excluded_sources=self._memory_source_exclusions(), recent_only=recent_only)
         fragments = tuple(UntrustedFragment(name, text) for name, text in
                      (('chat.recent', recent), ('chat.historical', historical)) if text)
+        if recent_only:
+            return fragments
         from runtime.memory.history_continuity import companion_view
         builder = companion_view(getattr(self, 'memory_prompt_builder', None))
         if builder is not None:

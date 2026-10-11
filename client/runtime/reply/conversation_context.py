@@ -27,7 +27,7 @@ def _time(value):
         return None
 
 
-def conversation_context(rows, *, query, now, excluded_sources=(), max_chars=6000):
+def conversation_context(rows, *, query, now, excluded_sources=(), max_chars=6000, recent_only=False):
     from runtime.personal_chat.context import READ_WINDOW
     frozen = READ_WINDOW.get()
     rows = list(rows) if frozen is None else frozen
@@ -141,6 +141,8 @@ def conversation_context(rows, *, query, now, excluded_sources=(), max_chars=600
         omitted = json.dumps({'kind': 'recent_dialogue', 'coverage': 'omitted_due_to_capacity',
                               'letters': []}, separators=(',', ':'))
         return (omitted if len(omitted) <= max_chars else ''), ''
+    if recent_only:
+        return recent, ''
     historical = recent_correspondence((r for r in rows if delivered(r)), query=query,
         excluded_sources=(*excluded_sources, *sources), max_chars=max_chars - len(recent))
     if historical:

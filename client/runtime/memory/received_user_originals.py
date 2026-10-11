@@ -44,6 +44,40 @@ def undelivered_letter_sources(rows):
         and row['letter_id'] and _undelivered_letter(row)))
 
 
+def _origins(row):
+    """The (channel, binding, identifier) keys under which received_originals indexes a row."""
+    if not isinstance(row, Mapping):
+        return ()
+    channel = row.get('channel') or 'letter'
+    if channel == 'letter':
+        letter_id = row.get('letter_id')
+        return (('letter', '', letter_id),) if isinstance(letter_id, str) and letter_id else ()
+    binding, sources = row.get('binding_id'), row.get('source_messages')
+    if channel in {'qq', 'wechat'} and isinstance(binding, str) and binding and isinstance(sources, Mapping):
+        return tuple((channel, binding, key) for key in sources if isinstance(key, str) and key)
+    return ()
+
+
+def rows_sharing_originals(rows, anchors):
+    """The rows that index any original the anchor rows index, the anchors included.
+
+    received_originals groups by receipt identity, so projecting just these rows
+    yields exactly the anchors' receipts, each with all of its rows, however many
+    unrelated rows the archive holds.
+    """
+    wanted = {origin for row in anchors for origin in _origins(row)}
+    names = {origin[2] for origin in wanted}
+    result = []
+    for row in rows if names else ():
+        if not isinstance(row, Mapping):
+            continue
+        sources, letter_id = row.get('source_messages'), row.get('letter_id')
+        if ((isinstance(sources, Mapping) and not names.isdisjoint(sources))
+                or (isinstance(letter_id, str) and letter_id in names)) and wanted.intersection(_origins(row)):
+            result.append(row)
+    return result
+
+
 def received_originals(rows, *, include_undelivered=False):
     """Caller supplies durable rows. Never read reply_text or synthetic media rows.
 
