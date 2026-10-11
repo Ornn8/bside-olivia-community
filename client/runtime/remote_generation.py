@@ -79,10 +79,11 @@ class RemoteGeneration:
         elif action == 'gifts_get' and data == {}:
             path, method = '/v1/gifts', 'GET'
         elif action == 'gifts_buy':
-            if not isinstance(data, dict) or set(data) != {'item'} or not isinstance(data['item'], str) \
-                    or not re.fullmatch(r'[a-z0-9-]{3,40}', data['item']):
-                raise CloudError('GPU_REQUEST_INVALID', 400)
-            payload = data
+            from runtime.gifts import validate_purchase
+            try:
+                payload = validate_purchase(data)
+            except ValueError:
+                raise CloudError('GPU_REQUEST_INVALID', 400) from None
             path, method = '/v1/gifts', 'POST'
         elif action == 'pets_get' and data == {}:
             path, method = '/v1/pets', 'GET'

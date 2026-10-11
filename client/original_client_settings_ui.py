@@ -4230,6 +4230,11 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       const card=document.createElement('button');card.type='button';card.className='oi-card';card.setAttribute('aria-label',label);
       const heading=text('strong',title);if(path==='/world/diary')heading.setAttribute('data-diary-badge','');
       card.append(heading,text('span',copy));card.addEventListener('click',()=>goWorld(path));grid.append(card);
+      if(path==='/world/cameras')void routeRequest('/toy/world/gifts').then(data=>{
+        if(card.isConnected&&Array.isArray(data.items)){
+          heading.textContent='礼物';card.querySelector('span').textContent='相机、音乐和日常心意，挑一份送给她。';card.setAttribute('aria-label','打开礼物');
+        }
+      }).catch(()=>{});
     }
     page.replaceChildren(style,header,itemsBreadcrumb(),grid);
     void refreshDiaryBadge(true);
@@ -4394,6 +4399,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       .oc-card button{align-self:flex-start;border:1px solid #686a70;border-radius:999px;background:transparent;color:#ded9d1;padding:8px 18px;font:inherit;cursor:pointer}
       .oc-card button:disabled{opacity:.6;cursor:default}.oc-owned{color:#b6c8b0;font-size:13px}
       .oc-status{color:#acb0b4;font-size:13px;min-height:20px}
+      .oc-gift-dialog button{border:1px solid #686a70;border-radius:999px;background:transparent;color:#ded9d1;padding:8px 18px;margin:8px 8px 0 0;font:inherit;cursor:pointer}
+      .oc-gift-dialog button:disabled{opacity:.6;cursor:default}
+      .oc-gift-dialog::backdrop{background:rgba(0,0,0,.55)}
       .ow-breadcrumb{display:flex;gap:10px;align-items:center;color:#acb0b4;font-size:14px}.ow-breadcrumb a{color:#ded9d1;text-decoration:none}
     `;
     const header=document.createElement('header');header.append(text('h1','拍摄设备'));
@@ -4427,6 +4435,57 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       const note=text('p','送她一台相机，它就一直是她的。她拍照时会按场合挑：在家随手多用手机，出门、纪念日或想拍好看的照片时会拿出你送的相机。'
         +(typeof data.balance_cents==='number'?' 账户余额 ¥'+(data.balance_cents/100).toFixed(2)+'。':''),'oc-note');
       main.replaceChildren(note,grid,status);
+      if(Array.isArray(data.items)){
+        header.replaceChildren(text('h1','礼物'));
+        page.querySelector('.ow-breadcrumb')?.replaceWith(itemsBreadcrumb('礼物'));
+        note.textContent='挑一份她用得上的礼物。黑胶和乐谱请填写具体名称；可重复赠送的礼物，每次确认都会重新购买。';
+        if(data.cameras.length)main.insertBefore(text('h2','相机'),grid);
+        for(const [category,label] of [['home','居家'],['jewelry','首饰'],['music','音乐'],['consumable','日常心意']]){
+          const items=data.items.filter(item=>item.category===category);if(!items.length)continue;
+          const section=document.createElement('section'), gifts=document.createElement('div');gifts.className='oc-grid';
+          section.append(text('h2',label),gifts);main.insertBefore(section,status);
+          for(const item of items){
+            const card=document.createElement('article');card.className='oc-card';
+            card.append(text('strong',item.name),text('p',item.summary),text('p',item.use));
+            if(item.custom?.title)card.append(text('p',item.custom.title));
+            if(item.owned)card.append(text('span','已送给她','oc-owned'));
+            if(!item.owned||item.repeatable){
+              const action=item.owned?'再送一次':'送给她';
+              const give=button(action+' · ¥'+(item.price_cents/100).toFixed(2),()=>{
+                const dialog=document.createElement('dialog');dialog.className='oc-gift-dialog';
+                dialog.style.cssText='background:#1f2023;color:#ded9d1;border:1px solid #686a70;border-radius:12px;padding:24px;max-width:min(420px,80vw)';
+                const heading=text('h2',action+'：'+item.name);heading.id='oc-gift-heading';dialog.setAttribute('aria-labelledby',heading.id);
+                dialog.append(heading,text('p','确认后按当前显示金额从账户扣除。'));
+                let input=null;
+                if(item.customizable){
+                  const label=document.createElement('label');label.textContent=item.id==='vinyl-record'?'专辑名（不超过 60 字）':'曲集名（不超过 60 字）';
+                  input=document.createElement('input');input.type='text';input.maxLength=120;input.required=true;
+                  input.style.cssText='display:block;box-sizing:border-box;width:100%;margin:12px 0;padding:10px;background:#191a1c;color:#ded9d1;border:1px solid #686a70;border-radius:6px';
+                  input.addEventListener('input',()=>{message.textContent='';});
+                  label.append(input);dialog.append(label);
+                }
+                const message=text('p','');message.setAttribute('role','status');dialog.append(message);
+                const close=()=>{dialog.close();dialog.remove();give.focus();};
+                const cancel=button('取消',close), confirm=button('确认送出 · ¥'+(item.price_cents/100).toFixed(2),async()=>{
+                  const title=input?.value.trim();
+                  if(input&&(!title||Array.from(title).length>60)){message.textContent='请填写 1–60 字的名称。';input.focus();return;}
+                  confirm.disabled=true;cancel.disabled=true;give.disabled=true;
+                  try{
+                    const result=await routeRequest('/toy/world/gifts',{item:item.id,...(input?{custom:{title}}:{})},{confirmed:true});
+                    close();status.textContent=result.already_owned?'她已经有这份礼物了。':'礼物送出了。';render(result);
+                  }catch(error){
+                    message.textContent=String(error?.message||'').includes('BALANCE')?'余额不足，请先充值。':'暂时无法确认结果，请关闭后刷新礼物清单并核对账户记录。';
+                    cancel.disabled=false;give.disabled=false;
+                  }
+                });
+                dialog.append(cancel,confirm);dialog.addEventListener('cancel',event=>{event.preventDefault();if(!cancel.disabled)close();});
+                page.append(dialog);dialog.showModal();(input||cancel).focus();
+              });card.append(give);
+            }
+            gifts.append(card);
+          }
+        }
+      }
     };
     main.append(text('p','正在打开她的设备柜……','oc-note'));
     void routeRequest('/toy/world/gifts').then(data=>{if(page.isConnected)render(data);})
