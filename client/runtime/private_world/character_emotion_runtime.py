@@ -26,6 +26,9 @@ _CURRENT_LIMIT = 32
 _REPLY_WINDOW = REACTION_WINDOW
 _BACKGROUND_LIMIT = 8
 _BACKGROUND_INTERVAL = 600.0
+# Each pass is a paid request. A backlog older than this is left unappraised rather
+# than billed for days to catch up on feelings about long-past messages.
+_BACKGROUND_HORIZON = timedelta(hours=48)
 _DIAGNOSTIC_CODES = frozenset({
     'JEV_INPUT_TOO_LARGE', 'JEV_EMOTION_EVIDENCE_TOO_LARGE',
     'JEV_EMOTION_EVIDENCE_INVALID', 'JEV_EMOTION_MISSING_EVIDENCE',
@@ -258,7 +261,8 @@ class CharacterEmotionRuntime:
         try:
             # What this reply just attempted is not retried behind its back.
             ids = [key for key in self.store.pending_source_ids(
-                before=now, limit=min(_CURRENT_LIMIT + 1, _BACKGROUND_LIMIT + len(skip)), until=now - _REPLY_WINDOW) if key not in skip]
+                before=now, limit=min(_CURRENT_LIMIT + 1, _BACKGROUND_LIMIT + len(skip)),
+                after=now - _BACKGROUND_HORIZON, until=now - _REPLY_WINDOW) if key not in skip]
             ids = ids[:_BACKGROUND_LIMIT]
             if not ids:
                 return

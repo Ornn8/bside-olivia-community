@@ -63,7 +63,7 @@ async def _reply(runtime, receipts, now):
     return view
 
 
-def backlog(runtime, size, *, age=timedelta(days=3)):
+def backlog(runtime, size, *, age=timedelta(days=1)):
     for index in range(size):
         runtime.store.receive(f'old-{index:03d}', f'很早以前的第{index}句话', occurred_at=NOW - age - timedelta(minutes=index))
 
@@ -183,3 +183,11 @@ def test_reply_path_statements_do_not_depend_on_how_much_is_waiting(make, monkey
         asyncio.run(runtime.evaluate_received([receipt('now')], now=NOW))
         counts[waiting] = (len(statements), len(port.calls), port.calls[0]['bytes'])
     assert counts[0][:2] == counts[200][:2] and abs(counts[0][2] - counts[200][2]) <= 8
+
+
+def test_backlog_older_than_the_horizon_is_never_billed(make):
+    port = Port()
+    runtime = make(port, 'ancient')
+    backlog(runtime, 5, age=runtime_module._BACKGROUND_HORIZON + timedelta(hours=1))
+    reply(runtime, receipt('now'))
+    assert [call['ids'] for call in port.calls if call['purpose'] == 'character-emotion'] == [['received-user:qq:now']]
