@@ -45,6 +45,10 @@ after the replacement is saved. A custom target, conflicting custom destination,
 or read-only shortcut is preserved. Refresh returns failed paths and continues
 with the other candidates. It does not recreate deleted shortcuts.
 
+Shortcut I/O uses the native Unicode
+[IShellLinkW interface](https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/nn-shobjidl_core-ishelllinkw).
+This avoids WSH shortcut-property failures with Chinese paths on English Windows.
+
 Tests can pass `-DesktopPath`, `-ProgramsPath`, or `-ShortcutPath`. Entire update
 and uninstall flows can inherit `OLIVIA_SHORTCUT_DESKTOP` and
 `OLIVIA_SHORTCUT_PROGRAMS`; set both to temporary directories to avoid real shell

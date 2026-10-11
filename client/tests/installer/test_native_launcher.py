@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -18,20 +19,27 @@ pytestmark = pytest.mark.skipif(os.name != "nt", reason="Windows native launcher
 
 
 def powershell(script, *arguments, stdin=None):
-    return subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+    if script[0] == "-Command":
+        source = (INSTALLER / "Create-Shortcut.ps1").read_text(encoding="utf-8-sig")
+        definition = re.search(r"Add-Type -TypeDefinition @'\n(.*?)\n'@", source, re.S).group(1)
+        script = ["-Command", "[Console]::InputEncoding=[Text.Encoding]::UTF8;\n"
+                  + "Add-Type -TypeDefinition @'\n" + definition + "\n'@\n" + script[1]]
+    result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
                            *script, *map(str, arguments)], input=stdin, capture_output=True,
-                          text=True, encoding="utf-8", errors="replace", check=True, timeout=30)
+                          text=True, encoding="utf-8", errors="replace", timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr
+    return result
 
 
 def shortcut(path, target=None, arguments=""):
     if target is not None:
         path.parent.mkdir(parents=True, exist_ok=True)
         powershell(["-Command", "$p=[Console]::In.ReadToEnd()|ConvertFrom-Json;"
-                    "$s=(New-Object -ComObject WScript.Shell).CreateShortcut($p.path);"
+                    "$s=New-Object OliviaShortcut($p.path);"
                     "$s.TargetPath=$p.target;$s.Arguments=$p.arguments;$s.Save()"],
                    stdin=json.dumps(dict(path=str(path), target=str(target), arguments=arguments)))
     result = powershell(["-Command", "[Console]::OutputEncoding=[Text.Encoding]::UTF8;"
-                         "$s=(New-Object -ComObject WScript.Shell).CreateShortcut([Console]::In.ReadToEnd());"
+                         "$s=New-Object OliviaShortcut([Console]::In.ReadToEnd());"
                          "@{target=$s.TargetPath;arguments=$s.Arguments;cwd=$s.WorkingDirectory;icon=$s.IconLocation}|ConvertTo-Json -Compress"],
                         stdin=str(path))
     return json.loads(result.stdout.lstrip("\ufeff"))
@@ -60,6 +68,24 @@ def installation(tmp_path, native, monkeypatch):
 
 def migrate(root, *args):
     return powershell(["-File", str(INSTALLER / "Create-Shortcut.ps1")], "-InstallRoot", root, *args)
+
+
+def test_reads_shortcut_written_by_legacy_wsh(tmp_path, native, monkeypatch):
+    root = tmp_path / "legacy-install"
+    root.mkdir()
+    shutil.copy2(native, root / "Olivia.exe")
+    shutil.copy2(INSTALLER / "assets/olivia.ico", root / "olivia.ico")
+    desktop = tmp_path / "desktop"
+    desktop.mkdir()
+    monkeypatch.setenv("OLIVIA_SHORTCUT_DESKTOP", str(desktop))
+    monkeypatch.setenv("OLIVIA_SHORTCUT_PROGRAMS", str(tmp_path / "programs"))
+    path = desktop / "Olivia.lnk"
+    powershell(["-Command", "$p=[Console]::In.ReadToEnd()|ConvertFrom-Json;"
+                "$s=(New-Object -ComObject WScript.Shell).CreateShortcut($p.path);"
+                "$s.TargetPath=$p.target;$s.Save()"],
+               stdin=json.dumps(dict(path=str(path), target=str(root / "START.cmd"))))
+    migrate(root, "-RefreshExisting")
+    assert shortcut(path)["target"] == str(root / "Olivia.exe")
 
 
 @pytest.mark.parametrize("kind", ["cmd", "vbs", "native"])
@@ -176,5 +202,5 @@ return 17; }}''')
     assert subprocess.run([str(harness), str(root), "8899"]).returncode == 2
     (root / "launcher/version_launcher.py").touch()
     assert subprocess.run([str(harness), str(root), "8911"]).returncode == 17
-    assert (root / "argv.txt").read_text().splitlines() == [str(root / "launcher/version_launcher.py"), "--install-root", str(root), "start", "--port", "8911"]
-    assert (root / "port.txt").read_text() == "8911"
+    assert (root / "argv.txt").read_text(encoding="utf-8").splitlines() == [str(root / "launcher/version_launcher.py"), "--install-root", str(root), "start", "--port", "8911"]
+    assert (root / "port.txt").read_text(encoding="utf-8") == "8911"
