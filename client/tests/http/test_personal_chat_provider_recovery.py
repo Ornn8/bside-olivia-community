@@ -47,6 +47,10 @@ def _fixture(tmp_path, monkeypatch, failures):
     class Provider:
         stream_enabled = False
 
+        async def complete_scoped(self, messages, *, request_id=None, scope):
+            assert scope is GatewayRequestScope.PERSONAL_CHAT_JSON
+            return await self.complete(messages, request_id=request_id)
+
         async def complete(self, messages, *, request_id=None):
             calls.append(request_id)
             index = len(calls) - 1
