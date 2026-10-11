@@ -825,9 +825,6 @@ async def _generate_billed(server, event, row):
             row.update(speech_script=script, speech_intent=speech_intent, requested_format='text',
                        speech_status='PENDING', speech_delivery_status='PENDING')
             mode = 'text'
-        if mode == 'voice' and basis == 'QQ_DEFAULT_VOICE' and not speech_intent and not script:
-            row.update(default_voice_status='PENDING', requested_format='text')
-            mode = 'text'
         if mode == 'voice' and voice_available and text != '[[skip]]':
             # A cancelled older revision can still finish in its worker thread.
             # Give each render its own output so it cannot overwrite new audio.
