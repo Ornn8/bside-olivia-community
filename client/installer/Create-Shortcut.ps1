@@ -45,7 +45,10 @@ else {
     $candidates = @(foreach ($folder in $folders) {
         foreach ($name in @('Olivia.lnk', 'Olivia 本地版.lnk')) {
             $candidate = Join-Path $folder $name
-            if (Test-Path -LiteralPath $candidate -PathType Leaf) { $candidate }
+            try {
+                if (Test-Path -LiteralPath $candidate -PathType Leaf) { $candidate }
+            }
+            catch { }
         }
     })
     if (-not $RefreshExisting -and -not $RemoveExisting) {
@@ -67,7 +70,7 @@ foreach ($path in $candidates) {
         $exists = Test-Path -LiteralPath $path -PathType Leaf
         if ($exists -and -not (Test-OwnedShortcut ($shell.CreateShortcut($path)))) { continue }
         if ($RemoveExisting) {
-            if ($exists) { Remove-Item -LiteralPath $path; $changed += $path }
+            if ($exists) { Remove-Item -LiteralPath $path -Force; $changed += $path }
             continue
         }
         if ($RefreshExisting -and -not $exists) { continue }

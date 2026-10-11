@@ -93,6 +93,7 @@ def test_new_install_and_uninstall_preserve_custom_shortcuts(installation, tmp_p
     assert desktop.exists()
     legacy = tmp_path / "desktop/Olivia 本地版.lnk"
     shortcut(legacy, root / "START.cmd")
+    legacy.chmod(0o444)
     renamed = tmp_path / "desktop/My Shortcut.lnk"
     shortcut(renamed, root / "START.cmd")
     migrate(root, "-RemoveExisting")
