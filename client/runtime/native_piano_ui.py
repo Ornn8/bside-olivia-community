@@ -11,7 +11,7 @@ JAVASCRIPT = r'''
   .piano-entry{padding:16px;border:1px solid #c5b7ad;border-radius:12px;background:#faf5ee;color:#392f2a;width:100%;text-align:left;cursor:pointer}
   .piano-dialog{width:min(640px,90vw);max-height:85vh;overflow:auto;background:#faf7f2;color:#392f2a;padding:24px;border:1px solid #c5b7ad;border-radius:16px}
   .piano-dialog::backdrop{background:#0006}.piano-dialog header{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}
-  .piano-dialog h2{font-size:22px;margin:0}.piano-dialog label{display:block;margin:12px 0}.piano-dialog input{background:white;color:#392f2a;border:1px solid #c5b7ad;padding:8px;border-radius:6px;max-width:100%}
+  .piano-dialog h2{font-size:22px;margin:0}.piano-dialog label{display:block;margin:12px 0}.piano-dialog input,.piano-dialog select{background:white;color:#392f2a;border:1px solid #c5b7ad;padding:8px;border-radius:6px;max-width:100%}
   .piano-dialog button,.piano-dialog a{padding:8px 12px;background:#eee3d7;color:#392f2a;border-radius:8px;border:1px solid #c5b7ad;cursor:pointer}.piano-dialog button:disabled{opacity:.5;cursor:wait}
   .piano-dialog article{padding:16px 0;border-top:1px solid #dfd4c9}.piano-dialog audio{display:block;width:100%;margin:12px 0}.piano-dialog p{margin:10px 0}`;
   document.head.append(css);
@@ -25,14 +25,20 @@ JAVASCRIPT = r'''
     if(!caps||dialog)return;dialog=node('dialog');dialog.className='piano-dialog';
     const head=node('header',null,dialog);node('h2','钢琴小样',head);const dismiss=node('button','关闭',head);dismiss.onclick=close;
     node('p','上传你的 MIDI，录成一段可以播放和下载的 MP3。',dialog);
+    const prices=caps.price_ranges_cents;
+    node('p','MIDI 小样 ¥'+(prices.midi[0]/100).toFixed(2)+'–'+(prices.midi[1]/100).toFixed(2)+(caps.original?'；原创小样 ¥'+(prices.original[0]/100).toFixed(2)+'–'+(prices.original[1]/100).toFixed(2):''),dialog);
+    const collection=node('p','',dialog);collection.setAttribute('aria-label','TA 给我的曲子');
     const form=node('form',null,dialog),fileLabel=node('label','MIDI 文件（.mid / .midi）',form),file=node('input',null,fileLabel);file.type='file';file.accept='.mid,.midi';file.required=true;
     const titleLabel=node('label','曲名',form),title=node('input',null,titleLabel);title.maxLength=60;title.required=true;
     const durationLabel=node('label','录音时长（秒）',form),duration=node('input',null,durationLabel);duration.type='number';duration.min='30';duration.max=String(caps.max_seconds);duration.value=String(Math.min(60,caps.max_seconds));duration.required=true;
+    const sectionLabel=node('label','演奏段落',form),section=node('select',null,sectionLabel);
+    for(const text of ['开头','中段','结尾']){const option=node('option',text,section);option.value=text}
     file.onchange=()=>{if(file.files[0])title.value=file.files[0].name.replace(/\.midi?$/i,'').slice(0,60)};
     const submit=node('button','生成 MP3',form);submit.type='submit';const status=node('p','',dialog);status.setAttribute('role','status');const list=node('section',null,dialog);list.setAttribute('aria-label','钢琴任务列表');
     async function load(){
       if(!dialog||busy)return;busy=true;
-      try{const data=await request('/toy/midi/listJobs?pageSize=100');
+      try{const latest=await request('/toy/midi/capabilities');collection.textContent='TA 给我的曲子：'+((latest.pieces||[]).map(p=>'《'+p.title+'》').join('、')||'还没有上传');
+        const data=await request('/toy/midi/listJobs?pageSize=100');
         const signature=JSON.stringify(data.list);if(list.dataset.signature===signature)return;list.dataset.signature=signature;
         list.querySelectorAll('audio').forEach(a=>a.pause());list.replaceChildren();
         for(const job of data.list){const row=node('article',null,list);node('strong',job.piano_meta?.title||job.filename,row);
@@ -54,16 +60,16 @@ JAVASCRIPT = r'''
       if(submit.disabled)return;submit.disabled=true;status.textContent='正在上传 MIDI…';
       try{if(!pending){const ticket=await request('/toy/genObjectUploadUrl',{filename:selected.name,type:'midi'});
           const uploaded=await fetch(ticket.url,{method:'PUT',headers:ticket.headers,body:selected});if(!uploaded.ok)throw Error('MIDI 上传失败，请检查文件后再试');
-          pending={midiUrl:ticket.key,title:title.value.trim(),seconds:Number(duration.value)};
-          file.disabled=title.disabled=duration.disabled=true;}
-        await request('/toy/midi/generate',pending);pending=null;file.disabled=title.disabled=duration.disabled=false;status.textContent='收到 MIDI 了，正在准备录音。';await load();
+          pending={midiUrl:ticket.key,title:title.value.trim(),seconds:Number(duration.value),section:section.value};
+          file.disabled=title.disabled=duration.disabled=section.disabled=true;}
+        await request('/toy/midi/generate',pending);pending=null;file.disabled=title.disabled=duration.disabled=section.disabled=false;status.textContent='收到 MIDI 了，正在准备录音。';await load();
       }catch(e){status.textContent=e.message}finally{submit.disabled=false}
     };
     dialog.addEventListener('cancel',e=>{e.preventDefault();close()});document.body.append(dialog);dialog.showModal();await load();timer=setInterval(load,4000);
   }
   function mount(){document.querySelectorAll(original).forEach(card=>{let button=card.previousElementSibling;if(!button?.classList.contains('piano-entry')){button=node('button','钢琴小样 · 上传 MIDI / 查看录音');button.className='piano-entry';button.type='button';button.onclick=open;card.before(button)}button.hidden=!caps})}
   const observer=new MutationObserver(mount);observer.observe(document.documentElement,{childList:true,subtree:true});mount();
-  async function capability(){try{const value=await request('/toy/midi/capabilities');caps=value.enabled===true?value:null}catch{caps=null}if(!caps)close();mount()}
+  async function capability(){try{const value=await request('/toy/midi/capabilities');caps=value.enabled===true&&value.price_ranges_cents?.midi&&value.price_ranges_cents?.original?value:null}catch{caps=null}if(!caps)close();mount()}
   capability();setInterval(capability,60000);
 })();
 '''

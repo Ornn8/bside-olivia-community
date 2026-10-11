@@ -692,5 +692,5 @@ def _im_presentation():
     local_only = {'companion_decision', 'save_companion_decision', 'record_context_recovery', 'received_source_id', 'input_revision',
                   'proactive_decide', 'proactive_decision', 'turn_is_current',
                   'record_stage_timing', 'generation_attempts', 'daily_video_candidates', 'story_continuation',
-                  'generation_run_id', 'generation_attempt_id', 'save_writer_checkpoint', 'piano_midi', 'piano_experience'}
+                  'generation_run_id', 'generation_attempt_id', 'save_writer_checkpoint', 'piano_midi', 'piano_experience', 'piano_pieces'}
     return {"chat_delivery": {key: item for key, item in value.items() if key not in local_only}} if value is not None else {}

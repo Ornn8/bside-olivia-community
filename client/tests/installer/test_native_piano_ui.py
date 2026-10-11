@@ -23,7 +23,7 @@ def test_native_audio_panel_hides_when_disabled_and_uploads_midi(tmp_path, monke
         def respond(route):
             path = route.request.url.split('http://127.0.0.1:8765')[-1]
             if path == '/toy/midi/capabilities':
-                data = {'enabled': enabled[0], 'max_seconds': 120, 'max_midi_bytes': 524288}
+                data = {'enabled': enabled[0], 'max_seconds': 120, 'max_midi_bytes': 524288,'price_ranges_cents':{'midi':[7,13],'original':[11,29]},'pieces':[{'title':'Evening'}]}
             elif path.startswith('/toy/midi/listJobs'):
                 data = {'list': [{'jobId': 'abc', 'filename': 'evening.midi', 'state': 3,
                                   'description': '给你弹了《Evening》的开头。',
@@ -54,9 +54,12 @@ def test_native_audio_panel_hides_when_disabled_and_uploads_midi(tmp_path, monke
         assert page.locator('audio').count() == 1
         assert page.get_by_text('下载 MP3', exact=True).get_attribute('href').endswith('?download=1')
         page.locator('input[type=file]').set_input_files({'name': 'evening.midi', 'mimeType': 'audio/midi', 'buffer': b'MThd\x00\x00\x00\x06'})
+        page.get_by_label('演奏段落').select_option('中段')
+        assert '0.07' in page.locator('dialog').inner_text()
+        assert 'Evening' in page.get_by_label('TA 给我的曲子').inner_text()
         with page.expect_response('http://127.0.0.1:8765/toy/midi/generate'):
             page.get_by_text('生成 MP3', exact=True).click()
-        assert submitted == [{'midiUrl': 'token', 'title': 'evening', 'seconds': 60}]
+        assert submitted == [{'midiUrl': 'token', 'title': 'evening', 'seconds': 60, 'section':'中段'}]
         page.screenshot(path=str(tmp_path / 'native-piano-panel.png'))
         page.get_by_text('关闭', exact=True).click()
         assert page.locator('dialog').count() == 0

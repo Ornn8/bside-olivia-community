@@ -15,6 +15,8 @@ def test_upload_submit_poll_meta_and_receipt_recovery(tmp_path, monkeypatch):
         uploaded = []; submitted = []; polls = []
         midi = b'MThdsynthetic'; digest = hashlib.sha256(midi).hexdigest()
         async def handler(request):
+            if request.path in {'/v1/capabilities', '/v1/tasks'}:
+                assert request.headers['X-Olivia-Piano'] == '1'
             if request.path == '/v1/capabilities':
                 return web.json_response(dict(kinds=[], shared_assets=[], piano=CAPS, result_acknowledgement=True))
             if request.path == '/v1/assets':
@@ -22,6 +24,7 @@ def test_upload_submit_poll_meta_and_receipt_recovery(tmp_path, monkeypatch):
                 assert request.headers['X-Asset-Suffix'] == '.mid'
                 return web.json_response({'asset_id': digest}, status=201)
             if request.path == '/v1/tasks':
+                assert request.headers['X-Olivia-Max-Charge-Cents'] == str(max(v[1] for v in CAPS['price_ranges_cents'].values()))
                 submitted.append(await request.json())
                 return web.json_response(dict(task_id='piano-test', status='queued'))
             if request.path == '/v1/tasks/piano-test':
@@ -55,5 +58,5 @@ def test_damaged_piano_receipt_never_creates_a_second_order(tmp_path, monkeypatc
     monkeypatch.setattr(RemoteGeneration, 'request', request)
     receipt = tmp_path / 'receipt.json'; receipt.write_text('damaged', encoding='utf-8')
     with pytest.raises(CloudError, match='GPU_RECOVERY_REQUIRED'):
-        asyncio.run(RemoteGeneration().generate('piano', dict(source='library', piece_id='nocturne', seconds=30),
+        asyncio.run(RemoteGeneration().generate('piano', dict(source='original', title='夜曲', mood='平静', seconds=30),
             tmp_path / 'out.mp3', receipt_path=receipt))

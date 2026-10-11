@@ -441,7 +441,7 @@ class JevDecisionPort:
         self._opener = urllib.request.build_opener(*handlers)
 
     def request_headers(self, body_digest):
-        headers = {'Content-Type': 'application/json', 'X-Olivia-Usage-Id': body_digest,
+        headers = {'Content-Type': 'application/json', 'X-Olivia-Piano': '1', 'X-Olivia-Usage-Id': body_digest,
                    'X-Olivia-Request-Id': str(uuid.uuid4())}
         if self.endpoint.startswith('https://'):
             from .jev_billing import cloud_request_headers

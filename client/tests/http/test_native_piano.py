@@ -9,12 +9,14 @@ import pytest
 from runtime import native_piano as native
 
 
-CAPS = {'piano': {'enabled': True, 'library': [], 'max_seconds': 120, 'max_midi_bytes': 64, 'original': True}}
+CAPS = {'piano': {'enabled': True, 'price_ranges_cents': {'midi':[7,13],'original':[11,29]}, 'max_seconds': 120, 'max_midi_bytes': 64, 'original': True}}
 META = {'title': 'Evening', 'composer': None, 'key': None, 'tempo_bpm': 80, 'seconds': 60, 'section': '开头'}
 
 
 @pytest.fixture
 def adapter(tmp_path, monkeypatch):
+    monkeypatch.setenv('OLIVIA_GPU_API_URL','http://127.0.0.1:1')
+    monkeypatch.setenv('OLIVIA_GPU_API_KEY','synthetic')
     class API:
         calls = []
         state = 'queued'
@@ -26,12 +28,13 @@ def adapter(tmp_path, monkeypatch):
             return {'task_id': 'remote_one', 'status': self.state, 'piano_meta': META}
         async def upload(self, path):
             assert path.read_bytes().startswith(b'MThd')
-            return 'a' * 64
+            import hashlib
+            return hashlib.sha256(path.read_bytes()).hexdigest()
         async def download_task(self, task_id, path, *, validate):
             assert callable(validate)
             path.write_bytes(b'ID3mock')
     api = API()
-    server = SimpleNamespace(_local_data_root=lambda: tmp_path, _os=SimpleNamespace(environ={}),
+    server = SimpleNamespace(_local_data_root=lambda: tmp_path, _os=__import__('os'),
                              PORT=8765, store=SimpleNamespace(midi_jobs=[]), _persist_store_state=lambda: None,
                              ok=lambda data: {'code': 0, 'data': data}, err=lambda code, msg, data: {'code': code, 'message': msg, 'data': data},
                              CORS_HEADERS=lambda request: {})

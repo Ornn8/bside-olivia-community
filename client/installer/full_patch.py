@@ -67,6 +67,7 @@ PAYLOAD_EXTRA_FILES = (
     "runtime/wardrobe.py",
     "runtime/gifts.py",
     "runtime/piano.py",
+    "runtime/piano_collection.py",
     "runtime/native_piano.py",
     "runtime/native_piano_ui.py",
     "runtime/personal_chat/piano.py",

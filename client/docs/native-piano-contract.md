@@ -40,3 +40,5 @@ evidence verifies visibility, input, upload and rendered audio/download controls
 it does not establish native-host codec playback, real-server generation or
 human listening acceptance. Those remain joint integration checks when the
 server enables the capability.
+
+For 2.3.0 the panel requires valid server price ranges and renders them without a client price table. Its segment selector sends section; omitted section defaults to 开头. Uploads also enter the account-scoped collection with title, SHA-256, first upload time and source. The panel displays that collection and filters jobs/audio by account. See [piano-client-contract.md](piano-client-contract.md).

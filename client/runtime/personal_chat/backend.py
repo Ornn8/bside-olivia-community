@@ -468,6 +468,8 @@ async def _generate_billed(server, event, row):
     speech_enabled = event.channel == 'qq' and await speech_supported(os.environ)
     from runtime import piano
     piano_caps = await piano.capabilities(os.environ) if event.channel == 'qq' else None
+    from runtime.piano_collection import pieces as saved_pieces
+    piano_pieces = saved_pieces(server) if piano_caps else []
     row['voice_ready'] = voice_available
     image_offered = bool(event.channel == 'qq' and row.get('image_available') and row['image_reply_settings'].get('enabled')
                          and os.environ.get('OLIVIA_GPU_API_URL') and os.environ.get('OLIVIA_GPU_API_KEY'))
@@ -589,8 +591,9 @@ async def _generate_billed(server, event, row):
                                     channel=event.channel, binding_id=event.binding_id),
                                 'structured': True, 'raw_user_text': event.text,
                                 'speech_enabled': speech_enabled,
-                                'piano_experience': ({**piano_caps, 'midi_available': bool(row.get('piano_midi'))} if piano_caps else None),
+                                'piano_experience': ({**piano_caps, 'midi_available': bool(row.get('piano_midi') or piano_pieces)} if piano_caps else None),
                                 'piano_midi': row.get('piano_midi') if piano_caps else None,
+                                'piano_pieces': piano_pieces,
                                 'bedtime_offer_enabled': speech_enabled,
                                 'daily_video_candidates': daily_candidates,
                                 'incoming_observation_context': observation_context,
@@ -833,10 +836,16 @@ async def _generate_billed(server, event, row):
             piano_intent = dict(source='midi', piece_hint=row['piano_midi']['title'], seconds=min(60, piano_caps['max_seconds']))
         if piano_caps and piano_intent and not row.get('degraded_stages'):
             try:
-                payload = piano.task_input(piano_intent, piano_caps, row.get('piano_midi'))
+                payload = piano.task_input(piano_intent, piano_caps, row.get('piano_midi'), piano_pieces)
                 timing = (row.get('companion_decision') or {}).get('plan', {}).get('proposal', {}).get('timing')
                 if timing not in {'wait_user', 'defer', 'no_reply'}:
-                    row.update(piano_input=payload, piano_status='PENDING', piano_delivery_status='PENDING', requested_format='text')
+                    from runtime.piano_collection import account, upload
+                    if payload['source'] == 'midi':
+                        from runtime.remote_generation import RemoteGeneration
+                        selected = next(p for p in piano_pieces if p['asset'] == payload['midi_asset'])
+                        api = RemoteGeneration(os.environ.get('OLIVIA_GPU_API_URL', ''), os.environ.get('OLIVIA_GPU_API_KEY', ''))
+                        await upload(server, api, selected, piano_caps['max_midi_bytes'])
+                    row.update(piano_account=account(server), piano_input=payload, piano_status='PENDING', piano_delivery_status='PENDING', requested_format='text')
                     mode = 'text'
             except ValueError:
                 row['piano_status'] = 'REQUEST_UNAVAILABLE'

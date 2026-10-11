@@ -39,6 +39,7 @@ class RemoteGeneration:
         # Clients up to 2.2.13 fail a whole QQ turn when her current moment is offered as a
         # video, so the service announces moment videos only to clients that say they can take one.
         headers['X-Olivia-Daily-Video-Moment'] = '1'
+        headers['X-Olivia-Piano'] = '1'
         payload = None
         if action == 'submit':
             if set(data) != {'request_id', 'kind', 'input'} or data['kind'] not in ('tts', 'cover', 'image', 'video', 'original', 'lipsync', 'separate', 'cover_video', 'original_video', 'daily_video', 'piano') or not isinstance(data['input'], dict):
@@ -60,6 +61,13 @@ class RemoteGeneration:
             payload = data
             headers['Idempotency-Key'] = data['request_id']
             headers['X-Olivia-Max-Charge-Cents'] = str(121 if data['kind'] == 'image' else 500 if data['kind'] in ('video', 'lipsync', 'cover_video', 'original_video', 'daily_video') else 300 if data['kind'] == 'original' else 100)
+            if data['kind'] == 'piano':
+                from runtime.piano import capability
+                caps = capability(await self.request('capabilities', {}))
+                if (not caps or data['input']['seconds'] > caps['max_seconds']
+                        or data['input']['source'] == 'original' and not caps['original']):
+                    raise CloudError('GPU_CAPABILITY_UNAVAILABLE', 503)
+                headers['X-Olivia-Max-Charge-Cents'] = str(max(span[1] for span in caps['price_ranges_cents'].values()))
             path, method = '/v1/tasks', 'POST'
         elif action == 'capabilities' and data == {}:
             path, method = '/v1/capabilities', 'GET'
@@ -85,11 +93,10 @@ class RemoteGeneration:
         elif action == 'gifts_get' and data == {}:
             path, method = '/v1/gifts', 'GET'
         elif action == 'gifts_buy':
-            from runtime.gifts import validate_purchase
-            try:
-                payload = validate_purchase(data)
-            except ValueError:
-                raise CloudError('GPU_REQUEST_INVALID', 400) from None
+            if not isinstance(data, dict) or set(data) != {'item'} or not isinstance(data['item'], str) \
+                    or not re.fullmatch(r'[a-z0-9-]{3,40}', data['item']):
+                raise CloudError('GPU_REQUEST_INVALID', 400)
+            payload = data
             path, method = '/v1/gifts', 'POST'
         elif action == 'pets_get' and data == {}:
             path, method = '/v1/pets', 'GET'

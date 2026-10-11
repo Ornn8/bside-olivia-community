@@ -12,6 +12,7 @@ from aiohttp import web
 from runtime.cloud_service import CloudError
 from runtime.remote_generation import RemoteGeneration
 from runtime import piano
+from runtime.piano_collection import account
 
 STATES = {'queued': 1, 'running': 2, 'succeeded': 3, 'cancelled': 4, 'failed': 5}
 _locks: dict[str, asyncio.Lock] = {}
@@ -26,9 +27,8 @@ def directory(server):
     root = server._local_data_root()
     if root is None:
         raise CloudError('PIANO_STORAGE_UNAVAILABLE', 503)
-    target = Path(root) / 'piano'
-    target.mkdir(parents=True, exist_ok=True)
-    return target
+    from runtime.piano_collection import root as collection_root
+    return collection_root(server)
 
 
 async def enabled(server):
@@ -64,6 +64,8 @@ async def upload_http(server, request):
         piano.validate_midi(record['filename'], bytes(data), caps['max_midi_bytes'])
         with target.open('xb') as stream:
             stream.write(data)
+        from runtime.piano_collection import save
+        save(server, bytes(data), Path(record['filename'].replace('\\', '/')).stem[:60] or '钢琴小样', 'client', caps['max_midi_bytes'])
         return web.Response(status=204, headers=headers)
     except CloudError as exc:
         return web.json_response(server.err(exc.status, exc.code, {}), status=exc.status, headers=headers)
@@ -86,6 +88,8 @@ def projection(server, job):
 
 
 async def refresh(server, job):
+    if job.get('piano_account') != account(server):
+        raise CloudError('PIANO_ACCOUNT_CHANGED', 409)
     async with _locks.setdefault(job['job_id'], asyncio.Lock()):
         if job['state'] in {4, 5} or job['state'] == 3 and job.get('remembered'):
             return
@@ -133,7 +137,7 @@ async def audio_http(server, request):
     if request.method not in {'GET', 'HEAD'}:
         return web.Response(status=405)
     job_id = request.path.rsplit('/', 1)[-1].removesuffix('.mp3')
-    job = next((j for j in server.store.midi_jobs if j.get('job_id') == job_id and j.get('state') == 3), None)
+    job = next((j for j in server.store.midi_jobs if j.get('job_id') == job_id and j.get('piano_account') == account(server) and j.get('state') == 3), None)
     if job is None or not re.fullmatch(r'[a-f0-9]{32}', job_id):
         return web.Response(status=404)
     path = directory(server) / (job_id + '.mp3')
@@ -149,11 +153,12 @@ async def route(server, path, body, query):
     try:
         if path in {'/toy/midi/getGenerateResult', '/toy/midi/cancelGenerate', '/toy/midi/deleteJob'}:
             identity = body.get('jobId') or query.get('jobId') or query.get('job_id')
-            if not any(j.get('job_id') == identity and j.get('task_id') and not j.get('hidden') for j in server.store.midi_jobs):
+            if not any(j.get('job_id') == identity and j.get('piano_account') == account(server) and j.get('task_id') and not j.get('hidden') for j in server.store.midi_jobs):
                 return server.err(404, 'MIDI_JOB_NOT_FOUND', {})
         caps = await enabled(server)
         if path == '/toy/midi/capabilities':
-            return server.ok(caps)
+            from runtime.piano_collection import pieces
+            return server.ok({**caps, 'pieces': pieces(server)})
         if path == '/toy/genObjectUploadUrl':
             filename = body.get('filename', '')
             if not isinstance(filename, str) or len(filename) > 255 or Path(filename).suffix.lower() not in {'.mid', '.midi'}:
@@ -170,16 +175,18 @@ async def route(server, path, body, query):
                 piano.validate_midi(record['filename'], source.read_bytes(), caps['max_midi_bytes'])
                 title = body.get('title') or Path(record['filename']).stem[:60]
                 seconds = body.get('seconds', min(60, caps['max_seconds']))
-                payload = piano.validate_input({'source': 'midi', 'midi_asset': '0' * 64, 'title': title, 'seconds': seconds})
+                payload = piano.validate_input({'source': 'midi', 'midi_asset': '0' * 64, 'title': title, 'seconds': seconds, 'section': body.get('section', '开头')})
                 if seconds > caps['max_seconds']:
                     raise ValueError('PIANO_SECONDS_INVALID')
-                previous = next((j for j in server.store.midi_jobs if j.get('upload_token') == token), None)
+                previous = next((j for j in server.store.midi_jobs if j.get('upload_token') == token and j.get('piano_account') == account(server)), None)
                 if previous is not None and previous.get('task_id'):
                     return server.ok(projection(server, previous))
                 remote = api(server)
-                payload['midi_asset'] = await remote.upload(source)
+                from runtime.piano_collection import save, upload
+                piece = save(server, source.read_bytes(), title, 'client', caps['max_midi_bytes'])
+                payload['midi_asset'] = await upload(server, remote, piece, caps['max_midi_bytes'])
                 if previous is None:
-                    previous = {'job_id': uuid.uuid4().hex, 'upload_token': token, 'filename': record['filename'],
+                    previous = {'piano_account': account(server), 'job_id': uuid.uuid4().hex, 'upload_token': token, 'filename': record['filename'],
                                 'created_at': int(time.time()), 'status': 'queued', 'state': 1, 'input': payload}
                     server.store.midi_jobs.append(previous)
                     server._persist_store_state()
@@ -203,7 +210,7 @@ async def route(server, path, body, query):
                 server._persist_store_state()
                 monitor(server, previous)
                 return server.ok(projection(server, previous))
-        jobs = [j for j in server.store.midi_jobs if (j.get('task_id') or j.get('input')) and not j.get('hidden')]
+        jobs = [j for j in server.store.midi_jobs if j.get('piano_account') == account(server) and (j.get('task_id') or j.get('input')) and not j.get('hidden')]
         if path == '/toy/midi/listJobs':
             cursor, size = max(0, int(query.get('cursor', 0))), max(1, min(100, int(query.get('pageSize', 20))))
             selected = list(reversed(jobs))[cursor:cursor + size]

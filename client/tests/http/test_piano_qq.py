@@ -19,6 +19,8 @@ META = dict(title='夜曲', composer='作曲者', key='降E大调', tempo_bpm=72
     (False, 'demo.mid', b'MThd1234', 'ordinary'), (True, 'notes.pdf', b'%PDF-', 'ordinary')],
     ids=['valid', 'bad-header', 'oversized', 'disabled', 'ordinary'])
 def test_current_turn_midi_intake(tmp_path, monkeypatch, enabled, name, data, expected):
+    monkeypatch.setenv('OLIVIA_GPU_API_URL','http://127.0.0.1:1')
+    monkeypatch.setenv('OLIVIA_GPU_API_KEY','synthetic')
     row = {}; calls = []
     async def caps(env): return CAPS if enabled else None
     class API:
@@ -53,7 +55,7 @@ def test_mp3_delivery_ack_memory_and_no_uncertain_replay(tmp_path, monkeypatch, 
     from runtime.personal_chat.qq import QQFileRejected
     from runtime.personal_chat.backend import persist_chat
     calls = []; sent = []; notices = []
-    row = dict(letter_id='turn', channel='qq', piano_input={'source': 'library', 'piece_id': 'nocturne', 'seconds': 30})
+    row = dict(letter_id='turn', channel='qq', piano_input={'source': 'original', 'title': '夜曲', 'mood': '平静', 'seconds': 30})
     async def caps(env): return CAPS
     async def persist(server): pass
     class API:
@@ -97,7 +99,7 @@ def test_piano_decision_is_frozen_and_optional():
     from runtime.reply.companion_decision import FrozenCompanionTurn, FrozenCompanionDecision, JevDecisionPort
     from tests.persona.test_companion_decision import input_args, envelope
     turn = FrozenCompanionTurn.create(**input_args(), piano_experience=CAPS)
-    response = {**envelope(), 'piano_request': dict(source='library', piece_hint='夜曲', seconds=30)}
+    response = {**envelope(), 'piano_request': dict(source='original', piece_hint='夜曲', seconds=30)}
     record = FrozenCompanionDecision.from_response(turn, response).record()
     assert FrozenCompanionDecision.from_record(FrozenCompanionTurn.from_record(record), record).record() == record
     assert JevDecisionPort('http://127.0.0.1:1/v1/companion/decide')._packet(turn)['piano_experience'] == CAPS
@@ -112,7 +114,7 @@ def test_piano_background_deduplicates_by_owner():
         async def perform(row, send): calls.append(row['letter_id']); await asyncio.sleep(0)
         async def commit(row): pass
         binding = PersonalMessage('qq', 'bot', 'owner', '', '').binding_id
-        row = dict(letter_id='one', channel='qq', binding_id=binding, delivery_status='DELIVERED', piano_input={'source': 'library'})
+        row = dict(letter_id='one', channel='qq', binding_id=binding, delivery_status='DELIVERED', piano_input={'source': 'original'})
         rows = [row, {**row, 'letter_id': 'unknown', 'piano_delivery_status': 'UNKNOWN'},
                 {**row, 'letter_id': 'foreign', 'binding_id': 'other'}]
         service = PersonalChatService(rows, lambda: None, None, commit, {'qq': ('bot', 'owner')}, piano=perform)

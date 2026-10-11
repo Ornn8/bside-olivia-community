@@ -23,7 +23,7 @@ def test_actual_writer_gets_only_executable_piano_instruction(timing, enabled, e
             response = dict(schema_version='companion-shadow/1', backend='jev', model=MODEL,
                 contract_valid=True, status='valid_contract', fallback=False, action_executed=False,
                 production_approved=False, latency_ms=1, plan=value, tasks=project(value),
-                api_calls=1, usage={'input_tokens': 1}, piano_request=dict(source='library', piece_hint='夜曲', seconds=30))
+                api_calls=1, usage={'input_tokens': 1}, piano_request=dict(source='original', piece_hint='夜曲', seconds=30))
             return CompanionDecisionResult(decision=FrozenCompanionDecision.from_response(turn, response))
     engine = Engine(envelope(text='等我一下，去琴房录给你。', delivery='text'))
     pipeline = ReplyPipeline(engine, reviewer=NullReviewer(), rewriter=UnavailableRewriter(),

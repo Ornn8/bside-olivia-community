@@ -1,0 +1,16 @@
+# Piano 2.3.0 client contract
+
+Draft only. Gifts are preserved separately on feat/gifts-v2.
+
+- Capabilities and decision requests carry X-Olivia-Piano: 1. The server must omit the piano capability and piano_request for clients without that header. Missing or disabled piano capability hides the entry. No new value is added to the existing speech format enum.
+- Sources are midi and original only. No bundled repertoire or capability library is consumed. Limits and original availability come from capabilities.piano.
+- price_ranges_cents must contain midi and original integer [low, high] pairs. The UI displays only those server ranges. Every piano submission fetches capabilities and sets X-Olivia-Max-Charge-Cents to the greatest upper bound. Invalid/missing ranges prevent submission. No product price is embedded.
+- section accepts 开头, 中段 or 结尾, default 开头. It survives the decision, frozen intent, writer plan and task input. The result description and memory use the actual validated piano_meta instead of the proposed segment.
+- MIDI bytes are retained unchanged in the application data directory under piano/<account namespace>/<sha256>.mid. The namespace is derived from API origin and account credential, never stored as plaintext. Credential rotation starts an isolated collection; files are retained in the prior namespace. No model assets or user MIDI are included in the package or logs.
+- pieces.sqlite3 records sha256, title, first upload time and source (qq/client), plus the confirmed asset receipt. Repeated bytes reuse one file and asset, retaining first-upload provenance and the latest supplied title. Concurrent upload attempts share one upload receipt. Modified local bytes fail validation.
+- The TA 给我的曲子 list is visible in the native panel. Titles also enter QQ and letter context as untrusted data. A MIDI piece_hint matches a saved title exactly, ignoring case and outer book-title brackets. Missing or ambiguous matches prompt clarification; no piece is invented. A just-uploaded MIDI can be selected directly. A saved piece can be played again without attaching the file again.
+- The decision body retains piano_experience with normalized capability and midi_available. piano_request is required when that experience is advertised, and can be null. The writer acknowledges a pending recording briefly without claiming completion.
+- Receipts retain request ID and payload across restart and uncertain transport. Damaged receipts fail closed. QQ audio is acknowledged only after confirmed file acceptance, and uncertain delivery is not automatically repeated. Native jobs and replay files are isolated by account.
+- Confirmed piano_meta feeds the existing memory outbox. Hiding a job does not erase its completion memory. See [native-piano-contract.md](native-piano-contract.md) for native adapter details.
+
+Validation uses synthetic MIDI, HTTP responses and browser fixtures. Server header gating, real synthesis, native-host playback and actual QQ delivery still require joint integration after the server update. No service is deployed by this PR.

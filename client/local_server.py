@@ -3938,7 +3938,7 @@ async def _pets_tick() -> None:
     now = datetime.now(timezone.utc)
     for action, remember in (
             ('pets_get', lambda r: diary_store.remember_pets(r['pets'], now, [i['name'] for i in r['items'] if i['owned']])),
-            ('gifts_get', lambda r: diary_store.remember_gifts([c for c in [*r['cameras'], *r.get('items', [])] if c['owned']], now)),
+            ('gifts_get', lambda r: diary_store.remember_gifts([c for c in r['cameras'] if c['owned']], now)),
             ('wardrobe_get', lambda r: diary_store.remember_wardrobe(r, now))):
         try:
             remember(await api.request(action, {}))
@@ -4733,16 +4733,8 @@ async def route(
             if method == 'POST':
                 if not companion_confirmed:
                     return err(403, 'COMPANION_CONFIRMATION_REQUIRED', {})
-                from runtime.gifts import validate_purchase
-                try:
-                    body = validate_purchase(body)
-                except ValueError:
+                if not isinstance(body, dict) or set(body) != {'item'}:
                     return err(400, 'GIFT_REQUEST_INVALID', {'error_code': 'GIFT_REQUEST_INVALID'})
-                catalog = await api.request('gifts_get', {})
-                selected = next((item for item in [*catalog['cameras'], *catalog.get('items', [])]
-                                 if item['id'] == body['item']), None)
-                if selected is None or ('custom' in body) != (selected.get('customizable') is True):
-                    return err(400, 'GIFT_CUSTOM_INVALID', {'error_code': 'GIFT_CUSTOM_INVALID'})
                 result = await api.request('gifts_buy', body)
             elif method == 'GET':
                 result = await api.request('gifts_get', {})
@@ -4752,7 +4744,7 @@ async def route(
             return err(exc.status, exc.code, {'error_code': exc.code})
         if diary_store is not None:
             try:
-                diary_store.remember_gifts([c for c in [*result['cameras'], *result.get('items', [])] if c['owned']], datetime.now(timezone.utc))
+                diary_store.remember_gifts([c for c in result['cameras'] if c['owned']], datetime.now(timezone.utc))
             except (OSError, ValueError, sqlite3.Error):
                 pass
         return ok(result)

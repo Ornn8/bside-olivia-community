@@ -605,12 +605,14 @@ class ReplyPipeline:
                 intent = dict(source='midi', piece_hint=midi['title'], seconds=min(60, caps['max_seconds']))
             if intent:
                 try:
-                    payload = task_input(intent, caps, midi)
+                    payload = task_input(intent, caps, midi, chat_metadata.get('piano_pieces', ()))
                     piano_note = writer_instruction(payload, caps)
                     speech_note = ''
                 except ValueError:
-                    piano_note = '钢琴请求暂时无法执行，请简短说明曲目尚未匹配或文件不可用，不承诺录音已完成。'
-        final_notes = tuple(note for note in (decision_note, generation_note, speech_note, piano_note) if note)
+                    piano_note = '没有唯一匹配的已上传 MIDI。自然地问对方指的是哪一首，或请对方上传 MIDI；不编造曲目，不承诺已经录好。'
+        from runtime.piano_collection import environment_context
+        collection_note = environment_context() if context.mode is ReplyMode.TEXT_LETTER else ''
+        final_notes = tuple(note for note in (decision_note, generation_note, speech_note, piano_note, collection_note) if note)
         # Content-only legacy requests keep their adapter-owned assembly path.
         if decision_note and isinstance(prepared, ReplyRequest) and prepared.messages is None:
             prepared = replace(prepared, messages=prepared.normalized_messages())

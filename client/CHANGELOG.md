@@ -2,6 +2,10 @@
 
 每个版本的完整内容、升级方式和已知问题见 [`docs/releases/`](docs/releases/) 下对应的更新说明；附件以 [GitHub Releases](https://github.com/Ornn8/bside-olivia-community/releases) 为准。
 
+## 2.3.0 - 准备中
+
+新增钢琴 MP3 小样、MIDI 上传与重奏、演奏段落选择，以及本地“TA 给我的曲子”清单。详见 [2.3.0 更新说明](docs/releases/v2.3.0.md)。
+
 ## 2.1.3 - 2026-10-04
 
 修复部分回信寄不出去和部分电脑启动报错码 2；照片默认开启；历史关系评估与曲库导入出错时显示具体原因。详见 [2.1.3 更新说明](docs/releases/v2.1.3.md)。
