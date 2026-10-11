@@ -169,7 +169,8 @@ def test_qq_default_speech_does_not_depend_on_writer_opting_in_or_old_listening_
     row['listening_preference'] = listening
     event = PersonalMessage('qq', 'b', 'u', '1', '今天怎么样？')
     assert asyncio.run(backend.generate(server, event, row)) == '今天练得挺顺，刚歇下来。'
-    assert row['requested_format'] == 'voice' and audio == ['今天练得挺顺，刚歇下来。']
+    assert row['requested_format'] == 'text' and not audio
+    assert row['default_voice_status'] == 'PENDING'
     assert row['delivery_basis'] == 'QQ_DEFAULT_VOICE'
 
 
@@ -180,7 +181,8 @@ def test_pending_future_media_does_not_lock_current_qq_reply_to_text(monkeypatch
         evidence_turn_ids=['t1'])]
     server, row, _, _, audio = server_fixture(monkeypatch, tmp_path, result)
     asyncio.run(backend.generate(server, PersonalMessage('qq', 'b', 'u', '1', '今天怎么样？'), row))
-    assert row['requested_format'] == 'voice' and len(audio) == 1
+    assert row['requested_format'] == 'text' and not audio
+    assert row['default_voice_status'] == 'PENDING'
 
 
 @pytest.mark.parametrize('restriction', ['current_text', 'no_extras', 'uncertain_media'])
@@ -216,7 +218,8 @@ def test_recipient_listening_and_invented_reasons_cannot_suppress_default_speech
     result = ordinary_chat_result(delivery='text', text_reason=reason)
     server, row, _, _, audio = server_fixture(monkeypatch, tmp_path, result)
     asyncio.run(backend.generate(server, PersonalMessage('qq', 'b', 'u', '1', '今天怎么样？'), row))
-    assert row['requested_format'] == 'voice' and len(audio) == 1
+    assert row['requested_format'] == 'text' and not audio
+    assert row['default_voice_status'] == 'PENDING'
 
 
 @pytest.mark.parametrize('unavailable,basis', [('wechat', 'WECHAT_TEXT'),
@@ -244,20 +247,22 @@ def test_twelve_ordinary_qq_turns_deliver_audio_without_text_opt_in_or_replay(mo
         generated.append(event.exchange_id)
         return await backend.generate(server, event, row)
     async def commit(row): pass
-    async def text_send(text): raise AssertionError('ordinary QQ turn should deliver speech')
+    async def text_send(text): return 'confirmed-text'
     async def audio_send(path):
         sent.append(path)
         return 'confirmed-' + str(len(sent))
     text_send.audio = audio_send
     server._persist_store_state = lambda: None
     async def scenario():
-        service = PersonalChatService(rows, lambda: None, generate, commit, {'qq': ('b', 'u')})
+        service = PersonalChatService(rows, lambda: None, generate, commit, {'qq': ('b', 'u')},
+            default_voice=lambda row, send: backend.deliver_default_voice(server, row, send))
         for index in range(12):
             event = PersonalMessage('qq', 'b', 'u', str(index), '今天怎么样？')
             await service.handle(event, text_send)
             await service.handle(event, text_send)  # A platform replay must not synthesize/send twice.
         assert len(generated) == len(prepared) == len(sent) == 12
-        assert all(row['delivery_status'] == 'DELIVERED' and row['delivered_format'] == 'audio' for row in rows)
+        assert all(row['delivery_status'] == 'DELIVERED' and row['delivered_format'] == 'text'
+                   and row['default_voice_status'] == 'DELIVERED' for row in rows)
         assert all(row['delivery_basis'] == 'QQ_DEFAULT_VOICE' for row in rows)
         await asyncio.gather(*service.consumer_tasks.values())
     asyncio.run(scenario())
@@ -278,13 +283,15 @@ def test_optional_default_voice_render_failure_still_delivers_reply_text(monkeyp
     async def audio_send(path): raise AssertionError('missing audio must not be sent')
     text_send.audio = audio_send
     async def scenario():
-        service = PersonalChatService(rows, lambda: None, generate, commit, {'qq': ('b', 'u')})
+        service = PersonalChatService(rows, lambda: None, generate, commit, {'qq': ('b', 'u')},
+            default_voice=lambda row, send: backend.deliver_default_voice(server, row, send))
         event = PersonalMessage('qq', 'b', 'u', '1', '今天怎么样？')
         await service.handle(event, text_send)
         assert sent == ['今天练得挺顺，刚歇下来']  # Existing QQ text formatting removes sentence-final dots.
         assert rows[0]['delivery_status'] == 'DELIVERED' and rows[0]['delivered_format'] == 'text'
-        assert rows[0]['voice_fallback'] == 'PERSONAL_CHAT_TTS_UNAVAILABLE'
-        assert rows[0]['delivery_basis'] == 'VOICE_RENDER_FAILED'
+        await asyncio.gather(*service.speech_tasks.values())
+        assert rows[0]['default_voice_status'] == 'FAILED'
+        assert rows[0]['delivery_basis'] == 'QQ_DEFAULT_VOICE'
         await asyncio.gather(*service.consumer_tasks.values())
     asyncio.run(scenario())
 

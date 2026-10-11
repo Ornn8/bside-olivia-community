@@ -124,7 +124,7 @@ def test_world_addressing_is_frozen_before_emotion_can_update_store(monkeypatch)
         monkeypatch.setattr(world_context_selection, 'select_world_context', select)
         adapter = object.__new__(local_server.LetterAdapter)
         adapter.daily_life = SimpleNamespace(store=Store())
-        adapter.recent_letter_fragments = lambda content, now: ()
+        adapter.recent_letter_fragments = lambda content, now, selection_only=False: ()
         task = asyncio.create_task(adapter.prepare_daily_life_fragments('晚上好。', now=NOW))
         await asyncio.sleep(0)
         state['calls'] = ['晚到的新称呼']

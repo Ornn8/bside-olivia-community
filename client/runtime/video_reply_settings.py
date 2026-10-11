@@ -50,6 +50,15 @@ def image_model_capability(capabilities):
     return result
 
 
+def delisted_fallback(image, catalog):
+    """Image settings whose model was delisted: the service default, at a resolution it offers."""
+    result = {key: value for key, value in image.items() if key != 'model'}
+    default = next((item for item in catalog['models'] if item['id'] == catalog.get('default_model')), None)
+    if default is not None and result.get('resolution') not in default['resolutions']:
+        result['resolution'] = default['resolutions'][0]
+    return result
+
+
 def require_image_model(image, capabilities):
     if 'model' not in image:
         return

@@ -1,6 +1,7 @@
 import asyncio
 import json
 from pathlib import Path
+import time
 
 import pytest
 
@@ -28,7 +29,8 @@ def test_frozen_text_visible_before_video_without_claiming_video_success(state):
 
 
 def test_background_video_does_not_gate_new_letters_but_unfinished_text_still_does(monkeypatch):
-    row = video_letter()
+    # Rows without a date no longer hold the scheduler, so this one carries its own.
+    row = video_letter(created_at=time.time())
     monkeypatch.setattr(local_server.store, 'letters', [row])
     assert local_server._active_undelivered_letter() is None
     row['letter_status'] = 'PROCESSING'

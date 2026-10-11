@@ -18,18 +18,22 @@ from runtime.private_world.life_rhythm import rhythm
 def test_proactive_uses_current_character_rhythm(stamp, shifts, expected):
     source = Path(__file__).resolve().parents[2] / 'local_server.py'
     nodes = [n for n in ast.parse(source.read_text(encoding='utf-8')).body
-             if isinstance(n, ast.FunctionDef) and n.name in {'_proactive_ready', '_current_life_rhythm'}]
+             if isinstance(n, ast.FunctionDef) and n.name in {'_proactive_ready', '_proactive_gate_reason', '_current_life_rhythm'}]
     class Clock:
         @staticmethod
         def now(tz=None):
             return datetime.fromisoformat(stamp).astimezone(tz or timezone.utc)
+    stub = SimpleNamespace(store=SimpleNamespace(letters=[], personal_chats=[]))
     namespace = dict(datetime=Clock, timezone=timezone, sqlite3=sqlite3,
+        sys=SimpleNamespace(modules={'rhythm_test': stub}), __name__='rhythm_test',
+        time=SimpleNamespace(time=lambda: Clock.now(timezone.utc).timestamp()),
         _proactive_settings=lambda: {'enabled': True},
         _history_memory_admin_gate=SimpleNamespace(locked=lambda: False),
         _conversation_memory_ready_for_reply=lambda: True,
         _active_undelivered_letter=lambda: None,
         _refresh_proactive_context=lambda: {'remaining': 3, 'blocked': False, 'unread': False},
         _safe_log=lambda *_: None,
+        _observe_letter_initiative=lambda *_: None,
         daily_life_runtime=SimpleNamespace(store=SimpleNamespace(
             snapshot=lambda now: {'rhythm': rhythm(now, [], shifts)})))
     exec(compile(ast.Module(body=nodes, type_ignores=[]), str(source), 'exec'), namespace)

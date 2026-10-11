@@ -25,10 +25,19 @@ async def login(ws):
 
 
 async def acknowledge(ws):
-    request = await ws.receive_json()
+    request = await receive_reply(ws)
     await ws.send_json({'echo': request['echo'], 'status': 'ok', 'retcode': 0,
                         'data': {'message_id': 300}})
     return request
+
+
+async def receive_reply(ws):
+    while True:
+        request = await ws.receive_json()
+        if request['action'] != 'set_input_status':
+            return request
+        assert request['params'] == {'user_id': '200', 'event_type': 1}
+        await ws.send_json({'echo': request['echo'], 'status': 'ok', 'retcode': 0, 'data': None})
 
 
 async def run(socket, handler, stop, *, merge_seconds=0):
@@ -437,7 +446,7 @@ def test_actual_service_input_during_network_ack_keeps_both_causal_replies():
             await ws.prepare(request)
             await login(ws)
             await ws.send_json(event(1, 'first'))
-            outgoing = await ws.receive_json()
+            outgoing = await receive_reply(ws)
             sent.append(outgoing)
             assert rows[0]['delivery_status'] == 'SENDING'
             await ws.send_json(event(2, 'second'))

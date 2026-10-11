@@ -13,7 +13,7 @@ import time
 import urllib.error
 import urllib.request
 
-from runtime.diagnostics.jev_pricing import DISCOUNT_PRICE_VERSION, INPUT_RATE_UNITS, PRICE_VERSION
+from runtime.diagnostics.jev_pricing import CURRENT_PRICE_VERSION, INPUT_RATE_UNITS, PRICE_VERSION
 
 
 @dataclass(frozen=True)
@@ -27,7 +27,7 @@ CURRENT = ContextVar('jev_billing_turn', default=None)
 # This header tells the relay the client verifies it; older clients are billed
 # exact usage because they reject any other amount.
 MINIMUM_CHARGE_UNITS = 1_000_000
-MINIMUM_HEADER = {'X-Olivia-Billing-Minimum': '1', 'X-Olivia-JEV-Price': DISCOUNT_PRICE_VERSION}
+MINIMUM_HEADER = {'X-Olivia-Billing-Minimum': '1', 'X-Olivia-JEV-Price': CURRENT_PRICE_VERSION}
 _account_key = None
 
 

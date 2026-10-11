@@ -10,7 +10,7 @@ from runtime import image_reply
 from runtime.cloud_service import CloudError
 from runtime.personal_chat.daily_video import select_candidate
 from runtime.remote_generation import RemoteGeneration
-from tests.http.test_daily_video import API, payload, publish, service, world, worker
+from tests.http.test_daily_video import API, HOME, payload, publish, service, world, worker
 
 SCENES = [dict(scene_id='bedroom', event_kinds=['housework'], locations=['住处'])]
 
@@ -54,7 +54,7 @@ def photo_turn(tmp_path, monkeypatch, response, row):
 
 def candidate():
     value = {key: item for key, item in payload().items() if key != 'spoken_text'}
-    return {**value, 'detail': '整理好了一小块。', 'location': '住处'}
+    return {**value, 'detail': '整理好了一小块。', 'location': '住处', 'place': HOME}
 
 
 def test_qq_photo_offers_her_moments_and_records_the_video_choice(tmp_path, monkeypatch):
@@ -78,7 +78,7 @@ def test_unknown_event_or_plain_skip_shares_nothing(tmp_path, monkeypatch):
 
 def test_worker_authors_a_shared_moment_once_and_delivers_it(tmp_path):
     store, chat, api = world(tmp_path), service(), API()
-    publish(store, payload())
+    publish(store, payload(), HOME)
     authored = []
 
     async def author(value):
@@ -111,7 +111,7 @@ def test_worker_authors_a_shared_moment_once_and_delivers_it(tmp_path):
 
 def test_worker_refuses_a_moment_without_an_approved_scene(tmp_path):
     store, chat, api = world(tmp_path), service(), API()
-    publish(store, payload())
+    publish(store, payload(), HOME)
 
     async def author(value):
         raise AssertionError('no writer call without an approved scene')

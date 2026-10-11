@@ -421,8 +421,15 @@ async def _prepare_once(server, row, content, text, *, channel='letter', on_read
             media_root = server._media_root() if callable(getattr(server, '_media_root', None)) else server._state_root() / 'media'
             receipt = (media_root / ('photo-' + photo_id + '.png')).with_suffix('.task.json') if media_root is not None else None
             if receipt is None or not receipt.is_file():
-                from runtime.video_reply_settings import require_image_model
-                require_image_model(settings, caps)
+                from runtime.video_reply_settings import delisted_fallback, image_model_capability, require_image_model
+                catalog = image_model_capability(caps)
+                if catalog and catalog['models'] and not any(item['id'] == settings['model'] for item in catalog['models']):
+                    # Delisted since the user chose it: the service default draws it, billed at
+                    # its own price, rather than every photo failing until the user notices.
+                    # Frozen on the row: a retry must resubmit exactly what was submitted.
+                    settings = row['image_reply_settings'] = delisted_fallback(settings, catalog)
+                else:
+                    require_image_model(settings, caps)
         if (row.get('image_server_request') or caps.get('server_media_planning') is True
                 and ('image_plan' not in row or row.get('image_server_planned'))):
             from runtime.wardrobe import style_for, DEFAULT_STYLE

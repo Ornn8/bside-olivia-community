@@ -142,7 +142,8 @@ def test_backend_generate_uses_real_pipeline_persona_memory_and_world(tmp_path, 
         GatewayRequestScope=GatewayRequestScope, supports_scoped_reasoning=lambda config: False,
         _reply_pipeline_timeout_seconds=lambda mode: 2, store=SimpleNamespace(personal_chats=[
             dict(channel=channel, delivery_status='DELIVERED') for _ in range(4)]),
-        video_reply_settings_store=SimpleNamespace(image_snapshot=lambda: {'enabled': True, 'resolution': '1K'}),
+        video_reply_settings_store=SimpleNamespace(image_snapshot=lambda: {'enabled': True, 'resolution': '1K'},
+                                                   tier_snapshot=lambda: 'video'),
         _persist_store_state=lambda: None,
         _safe_log=lambda event, **fields: logs.append(dict(event=event, **fields)))
     event = PersonalMessage(channel, "100", "200", "1", user)
@@ -239,15 +240,16 @@ def test_backend_generate_uses_real_pipeline_persona_memory_and_world(tmp_path, 
                         author_calls.append(state)
                         return dict(trigger='own_activity', experience='0:ordinary:none')
                 episode = await create(LifeAuthor(), 'day:synthetic-bath', captured, 'bath_finished', {})
-                world.publish_day('day:synthetic-bath', dict(location='住处', activity='刚洗完澡',
-                    note=episode['result']['detail']), [], occurred_at=captured,
+                world.publish_day('day:synthetic-bath', dict(location='浴室', activity='刚洗完澡',
+                    note=episode['result']['detail'], place=dict(place_id='home', name='浴室',
+                    setting='浴室，沿用已有布局与陈设。', stage='arrived')), [], occurred_at=captured,
                     activity_kind='bath_finished', episode=episode)
                 gate, videos, api = asyncio.Event(), [], API(asyncio.Event())
                 api.gate = gate
                 async def request(action, data):
                     if action == 'capabilities':
                         return dict(kinds=['daily_video'], daily_video_enabled=True, daily_video_scenes=[
-                            dict(scene_id='bathroom', event_kinds=['bath_finished'], locations=['住处'])])
+                            dict(scene_id='bathroom', event_kinds=['bath_finished'], locations=['浴室'])])
                     assert action == 'ack'
                     return {}
                 api.request = request

@@ -1014,7 +1014,7 @@ const run = (spec) => {
   const makeDialog = (item) => {
     let areas = item.shared ? sharedAreas.get(item.shared) : null;
     if (!areas) {
-      areas = Array.from({ length: item.textareas }, () => ({ maxLength: null, closest: () => null }));
+      areas = Array.from({ length: item.textareas }, () => ({ value: '', addEventListener: () => {}, maxLength: null, closest: () => null }));
       if (item.shared) sharedAreas.set(item.shared, areas);
     }
     const nodes = (values) => values.map((textContent) => ({ textContent }));

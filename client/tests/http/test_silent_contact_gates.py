@@ -72,7 +72,8 @@ def server_for(rows):
 
 def test_live_state_passes_due_appointment_exception_only_to_wait_and_world_gate():
     wait = quiet_user()
-    wait.update(companion_timing='wait_user', silence_reason='USER_REQUESTED_WAIT')
+    # Older than the open-turn window, which holds any proactive contact on its own.
+    wait.update(companion_timing='wait_user', silence_reason='USER_REQUESTED_WAIT', created_at=NOW.timestamp()-3600)
     server = server_for([wait])
     assert live_state(server, channel='qq', now=NOW)['gates']['blocked_reasons'] == ['sleeping', 'user_waiting']
     assert live_state(server, channel='qq', now=NOW, appointment_due=True)['gates']['blocked_reasons'] == []

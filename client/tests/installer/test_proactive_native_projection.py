@@ -7,6 +7,37 @@ from original_client_settings_ui import BOOTSTRAP_JAVASCRIPT
 from patch_companion_settings import _repair_native_proactive_collection, CompanionSettingsPatchError
 
 
+def test_composer_presence_rate_limit_clear_and_no_draft_content(tmp_path):
+    node = shutil.which('node')
+    if not node:
+        pytest.skip('Node.js unavailable')
+    begin = BOOTSTRAP_JAVASCRIPT.index('  const composingInputs =')
+    end = BOOTSTRAP_JAVASCRIPT.index('  const constrainLetterInputs =', begin)
+    script = tmp_path / 'presence.cjs'
+    script.write_text('''
+const sent=[]; let now=0; Date.now=()=>now;
+const requestMutation=async(path, body)=>{sent.push({path,body});};
+''' + BOOTSTRAP_JAVASCRIPT[begin:end] + '''
+(async()=>{
+  letterComposing(true);
+  for(let i=0;i<29;i++){now+=1000;letterComposing(true);}
+  await composingRequest;
+  if(sent.length!==1)throw Error('heartbeat spam');
+  now=30000;letterComposing(true); await composingRequest;
+  if(sent.length!==2)throw Error('renewal missing');
+  letterComposing(false); await composingRequest;
+  if(sent.length!==3 || sent[2].body.active!==false)throw Error('clear missing');
+  letterComposing(false);await composingRequest;
+  if(sent.length!==3)throw Error('duplicate clear');
+  for(const item of sent){
+    if(item.path!=='/toy/letter/composing' || Object.keys(item.body).join()!=='active')throw Error('draft leak');
+  }
+})();
+''', encoding='utf-8')
+    result = subprocess.run([node, str(script)], capture_output=True, text=True, timeout=20)
+    assert result.returncode == 0, result.stderr
+
+
 def test_proactive_selection_skips_paired_letter_and_updates_native_audio_props():
     # Synthetic fragments of the supported adapter contract; no original bundle.
     model = 'return{id:e.letterId,isUnread:e.isRead===0,coverId:e.coverId||"",'
@@ -45,7 +76,9 @@ def test_busy_send_gate_keeps_existing_mailbox_readable(tmp_path):
 (async()=>{
   const detail={url:'/toy/letter/detail'};
   if(await window.__oliviaPrepareLetterRoute(detail)!==detail) throw Error('read blocked');
-  try { await window.__oliviaPrepareLetterRoute({url:'/toy/letter/send'}); }
+  const sending={url:'/toy/letter/send'};
+  if(await window.__oliviaPrepareLetterRoute(sending)!==sending) throw Error('user send blocked');
+  try { await window.__oliviaPrepareLetterRoute({url:'/toy/letter/resend'}); }
   catch(error) { if(error.code==='PROACTIVE_LETTER_BUSY') return; throw error; }
   throw Error('send was allowed');
 })();

@@ -1,4 +1,7 @@
 """Jev selects optional world records around the host's required state."""
+from collections import OrderedDict
+from datetime import datetime
+import hashlib
 import json
 
 
@@ -66,6 +69,16 @@ _LEVEL_RANK = {'must': 2, 'useful': 1}
 _FINISHED = {'completed', 'cancelled'}
 
 
+# However much life she has lived, one selection offers at most this many records,
+# dropping finished then oldest ones first, the order the size trim below also uses.
+MAX_CANDIDATES = 60
+# Answers are reused for the identical request within one time bucket: the same
+# user text, dialogue, candidate records and phase of day in the same store.
+_ANSWER_BUCKET_SECONDS = 300
+_ANSWERS = OrderedDict()
+_ANSWER_LIMIT = 32
+
+
 def _trim_order(records):
     """List entries that may be left out, least useful first; single facts never."""
     def age(record):
@@ -77,10 +90,30 @@ def _trim_order(records):
     return sorted(removable, key=lambda i: (not finished(records[i]), age(records[i]), i))
 
 
-async def select_world_context(port, packet, user_text, *, max_chars=3500, required_fields=()):
+def _answer_key(scope, state, questions, required_fields):
+    try:
+        bucket = int(datetime.fromisoformat(state['as_of']).timestamp() // _ANSWER_BUCKET_SECONDS)
+    except (KeyError, TypeError, ValueError):
+        return None
+    # The time of day moves the bucket; the catalog and the words asked about decide the rest.
+    body = {key: value for key, value in state.items() if key not in {'as_of', 'rhythm'}}
+    body['phase'] = (state.get('rhythm') or {}).get('phase')
+    body['questions'], body['required'] = sorted(questions), sorted(required_fields)
+    return hashlib.sha256(json.dumps([str(scope), bucket, body], ensure_ascii=False, sort_keys=True,
+                                     separators=(',', ':')).encode()).hexdigest()
+
+
+async def select_world_context(port, packet, user_text, *, max_chars=3500, required_fields=(), max_candidates=MAX_CANDIDATES):
     if port is None:
         raise WorldSelectionError('JEV_WORLD_SELECTION_UNAVAILABLE')
     records = packet['records']
+    if len(records) > max_candidates:
+        dropped = set()
+        for index in _trim_order(records):
+            if len(records) - len(dropped) <= max_candidates:
+                break
+            dropped.add(index)
+        records = [record for index, record in enumerate(records) if index not in dropped]
     base = {**packet['base'], 'threads': []}
     required = {i for i, record in enumerate(records) if record['field'] in required_fields}
     for index in sorted(required):
@@ -112,26 +145,43 @@ async def select_world_context(port, packet, user_text, *, max_chars=3500, requi
                           'criteria': dict(_LEVELS)}
     state = {**common, 'records': catalog}
     envelope = {'state': state, 'questions': questions, 'purpose': 'reply-world-selection'}
+    size = None
     # Offer fewer candidates rather than fail the reply: finished, then oldest, go first.
     for index in _trim_order(records):
-        if len(questions) <= 192 and len(_json(envelope).encode('utf-8')) <= 30000:
-            break
+        if len(questions) <= 192:
+            if size is None:
+                size = len(_json(envelope).encode('utf-8'))
+            if size <= 30000:
+                break
         key = f'r{index}'
+        if size is not None:
+            # Exact UTF-8 member costs; preserve the existing removal order.
+            for mapping in (catalog, questions):
+                size -= len(_json({key: mapping[key]}).encode('utf-8')) - 2 + (len(mapping) > 1)
         catalog.pop(key, None)
         questions.pop(key, None)
     if len(_json(envelope).encode('utf-8')) > 30000:
         raise WorldSelectionError('JEV_WORLD_SELECTION_CAPACITY')
     ranked = []
     if questions:
+        scope = packet.get('scope')
+        key = _answer_key(scope, state, questions, required_fields) if scope is not None else None
+        answers = _ANSWERS.get(key) if key is not None else None
         try:
-            answers = await port.ask(state, questions, purpose='reply-world-selection')
+            if answers is None:
+                answers = await port.ask(state, questions, purpose='reply-world-selection')
         except Exception as exc:
             from .companion_decision import ERROR_CODES
             code = str(exc)
             raise WorldSelectionError(code if code in ERROR_CODES else 'JEV_WORLD_SELECTION_UNAVAILABLE') from exc
         if not isinstance(answers, dict) or set(answers) != set(questions) or any(v not in _LEVELS for v in answers.values()):
             raise WorldSelectionError('JEV_WORLD_SELECTION_INVALID')
-        ranked.extend((_LEVEL_RANK[answers[key]], int(key[1:])) for key in questions if answers[key] != 'skip')
+        ranked.extend((_LEVEL_RANK[answers[name]], int(name[1:])) for name in questions if answers[name] != 'skip')
+        if key is not None:
+            _ANSWERS[key] = dict(answers)
+            _ANSWERS.move_to_end(key)
+            while len(_ANSWERS) > _ANSWER_LIMIT:
+                _ANSWERS.popitem(last=False)
     value = base
     retained = len(required)
     for rank, index in sorted(ranked, key=lambda item: (-item[0], item[1])):

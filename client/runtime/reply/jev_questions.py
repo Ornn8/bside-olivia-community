@@ -35,7 +35,9 @@ class JevQuestionsPort:
         headers = self.transport.request_headers(digest)
         req = urllib.request.Request(self.transport.endpoint.rsplit('/', 1)[0] + '/semantic-decisions',
                                      data=body, headers=headers, method='POST')
-        value = self.transport.json_response(req)
+        from runtime.diagnostics.reply_telemetry import timing
+        with timing('jev_http'):
+            value = self.transport.json_response(req)
         if not isinstance(value, dict):
             raise ValueError('JEV_RESPONSE_INVALID')
         billing = value.pop('billing', None)
@@ -58,7 +60,8 @@ class JevQuestionsPort:
                 validated[key] = _decision_detail(detail, packet['questions'][key]['criteria'])
             except ValueError:
                 raise ValueError('JEV_RESPONSE_INVALID') from None
-        settle_receipt_sync(billing, digest)
+        with timing('jev_settlement'):
+            settle_receipt_sync(billing, digest)
         return validated if detailed else answers
 
     async def ask(self, state, questions, *, purpose):

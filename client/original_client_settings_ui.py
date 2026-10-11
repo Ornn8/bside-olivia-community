@@ -614,7 +614,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       }
       const payload = (path === VIDEO_REPLY_SETTINGS_PATH
           || path === LOCAL_LETTER_IMPORT_PATH
-          || path === MEMORY_RETRY_PATH || path.startsWith("/toy/letter/backup/")
+          || path === MEMORY_RETRY_PATH || path === '/toy/letter/composing' || path.startsWith("/toy/letter/backup/")
           || path.startsWith("/toy/letter/maintenance/"))
         && responseBody && responseBody.data && typeof responseBody.data === "object"
         ? responseBody.data
@@ -3665,7 +3665,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const endpoint = new URL(config.url, config.baseURL || apiBase);
     if (endpoint.origin !== new URL(apiBase).origin || !/^\/(?:toy\/)?letter\/(?:send|resend)$/.test(endpoint.pathname)) return config;
     const resending = endpoint.pathname.endsWith('/resend');
-    if (proactiveState.busy) {
+    if (proactiveState.busy && resending) {
       const error = new Error("林离正在写信，完成后就可以寄出。草稿会保留。");
       error.code = "PROACTIVE_LETTER_BUSY";
       error.config = config;
@@ -4644,27 +4644,10 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       setButtonsBusy([exportButton], true);
       state.textContent = "正在生成诊断包…";
       try {
-        // Ask where to save first, while the click still counts as a user action.
-        let handle = null;
-        if (typeof window.showSaveFilePicker === "function") {
-          try {
-            handle = await window.showSaveFilePicker({suggestedName: "olivia-diagnostic-bundle.zip",
-              types: [{description: "诊断包", accept: {"application/zip": [".zip"]}}]});
-          } catch (error) {
-            if (error && error.name === "AbortError") { state.textContent = "已取消导出。"; return; }
-            handle = null;  // No picker here: the app saves to Downloads below.
-          }
-        }
-        if (handle) {
-          const blob = await requestDiagnosticExport();
-          const writable = await handle.createWritable();
-          await writable.write(blob);
-          await writable.close();
-          state.textContent = `诊断包已保存为「${handle.name}」。`;
-        } else {
-          const saved = await requestDiagnosticSave();
-          state.textContent = `诊断包已保存到「下载」文件夹：${saved.file_name}，已为你打开所在位置。`;
-        }
+        // Always the Downloads folder. The system save dialog could open behind the app
+        // window and leave the export waiting on a dialog the user never saw.
+        const saved = await requestDiagnosticSave();
+        state.textContent = `诊断包已保存到「下载」文件夹：${saved.file_name}，已为你打开所在位置。`;
       } catch (error) {
         const code = error && typeof error.code === "string"
           ? error.code
@@ -5266,6 +5249,21 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     badge.before(group);
     void refreshAccountEntry();
   };
+  const composingInputs = new WeakSet();
+  let composingLastSent = -Infinity;
+  let composingActive = false;
+  let composingRequest = Promise.resolve();
+  const letterComposing = (active) => {
+    const now = Date.now();
+    if (active && composingActive && now - composingLastSent < 30000) return;
+    if (!active && !composingActive) return;
+    composingActive = active;
+    composingLastSent = now;
+    // Serialize presence transitions so a late heartbeat cannot undo clear.
+    // Never send draft text, and do not renew an idle open draft on a timer.
+    composingRequest = composingRequest.catch(() => {}).then(() =>
+      requestMutation('/toy/letter/composing', {active})).catch(() => {});
+  };
   const constrainLetterInputs = () => {
     const matches = new Set(
       Array.from(
@@ -5285,11 +5283,17 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       }).map((dialog) => Array.from(dialog.querySelectorAll("textarea")).find(node=>!node.closest("[data-olivia-cover-panel]")))
     );
     if (matches.size !== 1) {
+      letterComposing(false);
       return;
     }
     const input=matches.values().next().value;
     input.maxLength = LETTER_CHARACTER_LIMIT;
     mountCoverComposer(input);
+    if (!composingInputs.has(input)) {
+      composingInputs.add(input);
+      input.addEventListener('input', () => letterComposing(Boolean(input.value.trim())));
+    }
+    if (!input.value.trim()) letterComposing(false);
   };
 
   const proactiveSendButton = (node) => {
@@ -5299,7 +5303,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   };
 
   const applyProactiveSendGate = () => {
-    const busy = proactiveState.busy === true;
+    // A user may compose/send while her proactive draft is being generated.
+    // The backend rechecks user activity before publishing that draft.
+    const busy = false;
     const candidates = Array.from(document.querySelectorAll("button"))
       .filter(proactiveSendButton);
     for (const node of candidates) {

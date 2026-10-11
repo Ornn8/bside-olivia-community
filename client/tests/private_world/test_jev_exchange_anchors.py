@@ -3,6 +3,7 @@ import asyncio
 
 import pytest
 
+from runtime.private_world import jev_exchange
 from runtime.private_world.jev_exchange import extract
 
 
@@ -90,10 +91,14 @@ class BoundPort:
                     if field == 'quote':
                         value = next(ref for ref, anchor in state['action_anchors'].items() if anchor['text'] == text)
                     elif field == 'evidence':
-                        anchor = next(anchor for anchor in self.calls[0][0]['action_anchors'].values() if anchor['text'] == text)
+                        anchors = self.calls[0][0]['action_anchors']
+                        anchor = next(anchor for anchor in anchors.values() if anchor['text'] == text)
+                        # The supporting sentence is referenced by the anchor that carries it
+                        # (absent: the anchor is its own support) instead of being repeated.
+                        support = anchors[anchor['support']]['text'] if 'support' in anchor else anchor['text']
                         value = next(ref for ref in question['criteria'] if ref != 'none' and (
                             state['sources']['user_letter' if ref.startswith('u') else 'linli_reply'][
-                                slice(*state['quotes'][ref])] == anchor['support']))
+                                slice(*state['quotes'][ref])] == support))
                     else:
                         if field == 'existing_match':
                             value = identity if identity.startswith('p') else 'none'
@@ -219,13 +224,25 @@ def test_same_identity_deduplicates_equal_status_and_retains_user_cancellation(r
         ('send', 'cancelled', 'user', data['user_letter'])]
 
 
-def test_different_statuses_for_same_identity_still_fail_without_user_cancellation():
+def test_different_statuses_for_same_identity_without_user_cancellation_are_decided_not_failed():
     data = {'linli_reply': '我练完这首曲子了。我现在还在练这首曲子。', 'previous_state': {
         'projects': [{'id': 'practice', 'title': '练曲', 'kind': 'linli'}]}}
-    port = BoundPort([('我练完这首曲子了。', 'p0', 'completed'),
-                      ('我现在还在练这首曲子。', 'p0', 'ongoing')])
-    with pytest.raises(ValueError, match='JEV_EXCHANGE_CONFLICTING_UPDATES'):
-        asyncio.run(extract(port, data, '', 'life:status-conflict'))
+
+    class Deciding(BoundPort):
+        async def ask(self, state, questions, *, purpose):
+            if 'conflict_0' not in questions:
+                return await super().ask(state, questions, purpose=purpose)
+            self.calls.append((state, questions, purpose))
+            return {'conflict_0': self.answer}
+
+    port = Deciding([('我练完这首曲子了。', 'p0', 'completed'), ('我现在还在练这首曲子。', 'p0', 'ongoing')])
+    port.answer = 'ongoing'
+    result = asyncio.run(extract(port, data, '', 'life:status-conflict'))
+    assert [(item['id'], item['status']) for item in result['updates']] == [('practice', 'ongoing')]
+    assert len(port.calls) == 3
+    port = Deciding([('我练完这首曲子了。', 'p0', 'completed'), ('我现在还在练这首曲子。', 'p0', 'ongoing')])
+    port.answer = 'unclear'
+    assert asyncio.run(extract(port, data, '', 'life:status-conflict'))['updates'] == []
 
 
 def test_long_comma_sentence_keeps_legal_support_windows():
@@ -247,7 +264,7 @@ def test_same_surface_anchor_keeps_distinct_user_and_character_sources():
         'user_letter', 'linli_reply'}
 
 
-def test_large_identity_directory_uses_described_options_without_model_index_counting():
+def test_large_identity_directory_is_bounded_and_keyed_without_model_index_counting():
     projects = [{'id': f'archive-{i}', 'title': f'档案处理任务{i}', 'kind': 'linli', 'status': 'planned'}
                 for i in range(50)]
     projects[49]['title'] = '数字化第九册日记'
@@ -259,21 +276,29 @@ def test_large_identity_directory_uses_described_options_without_model_index_cou
             result = await super().ask(state, questions, purpose=purpose)
             for key, question in questions.items():
                 if key.endswith('_existing_match'):
-                    result[key] = next((option for option, meaning in question['criteria'].items()
-                                        if isinstance(meaning, dict) and meaning.get('title') == projects[49]['title']),
-                                       'none')
+                    # Each option is a key of the one shared directory, which names the project.
+                    directory = state['exchange']['previous_state']
+                    result[key] = next((option for option in question['criteria']
+                                        if directory.get(option, {}).get('title') == projects[49]['title']), 'none')
             return result
 
     port = SemanticOptions([(data['linli_reply'], 'new_linli', 'completed')])
     result = asyncio.run(extract(port, data, '', 'life:large-directory'))
     assert result['updates'][0]['id'] == 'archive-49'
     second_state, second_questions, _ = port.calls[1]
-    assert second_state['exchange']['previous_state']['projects'] == projects
+    # 50 known projects exceed what a request may carry, whatever the history: the one the
+    # reply mentions is among those shown, and every slot refers to the same directory.
+    directory = second_state['exchange']['previous_state']
+    assert len(directory) == jev_exchange.MAX_KNOWN_ITEMS < len(projects)
+    assert len(port.calls[0][0]['exchange']['previous_state']['projects']) == jev_exchange.MAX_KNOWN_ITEMS
+    key = next(key for key, entry in directory.items() if entry['title'] == projects[49]['title'])
+    assert directory[key] == {'title': projects[49]['title'], 'kind': 'linli', 'status': 'planned'}
+    assert set(second_questions['update_0_existing_match']['criteria']) == {'none', *directory}
+    assert all(option == name for name, option in second_questions['update_0_existing_match']['criteria'].items()
+               if name != 'none')
     assert 'action_anchors' not in second_state
     assert second_state['sources'] == port.calls[0][0]['sources']
     assert second_state['exchange']['previous_observation'] == data['previous_observation']
-    option = second_questions['update_0_existing_match']['criteria']['p49']
-    assert {key: option[key] for key in ('id', 'title', 'kind', 'status')} == projects[49]
 
 
 def test_bound_evidence_options_show_complete_text_and_prioritize_conditions():
@@ -282,8 +307,10 @@ def test_bound_evidence_options_show_complete_text_and_prioritize_conditions():
     result = asyncio.run(extract(port, data, '', 'life:bound-complete-proof'))
     state, questions, _ = port.calls[1]
     question = questions['update_0_evidence']
-    assert '最短' not in question['instructions']
-    assert '完整证明优先' in question['instructions']
+    # The rule text is written once in the request; the question names the rule it follows.
+    assert 'dependent_contract.evidence' in question['instructions']
+    assert '最短' not in question['instructions'] and '最短' not in state['dependent_contract']['evidence']
+    assert '完整证明优先' in state['dependent_contract']['evidence']
     for ref, meaning in question['criteria'].items():
         if ref == 'none':
             continue
@@ -298,7 +325,8 @@ def test_future_continuation_anchor_keeps_the_current_item_status_contract():
         'projects': [{'id': 'draft', 'title': '翻译这篇稿子', 'kind': 'linli', 'status': 'ongoing'}]}}
     port = BoundPort([('下个月再继续翻译。', 'p0', 'paused')])
     result = asyncio.run(extract(port, data, '', 'life:current-pause'))
-    instructions = port.calls[1][1]['update_0_status']['instructions']
+    assert 'dependent_contract.status' in port.calls[1][1]['update_0_status']['instructions']
+    instructions = port.calls[1][0]['dependent_contract']['status']
     assert '锚点只定位同一事项' in instructions
     assert '当前实际生效' in instructions
     assert '未来恢复' in instructions
@@ -371,7 +399,9 @@ def test_current_plan_contract_does_not_require_execution_or_an_old_status_chang
     result = asyncio.run(extract(port, data, '', 'life:current-future-plan'))
     status_question = port.calls[1][1]['update_0_status']
     assert '本轮明确安排或调整' in status_question['criteria']['planned']
-    assert '旧status为planned或paused' in status_question['instructions']
-    assert '不能仅因尚未执行或旧状态相同选none' in status_question['instructions']
+    rule = port.calls[1][0]['dependent_contract']['status']
+    assert 'dependent_contract.status' in status_question['instructions']
+    assert '旧status为planned或paused' in rule
+    assert '不能仅因尚未执行或旧状态相同选none' in rule
     assert result['updates'][0]['id'] == 'bench'
     assert result['updates'][0]['status'] == 'planned'

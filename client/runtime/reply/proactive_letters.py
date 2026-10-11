@@ -10,6 +10,7 @@ import tempfile
 import time
 
 from runtime.personal_chat.initiative_profile import InitiativeProfile, profile_from_rows
+from runtime.personal_chat.contact_activity import blocks_initiative
 
 DEFAULTS = {'enabled': True, 'allow_voice': True, 'login_check_enabled': False}
 DAY = 86400
@@ -101,22 +102,26 @@ def _life_opportunities(world: dict, profile: InitiativeProfile, latest: dict | 
 
 
 def make_context(rows: list[dict], *, now: float, world: dict | None = None,
-                 profile: InitiativeProfile | None = None) -> dict:
+                 profile: InitiativeProfile | None = None, medium: str = 'letter') -> dict:
     """App-owned opportunity projection; workers never write the mailbox."""
     profile = profile if profile is not None else profile_from_rows(rows)
     delivered = [row for row in rows if row.get('origin') == 'proactive'
                  and not _is_im(row) and row.get('letter_status') == 'COMPLETED']
     remaining = max(0, profile.letter_daily_limit - sum(
         _stamp(row.get('published_at', row.get('created_at'))) > now - DAY for row in delivered))
-    blocked = any(row.get('letter_status') in {'PENDING', 'PROCESSING'} or (
-        _is_im(row) and row.get('delivery_status') in {'RECEIVED', 'GENERATING', 'GENERATED', 'SENDING', 'DELIVERY_UNCONFIRMED'})
-        for row in rows)
-    unread = any(not row.get('is_read', 0) for row in delivered)
+    blocked = any(row.get('delivery_status') != 'FAILED' and blocks_initiative(row, now) for row in rows)
+    unread = sum(not row.get('is_read', 0) and
+                 now - 2 * DAY <= _stamp(row.get('published_at', row.get('created_at'))) <= now
+                 for row in delivered) >= 2
     latest = max((row for row in rows if row.get('origin') != 'proactive' and row.get('content')
                   and _stamp(row.get('created_at')) <= now
                   and (row.get('delivery_status') == 'DELIVERED' if _is_im(row) else row.get('letter_status') == 'COMPLETED')),
                  key=lambda row: _stamp(row.get('created_at')), default=None)
-    candidates = _life_opportunities(world or {}, profile, latest, now)
+    # Preserve world selection itself; a frequency promotion cannot introduce
+    # affection opportunities or grant intimate expression permissions.
+    from dataclasses import replace
+    tone_profile = replace(profile, tier=profile.tone_tier or profile.tier)
+    candidates = _life_opportunities(world or {}, tone_profile, latest, now)
     if latest:
         source = f"reply:{latest['letter_id']}:{latest.get('reply_revision', 1)}"
         candidates.append({'source_id': source, 'kind': 'correspondence_followup',
@@ -145,6 +150,19 @@ def make_context(rows: list[dict], *, now: float, world: dict | None = None,
                                'version': item.get('updated_at')})
     used = {row.get('proactive_candidate_id') for row in rows if row.get('origin') == 'proactive'
             and (row.get('delivery_status') == 'DELIVERED' if _is_im(row) else row.get('letter_status') == 'COMPLETED')}
+    used_sources = set()
+    for row in rows:
+        if row.get('origin') != 'proactive' or not (row.get('delivery_status') == 'DELIVERED' if _is_im(row) else row.get('letter_status') == 'COMPLETED'):
+            continue
+        opportunity = row.get('proactive_opportunity') or {}
+        used.add(opportunity.get('id'))
+        source = row.get('proactive_source_id')
+        try:
+            source = source or json.loads(opportunity.get('description', '{}')).get('source_id')
+        except (ValueError, TypeError, AttributeError):
+            pass
+        if source and _is_im(row) != (medium != 'letter'):
+            used_sources.add(source)
     for item in candidates:
         identity = {key: value for key, value in item.items()
                     if key not in {'not_before', 'expires_at', 'relationship_tier', 'relationship_caution'}}
@@ -153,13 +171,14 @@ def make_context(rows: list[dict], *, now: float, world: dict | None = None,
             # not permission to repeat the same current-window contact.
             identity = {'kind': item['kind'], 'window_start': item['window_start']}
         item['id'] = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:32]
-        item['relationship_tier'] = profile.tier
+        item['relationship_tier'] = profile.tone_tier or profile.tier
         item['relationship_caution'] = profile.caution
     return {'updated_at': now, 'remaining': remaining, 'blocked': blocked, 'unread': unread,
             # Keep the old boolean for diagnostics/backward-compatible clients.
-            'relationship_high': profile.rank >= 3,
+            'relationship_high': profile.tone_rank >= 3,
             'initiative_profile': profile.public_view(),
-            'candidates': [item for item in candidates if item['id'] not in used and item['source_id']]}
+            'candidates': [item for item in candidates if item['id'] not in used and item['source_id']
+                           and item['source_id'] not in used_sources]}
 
 
 def scan_pending(data_root: Path, *, now: float | None = None,

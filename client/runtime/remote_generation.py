@@ -36,6 +36,9 @@ class RemoteGeneration:
         from .wardrobe import CLOUD_CATALOG_PROTOCOL
         # Keep v2 metadata working against servers that predate this catalog.
         headers['X-Olivia-Wardrobe-Catalog'] = CLOUD_CATALOG_PROTOCOL
+        # Clients up to 2.2.13 fail a whole QQ turn when her current moment is offered as a
+        # video, so the service announces moment videos only to clients that say they can take one.
+        headers['X-Olivia-Daily-Video-Moment'] = '1'
         payload = None
         if action == 'submit':
             if set(data) != {'request_id', 'kind', 'input'} or data['kind'] not in ('tts', 'cover', 'image', 'video', 'original', 'lipsync', 'separate', 'cover_video', 'original_video', 'daily_video') or not isinstance(data['input'], dict):

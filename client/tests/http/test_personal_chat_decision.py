@@ -119,7 +119,7 @@ def test_explicit_followup_persists_deadline_and_temporary_pause_expires():
     assert not policy.ready()
     clock[0] = later.timestamp()
     assert policy.ready() and policy.pending_followup() == row
-    rows.append(dict(origin='proactive', delivery_status='SENDING', followup_source_id='request'))
+    rows.append(dict(origin='proactive', delivery_status='SENDING', followup_source_id='request', created_at=clock[0]))
     assert policy.pending_followup() is None and not policy.ready()
 
 
@@ -396,7 +396,7 @@ def test_retry_discards_unpublished_audio_and_decisions():
 
 def test_failed_new_user_request_suppresses_initiative_until_next_completed_exchange():
     now = datetime(2026,9,13,12,tzinfo=LOCAL).timestamp()
-    rows = [dict(delivery_status='DELIVERED'), dict(delivery_status='FAILED')]
+    rows = [dict(delivery_status='DELIVERED'), dict(delivery_status='FAILED', created_at=now)]
     policy = Initiative(rows, clock=lambda: now, interval=lambda: 0)
     policy.received(None, None)
     assert not policy.ready()
@@ -425,7 +425,7 @@ def test_due_appointment_waives_world_gates_only():
                              store=SimpleNamespace(letters=[], personal_chats=[]))
     now = datetime(2026, 9, 14, 7, tzinfo=LOCAL)
     original = proactive_runtime.live_profile
-    proactive_runtime.live_profile = lambda server: SimpleNamespace(im_interval_min=0, im_interval_max=0)
+    proactive_runtime.live_profile = lambda server, now=None: SimpleNamespace(im_interval_min=0, im_interval_max=0)
     original_gates = proactive_runtime.contact_gates
     proactive_runtime.contact_gates = lambda rows, **k: {'paused': False, 'blocked_reasons': ['pending_reply']}
     try:

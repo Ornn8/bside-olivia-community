@@ -332,6 +332,17 @@ def project_reply_quality(value: Mapping[str, object]) -> dict[str, object]:
             'final_review' if result.get('reviewer_calls') == 2 else 'review')
     # Numeric phase evidence is shared by letters and chat. Private cached text
     # and keys never enter diagnostic bundles through these nested maps.
+    from .reply_telemetry import safe_timings
+    reply_timings = safe_timings(value.get('reply_timing_seconds'))
+    if reply_timings:
+        result['reply_timing_seconds'] = reply_timings
+    voice_status = value.get('default_voice_status')
+    if isinstance(voice_status, str) and voice_status in {
+            'PENDING', 'RENDERING', 'SENDING', 'DELIVERED', 'UNKNOWN', 'FAILED', 'SKIPPED'}:
+        result['default_voice_status'] = voice_status
+    voice_seconds = value.get('default_voice_seconds')
+    if type(voice_seconds) in (int, float) and 0 <= voice_seconds <= 86400:
+        result['default_voice_seconds'] = round(float(voice_seconds), 4)
     timing = value.get('stage_timing_seconds')
     if isinstance(timing, Mapping):
         safe = {name: round(float(timing[name]), 4)

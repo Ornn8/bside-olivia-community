@@ -2,6 +2,8 @@
 import asyncio
 import json
 import logging
+import math
+import os
 import re
 import uuid
 
@@ -12,6 +14,16 @@ from .probe import checked_url
 from .qq_faces import FACE_IDS
 
 log = logging.getLogger(__name__)
+
+_TYPING_ACK_TIMEOUT = 5
+
+
+def _typing_interval():
+    try:
+        value = float(os.environ.get('OLIVIA_QQ_TYPING_INTERVAL_SECONDS', '5'))
+        return max(1, min(60, value)) if math.isfinite(value) else 5
+    except ValueError:
+        return 5
 
 
 def transport_error(exc):
@@ -67,8 +79,49 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
     scheduled_sources = set()
     classify_control = getattr(handle_message, 'is_control_message', None)
     handle_control = getattr(handle_message, 'handle_control', handle_message)
+    typing_tasks = set()
+    typing_pending = {}
+
+    def stop_typing():
+        for task in tuple(typing_tasks):
+            task.cancel()
+
+    async def typing_loop():
+        failed = False
+        while not ws.closed and not stop_event.is_set():
+            started = asyncio.get_running_loop().time()
+            echo = uuid.uuid4().hex
+            future = asyncio.get_running_loop().create_future()
+            typing_pending[echo] = future
+            try:
+                async with asyncio.timeout(_TYPING_ACK_TIMEOUT):
+                    await ws.send_json({'action': 'set_input_status', 'echo': echo,
+                        'params': {'user_id': owner_id, 'event_type': 1}})
+                    raw = await future
+                    if raw.get('status') != 'ok' or type(raw.get('retcode')) is not int or raw['retcode'] != 0:
+                        raise RuntimeError('ONEBOT_TYPING_UNCONFIRMED')
+                    failed = False
+            except Exception:
+                if not failed:
+                    log.warning('ONEBOT_TYPING_UNCONFIRMED')
+                failed = True
+            finally:
+                typing_pending.pop(echo, None)
+                if not future.done():
+                    future.cancel()
+            await asyncio.sleep(max(.01, _typing_interval() - (asyncio.get_running_loop().time() - started)))
+
+    def start_typing():
+        stop_typing()
+        if os.environ.get('OLIVIA_QQ_TYPING_ENABLED', '1') == '0' or ws.closed or stop_event.is_set():
+            return lambda: None
+        task = asyncio.create_task(typing_loop())
+        typing_tasks.add(task)
+        task.add_done_callback(typing_tasks.discard)
+        return task.cancel
 
     def enqueue(event):
+        stop_typing()
         target = control_queue if callable(classify_control) and classify_control(event) else (
             intake_queue if durable_intake else queue)
         try:
@@ -200,6 +253,7 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
                 future.cancel()
     send.resolve_media = resolve_media
     send.is_available = lambda: not ws.closed
+    send.start_typing = start_typing
 
     def for_exchange(event):
         if (event.channel, event.account_id, event.owner_id) != ('qq', account_id, owner_id):
@@ -222,6 +276,7 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
         correlated.file = send_file
         correlated.resolve_media = resolve_media
         correlated.is_available = send.is_available
+        correlated.start_typing = start_typing
         return correlated
 
     send.for_exchange = for_exchange
@@ -283,6 +338,11 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
             if callable(state_callback):
                 state_callback("CONNECTED")
             echo = raw.get("echo")
+            typing_future = typing_pending.get(echo) if isinstance(echo, str) else None
+            if typing_future is not None:
+                if not typing_future.done():
+                    typing_future.set_result(raw)
+                continue
             future = pending.get(echo) if isinstance(echo, str) else None
             if future is not None:
                 if not future.done():
@@ -368,6 +428,9 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
             if not stop_event.is_set() and (processing or not queue.empty() or not intake_queue.empty() or not control_queue.empty()):
                 raise RuntimeError("QQ_CONNECTION_LOST_DURING_EXCHANGE")
     finally:
+        active_typing = tuple(typing_tasks)
+        stop_typing()
+        await asyncio.gather(*active_typing, return_exceptions=True)
         disconnected = getattr(handle_message, 'disconnected', None)
         if callable(disconnected):
             disconnected(send)

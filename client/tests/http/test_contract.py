@@ -2032,6 +2032,7 @@ def test_handler_rejects_malformed_json_and_wrong_methods() -> None:
 def test_letter_conflict_is_exported_without_letter_content(monkeypatch, conflict):
     import local_server
     original = {"letter_id": "private-letter-id", "letter_status": "PENDING" if conflict == "LETTER_IN_PROGRESS" else "COMPLETED", "content": "private original text", "material": {}}
+    original['created_at'] = local_server.time.time()  # Only recent work owns the in-flight gate.
     local_server.store.letters[:] = [original]
     local_server.store.request_keys["private-request-key"] = original["letter_id"]
     local_server._RUNTIME_DIAGNOSTIC_EVENTS.clear()

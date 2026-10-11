@@ -1,7 +1,7 @@
 """One autonomous life decision, projected against immutable world facts."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from copy import deepcopy
 import json
 from jsonschema import Draft202012Validator, ValidationError
@@ -61,9 +61,26 @@ PROMPT = LIFE_PROMPT + '\ndevelopment默认为空数组，不为凑成长制造�
 
 
 
+# One decision reads a recent window of her life, however long the journal is:
+# yesterday's and today's meals and the latest few episodes.
+_MEAL_DAYS = 2
+_EPISODES = 3
+
+
+def _recent_window(data: dict) -> dict:
+    today = datetime.fromisoformat(data['time']).astimezone(timezone(timedelta(hours=8))).date()
+    first = (today - timedelta(days=_MEAL_DAYS - 1)).isoformat()
+    world = dict(data['world'])
+    if isinstance(world.get('meals'), list):
+        world['meals'] = [m for m in world['meals'] if not isinstance(m, dict) or str(m.get('date', first)) >= first]
+    if isinstance(world.get('recent_episodes'), list):
+        world['recent_episodes'] = world['recent_episodes'][:_EPISODES]
+    return {**data, 'world': world}
+
+
 def decision_context(data: dict) -> dict:
     from .project_timing import prepare_context
-    data = prepare_context(data)
+    data = prepare_context(_recent_window(data))
     try:
         declarations = json.loads(data['persona'])
     except (ValueError, TypeError):

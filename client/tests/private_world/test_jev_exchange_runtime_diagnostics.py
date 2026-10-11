@@ -123,3 +123,41 @@ def test_failed_exchange_keeps_only_its_partial_metadata(tmp_path, monkeypatch):
         _complete(runtime)
     assert len(failed.calls) == 1
     assert [event['phase'] for event in runtime.last_exchange_diagnostics] == ['exchange-facts']
+
+
+def test_conflict_counters_never_push_a_decision_phase_out_of_the_retained_window(tmp_path, monkeypatch):
+    from tests.private_world.test_jev_exchange_conflicts import PRACTICE_DATA, SPECS, Port, decide
+    runtime = _runtime(tmp_path, monkeypatch, Port(SPECS, conflict=decide('ongoing')))
+    result = asyncio.run(runtime._complete('PRIVATE_INSTRUCTIONS', PRACTICE_DATA, 'life:' + PRIVATE_REQUEST_ID))
+    assert [item['status'] for item in result['updates']] == ['ongoing']
+    events = runtime.last_exchange_diagnostics
+    assert [event['phase'] for event in events] == [
+        'exchange-facts', 'exchange-anchored-facts', 'exchange-anchored-facts', 'exchange-conflict']
+    assert events[-1] == {'phase': 'exchange-conflict', 'outcome': 'decided', 'count': 1}
+    assert 'diagnostics' not in result
+    # The next exchange starts from nothing, counters included.
+    asyncio.run(runtime._complete('PRIVATE_INSTRUCTIONS', PRACTICE_DATA, 'life:next'))
+    assert len(runtime.last_exchange_diagnostics) == 4
+
+
+def test_retained_counters_are_bounded_separately_and_keep_their_order(tmp_path, monkeypatch):
+    from runtime.private_world import jev_exchange
+    runtime = _runtime(tmp_path, monkeypatch, object())
+    emitted = []
+    for i in range(5):
+        emitted.append({'phase': f'synthetic-{i}', 'decisions': {}})
+        emitted.append({'phase': 'exchange-conflict', 'outcome': 'detached', 'count': i + 1})
+
+    async def extract(_port, _data, _prompt, _request_id, *, diagnostic_observer):
+        for event in emitted:
+            diagnostic_observer(event)
+        return {'updates': []}
+
+    monkeypatch.setattr(jev_exchange, 'extract', extract)
+    _complete(runtime)
+    kept = runtime.last_exchange_diagnostics
+    assert [event['phase'] for event in kept] == [
+        'synthetic-2', 'exchange-conflict', 'synthetic-3', 'exchange-conflict', 'synthetic-4', 'exchange-conflict']
+    assert [event['count'] for event in kept if event['phase'] == 'exchange-conflict'] == [3, 4, 5]
+    emitted[-1]['count'] = 99
+    assert kept[-1]['count'] == 5 and runtime.last_exchange_diagnostics[-1]['count'] == 5

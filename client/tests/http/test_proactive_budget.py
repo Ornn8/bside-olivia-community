@@ -103,11 +103,19 @@ async def main():
         server._refresh_proactive_context()
         await tick()
         now[0] += 3600
-    assert len(calls) == 3, len(calls)
+    assert len(calls) == 7, len(calls)
+    # The legacy scheduler now uses the same tier-derived decision ceiling as
+    # JEV: committed allows six letters and at most eighteen attempts per day.
+    for revision in range(7, 27):
+        server.store.letters[0]['reply_revision'] = revision
+        server._refresh_proactive_context()
+        await tick()
+        now[0] += 1200
+    assert len(calls) == 18, len(calls)
     now[0] += 86400
     server._refresh_proactive_context()
     await tick()
-    assert len(calls) == 4
+    assert len(calls) == 19
 asyncio.run(main())
 '''
     env = {k: v for k, v in os.environ.items()

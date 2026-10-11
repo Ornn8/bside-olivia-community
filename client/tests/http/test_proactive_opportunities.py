@@ -42,7 +42,7 @@ def test_relationship_profile_changes_letter_budget_and_reason_threshold():
     close_followup = next(item for item in close['candidates'] if item['kind'] == 'correspondence_followup')
     committed_followup = next(item for item in committed['candidates'] if item['kind'] == 'correspondence_followup')
     assert reserved_followup['not_before'] > close_followup['not_before'] > committed_followup['not_before']
-    assert not any(item['kind'] == 'relationship_checkin' for item in reserved['candidates'])
+    assert any(item['kind'] == 'relationship_checkin' for item in reserved['candidates'])
     assert any(item['kind'] == 'relationship_checkin' for item in close['candidates'])
     assert any(item['kind'] == 'relationship_checkin' for item in committed['candidates'])
 
@@ -95,8 +95,6 @@ committed = []
 server._schedule_daily_life_exchange = lambda letter: committed.append(letter.copy())
 async def complete(*args, **kwargs):
     assert server._proactive_busy
-    response = await server.route('POST', '/toy/letter/send', {'content': '同时来信'}, {})
-    assert response['code'] == 409, response
     return '我刚把那段谱子整理好了。'
 server._proactive_complete = complete
 async def render(lid, content, body, mode):

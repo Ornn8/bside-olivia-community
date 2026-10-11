@@ -4,6 +4,7 @@ import re
 import inspect
 import uuid
 import hashlib
+import logging
 from contextvars import ContextVar
 from datetime import datetime, timezone
 
@@ -36,7 +37,7 @@ def _clear_draft(row):
                 'speech_script', 'speech_intent', 'speech_status', 'speech_delivery_status', 'content_review',
                 'proactive_decision', 'proactive_basis', 'proactive_opportunity', 'generation_failure_notice',
                 'generation_context_at', 'stage_timing_seconds', 'stage_actual_calls', 'stage_cache_hits',
-                'degraded_stages',
+                'degraded_stages', 'default_voice_status', 'default_voice_seconds', 'default_voice_duration',
                 'voice_prepare_seconds', 'voice_prepare_status', 'voice_prepare_timeout_seconds',
                 'generation_retryable', 'generation_failure_context', 'generation_failures',
                 'silence_reason', 'skip_reason', 'user_controls_applied',
@@ -75,7 +76,7 @@ async def delivery_notice(row, send, persist, key, text):
 
 
 class PersonalChatService:
-    def __init__(self, rows, persist, generate, commit, bindings, *, sticker_allowed=lambda key: True, sticker_asset=None, photo=None, prepare_photo=None, speech=None, inspect_writer=None):
+    def __init__(self, rows, persist, generate, commit, bindings, *, sticker_allowed=lambda key: True, sticker_asset=None, photo=None, prepare_photo=None, speech=None, default_voice=None, inspect_writer=None):
         self.rows, self.persist = rows, persist
         self.generate, self.commit = generate, commit
         self.bindings = dict(bindings)
@@ -88,7 +89,10 @@ class PersonalChatService:
         self.photo_tasks = {}
         self.photo_slots = asyncio.Semaphore(2)
         self.speech = speech
+        self.default_voice = default_voice
         self.speech_tasks = {}
+        self.typing = {}
+        self.active_user_turns = set()
         self.consumer_tasks = {}
         # One owner shares memory/world across both channels; serialize exchanges.
         self.lock = asyncio.Lock()
@@ -235,6 +239,16 @@ class PersonalChatService:
 
     async def _generate(self, event, row, send):
         from runtime.incoming_media import MEDIA_RESOLVER
+        start_typing = getattr(send, 'start_typing', None)
+        if callable(start_typing) and event.exchange_id not in self.typing:
+            try:
+                self.typing[event.exchange_id] = start_typing()
+            except Exception:
+                logging.getLogger(__name__).debug('ONEBOT_TYPING_START_UNAVAILABLE')
+        timings = row.setdefault('reply_timing_seconds', {})
+        timings.setdefault('queue_wait', round(max(0, min(86400,
+            datetime.now(timezone.utc).timestamp() - row.get('created_at', datetime.now(timezone.utc).timestamp()))), 4))
+        timings.setdefault('voice_wait', 0.0)
         media_token = MEDIA_RESOLVER.set(getattr(send, 'resolve_media', None))
         current = TURN_IS_CURRENT.set(lambda: not self._new_inputs(row))
         try:
@@ -321,6 +335,27 @@ class PersonalChatService:
 
     async def _handle_one(self, event, send, proactive=False, followup=None, proactive_revision=None,
                           proactive_eligible=None, gift=None):
+        key = getattr(event, 'exchange_id', None)
+        if not proactive:
+            self.active_user_turns.add(key)
+        try:
+            return await self._handle_one_impl(event, send, proactive, followup, proactive_revision,
+                                               proactive_eligible, gift)
+        finally:
+            self._stop_typing(event)
+            if not proactive:
+                self.active_user_turns.discard(key)
+
+    def _stop_typing(self, event):
+        cancel = self.typing.pop(getattr(event, 'exchange_id', None), None)
+        if callable(cancel):
+            try:
+                cancel()
+            except Exception:
+                logging.getLogger(__name__).debug('ONEBOT_TYPING_STOP_UNAVAILABLE')
+
+    async def _handle_one_impl(self, event, send, proactive=False, followup=None, proactive_revision=None,
+                               proactive_eligible=None, gift=None):
         if not isinstance(event, PersonalMessage) or self.bindings.get(event.channel) != (event.account_id, event.owner_id):
             raise ValueError("PERSONAL_CHAT_OWNER_MISMATCH")
         if (not event.text.strip() and not proactive) or len(event.text) > 10000:
@@ -588,16 +623,20 @@ class PersonalChatService:
                 return
             receipt = None
             try:
-                if audio and callable(getattr(send, 'audio', None)):
-                    receipt = await send.audio(audio)
-                    row['delivered_format'] = 'audio'
-                else:
-                    receipt = await send(row["reply_text"])
-                    row['delivered_format'] = 'text'
+                from runtime.diagnostics.reply_telemetry import timing
+                with timing('send_ack', row):
+                    if audio and callable(getattr(send, 'audio', None)):
+                        receipt = await send.audio(audio)
+                        row['delivered_format'] = 'audio'
+                    else:
+                        receipt = await send(row["reply_text"])
+                        row['delivered_format'] = 'text'
             except BaseException:
+                self._stop_typing(event)
                 row["error_code"] = "PERSONAL_CHAT_DELIVERY_UNKNOWN"
                 await persist_state(self.persist)
                 raise
+            self._stop_typing(event)
             classifier = getattr(send, 'delivery_confirmation', None)
             if callable(classifier):
                 confirmation = classifier(receipt)
@@ -762,6 +801,21 @@ class PersonalChatService:
         key=row['letter_id']
         binding=self.bindings.get('qq')
         if not binding or row.get('binding_id')!=PersonalMessage('qq',*binding,'','').binding_id:
+            return
+        if (row.get('delivery_status') == 'DELIVERED' and row.get('channel') == 'qq'
+                and row.get('default_voice_status') == 'PENDING' and callable(self.default_voice)
+                and callable(getattr(send, 'audio', None)) and key not in self.speech_tasks):
+            async def voice():
+                try:
+                    await self.default_voice(row, send)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    # An attachment failure cannot undo or repeat acknowledged text.
+                    row['default_voice_status'] = 'UNKNOWN'
+                finally:
+                    self.speech_tasks.pop(key, None)
+            self.speech_tasks[key] = asyncio.create_task(voice())
             return
         if (row.get('delivery_status')!='DELIVERED' or row.get('channel')!='qq'
                 or not row.get('speech_script') or not callable(self.speech)
