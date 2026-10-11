@@ -119,6 +119,9 @@ def test_local_configuration_requires_session_and_collects_by_default(tmp_path, 
     calls=[]
     async def remote(*args): calls.append(args); return {}
     monkeypatch.setattr(relay,'relay_request',remote)
+    from runtime import cloud_policy
+    async def offline_policy(*args): raise TimeoutError()
+    monkeypatch.setattr(cloud_policy, 'fetch_policy', offline_policy)
     setup=LLMSetupService(tmp_path,protect=lambda s:s,unprotect=lambda s:s)
     setup.observe_login(success=True)
     setup._config_root.mkdir(parents=True,exist_ok=True)
@@ -129,7 +132,7 @@ def test_local_configuration_requires_session_and_collects_by_default(tmp_path, 
         async with TestClient(TestServer(app)) as client:
             result=await client.post('/toy/telemetry/action',headers=headers,json={'action':'status'})
             assert (await result.json())['enabled'] is True
-            assert all(call[3]=='/telemetry/events?schemas=1,2,3' for call in calls)
+            assert all(call[3]=='/telemetry/events?schemas=1,2,3&policy_version=1' for call in calls)
             denied=await client.post('/toy/telemetry/action',json={'action':'set_enabled','enabled':True})
             assert denied.status==403
             invalid=await client.post('/toy/telemetry/action',headers=headers,json={'action':'set_enabled','enabled':'true'})

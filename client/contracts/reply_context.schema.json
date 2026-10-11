@@ -246,6 +246,8 @@
             "unknown",
             "acquaintance",
             "familiar",
+            "friend",
+            "trusted_friend",
             "close",
             "committed"
           ]

@@ -29,7 +29,8 @@ class Engagement:
     polls inspect the count/tail and recent rows (including in-place merges).
     Expiry and time-of-day changes are evaluated even without a new receipt.
     """
-    def __init__(self):
+    def __init__(self, window=WEEK):
+        self.window = window
         self.tails = {}
         self.signature = None
         self.events = {}
@@ -47,7 +48,7 @@ class Engagement:
             # Native user letters are inserted at index zero; proactive letters
             # append at the other end and never count as user engagement.
             end = 0
-            while end < len(rows) and stamp(rows[end].get('created_at')) > now - WEEK:
+            while end < len(rows) and stamp(rows[end].get('created_at')) > now - self.window:
                 end += 1
             return rows[:end]
         key = id(rows)
@@ -55,11 +56,11 @@ class Engagement:
         if (cached is None or cached[0] is not rows or len(rows) < cached[1]
                 or len(rows) == cached[1] and cached[3] != (id(rows[-1]) if rows else None)):
             start = len(rows)
-            while start and stamp(rows[start - 1].get('created_at')) > now - WEEK:
+            while start and stamp(rows[start - 1].get('created_at')) > now - self.window:
                 start -= 1
         else:
             start = cached[2]
-        while start < len(rows) and stamp(rows[start].get('created_at')) <= now - WEEK:
+        while start < len(rows) and stamp(rows[start].get('created_at')) <= now - self.window:
             start += 1
         self.tails[key] = (rows, len(rows), start, id(rows[-1]) if rows else None)
         return rows[start:]
@@ -78,10 +79,13 @@ class Engagement:
             hours[local.hour].add(local.date())
         count = len(self.events)
         last_day = sum(at > now - 86400 for at in self.events.values())
-        rank = (4 if last_day >= 100 or count >= 560 and len(dates) >= 5 else
-                3 if count >= 60 and len(dates) >= 5 else
-                2 if count >= 20 and len(dates) >= 3 else 1 if count >= 5 else 0)
-        usual = len(hours[datetime.fromtimestamp(now, BEIJING).hour]) >= 2
+        from runtime.cloud_policy import get_policy
+        limits = get_policy('proactive')['engagement']
+        rank = (4 if last_day >= limits['committed_day_count'] or count >= limits['committed_count'] and len(dates) >= limits['committed_days'] else
+                3 if count >= limits['close_count'] and len(dates) >= limits['close_days'] else
+                2 if count >= limits['trusted_count'] and len(dates) >= limits['trusted_days'] else
+                1 if count >= limits['familiar_count'] else 0)
+        usual = len(hours[datetime.fromtimestamp(now, BEIJING).hour]) >= limits['usual_days']
         return rank, usual
 
     def _read_events(self, letters, chats, now):
@@ -95,7 +99,7 @@ class Engagement:
                 if medium == 'qq' and row.get('channel') != 'qq':
                     continue
                 at = stamp(row.get('user_sent_at')) or stamp(row.get('life_received_at')) or stamp(row.get('created_at'))
-                if not now - WEEK < at <= now:
+                if not now - self.window < at <= now:
                     continue
                 sources = row.get('source_messages') if medium == 'qq' else None
                 ids = sources.keys() if isinstance(sources, dict) and sources else (row.get('letter_id'),)
@@ -122,7 +126,8 @@ def effective_profile(server, now=None):
     letters, chats = getattr(store, 'letters', []), getattr(store, 'personal_chats', [])
     port = getattr(server, 'private_world_port', None)
     from runtime.private_world.port import NullPrivateWorldPort
-    relationship = (profile_from_snapshot(port.snapshot()) if port is not None and not isinstance(port, NullPrivateWorldPort)
+    from runtime.memory.effective_relationship import relationship_history
+    relationship = (profile_from_snapshot(port.snapshot(), relationship_history(store, now)) if port is not None and not isinstance(port, NullPrivateWorldPort)
                     else profile_from_rows(letters + chats))
     cache = getattr(server, '_contact_engagement', None)
     if cache is None:

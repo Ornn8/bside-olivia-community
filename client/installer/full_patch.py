@@ -60,6 +60,7 @@ PAYLOAD_EXTRA_DIRS = (
     "runtime/improve",
 )
 PAYLOAD_EXTRA_FILES = (
+    "runtime/cloud_policy.py",
     "runtime/official_endpoints.py",
     "runtime/image_assets.py",
     "runtime/image_assets.json",
@@ -141,6 +142,8 @@ PAYLOAD_REQUIRED_ROOT_FILES = {
     "video_capability_install.py",
 }
 PAYLOAD_REQUIRED_RELATIVE_FILES = {
+    "runtime/cloud_policy.py",
+    "runtime/memory/effective_relationship.py",
     "runtime/official_endpoints.py",
     "runtime/image_assets.py",
     "runtime/image_assets.json",

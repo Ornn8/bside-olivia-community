@@ -71,6 +71,7 @@ class ProjectedPrivateWorld:
 
 def project_private_world(
     snapshot: PrivateWorldSnapshot,
+    history=None,
 ) -> ProjectedPrivateWorld:
     if not isinstance(snapshot, PrivateWorldSnapshot):
         raise TypeError(
@@ -96,6 +97,9 @@ def project_private_world(
     continuation_known = character.continuation_known
     stage = _stage(character.relationship_stage)
     intimacy_ceiling = intimacy_ceiling_for_stage(stage)
+    if history is not None:
+        from runtime.memory.effective_relationship import effective_relationship_stage
+        stage = _stage(effective_relationship_stage(snapshot, history))
     granted_intimacy = character.granted_intimacy
     behavior = PrivateBehaviorView(
         familiarity=_level(snapshot.familiarity),

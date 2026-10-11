@@ -131,11 +131,13 @@ async def deliver_default_voice(server, row, send):
 
 
 def _qq_default_voice_timeout_seconds():
+    from runtime.cloud_policy import get_policy
+    fallback = get_policy('qq_default_voice')['wait_seconds']
     try:
         value = float(os.environ.get('OLIVIA_QQ_DEFAULT_VOICE_TIMEOUT_SECONDS', ''))
     except ValueError:
-        return _QQ_DEFAULT_VOICE_TIMEOUT_SECONDS
-    return value if math.isfinite(value) and 5 <= value <= 120 else _QQ_DEFAULT_VOICE_TIMEOUT_SECONDS
+        return fallback
+    return value if math.isfinite(value) and 5 <= value <= 120 else fallback
 
 
 def _discard_chat_audio(path):
@@ -777,6 +779,12 @@ async def _generate_billed(server, event, row):
                 reason = decision['text_reason'] if decision['delivery'] == 'text' else None
                 mode = 'text' if reason else 'voice'
                 basis = reason.upper() if reason else 'QQ_DEFAULT_VOICE'
+                if basis == 'QQ_DEFAULT_VOICE':
+                    from runtime.cloud_policy import get_policy
+                    policy_mode = get_policy('qq_default_voice')['mode']
+                    mode = 'voice' if policy_mode == 'voice_only' else 'text'
+                    if policy_mode == 'text_then_voice':
+                        row['default_voice_status'] = 'PENDING'
         if contact is not None:
             delivery = contact['decision']['medium']
             if delivery not in {'text', 'audio_speech'} or delivery == 'audio_speech' and not voice_available:

@@ -1614,16 +1614,11 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           if (!alive() || !area.isConnected) return;
           if (!result || result.status !== "READY" || !result.levels) throw new Error("RELATIONSHIP_UNAVAILABLE");
           const stages = {unknown:"尚未确定", acquaintance:"初识", familiar:"逐渐熟悉", friend:"朋友", trusted_friend:"信赖的朋友", close:"亲近", committed:"稳定的亲密关系"};
-          const levels = {unknown:"尚未确定", low:"较低", medium:"中等", high:"较高"};
+          const descriptions = {unknown:"你们的关系还在慢慢建立。", acquaintance:"你们刚认识不久，她对你还有些拘谨。", familiar:"你们渐渐熟了，聊得来的话题越来越多。", friend:"你们已经是朋友了，她跟你在一起很自在。", trusted_friend:"你们是彼此信赖的朋友，她愿意跟你说心里话。", close:"你们很亲近，她会想你，也愿意让你知道。", committed:"你们已经确认了彼此的关系。"};
           content.replaceChildren(text("p", `关系阶段：${stages[result.relationship_stage] || "尚未确定"}`, "text-text-body text-body-m"));
-          const list = document.createElement("dl");
-          list.style.cssText = "display:grid;grid-template-columns:auto 1fr;gap:8px 24px;margin:0";
-          for (const [key, label] of [["familiarity","熟悉"],["trust","信任"],["comfort","自在"],["closeness","亲近"],["tension","紧张"]]) {
-            const value = text("dd", levels[result.levels[key]] || "尚未确定", "text-text-body text-body-m");
-            value.style.margin = "0";
-            list.append(text("dt", label, "text-text-secondary text-body-m"), value);
-          }
-          content.append(list, text("p", "这里读取既有关系记录；生活动态的刷新不会增加好感或改变关系阶段。", "text-text-secondary text-caption-m"));
+          content.append(text("p", descriptions[result.relationship_stage] || descriptions.unknown, "text-text-body text-body-m"));
+          if (result.levels.tension === "high") content.append(text("p", "最近你们之间有点小别扭。", "text-text-secondary text-body-m"));
+          content.append(text("p", "这里读取既有关系记录；生活动态的刷新不会增加好感或改变关系阶段。", "text-text-secondary text-caption-m"));
           loaded = true;
         } catch (_error) {
           content.replaceChildren(text("p", "关系状态暂时无法读取。", "text-text-secondary text-body-m"), button("重试读取关系", read));

@@ -51,6 +51,7 @@ def mount(app, setup, stored_key, remote):
                     current = (key, setup._config().base_url)
                     if current != destination:
                         collector.schema = 1
+                        collector.policy_version_supported = False
                         destination = current
                     async def send(events):
                         return await remote(key, {'schema': collector.schema, 'events': events})
