@@ -491,3 +491,29 @@ def test_malformed_memory_records_are_ignored_by_the_outbox_projection():
     assert len(rows) == 1 and rows[0]['origin'] == 'proactive' and rows[0]['content'] == ''
     assert rows[0]['letter_id'] == daily_video_memory.letter_id('day:a')
     assert list(daily_video_memory.memory_rows({daily_video_memory.KEY: 'oops'})) == []
+
+
+def test_capability_requests_say_the_client_takes_moment_videos():
+    """Older clients fail a whole QQ turn on a moment offer; the service announces moments only on this header."""
+    from aiohttp import web
+    from aiohttp.test_utils import TestServer
+    from runtime.remote_generation import RemoteGeneration
+
+    async def scenario():
+        seen = []
+
+        async def capabilities(request):
+            seen.append(request.headers.get('X-Olivia-Daily-Video-Moment'))
+            return web.json_response({'kinds': [], 'shared_assets': []})
+
+        app = web.Application()
+        app.router.add_get('/v1/capabilities', capabilities)
+        server = TestServer(app)
+        await server.start_server()
+        try:
+            await RemoteGeneration(str(server.make_url('')).rstrip('/'), 'synthetic-token').request('capabilities', {})
+        finally:
+            await server.close()
+        return seen
+
+    assert asyncio.run(scenario()) == ['1']
