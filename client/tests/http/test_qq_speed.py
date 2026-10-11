@@ -12,18 +12,16 @@ from runtime.personal_chat.service import PersonalChatService
 from tests.http.test_chat_jev_decision import ordinary_chat_result, server_fixture
 
 
-def test_default_voice_text_precedes_render_and_replay_never_renders_twice(monkeypatch, tmp_path):
+def test_default_voice_sends_only_the_voice_and_replay_never_renders_twice(monkeypatch, tmp_path):
+    # Default QQ voice is the reply itself: the same words are never sent as text first.
     server, _, *_ = server_fixture(monkeypatch, tmp_path, ordinary_chat_result(delivery='text'))
     rows, sent, renders = [], [], []
     server.store.personal_chats = rows
     server._persist_store_state = lambda: None
 
     async def scenario():
-        release = asyncio.Event()
         async def render(server, text, path, **options):
             renders.append(text)
-            assert sent == [('text', text)]
-            await release.wait()
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b'audio')
             return {'duration_seconds': 1}
@@ -40,15 +38,11 @@ def test_default_voice_text_precedes_render_and_replay_never_renders_twice(monke
             lambda event, row: backend.generate(server, event, row), commit, {'qq': ('b', 'u')},
             default_voice=lambda row, send: backend.deliver_default_voice(server, row, send))
         event = PersonalMessage('qq', 'b', 'u', 'first', 'hello')
-        await asyncio.wait_for(service.handle(event, send), .5)
-        assert rows[0]['delivery_status'] == 'DELIVERED'
-        assert sent == [('text', rows[0]['reply_text'])]
         await service.handle(event, send)
-        release.set()
-        await asyncio.gather(*service.speech_tasks.values())
         await service.handle(event, send)
-        assert len(renders) == 1 and [x[0] for x in sent] == ['text', 'audio']
-        assert rows[0]['default_voice_status'] == 'DELIVERED'
+        assert len(renders) == 1 and [x[0] for x in sent] == ['audio']
+        assert rows[0]['delivery_status'] == 'DELIVERED' and rows[0]['delivered_format'] == 'audio'
+        assert 'default_voice_status' not in rows[0]
         await asyncio.gather(*service.consumer_tasks.values())
     asyncio.run(scenario())
 
