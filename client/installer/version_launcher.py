@@ -584,6 +584,11 @@ def _belongs_to_installation(root: Path, executable: str, command_line: str,
     prefix = ntpath.normcase(ntpath.normpath(str(root))).rstrip("\\")
     if executable and ntpath.normcase(ntpath.normpath(executable)).startswith(prefix + "\\"):
         return True
+    # Outside the install folder only the bundled runtime runs our launcher and backend;
+    # an editor holding a log open names the folder too and must be left alone.
+    runtime = ntpath.normcase(ntpath.normpath(str(root.parent / "runtime"))).rstrip("\\")
+    if not executable or not ntpath.normcase(ntpath.normpath(executable)).startswith(runtime + "\\"):
+        return False
     # Match a complete path boundary, never another installation with this prefix.
     command = command_line.replace("/", "\\").casefold()
     return bool(re.search(r'(?:^|[\s"=])' + re.escape(prefix.casefold()) + r'(?=[\\"\s]|$)', command))
@@ -663,12 +668,19 @@ def _restart_failure_prompt() -> None:
     ctypes.windll.user32.MessageBoxW(None, "Olivia 自动重启失败，请手动打开", "Olivia", 0x10 | 0x40000)
 
 
-def _wait_restart_processes(root: Path, kernel, handles) -> None:
+def _wait_restart_processes(root: Path, kernel, handles, owner_pid: int | None = None) -> None:
     deadline = time.monotonic() + 20
+    owner = [handle for pid, handle in handles if pid == owner_pid]
+    owner_stopped_at = None
     _restart_event(root, "waiting")
     while any(kernel.WaitForSingleObject(handle, 0) != 0 for _, handle in handles):
-        if time.monotonic() >= deadline:
-            _restart_event(root, "timeout")
+        now = time.monotonic()
+        if owner and owner_stopped_at is None and kernel.WaitForSingleObject(owner[0], 0) == 0:
+            owner_stopped_at = now
+        # The client ignores the close request, so once the backend has gone it gets
+        # a short grace period instead of the full timeout.
+        if now >= deadline or (owner_stopped_at is not None and now >= owner_stopped_at + 3):
+            _restart_event(root, "timeout" if now >= deadline else "grace_elapsed")
             for _, handle in handles:
                 if kernel.WaitForSingleObject(handle, 0) != 0:
                     if not kernel.TerminateProcess(handle, 0):
@@ -696,7 +708,7 @@ def _update_restart(root: Path, ready: Path, owner_pid: int | None = None) -> in
         # The backend acknowledges the response before closing itself.
         time.sleep(1.5)
         _close_restart_windows({pid for pid, _ in handles})
-        _wait_restart_processes(root, kernel, handles)
+        _wait_restart_processes(root, kernel, handles, owner_pid)
         log = root / "data" / "logs" / "launcher.jsonl"
         offset = log.stat().st_size
         _restart_event(root, "starting")

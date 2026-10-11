@@ -87,8 +87,10 @@ def test_restart_requires_success_and_is_one_shot(tmp_path, monkeypatch, action)
 @pytest.mark.parametrize("exe,command,pid,expected", [
     (r"F:\安装 空格\app\Olivia.exe", "", 11, True),
     (r"F:\安装 空格2\app\Olivia.exe", "", 11, False),
-    (r"C:\Windows\python.exe", 'python "F:\\安装 空格\\launcher\\version_launcher.py"', 11, True),
-    (r"C:\Windows\python.exe", 'python "F:\\安装 空格2\\launcher\\version_launcher.py"', 11, False),
+    (r"F:\runtime\python-3.12.10-embed-amd64\pythonw.exe", 'pythonw "F:\\安装 空格\\launcher\\version_launcher.py"', 11, True),
+    (r"F:\runtime\python-3.12.10-embed-amd64\pythonw.exe", 'pythonw "F:\\安装 空格2\\launcher\\version_launcher.py"', 11, False),
+    (r"C:\Windows\python.exe", 'python "F:\\安装 空格\\launcher\\version_launcher.py"', 11, False),
+    (r"C:\Windows\notepad.exe", 'notepad "F:\\安装 空格\\data\\logs\\launcher.jsonl"', 11, False),
     (r"F:\安装 空格\runtime\pythonw.exe", "", 10, False),
 ])
 def test_installation_ownership(exe, command, pid, expected):
@@ -114,6 +116,27 @@ def test_wait_before_timeout_kill(tmp_path, monkeypatch, timeout):
             return True
     launcher._wait_restart_processes(tmp_path, Kernel(), [(123, "retained handle")])
     assert steps == (["waiting", "timeout", "kill", "stopped"] if timeout else ["waiting", "stopped"])
+
+
+def test_client_gets_short_grace_after_backend_exit(tmp_path, monkeypatch):
+    steps = []
+    clock = [0]
+    monkeypatch.setattr(launcher.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(launcher.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    monkeypatch.setattr(launcher, "_restart_event", lambda root, event, **kw: steps.append(event))
+
+    class Kernel:
+        killed = False
+        def WaitForSingleObject(self, handle, milliseconds):
+            # The backend exits after 1 s; the client keeps running until terminated.
+            return 0 if self.killed or (handle == "backend" and clock[0] >= 1) else 258
+        def TerminateProcess(self, handle, code):
+            assert handle == "client" and 4 <= clock[0] < 5
+            steps.append("kill")
+            self.killed = True
+            return True
+    launcher._wait_restart_processes(tmp_path, Kernel(), [(7, "backend"), (8, "client")], 7)
+    assert steps == ["waiting", "grace_elapsed", "kill", "stopped"]
 
 
 def test_helper_failure_is_logged_and_visible(tmp_path, monkeypatch):
