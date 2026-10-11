@@ -132,6 +132,8 @@ client/linli_character/message_templates.json
 # Ignore documentation by default; explicitly allow formal documents, the
 # public index, and sanitized historical snapshots.
 client/docs/*
+!client/docs/piano-gifts-client-contract.md
+!client/docs/native-piano-contract.md
 !client/docs/ace-cover-runtime.md
 !client/docs/RELATIONSHIP_GROUNDING.md
 !client/docs/PRIVATE_WORLD_LIFE.md

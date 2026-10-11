@@ -4,7 +4,6 @@
 #
 # 本地适配点（按配置接入模型）:
 #   letter_adapter.reply(content)  -> 本地 LLM 生成回信
-#   music_adapter.generate(midi)   -> 本地音乐模型生成演奏
 import asyncio
 from collections import deque
 from contextvars import ContextVar
@@ -1132,18 +1131,6 @@ class LetterAdapter:
             raise LLMError("LLM_UNAVAILABLE") from None
 
 
-class MusicAdapter:
-    """MIDI 生成边界：没有实现就明确 NOT_IMPLEMENTED，不伪造处理中。"""
-
-    def submit(self, midi_url: str, filename: str) -> dict:
-        return {
-            "job_id": str(uuid.uuid4()),
-            "state": 5,
-            "status": "NOT_IMPLEMENTED",
-            "error_code": "MIDI_NOT_IMPLEMENTED",
-            "filename": filename,
-        }
-
 # ---------------------------------------------------------------------------
 # 数据存储（内存，可加文件持久化）
 # ---------------------------------------------------------------------------
@@ -1976,7 +1963,6 @@ async def _music_voice_plan_for_letter(
     return await _voice_plan_for_letter(letter, reply_text)
 
 
-music_adapter = MusicAdapter()
 reply_engine = ReplyOrchestrator(
     _LetterGateway(letters_adapter),
     timeout_seconds=LLM_CONFIG.timeout_seconds,
@@ -2186,6 +2172,13 @@ async def handler(request: web.Request):
     if method == "OPTIONS":
         _safe_log('cors_preflight', method=method, path=path, origin_allowed=True)
         return web.Response(status=204, headers=CORS_HEADERS(request))
+
+    if canonical_path.startswith('/toy/midi/upload/'):
+        from runtime.native_piano import upload_http
+        return await upload_http(sys.modules[__name__], request)
+    if canonical_path.startswith('/toy/midi/audio/'):
+        from runtime.native_piano import audio_http
+        return await audio_http(sys.modules[__name__], request)
 
     if canonical_path == "/toy/cover/upload":
         if method != "POST" or request.headers.get("X-Olivia-Companion-Action") != "confirmed":
@@ -3945,7 +3938,7 @@ async def _pets_tick() -> None:
     now = datetime.now(timezone.utc)
     for action, remember in (
             ('pets_get', lambda r: diary_store.remember_pets(r['pets'], now, [i['name'] for i in r['items'] if i['owned']])),
-            ('gifts_get', lambda r: diary_store.remember_gifts([c for c in r['cameras'] if c['owned']], now)),
+            ('gifts_get', lambda r: diary_store.remember_gifts([c for c in [*r['cameras'], *r.get('items', [])] if c['owned']], now)),
             ('wardrobe_get', lambda r: diary_store.remember_wardrobe(r, now))):
         try:
             remember(await api.request(action, {}))
@@ -4299,7 +4292,11 @@ async def route(
             "retryable": public_status in {"INITIALIZING", "DEGRADED", "UNAVAILABLE"},
             "retried_count": retried,
         })
-    if spec["state"] == "not_implemented" and p != "/toy/midi/generate":
+    if p == '/toy/genObjectUploadUrl' or p.startswith('/toy/midi/') and p != '/toy/midi/importShareCode':
+        import sys as piano_sys
+        from runtime.native_piano import route as piano_route
+        return await piano_route(piano_sys.modules[__name__], p, body, query)
+    if spec["state"] == "not_implemented":
         return not_implemented(spec["error_code"] or "ROUTE_NOT_IMPLEMENTED")
 
     if p.startswith('/toy/letter/maintenance/'):
@@ -4736,8 +4733,16 @@ async def route(
             if method == 'POST':
                 if not companion_confirmed:
                     return err(403, 'COMPANION_CONFIRMATION_REQUIRED', {})
-                if not isinstance(body, dict) or set(body) != {'item'}:
+                from runtime.gifts import validate_purchase
+                try:
+                    body = validate_purchase(body)
+                except ValueError:
                     return err(400, 'GIFT_REQUEST_INVALID', {'error_code': 'GIFT_REQUEST_INVALID'})
+                catalog = await api.request('gifts_get', {})
+                selected = next((item for item in [*catalog['cameras'], *catalog.get('items', [])]
+                                 if item['id'] == body['item']), None)
+                if selected is None or ('custom' in body) != (selected.get('customizable') is True):
+                    return err(400, 'GIFT_CUSTOM_INVALID', {'error_code': 'GIFT_CUSTOM_INVALID'})
                 result = await api.request('gifts_buy', body)
             elif method == 'GET':
                 result = await api.request('gifts_get', {})
@@ -4747,7 +4752,7 @@ async def route(
             return err(exc.status, exc.code, {'error_code': exc.code})
         if diary_store is not None:
             try:
-                diary_store.remember_gifts([c for c in result['cameras'] if c['owned']], datetime.now(timezone.utc))
+                diary_store.remember_gifts([c for c in [*result['cameras'], *result.get('items', [])] if c['owned']], datetime.now(timezone.utc))
             except (OSError, ValueError, sqlite3.Error):
                 pass
         return ok(result)
@@ -5696,67 +5701,6 @@ async def route(
         return not_implemented("MUSIC_WRITE_NOT_IMPLEMENTED")
 
     # ---- MIDI 生成 ----
-    if p == "/toy/genObjectUploadUrl":
-        return not_implemented("MIDI_UPLOAD_NOT_IMPLEMENTED")
-    if p == "/toy/midi/generate":
-        midi_url = body.get("midiUrl", "")
-        filename = body.get("filename", "")
-        job = music_adapter.submit(midi_url, filename)
-        job["created_at"] = int(time.time())
-        store.midi_jobs.append(job)
-        return err(501, 'MIDI_NOT_IMPLEMENTED', {
-            'job_id': job['job_id'],
-            'status': job['status'],
-            'error_code': job['error_code'],
-        })
-    if p == "/toy/midi/listJobs":
-        return ok({
-            "total": len(store.midi_jobs),
-            "next_cursor": 0, "has_more": False,
-            "list": [{"job_id": j["job_id"], "state": j["state"],
-                      "status": j.get("status", "FAILED"),
-                      "filename": j.get("filename", ""), "created_at": j.get("created_at")}
-                     for j in store.midi_jobs],
-        })
-    if p == "/toy/midi/batchGetResult":
-        ids = query.getall("job_ids", []) if hasattr(query, 'getall') else query.get("job_ids", [])
-        if isinstance(ids, str):
-            ids = [ids]
-        results = []
-        for j in store.midi_jobs:
-            if not ids or j["job_id"] in ids:
-                results.append({"job_id": j["job_id"], "state": j["state"], "status": j.get("status", "FAILED")})
-        return ok({"results": results, "generated_today": len(store.midi_jobs), "daily_limit": 0})
-    if p == "/toy/midi/getGenerateResult":
-        job_id = query.get("jobId") or query.get("job_id", "")
-        j = next((x for x in store.midi_jobs if x["job_id"] == job_id), None)
-        if not j:
-            return err(404, 'MIDI_JOB_NOT_FOUND', {'jobId': job_id, 'status': 'FAILED'})
-        return ok({"jobId": job_id, "state": j["state"], "status": j.get("status", "FAILED"), "info": {"videoUrls": []}})
-    if p == "/toy/midi/cancelGenerate":
-        job_id = body.get('jobId') or query.get('jobId') or query.get('job_id', '')
-        j = next((x for x in store.midi_jobs if x["job_id"] == job_id), None)
-        if not j:
-            return err(404, 'MIDI_JOB_NOT_FOUND', {
-                'job_id': job_id,
-                'status': 'FAILED',
-                'error_code': 'MIDI_JOB_NOT_FOUND',
-            })
-        if j and j.get('status') not in {
-            'COMPLETED', 'FAILED', 'CANCELED', 'NOT_IMPLEMENTED'
-        }:
-            j.update({'state': 4, 'status': 'CANCELED', 'error_code': None})
-        return ok({'job_id': job_id, 'status': j.get('status', 'CANCELED')})
-    if p == "/toy/midi/deleteJob":
-        job_id = body.get('jobId') or query.get('jobId') or query.get('job_id', '')
-        if not any(x.get('job_id') == job_id for x in store.midi_jobs):
-            return err(404, 'MIDI_JOB_NOT_FOUND', {
-                'job_id': job_id,
-                'status': 'FAILED',
-                'error_code': 'MIDI_JOB_NOT_FOUND',
-            })
-        store.midi_jobs[:] = [j for j in store.midi_jobs if j.get('job_id') != job_id]
-        return ok({'job_id': job_id, 'status': 'DELETED'})
     if p == "/toy/midi/importShareCode":
         return not_implemented("MIDI_IMPORT_NOT_IMPLEMENTED")
 

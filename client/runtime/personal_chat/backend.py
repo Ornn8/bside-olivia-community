@@ -85,6 +85,11 @@ async def _recover_chat_loop(server, runtime, *, interval_seconds=30):
             pass
 
 
+async def deliver_piano(server, row, send):
+    from .piano import deliver
+    await deliver(server, row, send)
+
+
 async def deliver_speech(server,row,send):
     from .speech import deliver
     return await deliver(server,row,send)
@@ -446,6 +451,8 @@ async def _generate_billed(server, event, row):
     observation_context = incoming_context(row)
     if event.media:
         observation_context += incoming_media.incoming_context(row)
+    from runtime.piano import recent_context
+    observation_context += recent_context(server, event.binding_id)
     content = event.text + observation_context
     source = server._CURRENT_LETTER_MEMORY_SOURCE.set(f"reply:{event.exchange_id}:1")
     receipt = server._CURRENT_LETTER_RECEIPT.set(datetime.fromisoformat(row["life_received_at"]))
@@ -459,6 +466,8 @@ async def _generate_billed(server, event, row):
     voice_available = voice_block is None
     from .speech import supported as speech_supported
     speech_enabled = event.channel == 'qq' and await speech_supported(os.environ)
+    from runtime import piano
+    piano_caps = await piano.capabilities(os.environ) if event.channel == 'qq' else None
     row['voice_ready'] = voice_available
     image_offered = bool(event.channel == 'qq' and row.get('image_available') and row['image_reply_settings'].get('enabled')
                          and os.environ.get('OLIVIA_GPU_API_URL') and os.environ.get('OLIVIA_GPU_API_KEY'))
@@ -580,6 +589,8 @@ async def _generate_billed(server, event, row):
                                     channel=event.channel, binding_id=event.binding_id),
                                 'structured': True, 'raw_user_text': event.text,
                                 'speech_enabled': speech_enabled,
+                                'piano_experience': ({**piano_caps, 'midi_available': bool(row.get('piano_midi'))} if piano_caps else None),
+                                'piano_midi': row.get('piano_midi') if piano_caps else None,
                                 'bedtime_offer_enabled': speech_enabled,
                                 'daily_video_candidates': daily_candidates,
                                 'incoming_observation_context': observation_context,
@@ -817,7 +828,21 @@ async def _generate_billed(server, event, row):
         from runtime.reply.character_emotion_context import store_expression_context
         store_expression_context(row, getattr(result, 'expression_context', None), text)
         speech_intent = (row.get('companion_decision') or {}).get('speech_request')
+        piano_intent = (row.get('companion_decision') or {}).get('piano_request')
+        if piano_caps and row.get('piano_midi') and (not piano_intent or piano_intent['source'] != 'midi'):
+            piano_intent = dict(source='midi', piece_hint=row['piano_midi']['title'], seconds=min(60, piano_caps['max_seconds']))
+        if piano_caps and piano_intent and not row.get('degraded_stages'):
+            try:
+                payload = piano.task_input(piano_intent, piano_caps, row.get('piano_midi'))
+                timing = (row.get('companion_decision') or {}).get('plan', {}).get('proposal', {}).get('timing')
+                if timing not in {'wait_user', 'defer', 'no_reply'}:
+                    row.update(piano_input=payload, piano_status='PENDING', piano_delivery_status='PENDING', requested_format='text')
+                    mode = 'text'
+            except ValueError:
+                row['piano_status'] = 'REQUEST_UNAVAILABLE'
         script = decision.get('speech')
+        if row.get('piano_input'):
+            script = None
         if speech_intent and not script and event.channel == 'qq':
             # Requested long audio the writer left out: the reply still goes out, recorded for diagnosis.
             row['speech_status'] = 'WRITER_OMITTED'
@@ -885,6 +910,9 @@ async def _generate_billed(server, event, row):
 async def commit(server, row):
     if row.get("delivery_status") != "DELIVERED":
         return
+    if row.get('piano_delivery_status') == 'DELIVERED':
+        from runtime.piano import remember
+        await remember(server, row['letter_id'], row['piano_meta'], channel='qq')
     failures = []
     from runtime.image_understanding import commit_image_memory
     # Memory first: the daily-life extraction can be slow and must never hold it back.
@@ -1244,6 +1272,7 @@ def install_personal_chat(app, server):
                 photo=lambda row, send: deliver_photo(server, row, send),
                 prepare_photo=lambda row, send: prepare_chat_photo(server, row, send),
                 speech=lambda row, send: deliver_speech(server,row,send),
+                piano=lambda row, send: deliver_piano(server, row, send),
                 default_voice=lambda row, send: deliver_default_voice(server,row,send), inspect_writer=inspect_writer)
             server._personal_chat_service = service
             # Recovery runs in _recover_chat_loop right after startup; awaiting it here

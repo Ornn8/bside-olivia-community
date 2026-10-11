@@ -179,7 +179,7 @@ def _decision_context(messages, required_sources=(), recent_turns=1):
 
 async def prepare_decision(port, messages, user_text, *, source_id, input_revision, as_of, kinds, cached=None,
                            required_sources=(), speech_enabled=False, bedtime_offer=False,
-                           daily_video_experience=None, record_context_recovery=None):
+                           daily_video_experience=None, record_context_recovery=None, piano_experience=None):
     from .companion_decision import FrozenCompanionTurn, FrozenCompanionDecision, MAX_MESSAGE_CHARS
     metadata = TURN_CONTEXT.get() or {}
     reuse = isinstance(cached, dict) and cached.get('input_revision') == input_revision
@@ -228,6 +228,7 @@ async def prepare_decision(port, messages, user_text, *, source_id, input_revisi
         # A capability rollout must not invalidate a paid, frozen decision.
         # Legacy records have no speech slot; digest validation still catches edits.
         speech_enabled = 'speech_request' in cached
+        piano_experience = cached.get('piano_experience')
         daily_video_experience = cached.get('daily_video_experience')
         if daily_video_experience is None:
             kinds = [kind for kind in kinds if kind != 'video_speech']
@@ -248,7 +249,7 @@ async def prepare_decision(port, messages, user_text, *, source_id, input_revisi
                     compose_audio=False, compose_video=False, split_spoken_content=False),
                 environment=dict(can_read=None, can_view=None, can_listen=None), forbidden_kinds=[],
                 as_of=as_of, input_revision=input_revision, speech_enabled=speech_enabled,
-                bedtime_offer=bedtime_offer,
+                bedtime_offer=bedtime_offer, piano_experience=piano_experience,
                 daily_video_experience=daily_video_experience)
             break
         except CompanionDecisionError as exc:

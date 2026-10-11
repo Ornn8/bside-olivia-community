@@ -232,6 +232,15 @@ class DiaryStore:
             known = json.loads(row['value']) if row else {}
             for camera in cameras:
                 known.setdefault(camera['id'], {'name': camera['name'], 'received_on': local_day(now)})
+                if 'category' in camera:
+                    entry = known[camera['id']]
+                    entry.update(category=camera['category'], use=camera['use'])
+                    if camera.get('custom'):
+                        titles = entry.setdefault('titles', [])
+                        title = camera['custom']['title']
+                        if title not in titles:
+                            titles.append(title)
+                        entry['custom'] = camera['custom']
             db.execute("INSERT INTO diary_settings VALUES ('gifts',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                        (json.dumps(known, ensure_ascii=False),))
 
@@ -417,7 +426,8 @@ class DiaryStore:
                            'meaning': '这是林离自己写给对方看的日记和她记下的事。facts 中的约定、纪念日、称呼和对方近况来自当时对方的原话；'
                                       'user_comment 是对方读日记后的留言。日期以 day 和 date 为准。',
                            'recent_entries': entries, 'facts': facts[:CONTEXT_FACTS],
-                           **({'gifts_from_user': gifts, 'gifts_meaning': '对方送你的相机，都在你身边，拍照时会挑着用；'
+                           **({'gifts_from_user': gifts, 'gifts_meaning': '对方送你的礼物；相机可在拍照时按场合使用。黑胶和乐谱的标题由对方指定，'
+                               '标题不代表已知具体内容；需要了解内容时由判断层决定使用现有联网搜索，不猜曲目或书中内容。'
                                'received_on 是收到的那天，那天还没道谢的话可以自然提起。'} if gifts else {}),
                            **(pets or {}), **clothes},
                           ensure_ascii=False, separators=(',', ':'))

@@ -41,6 +41,7 @@ def _clear_draft(row):
                 'mailbox_notice_letter_id', 'decision_rejection_reason', 'semantic_shadow', 'expression_context',
                 'companion_decision', 'companion_timing', 'companion_delivery', 'companion_context_recovery',
                 'speech_script', 'speech_intent', 'speech_status', 'speech_delivery_status', 'content_review',
+                'piano_input', 'piano_status', 'piano_delivery_status', 'piano_midi', 'piano_file_notice', 'piano_input_error',
                 'proactive_decision', 'proactive_basis', 'proactive_opportunity', 'generation_failure_notice',
                 'generation_context_at', 'stage_timing_seconds', 'stage_actual_calls', 'stage_cache_hits',
                 'degraded_stages', 'default_voice_status', 'default_voice_seconds', 'default_voice_duration',
@@ -82,7 +83,8 @@ async def delivery_notice(row, send, persist, key, text):
 
 
 class PersonalChatService:
-    def __init__(self, rows, persist, generate, commit, bindings, *, sticker_allowed=lambda key: True, sticker_asset=None, photo=None, prepare_photo=None, speech=None, default_voice=None, inspect_writer=None):
+    def __init__(self, rows, persist, generate, commit, bindings, *, sticker_allowed=lambda key: True, sticker_asset=None, photo=None, prepare_photo=None, speech=None, default_voice=None, inspect_writer=None, piano=None):
+        self.piano = piano
         self.rows, self.persist = rows, persist
         self.generate, self.commit = generate, commit
         self.bindings = dict(bindings)
@@ -598,7 +600,7 @@ class PersonalChatService:
                     validate_intent(row['speech_intent'])
                 # Text chosen because speech could not be rendered is deliberate; a lost upload is not.
                 text_fallback = row.get('delivery_basis') in {'VOICE_RENDER_TIMEOUT', 'VOICE_RENDER_FAILED'}
-                if not file_speech and not text_fallback and (row.get('companion_decision') is not None and row.get('companion_delivery') == 'audio_speech'
+                if not file_speech and not row.get('piano_input') and not text_fallback and (row.get('companion_decision') is not None and row.get('companion_delivery') == 'audio_speech'
                         or row.get('proactive_decision', {}).get('decision', {}).get('medium') == 'audio_speech'):
                     row.update(delivery_status='FAILED', letter_status='FAILED', error_code='JEV_PLAN_UNSUPPORTED')
                     await persist_state(self.persist)
@@ -813,6 +815,29 @@ class PersonalChatService:
         key=row['letter_id']
         binding=self.bindings.get('qq')
         if not binding or row.get('binding_id')!=PersonalMessage('qq',*binding,'','').binding_id:
+            return
+        if row.get('piano_input'):
+            if (row.get('delivery_status') != 'DELIVERED' or row.get('channel') != 'qq'
+                    or not callable(self.piano) or not callable(getattr(send, 'file', None))
+                    or key in self.speech_tasks or row.get('piano_delivery_status') in {'SENDING', 'UNKNOWN'}
+                    or row.get('piano_delivery_status') == 'DELIVERED' and row.get('piano_completed_at')
+                       and row.get('piano_notice_status') in {'SENDING', 'UNKNOWN', 'DELIVERED'} and row.get('piano_cleanup_recorded')):
+                return
+            async def play():
+                try:
+                    await self.piano(row, send)
+                    self._schedule_commit(row)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    if row.get('piano_delivery_status') not in {'SENDING', 'UNKNOWN', 'DELIVERED'}:
+                        row['piano_status'] = 'FAILED'
+                        await persist_state(self.persist)
+                        await delivery_notice(row, send, self.persist, 'piano_failure_notice',
+                                              '这次钢琴录音暂时没能完成，请稍后再试。')
+                finally:
+                    self.speech_tasks.pop(key, None)
+            self.speech_tasks[key] = asyncio.create_task(play())
             return
         if (row.get('delivery_status') == 'DELIVERED' and row.get('channel') == 'qq'
                 and row.get('default_voice_status') == 'PENDING' and callable(self.default_voice)

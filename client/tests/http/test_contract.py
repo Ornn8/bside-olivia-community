@@ -2512,7 +2512,6 @@ def test_unimplemented_routes_and_native_capabilities_are_not_fake_successes() -
     paths = (
         "/toy/letter/share",
         "/toy/addPerformance",
-        "/toy/genObjectUploadUrl",
         "/toy/midi/importShareCode",
         "/toy/not-known",
     )
