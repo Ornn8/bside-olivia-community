@@ -1,16 +1,14 @@
 """Bound optional QQ speech without changing a promised media delivery."""
 import asyncio
-from copy import deepcopy
-import json
 import threading
 
 import pytest
 
 from runtime.personal_chat import backend
 from runtime.personal_chat.events import PersonalMessage
-from runtime.personal_chat.service import PersonalChatService, TURN_IS_CURRENT
+from runtime.personal_chat.service import TURN_IS_CURRENT
 from tests.http.test_chat_jev_decision import (
-    ordinary_chat_result, pipeline_result, server_fixture,
+    pipeline_result, server_fixture,
 )
 
 
@@ -32,75 +30,6 @@ def real_voice_server(monkeypatch, tmp_path, result):
     monkeypatch.setenv('OLIVIA_TTS_CONFIG', str(tmp_path / 'tts.json'))
     monkeypatch.delenv('OLIVIA_QQ_DEFAULT_VOICE_TIMEOUT_SECONDS', raising=False)
     return server, row
-
-
-def test_default_voice_timeout_delivers_reviewed_text_once_and_keeps_receiver_live(monkeypatch, tmp_path):
-    result = ordinary_chat_result(delivery='text')
-    server, _ = real_voice_server(monkeypatch, tmp_path, result)
-    monkeypatch.setattr(backend, '_QQ_DEFAULT_VOICE_TIMEOUT_SECONDS', .02, raising=False)
-    rows, sent, rendered = [], [], []
-    release, completed = threading.Event(), threading.Event()
-    server.store.personal_chats = rows
-    server._persist_store_state = lambda: None
-
-    def render(text, path, **kwargs):
-        rendered.append((text, path))
-        if len(rendered) == 1:
-            assert release.wait(2)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(b'synthetic-audio')
-        completed.set()
-        return {'duration_seconds': 2}
-
-    server.render_reply_audio = render
-    async def generate(event, row):
-        return await backend.generate(server, event, row)
-    async def commit(row): pass
-    async def send(text):
-        sent.append(('text', text))
-        return 'text-ack'
-    async def audio(path):
-        sent.append(('audio', path))
-        return 'audio-ack'
-    send.audio = audio
-
-    async def scenario():
-        service = PersonalChatService(rows, lambda: None, generate, commit, {'qq': ('b', 'u')})
-        event = PersonalMessage('qq', 'b', 'u', 'first', 'How was your day?')
-        try:
-            await asyncio.wait_for(service.handle(event, send), .5)
-            assert len(rendered) == len(sent) == 1
-            assert sent[0][0] == 'text'
-            row = rows[0]
-            assert row['delivery_status'] == 'DELIVERED' and row['delivered_format'] == 'text'
-            assert row['voice_fallback'] == 'PERSONAL_CHAT_TTS_TIMEOUT'
-            assert row['delivery_basis'] == 'VOICE_RENDER_TIMEOUT'
-            assert row['voice_prepare_status'] == 'timeout'
-            assert 0 <= row['voice_prepare_seconds'] < .5
-            assert row['voice_prepare_timeout_seconds'] == .02
-            assert 'prepared_audio' not in row
-            snapshot = deepcopy(row)
-            await service.handle(event, send)
-            assert len(rendered) == len(sent) == 1
-            release.set()
-            assert await asyncio.to_thread(completed.wait, 1)
-            await asyncio.sleep(.01)
-            assert row == snapshot and len(sent) == 1
-            assert not rendered[0][1].exists()
-            # A subsequent receipt still gets its own normal voice reply.
-            next_body = json.loads(result.text)
-            next_body['text'] = 'A different answer about your next question'
-            result.text = json.dumps(next_body, ensure_ascii=False)
-            monkeypatch.setattr(backend, '_QQ_DEFAULT_VOICE_TIMEOUT_SECONDS', .5)
-            await asyncio.wait_for(service.handle(
-                PersonalMessage('qq', 'b', 'u', 'second', 'And what happened next?'), send), .5)
-            assert len(rendered) == len(sent) == 2 and sent[-1][0] == 'audio'
-            assert rendered[0][1] != rendered[1][1]
-            assert rows[-1]['voice_prepare_status'] == 'completed'
-            await asyncio.gather(*service.consumer_tasks.values())
-        finally:
-            release.set()
-    asyncio.run(scenario())
 
 
 def test_explicit_audio_does_not_use_optional_default_voice_budget(monkeypatch, tmp_path):
@@ -154,7 +83,7 @@ def test_explicit_audio_timeout_sends_the_written_text(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize('obsolete', ['revision', 'receipt'])
 def test_finished_audio_for_obsolete_turn_is_not_adopted(monkeypatch, tmp_path, obsolete):
-    server, row = real_voice_server(monkeypatch, tmp_path, ordinary_chat_result(delivery='text'))
+    server, row = real_voice_server(monkeypatch, tmp_path, pipeline_result(delivery='audio_speech'))
     started, release = threading.Event(), threading.Event()
     current = [True]
     paths = []

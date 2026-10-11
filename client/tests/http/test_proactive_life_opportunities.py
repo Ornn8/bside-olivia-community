@@ -34,8 +34,8 @@ def kinds(context):
     ('committed', {}, (300, 720, 72, 6, 1200, 14400)),
     ('close', {}, (600, 1500, 24, 2, 5400, 172800)),
     ('familiar', {'familiarity': 75, 'trust': 75}, (1800, 5400, 12, 2, 10800, 345600)),
-    ('unknown', {}, (21600, 64800, 2, 1, 86400, None)),
-    ('familiar', {}, (7200, 21600, 4, 1, 28800, 604800)),
+    ('unknown', {}, (7200, 21600, 2, 1, 86400, None)),
+    ('familiar', {}, (3600, 10800, 4, 1, 28800, 604800)),
 ])
 def test_relationship_cadence_matches_authorized_policy(tier, kwargs, expected):
     actual = profile(tier, **kwargs)
@@ -71,7 +71,7 @@ def test_live_profile_provider_rearms_once_without_backlog(monkeypatch):
     policy = Initiative([], clock=lambda: clock[0], profile_provider=lambda: current[0])
     assert not policy.ready()
     policy.received(object(), None)
-    assert policy.due == NOW + 6*3600
+    assert policy.due == NOW + 2*3600
     current[0] = profile()
     clock[0] += 1
     assert not policy.ready() and policy.due == clock[0]+300

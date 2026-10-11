@@ -7,6 +7,7 @@ from contextvars import ContextVar
 import hashlib
 import hmac
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -27,7 +28,10 @@ V2_DEFAULTS = dict(error_code='UNKNOWN', close_code=None, transport_error=None,
                    in_flight=None, napcat_state=None, napcat_reason=None)
 
 STAGES = frozenset({'app', 'binding', 'recharge_page', 'received', 'generation',
-                    'validation', 'media', 'send', 'reply'})
+                    'validation', 'media', 'send', 'reply', 'initiative'})
+INITIATIVE_REASONS = frozenset({'not_due', 'quiet_hours', 'attempt_limit', 'user_turn_open',
+    'unanswered_wait', 'paused', 'wait_user', 'no_target', 'sending_uncertain', 'ready'})
+INITIATIVE_TIERS = frozenset({'reserved', 'familiar', 'trusted', 'close', 'committed'})
 STATUSES = frozenset({'started', 'ok', 'failed', 'unknown', 'skipped'})
 CHANNELS = frozenset({'client', 'qq', 'wechat', 'letter', 'proactive'})
 MODELS = frozenset({'claude-sonnet-5-5', 'claude-opus-5-5', 'claude-opus-4-6',
@@ -35,7 +39,31 @@ MODELS = frozenset({'claude-sonnet-5-5', 'claude-opus-5-5', 'claude-opus-4-6',
     'qwen3.8-max', 'gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-luna', 'unknown'})
 ERRORS = frozenset({'none', 'timeout', 'balance', 'validation', 'provider', 'media', 'send', 'other'})
 CURRENT = ContextVar('reply_telemetry', default=None)
+TIMINGS = ContextVar('reply_timings', default=None)
+TIMING_NAMES = frozenset({'queue_wait', 'memory_ready', 'media_in', 'world', 'emotion',
+    'interpretation', 'history', 'decision', 'writer', 'quality', 'voice_wait', 'send_ack',
+    'world_local', 'world_selection', 'writer_search', 'writer_http', 'jev_http', 'jev_settlement'})
 _collector = None
+
+
+def safe_timings(value):
+    if not isinstance(value, dict):
+        return {}
+    return {key: round(float(number), 4) for key, number in value.items()
+            if key in TIMING_NAMES and type(number) in (int, float)
+            and 0 <= number <= 86400 and math.isfinite(number)}
+
+
+@contextmanager
+def timing(name, row=None):
+    target = row if row is not None else TIMINGS.get()
+    started = time.monotonic()
+    try:
+        yield
+    finally:
+        if target is not None and name in TIMING_NAMES:
+            values = target.setdefault('reply_timing_seconds', {})
+            values[name] = round(min(86400, values.get(name, 0) + time.monotonic() - started), 4)
 
 
 def error_group(code):
@@ -137,16 +165,26 @@ class Collector:
         return hmac.new(self.salt.encode(), str(source).encode(), hashlib.sha256).hexdigest()
 
     def _event(self, stage, status, *, source='', channel='client', attempt=0, duration_ms=None,
-               error=None, model=None, transport=None):
+               error=None, model=None, transport=None, initiative=None):
         valid = status in TRANSPORT_STATUSES if stage == 'transport' else stage in STAGES and status in STATUSES
         if stage == 'transport' and channel != 'qq':
             return None
         if not self.enabled or not self.owner or not valid: return None
+        if stage == 'initiative':
+            if self.schema != 3 or not isinstance(initiative, dict): return None
+            due = initiative.get('due_in_seconds')
+            if (type(initiative.get('tier')) is not str or initiative['tier'] not in INITIATIVE_TIERS
+                    or type(initiative.get('reason')) is not str or initiative['reason'] not in INITIATIVE_REASONS
+                    or type(initiative.get('catch_up')) is not bool or type(due) not in (int, float)
+                    or not -86400 <= due <= 86400 or not math.isfinite(due)):
+                return None
         if model is None:
             try: model = self.model()
             except Exception: model = 'unknown'
         extra = dict(V2_DEFAULTS, error_code='NONE' if not error else
                      error if isinstance(error, str) and error in ERROR_CODES else 'UNKNOWN')
+        if stage == 'initiative':
+            extra['initiative'] = {key: initiative[key] for key in ('tier', 'due_in_seconds', 'reason', 'catch_up')}
         if stage == 'transport':
             fields = transport if isinstance(transport, dict) else {}
             code = fields.get('close_code')
@@ -210,12 +248,23 @@ class Collector:
                         self._insert(db, self._event('received', 'ok', **fields))
                     if any(previous.get(k) != v for k, v in current.items()):
                         current['changed_at'] = self.clock()
-                        self._insert(db, self._event('reply', status, error=row.get('error_code'), **fields))
+                        event = self._event('reply', status, error=row.get('error_code'), **fields)
+                        current['timing_recorded'] = previous.get('timing_recorded', False)
+                        terminal = (state in {'DELIVERED', 'COMPLETED', 'DELIVERY_UNCONFIRMED', 'SKIPPED'}
+                            or state == 'SENDING' and bool(row.get('error_code'))
+                            or state == 'FAILED' and (attempt >= 2 or row.get('generation_retryable') is False))
+                        if event and not current['timing_recorded'] and terminal:
+                            timings = safe_timings(row.get('reply_timing_seconds'))
+                            if timings:
+                                event['timing_seconds'] = timings
+                                current['timing_recorded'] = True
+                        self._insert(db, event)
                         if state in {'SENDING', 'DELIVERED', 'DELIVERY_UNCONFIRMED'}:
                             elapsed = int((self.clock()-previous['changed_at'])*1000) if previous.get('state')=='SENDING' and 'changed_at' in previous else None
                             self._insert(db, self._event('send', status, duration_ms=elapsed, error=row.get('error_code'), **fields))
                     else:
                         current['changed_at'] = previous.get('changed_at', self.clock())
+                        current['timing_recorded'] = previous.get('timing_recorded', False)
                     for field in ('image_status', 'media_status', 'voice_prepare_status', 'speech_delivery_status'):
                         value = row.get(field)
                         current[field] = value
@@ -234,10 +283,17 @@ class Collector:
     def batch(self, schema=1):
         with self.lock, self._db() as db:
             self._prune(db)
+            if schema != 3:
+                # A capability downgrade must not leak a new stage into an old schema.
+                db.execute("DELETE FROM queue WHERE json_extract(payload, '$.stage') = 'initiative'")
             events = [dict(json.loads(row[1]), seq=row[0]) for row in
                     db.execute('SELECT seq,payload FROM queue ORDER BY seq LIMIT 100')] if self.enabled else []
             for event in events:
-                if schema == 2:
+                if schema != 3:
+                    event.pop('timing_seconds', None)
+                elif 'timing_seconds' in event:
+                    event['timing_seconds'] = safe_timings(event['timing_seconds'])
+                if schema in (2, 3):
                     for key, value in V2_DEFAULTS.items():
                         event.setdefault(key, value)
                 else:
@@ -265,7 +321,7 @@ class Collector:
             if (not isinstance(supported, list) or any(type(value) is not int for value in supported)):
                 raise ValueError('bad capabilities')
             self.ack(expected)
-            self.schema = 2 if 2 in supported else 1
+            self.schema = 3 if 3 in supported else 2 if 2 in supported else 1
             self.last_error = None
         except (OSError, sqlite3.Error, ValueError, RuntimeError, TimeoutError):
             self.schema = 1

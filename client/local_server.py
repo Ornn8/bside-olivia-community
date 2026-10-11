@@ -906,8 +906,10 @@ class LetterAdapter:
         from runtime.reply.jev_questions import configured_questions
         from runtime.reply.world_context_selection import select_world_context, selection_dialogue
         from runtime.personal_chat.presentation import CURRENT
-        packet = self.daily_life.store.reply_candidates(now=now)
-        packet['recent_dialogue'] = selection_dialogue(self.recent_letter_fragments(content, now=now))
+        from runtime.diagnostics.reply_telemetry import timing
+        with timing('world_local'):
+            packet = self.daily_life.store.reply_candidates(now=now)
+            packet['recent_dialogue'] = selection_dialogue(self.recent_letter_fragments(content, now=now, selection_only=True))
         # Freeze the turn's local inputs before concurrent emotion evaluation
         # can update the store while selection awaits its provider.
         addressing = self.daily_life.store.addressing_profile(now=now)
@@ -915,7 +917,8 @@ class LetterAdapter:
         # live state. Relevance selection must not discard their prerequisites.
         selection = {'required_fields': ('current', 'last_observation', 'schedule')} if (
             CURRENT.get() or {}).get('proactive') else {}
-        value = await select_world_context(configured_questions(), packet, content, **selection)
+        with timing('world_selection'):
+            value = await select_world_context(configured_questions(), packet, content, **selection)
         fragments = [UntrustedFragment('linli.daily-life', value),
                      UntrustedFragment('linli.rhythm', json.dumps(packet['rhythm'], ensure_ascii=False))]
         if addressing:
@@ -966,15 +969,17 @@ class LetterAdapter:
             and item.user_message in content), key=lambda item: item.occurred_at))
         return await emotion.evaluate_received(receipts, now=now)
 
-    def recent_letter_fragments(self, content: str = "", *, now=None) -> tuple[UntrustedFragment, ...]:
+    def recent_letter_fragments(self, content: str = "", *, now=None, selection_only=False) -> tuple[UntrustedFragment, ...]:
         now = self._now() if now is None else now
         from runtime.reply.conversation_context import conversation_context
         from runtime.personal_chat.context import READ_WINDOW
         rows = self.recent_letters() if READ_WINDOW.get() is None and self.recent_letters is not None else ()
         recent, historical = conversation_context(rows, query=content,
-            now=now, excluded_sources=self._memory_source_exclusions())
+            now=now, excluded_sources=self._memory_source_exclusions(), include_history=not selection_only)
         fragments = tuple(UntrustedFragment(name, text) for name, text in
                      (('chat.recent', recent), ('chat.historical', historical)) if text)
+        if selection_only:
+            return fragments  # World selection consumes only chat.recent.
         from runtime.memory.history_continuity import companion_view
         builder = companion_view(getattr(self, 'memory_prompt_builder', None))
         if builder is not None:

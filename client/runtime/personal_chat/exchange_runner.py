@@ -34,6 +34,7 @@ class ExchangeRunner:
         send.is_available = lambda: (not self.stopped and self.sender is not None
                                      and self.sender.is_available())
         send.for_exchange = self._sender
+        send.start_typing = lambda: getattr(lease(), 'start_typing', lambda: None)()
         return send
 
     def ready(self, channel, sender):

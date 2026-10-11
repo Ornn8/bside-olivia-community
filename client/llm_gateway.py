@@ -971,6 +971,23 @@ class OpenAICompatibleAdapter(Gateway):
         allow_redirects: bool = True,
         label: str | None = None,
     ) -> dict[str, Any]:
+        from runtime.diagnostics.reply_telemetry import timing
+        with timing('writer_http' if label == 'personal-chat-json' else ''):
+            return await self._post_json_impl(body, request_id, max_reasoning=max_reasoning,
+                background_reasoning=background_reasoning, endpoint=endpoint,
+                allow_redirects=allow_redirects, label=label)
+
+    async def _post_json_impl(
+        self,
+        body: dict[str, Any],
+        request_id: str,
+        *,
+        max_reasoning: bool = False,
+        background_reasoning: bool = False,
+        endpoint: str | None = None,
+        allow_redirects: bool = True,
+        label: str | None = None,
+    ) -> dict[str, Any]:
         try:
             key = self._ensure_configured()
         except GatewayError as exc:
@@ -1115,7 +1132,9 @@ class OpenAICompatibleAdapter(Gateway):
     ) -> GatewayResponse:
         request = request_id or uuid.uuid4().hex
         from runtime.reply.web_search import prepare_search
-        messages = await prepare_search(self, messages, scope.value if scope is not None else None, request)
+        from runtime.diagnostics.reply_telemetry import timing
+        with timing('writer_search' if scope is GatewayRequestScope.PERSONAL_CHAT_JSON else ''):
+            messages = await prepare_search(self, messages, scope.value if scope is not None else None, request)
         max_reasoning = self._uses_max_reasoning(scope)
         # Persona review scopes already own their format and empty-result retry
         # contract. Keep that existing wire protocol and caller validation.

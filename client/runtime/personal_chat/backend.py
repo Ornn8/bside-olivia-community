@@ -90,6 +90,46 @@ async def deliver_speech(server,row,send):
     return await deliver(server,row,send)
 
 
+async def deliver_default_voice(server, row, send):
+    """One optional attachment after the canonical text acknowledgment."""
+    if row.get('delivery_status') != 'DELIVERED' or row.get('default_voice_status') != 'PENDING':
+        return
+    text = row['reply_text']
+    receipt = row.get('delivery_receipt') or {}
+    import hashlib
+    if receipt.get('confirmed') is not True or receipt.get('text_sha256') != hashlib.sha256(text.encode()).hexdigest():
+        return
+    # Reserve durably before a paid render. Interrupted reservations never resubmit.
+    row['default_voice_status'] = 'RENDERING'
+    await persist_chat(server)
+    path = server._state_root() / 'media' / (row['letter_id'] + '-' + secrets.token_hex(8) + '.wav')
+    started = monotonic()
+    try:
+        metadata = await prepare_chat_audio(server, text, path,
+                                            timeout_seconds=_qq_default_voice_timeout_seconds())
+        if row.get('reply_text') != text or row.get('delivery_status') != 'DELIVERED':
+            row['default_voice_status'] = 'SKIPPED'
+            return
+        if callable(getattr(send, 'is_available', None)) and not send.is_available():
+            row['default_voice_status'] = 'SKIPPED'
+            return
+        row['default_voice_status'] = 'SENDING'
+        await persist_chat(server)
+        ack = await send.audio(str(path))
+        row['default_voice_status'] = ('DELIVERED' if type(ack) in (str, int) and str(ack) else 'UNKNOWN')
+        if row['default_voice_status'] == 'DELIVERED':
+            row['default_voice_duration'] = metadata['duration_seconds']
+    except asyncio.CancelledError:
+        row['default_voice_status'] = 'UNKNOWN' if row['default_voice_status'] == 'SENDING' else 'FAILED'
+        raise
+    except Exception:
+        row['default_voice_status'] = 'UNKNOWN' if row['default_voice_status'] == 'SENDING' else 'FAILED'
+    finally:
+        row['default_voice_seconds'] = round(monotonic() - started, 4)
+        _discard_chat_audio(path)
+        await persist_chat(server)
+
+
 def _qq_default_voice_timeout_seconds():
     try:
         value = float(os.environ.get('OLIVIA_QQ_DEFAULT_VOICE_TIMEOUT_SECONDS', ''))
@@ -336,6 +376,8 @@ async def _proactive_contact(server, runtime, initiative):
                 return _contact_eligible(server, event)
             return (any(r.get('letter_id') == event.exchange_id for r in server.store.personal_chats)
                     or initiative.ready())
+        if not initiative.reserve():
+            return
         try:
             followup = initiative.pending_followup()
             if followup and followup['followup_at'] > datetime.now().timestamp():
@@ -348,11 +390,15 @@ async def _proactive_contact(server, runtime, initiative):
 async def generate(server, event, row):
     from runtime.reply.jev_billing import billing_scope
     from runtime.model_routes import using
-    from runtime.diagnostics.reply_telemetry import scope, selected_model
+    from runtime.diagnostics.reply_telemetry import scope, selected_model, TIMINGS
     with billing_scope('personal-chat:' + event.exchange_id + ':' + str(row.get('input_revision', 0))), using('qq'), scope(
             event.exchange_id, 'proactive' if row.get('origin') == 'proactive' else event.channel, row.get('generation_attempts', 0)):
         row['diagnostic_model'] = selected_model()
-        return await _generate_billed(server, event, row)
+        token = TIMINGS.set(row)
+        try:
+            return await _generate_billed(server, event, row)
+        finally:
+            TIMINGS.reset(token)
 
 
 async def _generate_billed(server, event, row):
@@ -367,20 +413,23 @@ async def _generate_billed(server, event, row):
     if server.daily_life_runtime is None or not server._official_history_private_world_available():
         raise RuntimeError("PERSONAL_CHAT_WORLD_UNAVAILABLE")
     # Keep the same memory readiness policy; do not bypass a slow extraction.
-    deadline = asyncio.get_running_loop().time() + server.MEMORY_READY_REPLY_TIMEOUT_SECONDS
-    while not server._conversation_memory_ready_for_reply():
-        if asyncio.get_running_loop().time() >= deadline:
-            raise RuntimeError("PERSONAL_CHAT_MEMORY_UNAVAILABLE")
-        await asyncio.sleep(.25)
+    from runtime.diagnostics.reply_telemetry import timing
+    with timing('memory_ready', row):
+        deadline = asyncio.get_running_loop().time() + server.MEMORY_READY_REPLY_TIMEOUT_SECONDS
+        while not server._conversation_memory_ready_for_reply():
+            if asyncio.get_running_loop().time() >= deadline:
+                raise RuntimeError("PERSONAL_CHAT_MEMORY_UNAVAILABLE")
+            await asyncio.sleep(.25)
     # Freeze before generation so the writer and attachment use one preference.
     if 'image_reply_settings' not in row:
         row['image_reply_settings'] = server.video_reply_settings_store.image_snapshot()
         await persist_chat(server)
     from runtime.image_understanding import understand_incoming, incoming_context
-    await understand_incoming(server, event, row)
-    observation_context = incoming_context(row)
     from runtime import incoming_media
-    await incoming_media.understand_incoming(server, event, row)
+    with timing('media_in', row):
+        await understand_incoming(server, event, row)
+        await incoming_media.understand_incoming(server, event, row)
+    observation_context = incoming_context(row)
     if event.media:
         observation_context += incoming_media.incoming_context(row)
     content = event.text + observation_context
@@ -749,6 +798,9 @@ async def _generate_billed(server, event, row):
             row.update(speech_script=script, speech_intent=speech_intent, requested_format='text',
                        speech_status='PENDING', speech_delivery_status='PENDING')
             mode = 'text'
+        if mode == 'voice' and basis == 'QQ_DEFAULT_VOICE' and not speech_intent and not script:
+            row.update(default_voice_status='PENDING', requested_format='text')
+            mode = 'text'
         if mode == 'voice' and voice_available and text != '[[skip]]':
             # A cancelled older revision can still finish in its worker thread.
             # Give each render its own output so it cannot overwrite new audio.
@@ -759,7 +811,9 @@ async def _generate_billed(server, event, row):
             voice_status = 'failed'
             row.update(voice_prepare_status='running', voice_prepare_timeout_seconds=timeout)
             try:
-                metadata = await prepare_chat_audio(server, text, path, timeout_seconds=timeout)
+                from runtime.diagnostics.reply_telemetry import timing
+                with timing('voice_wait', row):
+                    metadata = await prepare_chat_audio(server, text, path, timeout_seconds=timeout)
                 if not turn_is_current():
                     _discard_chat_audio(path)
                     return text
@@ -1161,7 +1215,8 @@ def install_personal_chat(app, server):
                 sticker_asset=lambda key: ensure_image(server._local_data_root(), 'stickers', key),
                 photo=lambda row, send: deliver_photo(server, row, send),
                 prepare_photo=lambda row, send: prepare_chat_photo(server, row, send),
-                speech=lambda row, send: deliver_speech(server,row,send), inspect_writer=inspect_writer)
+                speech=lambda row, send: deliver_speech(server,row,send),
+                default_voice=lambda row, send: deliver_default_voice(server,row,send), inspect_writer=inspect_writer)
             # Recovery runs in _recover_chat_loop right after startup; awaiting it here
             # kept the backend from becoming ready for users with hundreds of chats.
             from .probe import ProbeJournal
@@ -1192,6 +1247,7 @@ def install_personal_chat(app, server):
             from .initiative import Initiative
             from runtime.reply import proactive_runtime
             initiative = Initiative(server.store.personal_chats,
+                state_path=server._state_root() / 'personal-chat-initiative.sqlite3',
                 profile_provider=(lambda: proactive_runtime.live_profile(server)) if proactive_runtime.enabled() else None)
 
             async def handle_connection_test(event, send):

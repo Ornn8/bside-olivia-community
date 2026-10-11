@@ -51,12 +51,12 @@ class InitiativeProfile:
 
 _BASE = {
     "reserved": InitiativeProfile(
-        "reserved", "normal", 6 * 3600, 18 * 3600, 2,
+        "reserved", "normal", 2 * 3600, 6 * 3600, 2,
         1, 24 * 3600, None,
         "需要明确的未完话题、约定或具体关心理由，不为表现主动而闲聊。",
     ),
     "familiar": InitiativeProfile(
-        "familiar", "normal", 2 * 3600, 6 * 3600, 4,
+        "familiar", "normal", 1 * 3600, 3 * 3600, 4,
         1, 8 * 3600, 7 * 86400,
         "可以主动延续共同兴趣、上次话题或具体生活关联；纯粹没事找话仍应克制。",
     ),

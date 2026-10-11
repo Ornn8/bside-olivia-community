@@ -112,11 +112,19 @@ async def select_world_context(port, packet, user_text, *, max_chars=3500, requi
                           'criteria': dict(_LEVELS)}
     state = {**common, 'records': catalog}
     envelope = {'state': state, 'questions': questions, 'purpose': 'reply-world-selection'}
+    size = None
     # Offer fewer candidates rather than fail the reply: finished, then oldest, go first.
     for index in _trim_order(records):
-        if len(questions) <= 192 and len(_json(envelope).encode('utf-8')) <= 30000:
-            break
+        if len(questions) <= 192:
+            if size is None:
+                size = len(_json(envelope).encode('utf-8'))
+            if size <= 30000:
+                break
         key = f'r{index}'
+        if size is not None:
+            # Exact UTF-8 member costs; preserve the existing removal order.
+            for mapping in (catalog, questions):
+                size -= len(_json({key: mapping[key]}).encode('utf-8')) - 2 + (len(mapping) > 1)
         catalog.pop(key, None)
         questions.pop(key, None)
     if len(_json(envelope).encode('utf-8')) > 30000:
