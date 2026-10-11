@@ -172,11 +172,11 @@ def mount(app, root, stored_key):
     async def lifecycle(app):
         global _active
         _active = manager
-        await manager.refresh(fetch)
+        # Startup never waits for the network: the cache or built-in defaults apply until it answers.
         async def run():
             while True:
-                await asyncio.sleep(600)
                 await manager.refresh(fetch)
+                await asyncio.sleep(600)
         task = asyncio.create_task(run())
         try:
             yield
