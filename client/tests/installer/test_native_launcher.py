@@ -218,3 +218,17 @@ return 17; }}''')
     assert subprocess.run([str(harness), str(root), "8911"]).returncode == 17
     assert (root / "argv.txt").read_text(encoding="utf-8").splitlines() == [str(root / "launcher/version_launcher.py"), "--install-root", str(root), "start", "--port", "8911"]
     assert (root / "port.txt").read_text(encoding="utf-8") == "8911"
+
+
+def test_startup_skips_shortcut_script_once_entrypoint_is_current(tmp_path):
+    from installer.native_launcher import native_launcher_current
+
+    backend = tmp_path / "app/2.2.16"
+    built = backend / "installer/olivia_launcher/Olivia.exe"
+    built.parent.mkdir(parents=True)
+    built.write_bytes(b"MZ synthetic")
+    assert not native_launcher_current(tmp_path, backend)
+    (tmp_path / "Olivia.exe").write_bytes(b"MZ older")
+    assert not native_launcher_current(tmp_path, backend)
+    (tmp_path / "Olivia.exe").write_bytes(b"MZ synthetic")
+    assert native_launcher_current(tmp_path, backend)

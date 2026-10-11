@@ -26,3 +26,11 @@ def install_native_launcher(root: Path, backend: Path) -> None:
             temporary.replace(target)
         finally:
             temporary.unlink(missing_ok=True)
+
+
+def native_launcher_current(root: Path, backend: Path) -> bool:
+    """True once this backend's entrypoint is published; startup then skips the shortcut script."""
+    try:
+        return (root / "Olivia.exe").read_bytes() == (backend / "installer/olivia_launcher/Olivia.exe").read_bytes()
+    except OSError:
+        return False
