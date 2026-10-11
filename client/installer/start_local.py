@@ -1035,6 +1035,10 @@ def main(argv: list[str] | None = None) -> int:
             except OSError:
                 pass
         _refresh_stable_launcher(root, data_root)
+        # Pre-native updaters can only run their old shortcut script. Migrate
+        # on the first launch of the newly activated backend as well.
+        from installer.component_update import _refresh_existing_shortcuts
+        _refresh_existing_shortcuts(root, backend)
         return _launch(args, root, backend, entrypoint, data_root, startup_player=animation_process)
     finally:
         os.environ.pop("OLIVIA_STARTUP_CLIENT_PID_FILE", None)

@@ -73,6 +73,9 @@ VIDEO_RUNTIME_MODEL_DIRECTORIES = {"checkpoint", "checkpoints", "downloads", "ff
 VIDEO_RUNTIME_MODEL_SUFFIXES = {".ckpt", ".engine", ".gguf", ".h5", ".hdf5", ".onnx", ".pb", ".pt", ".safetensors", ".tflite", ".weights"}
 VIDEO_RUNTIME_MEDIA_SUFFIXES = {".3g2", ".3gp", ".aac", ".aif", ".aiff", ".alac", ".amr", ".asf", ".avi", ".caf", ".flac", ".flv", ".m2ts", ".m2v", ".m4a", ".m4v", ".mka", ".mkv", ".mov", ".mp3", ".mp4", ".mpeg", ".mpg", ".mts", ".mxf", ".ogg", ".ogv", ".opus", ".vob", ".wav", ".webm", ".wma", ".wmv"}
 BUILD_CONTROL_FILES = {
+    "installer/build_native_launcher.py",
+    "installer/olivia_launcher/Program.cs",
+    "installer/olivia_launcher/app.manifest",
     "installer/build_windows_setup.py",
     "installer/setup-build-requirements.txt",
     "installer/windows_setup.iss",
@@ -155,6 +158,9 @@ RELEASE_ROOT_FILES = {
     "video_capability_install.py",
 }
 RELEASE_INSTALLER_FILES = {
+    "installer/native_launcher.py",
+    "installer/olivia_launcher/Olivia.exe",
+    "installer/olivia_launcher/Olivia.exe.sha256",
     "installer/patch_local_login.py",
     "installer/patch_letter_stickers.py",
     "installer/__init__.py",
@@ -1109,6 +1115,11 @@ def prepare_setup_payload(
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source_path, target)
         from installer.full_patch import PatchInstallError, stage_startup_video
+        from installer.build_native_launcher import build_native_launcher
+        try:
+            build_native_launcher(source / "installer", staging / "installer/olivia_launcher/Olivia.exe")
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            raise SetupBuildError("NATIVE_LAUNCHER_BUILD_FAILED") from exc
         try:
             stage_startup_video(staging, startup_video, startup_video_sha256)
         except PatchInstallError as exc:

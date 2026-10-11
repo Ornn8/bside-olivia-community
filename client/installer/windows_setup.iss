@@ -54,8 +54,8 @@ Source: "{#PayloadRoot}\LICENSE"; DestDir: "{code:GetPayloadRoot}"; Flags: ignor
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加选项："
 
 [Icons]
-Name: "{userprograms}\Olivia 本地版"; Filename: "{sys}\wscript.exe"; Parameters: "//B //Nologo ""{code:GetInstallRoot}\install\START.vbs"""; WorkingDir: "{code:GetInstallRoot}\install"; IconFilename: "{code:GetInstallRoot}\install\local_backend\installer\assets\olivia.ico"; Check: InstallCompleted and not WizardNoIcons
-Name: "{userdesktop}\Olivia 本地版"; Filename: "{sys}\wscript.exe"; Parameters: "//B //Nologo ""{code:GetInstallRoot}\install\START.vbs"""; WorkingDir: "{code:GetInstallRoot}\install"; IconFilename: "{code:GetInstallRoot}\install\local_backend\installer\assets\olivia.ico"; Tasks: desktopicon; Check: InstallCompleted and not WizardNoIcons
+Name: "{userprograms}\Olivia"; Filename: "{code:GetInstallRoot}\install\Olivia.exe"; WorkingDir: "{code:GetInstallRoot}\install"; IconFilename: "{code:GetInstallRoot}\install\olivia.ico"; Check: InstallCompleted and not WizardNoIcons
+Name: "{userdesktop}\Olivia"; Filename: "{code:GetInstallRoot}\install\Olivia.exe"; WorkingDir: "{code:GetInstallRoot}\install"; IconFilename: "{code:GetInstallRoot}\install\olivia.ico"; Tasks: desktopicon; Check: InstallCompleted and not WizardNoIcons
 
 [Run]
 Filename: "{sys}\wscript.exe"; Parameters: "//B //Nologo ""{code:GetInstallRoot}\install\START.vbs"""; Description: "立即启动 Olivia"; WorkingDir: "{code:GetInstallRoot}\install"; Flags: postinstall nowait skipifsilent; Check: InstallCompleted

@@ -412,11 +412,13 @@ def _resolve_state_payload(
 
 
 def _refresh_existing_shortcuts(root: Path, _active_version: Path) -> None:
-    """Best-effort icon refresh for shortcuts that the user kept."""
+    """Publish the native entrypoint, then migrate only owned shortcuts."""
 
     if os.name != "nt":
         return
     try:
+        from installer.native_launcher import install_native_launcher
+        install_native_launcher(root, _active_version)
         script = root / "launcher" / "Create-Shortcut.ps1"
         powershell = (
             Path(os.environ.get("WINDIR", r"C:\Windows"))

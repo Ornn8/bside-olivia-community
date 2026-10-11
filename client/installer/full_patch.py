@@ -142,6 +142,9 @@ PAYLOAD_REQUIRED_ROOT_FILES = {
     "video_capability_install.py",
 }
 PAYLOAD_REQUIRED_RELATIVE_FILES = {
+    "installer/olivia_launcher/Olivia.exe",
+    "installer/olivia_launcher/Olivia.exe.sha256",
+    "installer/native_launcher.py",
     "runtime/cloud_policy.py",
     "runtime/memory/effective_relationship.py",
     "runtime/official_endpoints.py",
@@ -582,7 +585,17 @@ def copy_project_payload(
     ) or any(
         not (destination / Path(*relative.split("/"))).is_file()
         for relative in PAYLOAD_REQUIRED_RELATIVE_FILES
+        if relative not in {"installer/olivia_launcher/Olivia.exe", "installer/olivia_launcher/Olivia.exe.sha256"}
     ):
+        raise PatchInstallError("PATCH_PAYLOAD_INCOMPLETE")
+    native = destination / "installer/olivia_launcher/Olivia.exe"
+    if not native.is_file():
+        from installer.build_native_launcher import build_native_launcher
+        try:
+            build_native_launcher(destination / "installer", native)
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            raise PatchInstallError("NATIVE_LAUNCHER_BUILD_FAILED") from exc
+    if not native.with_suffix(".exe.sha256").is_file():
         raise PatchInstallError("PATCH_PAYLOAD_INCOMPLETE")
     return sorted(copied)
 
@@ -609,6 +622,11 @@ def copy_official_runtime(
 
 
 def _write_start_scripts(root: Path, port: int) -> None:
+    from installer.native_launcher import install_native_launcher
+    try:
+        install_native_launcher(root, root / "local_backend")
+    except (OSError, ValueError) as exc:
+        raise PatchInstallError("NATIVE_LAUNCHER_INVALID") from exc
     launcher = root / "launcher" / "version_launcher.py"
     launcher.parent.mkdir(parents=True, exist_ok=True)
     _copy_file(root / "local_backend" / "installer" / "version_launcher.py", launcher)
@@ -698,6 +716,8 @@ def _refresh_existing_install(
     names = (
         "local_backend",
         "launcher",
+        "Olivia.exe",
+        "olivia.ico",
         "START.cmd",
         "START.vbs",
         "CONFIGURE.cmd",
