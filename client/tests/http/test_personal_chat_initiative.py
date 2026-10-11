@@ -74,12 +74,12 @@ def test_cadence_rearms_once_when_committed_relationship_changes(monkeypatch):
     monkeypatch.setattr('runtime.personal_chat.initiative.random.uniform', lambda low, high: low)
     policy = Initiative(rows, clock=lambda: now[0])
     policy.received(PersonalMessage('qq', 'bot', 'owner', '1', 'hi'), None)
-    assert policy.due == base + 6 * 3600  # reserved at receipt time
+    assert policy.due == base + 2 * 3600  # reserved at receipt time
     rows.append(dict(origin='user', delivery_status='DELIVERED', created_at=base,
                      initiative_tier='committed', initiative_caution='normal'))
     now[0] += 3600
     assert not policy.ready()
-    assert policy.due == now[0] + 5 * 60  # re-armed from the committed profile, not the old 6h cadence
+    assert policy.due == now[0] + 5 * 60  # re-armed from the committed profile
     due = policy.due
     now[0] += 6 * 60
     assert policy.ready()

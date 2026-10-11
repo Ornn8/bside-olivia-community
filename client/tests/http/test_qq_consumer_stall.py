@@ -134,6 +134,7 @@ def test_onebot_probe_and_next_reply_survive_stalled_consumer(monkeypatch):
     from aiohttp.test_utils import TestServer
     from runtime.personal_chat.qq import run_qq
     from tests.http.test_personal_chat_qq import TOKEN, event, login
+    from tests.http.test_qq_durable_intake import receive_reply
 
     async def scenario():
         stop, stalled = asyncio.Event(), asyncio.Event()
@@ -168,7 +169,7 @@ def test_onebot_probe_and_next_reply_survive_stalled_consumer(monkeypatch):
             await login(ws)
             await ws.send_json(event(1, message=[{'type': 'text', 'data': {'text': 'first'}}]))
             for index in range(3):
-                raw = await asyncio.wait_for(ws.receive_json(), 1)
+                raw = await asyncio.wait_for(receive_reply(ws), 1)
                 sent.append(raw['params']['message'][-1]['data']['text'])
                 await ws.send_json({'echo': raw['echo'], 'status': 'ok', 'retcode': 0,
                                     'data': {'message_id': 301 + index}})

@@ -121,8 +121,10 @@ def change_opportunity():
     elif change in ('unread','quota'):
         server.store.letters.append({'letter_id':'other-proactive', 'origin':'proactive',
             'letter_status':'COMPLETED', 'is_read':int(change == 'quota'),
-            'created_at':clock[0] - (2 * 86400 if change == 'unread' else 0),
+            'created_at':clock[0] - (36 * 3600 if change == 'unread' else 0),
             'proactive_candidate_id':'another-opportunity'})
+        if change == 'unread':
+            server.store.letters.append({**server.store.letters[-1], 'letter_id':'second-unread'})
     elif change == 'other_pending':
         # Even a different row carrying the draft id is not the draft object.
         other_id = (next(row['letter_id'] for row in server.store.letters
@@ -274,9 +276,10 @@ write_json(server._state_root() / 'proactive/settings.json', {'enabled':True, 'a
 async def render(*a, **k):
     draft = server.store.letters[-1]
     assert draft['letter_status'] == 'PROCESSING' and 'expression_context' not in draft
-    response = await server.route('POST', '/toy/letter/send', {'content':'生成语音时的新来信'}, {})
-    assert response['code'] == 409 and response['data']['error_code'] == 'PROACTIVE_LETTER_BUSY'
-    assert len(server.store.letters) == 2  # The real native route admitted no new row.
+    server._current_life_rhythm = lambda: {}
+    response = await server.route('POST', '/toy/letter/send', {'content':'生成语音时的新来信'}, {}, defer_reply=True)
+    assert response['code'] == 0, response
+    assert len(server.store.letters) == 3  # New input takes priority over her draft.
     raise asyncio.CancelledError()
 server._render_media_job = render
 async def main():

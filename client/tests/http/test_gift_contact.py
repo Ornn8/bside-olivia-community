@@ -34,6 +34,9 @@ def test_instruction_mentions_a_photo_only_when_one_is_sent():
 
 
 class Initiative:
+    def profile(self):
+        from runtime.personal_chat.initiative_profile import profile_from_rows
+        return profile_from_rows([])
     def __init__(self, target, free=True):
         self.target, self._free, self.attempts = target, free, 0
     def free(self):
@@ -56,7 +59,7 @@ def qq_world(tmp_path, monkeypatch, *, free=True, status='CONNECTED'):
     owner = PersonalMessage('qq', 'bot', 'owner', 'm1', '在吗')
     initiative = Initiative((owner, send), free)
     runtime = {'service': Service(), 'status': {'qq': status}}
-    server = SimpleNamespace(_state_root=lambda: tmp_path)
+    server = SimpleNamespace(_state_root=lambda: tmp_path, store=SimpleNamespace(letters=[], personal_chats=[]))
     return backend, server, runtime, initiative, calls
 
 
