@@ -589,13 +589,7 @@ def copy_project_payload(
     ):
         raise PatchInstallError("PATCH_PAYLOAD_INCOMPLETE")
     native = destination / "installer/olivia_launcher/Olivia.exe"
-    if not native.is_file():
-        from installer.build_native_launcher import build_native_launcher
-        try:
-            build_native_launcher(destination / "installer", native)
-        except (OSError, ValueError, subprocess.SubprocessError) as exc:
-            raise PatchInstallError("NATIVE_LAUNCHER_BUILD_FAILED") from exc
-    if not native.with_suffix(".exe.sha256").is_file():
+    if native.is_file() and not native.with_suffix(".exe.sha256").is_file():
         raise PatchInstallError("PATCH_PAYLOAD_INCOMPLETE")
     return sorted(copied)
 
@@ -624,8 +618,13 @@ def copy_official_runtime(
 def _write_start_scripts(root: Path, port: int) -> None:
     from installer.native_launcher import install_native_launcher
     try:
+        source = root / "local_backend/installer"
+        native = source / "olivia_launcher/Olivia.exe"
+        if not native.is_file():
+            from installer.build_native_launcher import build_native_launcher
+            build_native_launcher(source, native)
         install_native_launcher(root, root / "local_backend")
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
         raise PatchInstallError("NATIVE_LAUNCHER_INVALID") from exc
     launcher = root / "launcher" / "version_launcher.py"
     launcher.parent.mkdir(parents=True, exist_ok=True)

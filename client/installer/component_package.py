@@ -221,9 +221,13 @@ def build_component_package(
         payload = staging / "payload"
         try:
             copy_project_payload(exported_source, payload, include_base_stickers=False)
+            from installer.build_native_launcher import build_native_launcher
+            build_native_launcher(payload / "installer", payload / "installer/olivia_launcher/Olivia.exe")
             stage_startup_video(payload, startup_video, startup_video_sha256)
         except PatchInstallError as exc:
             raise ComponentPackageBuildError(str(exc)) from exc
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            raise ComponentPackageBuildError("NATIVE_LAUNCHER_BUILD_FAILED") from exc
         _verify_source(source_root, source_commit)
         if image_dependency_wheel is not None:
             from installer.repair_image_dependency import WHEEL, SHA256

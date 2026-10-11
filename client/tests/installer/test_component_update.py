@@ -32,6 +32,21 @@ _REQUIRED_COMPONENT_ENTRYPOINTS = {
 }
 
 
+@pytest.mark.parametrize("missing", ["Olivia.exe", "Olivia.exe.sha256"])
+def test_native_update_rejects_omitted_launcher_before_activation(tmp_path, missing):
+    installation, _ = _managed_installation(tmp_path)
+    package = tmp_path / "incomplete.oliviapatch"
+    files = {"installer/native_launcher.py": b"# native startup wiring",
+             "installer/assets/olivia.ico": b"icon", "installer/Create-Shortcut.ps1": b"script",
+             "installer/olivia_launcher/Olivia.exe": b"MZ",
+             "installer/olivia_launcher/Olivia.exe.sha256": hashlib.sha256(b"MZ").hexdigest().encode()}
+    del files["installer/olivia_launcher/" + missing]
+    digest = _write_component_package(package, version="2.2.16", files=files)
+    with pytest.raises(ComponentUpdateError, match="UPDATE_MANIFEST_INVALID"):
+        apply_component_update(installation, package, expected_manifest_sha256=digest)
+    assert not (installation / ".olivia-update-state.json").exists()
+
+
 @pytest.mark.parametrize("valid_digest", [True, False])
 def test_auto_verified_http_update_preserves_data_and_rejects_mismatch(tmp_path, monkeypatch, valid_digest):
     import asyncio

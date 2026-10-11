@@ -48,6 +48,8 @@ def _clean_payload_repo(tmp_path: Path) -> tuple[Path, str]:
         "installer/configure.py",
         "installer/start_local.py",
         "installer/uninstall.py",
+        "installer/assets/olivia.ico",
+        "installer/Create-Shortcut.ps1",
     ):
         target = source.joinpath(*relative.split("/"))
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -89,6 +91,9 @@ def test_update_manifest_contains_native_launcher_and_hash(tmp_path):
             content = archive.read("payload/" + relative)
             assert entries[relative]["size_bytes"] == len(content)
             assert entries[relative]["sha256"] == hashlib.sha256(content).hexdigest()
+        executable = archive.read("payload/installer/olivia_launcher/Olivia.exe")
+        assert executable.startswith(b"MZ")
+        assert archive.read("payload/installer/olivia_launcher/Olivia.exe.sha256").strip().decode() == hashlib.sha256(executable).hexdigest()
 
 
 def test_build_update_cli_stages_explicit_hash_pinned_startup_video(tmp_path):

@@ -143,6 +143,16 @@ def _validate_manifest(value: dict[str, Any]) -> tuple[str, str, list[dict[str, 
         {item["path"] for item in normalized}
     ):
         raise ComponentUpdateError("UPDATE_MANIFEST_INVALID")
+    # Older packages remain usable; packages that ship native startup wiring
+    # must also ship every asset it needs before their backend can be activated.
+    paths = {item["path"] for item in normalized}
+    if "installer/native_launcher.py" in paths and not {
+        "installer/olivia_launcher/Olivia.exe",
+        "installer/olivia_launcher/Olivia.exe.sha256",
+        "installer/assets/olivia.ico",
+        "installer/Create-Shortcut.ps1",
+    }.issubset(paths):
+        raise ComponentUpdateError("UPDATE_MANIFEST_INVALID")
     return component, version, normalized
 
 
