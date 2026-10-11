@@ -224,13 +224,25 @@ def test_same_identity_deduplicates_equal_status_and_retains_user_cancellation(r
         ('send', 'cancelled', 'user', data['user_letter'])]
 
 
-def test_different_statuses_for_same_identity_still_fail_without_user_cancellation():
+def test_different_statuses_for_same_identity_without_user_cancellation_are_decided_not_failed():
     data = {'linli_reply': '我练完这首曲子了。我现在还在练这首曲子。', 'previous_state': {
         'projects': [{'id': 'practice', 'title': '练曲', 'kind': 'linli'}]}}
-    port = BoundPort([('我练完这首曲子了。', 'p0', 'completed'),
-                      ('我现在还在练这首曲子。', 'p0', 'ongoing')])
-    with pytest.raises(ValueError, match='JEV_EXCHANGE_CONFLICTING_UPDATES'):
-        asyncio.run(extract(port, data, '', 'life:status-conflict'))
+
+    class Deciding(BoundPort):
+        async def ask(self, state, questions, *, purpose):
+            if 'conflict_0' not in questions:
+                return await super().ask(state, questions, purpose=purpose)
+            self.calls.append((state, questions, purpose))
+            return {'conflict_0': self.answer}
+
+    port = Deciding([('我练完这首曲子了。', 'p0', 'completed'), ('我现在还在练这首曲子。', 'p0', 'ongoing')])
+    port.answer = 'ongoing'
+    result = asyncio.run(extract(port, data, '', 'life:status-conflict'))
+    assert [(item['id'], item['status']) for item in result['updates']] == [('practice', 'ongoing')]
+    assert len(port.calls) == 3
+    port = Deciding([('我练完这首曲子了。', 'p0', 'completed'), ('我现在还在练这首曲子。', 'p0', 'ongoing')])
+    port.answer = 'unclear'
+    assert asyncio.run(extract(port, data, '', 'life:status-conflict'))['updates'] == []
 
 
 def test_long_comma_sentence_keeps_legal_support_windows():

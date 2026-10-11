@@ -183,8 +183,15 @@ class DailyLifeRuntime:
         return deepcopy(self._last_exchange_diagnostics)
 
     def _record_exchange_diagnostic(self, event: dict) -> None:
-        self._last_exchange_diagnostics.append(deepcopy(event))
-        del self._last_exchange_diagnostics[:-3]
+        from .jev_exchange import CONFLICT_PHASE
+        events = self._last_exchange_diagnostics
+        events.append(deepcopy(event))
+        # The last three decision phases are kept. Conflict counters (outcome and count only) are
+        # kept apart, so they can never push a decision phase out of the retained window.
+        counters = [kept for kept in events if kept.get('phase') == CONFLICT_PHASE]
+        phases = [kept for kept in events if kept.get('phase') != CONFLICT_PHASE]
+        retained = {id(kept) for kept in (*phases[-3:], *counters[-3:])}
+        events[:] = [kept for kept in events if id(kept) in retained]
 
     @property
     def emotion(self):
