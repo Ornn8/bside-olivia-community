@@ -6,8 +6,9 @@ import hashlib
 import json
 import os
 
-from runtime.personal_chat.initiative_profile import profile_from_snapshot, unanswered_wait
+from runtime.personal_chat.initiative_profile import unanswered_wait
 from runtime.personal_chat.initiative import controls_available
+from runtime.personal_chat.contact_activity import blocks_initiative
 from runtime.reply.companion_runtime import CompanionRuntimeError
 
 
@@ -15,8 +16,9 @@ def enabled():
     return bool(os.environ.get('OLIVIA_JEV_DECISION_URL', '').strip())
 
 
-def live_profile(server):
-    return profile_from_snapshot(server.private_world_port.snapshot())
+def live_profile(server, now=None):
+    from runtime.personal_chat.engagement import effective_profile
+    return effective_profile(server, now)
 
 
 @contextmanager
@@ -113,10 +115,7 @@ def contact_gates(rows, *, now, profile, channel, exclude_id=None, appointment_d
     if (not appointment_due and latest_user and latest_user.get('companion_timing') == 'wait_user'
             and latest_user.get('silence_reason') == 'USER_REQUESTED_WAIT'):
         reasons.append('user_waiting')
-    if any(not r.get('superseded_by') and (r.get('delivery_status') in {
-            'RECEIVED', 'GENERATING', 'GENERATED', 'SENDING', 'DELIVERY_UNCONFIRMED'}
-            or r.get('delivery_status') == 'FAILED' and r.get('origin') != 'proactive'
-            or r.get('letter_status') in {'PENDING', 'PROCESSING'}) for r in rows):
+    if any((r.get('delivery_status') != 'FAILED' or r is latest_user) and blocks_initiative(r, stamp) for r in rows):
         reasons.append('pending_reply')
     summary = contact_summary(rows, now)
     elapsed = summary['seconds_since_last_contact']
@@ -130,11 +129,19 @@ def contact_gates(rows, *, now, profile, channel, exclude_id=None, appointment_d
 
 def live_state(server, *, channel, now, exclude_id=None, appointment_due=False):
     try:
-        profile = live_profile(server)
+        profile = live_profile(server, now.timestamp())
         snapshot = server.daily_life_runtime.store.snapshot(now)
         rows = deepcopy([r for r in [*server.store.letters, *server.store.personal_chats]
                          if exclude_id is None or r.get('letter_id') != exclude_id])
         gates = contact_gates(rows, now=now, profile=profile, channel=channel, appointment_due=appointment_due)
+        from runtime.personal_chat.contact_activity import cross_channel_reason
+        cross = cross_channel_reason(server, channel=channel, now=now.timestamp(), profile=profile, exclude_id=exclude_id)
+        if cross:
+            gates['blocked_reasons'].insert(0, 'cooldown' if cross == 'not_due' else 'pending_reply')
+        if (any(key != exclude_id and not task.done() for key, task in getattr(server, 'reply_jobs', {}).items())
+                or getattr(getattr(server, '_personal_chat_service', None), 'active_user_turns', set()) - {exclude_id}):
+            if 'pending_reply' not in gates['blocked_reasons']:
+                gates['blocked_reasons'].append('pending_reply')
         # A contact time the user asked for is kept even if she was asleep, in
         # class or busy: people change plans for it. Contact rules still apply.
         world = [] if appointment_due else world_gates(snapshot)
@@ -155,7 +162,7 @@ def state_binding(state):
 def opportunities(state, now):
     from runtime.reply.proactive_letters import make_context
     candidates = make_context(state['rows'], now=now.timestamp(), world=state['snapshot'],
-                              profile=state['profile'])['candidates']
+                              profile=state['profile'], medium='qq')['candidates']
     kinds = {'correspondence_followup': 'followup', 'shared_followup': 'shared_topic',
              'relationship_checkin': 'connection', 'affection_checkin': 'connection', 'life_share': 'daily_share'}
     result = []
@@ -164,8 +171,9 @@ def opportunities(state, now):
             # Identity, eligibility and relationship gates remain local. The
             # judgment only needs this opportunity's source and time boundary.
             result.append({'id': candidate['id'], 'kind': kinds[candidate['kind']],
-                           'description': json.dumps({k:v for k,v in candidate.items()
+                           'description': json.dumps({**{k:v for k,v in candidate.items()
                                if k not in {'id','relationship_tier','relationship_caution','window_start'}},
+                               'contact_guidance': state['profile'].reason_floor},
                                ensure_ascii=False, separators=(',', ':'))})
     return result[:16]
 
@@ -195,7 +203,7 @@ def packet(*, channel, now, profile, world, rhythm, emotion, messages, opportuni
             projected[field] = selected
     projected['coverage'] = '只含当前状态及本次机会引用事项；近期原话最多两回合，未展示不代表不存在。'
     return deepcopy({'channel': channel, 'as_of': now.isoformat(),
-        'relationship': {'tier': profile.tier, 'caution': profile.caution},
+        'relationship': {'tier': profile.tone_tier or profile.tier, 'caution': profile.caution},
         'world': projected, 'rhythm': {k:rhythm[k] for k in ('phase','rest','availability','wellbeing','note') if k in rhythm},
         'activity': {k:v for k,v in (world.get('current') or {}).items()
                      if k in {'activity','activity_kind','location','note','occurred_at'}},

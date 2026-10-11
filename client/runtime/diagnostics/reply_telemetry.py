@@ -30,7 +30,8 @@ V2_DEFAULTS = dict(error_code='UNKNOWN', close_code=None, transport_error=None,
 STAGES = frozenset({'app', 'binding', 'recharge_page', 'received', 'generation',
                     'validation', 'media', 'send', 'reply', 'initiative'})
 INITIATIVE_REASONS = frozenset({'not_due', 'quiet_hours', 'attempt_limit', 'user_turn_open',
-    'unanswered_wait', 'paused', 'wait_user', 'no_target', 'sending_uncertain', 'ready'})
+    'unanswered_wait', 'paused', 'wait_user', 'no_target', 'sending_uncertain', 'ready',
+    'disabled', 'memory_not_ready', 'in_flight', 'unread', 'daily_limit', 'no_opportunity', 'deferred'})
 INITIATIVE_TIERS = frozenset({'reserved', 'familiar', 'trusted', 'close', 'committed'})
 STATUSES = frozenset({'started', 'ok', 'failed', 'unknown', 'skipped'})
 CHANNELS = frozenset({'client', 'qq', 'wechat', 'letter', 'proactive'})
@@ -178,6 +179,8 @@ class Collector:
                     or type(initiative.get('catch_up')) is not bool or type(due) not in (int, float)
                     or not -86400 <= due <= 86400 or not math.isfinite(due)):
                 return None
+            if 'medium' in initiative and initiative['medium'] not in ('qq', 'letter'):
+                return None
         if model is None:
             try: model = self.model()
             except Exception: model = 'unknown'
@@ -185,6 +188,8 @@ class Collector:
                      error if isinstance(error, str) and error in ERROR_CODES else 'UNKNOWN')
         if stage == 'initiative':
             extra['initiative'] = {key: initiative[key] for key in ('tier', 'due_in_seconds', 'reason', 'catch_up')}
+            if 'medium' in initiative:
+                extra['initiative']['medium'] = initiative['medium']
         if stage == 'transport':
             fields = transport if isinstance(transport, dict) else {}
             code = fields.get('close_code')
@@ -339,6 +344,26 @@ def observe_rows(rows):
 
 def emit(stage, status, **fields):
     if _collector: _collector.emit(stage, status, **fields)
+
+
+class InitiativeObserver:
+    """One observation per state change, or once an hour while unchanged."""
+    def __init__(self):
+        self.last = None
+
+    def record(self, reason, *, tier, now, due, source='', catch_up=False, medium=None):
+        state = (source, tier, reason, catch_up, medium)
+        if self.last is not None and self.last[0] == state and now - self.last[1] < 3600:
+            return
+        if type(due) not in (int, float) or not -1e12 <= due <= 1e12 or not math.isfinite(due):
+            due = now
+        fields = dict(tier=tier, due_in_seconds=round(max(-86400, min(86400, due-now)), 3),
+                      reason=reason, catch_up=catch_up)
+        if medium is not None:
+            fields['medium'] = medium
+        emit('initiative', 'ok' if reason == 'ready' else 'skipped',
+             source=source, channel='proactive', initiative=fields)
+        self.last = (state, now)
 
 
 def selected_model():

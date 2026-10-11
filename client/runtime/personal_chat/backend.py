@@ -1,6 +1,5 @@
 """Opt-in lifecycle inside the existing local server, not a second data writer."""
 import asyncio
-from contextlib import nullcontext
 from copy import deepcopy
 from datetime import datetime
 import json
@@ -329,7 +328,7 @@ async def _gift_contact(server, runtime, initiative):
     gifts = cloud_events.pending(root, time.time())
     if not gifts or not initiative.target or not initiative.free():
         return False
-    with (proactive_runtime.contact_slot(server, 'im') if proactive_runtime.enabled() else nullcontext(True)) as acquired:
+    with proactive_runtime.contact_slot(server, 'im') as acquired:
         if not acquired:
             return False
         old, sender = initiative.target
@@ -345,8 +344,12 @@ async def _gift_contact(server, runtime, initiative):
         event = PersonalMessage(old.channel, old.account_id, old.owner_id,
                                 'gift-' + hashlib.sha256(gift['id'].encode()).hexdigest()[:24], '')
         fresh = sender.for_exchange(event) if callable(getattr(sender, 'for_exchange', None)) else sender
+        def eligible():
+            from .contact_activity import cross_channel_reason
+            return channel_ready() and not cross_channel_reason(server, channel=old.channel, now=time.time(),
+                profile=initiative.profile(), exclude_id=event.exchange_id)
         try:
-            await runtime['service'].proactive(event, fresh, channel_ready, gift=gift)
+            await runtime['service'].proactive(event, fresh, eligible, gift=gift)
         finally:
             initiative.attempted()
     return True
@@ -357,7 +360,7 @@ async def _proactive_contact(server, runtime, initiative):
     from runtime.reply import proactive_runtime
     import uuid
     enabled = proactive_runtime.enabled()
-    with (proactive_runtime.contact_slot(server, 'im') if enabled else nullcontext(True)) as acquired:
+    with proactive_runtime.contact_slot(server, 'im') as acquired:
         if not acquired or not initiative.ready():
             return
         old, sender = initiative.target
@@ -372,6 +375,10 @@ async def _proactive_contact(server, runtime, initiative):
         def eligible():
             if initiative.target[0] is not old or not channel_ready():
                 return False
+            from .contact_activity import cross_channel_reason
+            if cross_channel_reason(server, channel=old.channel, now=datetime.now().timestamp(),
+                    profile=initiative.profile(), exclude_id=event.exchange_id):
+                return False
             if enabled:
                 return _contact_eligible(server, event)
             return (any(r.get('letter_id') == event.exchange_id for r in server.store.personal_chats)
@@ -383,6 +390,10 @@ async def _proactive_contact(server, runtime, initiative):
             if followup and followup['followup_at'] > datetime.now().timestamp():
                 followup = None
             await runtime['service'].proactive(event, fresh, eligible, followup=followup)
+            row = next((r for r in server.store.personal_chats if r.get('letter_id') == event.exchange_id), {})
+            if (row.get('proactive_decision', {}).get('decision', {}).get('action') == 'defer'
+                    or row.get('skip_reason') in {'PROACTIVE_NO_REPLY', 'CONTACT_SUPERSEDED', 'USER_PRIORITY'}):
+                initiative.observe('deferred')
         finally:
             initiative.attempted()
 
@@ -1217,6 +1228,7 @@ def install_personal_chat(app, server):
                 prepare_photo=lambda row, send: prepare_chat_photo(server, row, send),
                 speech=lambda row, send: deliver_speech(server,row,send),
                 default_voice=lambda row, send: deliver_default_voice(server,row,send), inspect_writer=inspect_writer)
+            server._personal_chat_service = service
             # Recovery runs in _recover_chat_loop right after startup; awaiting it here
             # kept the backend from becoming ready for users with hundreds of chats.
             from .probe import ProbeJournal
@@ -1246,9 +1258,12 @@ def install_personal_chat(app, server):
             application[_RUNTIME] = runtime
             from .initiative import Initiative
             from runtime.reply import proactive_runtime
+            from .contact_activity import cross_channel_reason
             initiative = Initiative(server.store.personal_chats,
+                active_provider=lambda: bool(cross_channel_reason(
+                    server, channel='qq', now=datetime.now().timestamp(), profile=proactive_runtime.live_profile(server))),
                 state_path=server._state_root() / 'personal-chat-initiative.sqlite3',
-                profile_provider=(lambda: proactive_runtime.live_profile(server)) if proactive_runtime.enabled() else None)
+                profile_provider=lambda: proactive_runtime.live_profile(server))
 
             async def handle_connection_test(event, send):
                 # Connection diagnostics are never persona/memory inputs. The first
@@ -1486,6 +1501,8 @@ def install_personal_chat(app, server):
         await asyncio.gather(*tasks, return_exceptions=True)
         await _stop_semantic_shadow(server)
         runtime["journal"].db.close()
+        if getattr(server, '_personal_chat_service', None) is runtime['service']:
+            server._personal_chat_service = None
 
     activation_lock = asyncio.Lock()
     async def activate_saved_config():

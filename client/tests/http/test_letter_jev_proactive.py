@@ -37,12 +37,16 @@ if case == 'no_old_letter':
     server.store.letters.clear()
 server._proactive_ready = lambda: server._proactive_settings()['enabled']
 requests = []
+observations = []
+from runtime.diagnostics import reply_telemetry
+reply_telemetry.emit = lambda *args, **kwargs: observations.append(kwargs.get('initiative', {}))
 def request(self, encoded):
     value = json.loads(encoded)
     requests.append(value)
     assert value['channel'] == 'letter' and value['available_media'] == ['text']
     assert value['relationship']['tier'] == 'committed'
     item = value['opportunities'][0]
+    assert 'contact_guidance' in json.loads(item['description'])
     decision = ({'action':'defer', 'opportunity_id':None, 'reason':'not_now', 'intent':None, 'medium':None}
         if case == 'defer' or case == 'next_opportunity' and len(requests) == 1 else {'action':'send', 'opportunity_id':item['id'], 'reason':'opportunity',
             'intent':item['kind'], 'medium':'text'})
@@ -78,6 +82,8 @@ async def main():
         assert not published, (case, published)
         assert len(calls) == (1 if case == 'body_changed' else 0)
         assert len(requests) == (0 if case == 'pause' else 1)
+    if case == 'defer':
+        assert any(e.get('medium') == 'letter' and e.get('reason') == 'deferred' for e in observations)
     assert not getattr(server, '_jev_contact_channel', None)
 asyncio.run(main())
 ''')

@@ -3206,6 +3206,27 @@ _proactive_busy = False
 _proactive_task = None
 _gift_task = None
 _proactive_reason = 'disabled'
+from runtime.diagnostics.reply_telemetry import InitiativeObserver
+_letter_initiative_observer = InitiativeObserver()
+
+
+def _observe_letter_initiative(reason):
+    from runtime.reply.proactive_letters import read_json
+    from runtime.reply.proactive_runtime import enabled, live_profile
+    from runtime.personal_chat.initiative_profile import profile_from_rows
+    try:
+        now = time.time()
+        root = _state_root()
+        schedule = read_json(root / 'proactive/schedule.json') if root else {}
+        profile = profile_from_rows([*store.letters, *store.personal_chats])
+        try:
+            profile = live_profile(sys.modules[__name__], now)
+        except Exception:
+            pass  # Missing live state must not hide the reason for blocking.
+        _letter_initiative_observer.record(reason, tier=profile.tier, now=now,
+            due=schedule.get('next_check_at', now), source='letter-initiative', medium='letter')
+    except Exception:
+        _safe_log('initiative_observation_unavailable')
 
 
 def _proactive_settings() -> dict:
@@ -3218,14 +3239,13 @@ def _refresh_proactive_context(*, pending_draft=None) -> dict:
     from runtime.reply.proactive_letters import make_context, write_json
     from runtime.reply.proactive_runtime import enabled, live_profile
     rows = [row for row in store.letters if row is not pending_draft]
-    if enabled():
-        rows += [row for row in store.personal_chats if row is not pending_draft]
+    rows += [row for row in store.personal_chats if row is not pending_draft]
     context = make_context(rows, now=time.time())
     try:
         world = ((daily_life_runtime.store.snapshot(datetime.fromtimestamp(time.time(), timezone.utc)) if enabled()
                   else daily_life_runtime.store.exchange_state()) if daily_life_runtime is not None else {})
         context = make_context(rows, now=time.time(), world=world,
-                               profile=live_profile(sys.modules[__name__]) if enabled() else None)
+                               profile=live_profile(sys.modules[__name__]))
         from runtime.personal_chat.contact_invitation import candidate, preview_configured
         invitation = (candidate(rows, private_world_port.snapshot(), time.time())
                       if preview_configured(_state_root()) else None)
@@ -3247,6 +3267,7 @@ def _diary_due_candidates(rows, context) -> list:
         return []
     from datetime import timedelta
     from runtime.diary.diary import due_facts, SHANGHAI as DIARY_ZONE
+    from runtime.reply.proactive_runtime import live_profile
     now = datetime.now(timezone.utc)
     latest = max((row for row in rows if row.get('origin') != 'proactive' and row.get('content')
                   and (row.get('letter_status') == 'COMPLETED' or row.get('delivery_status') == 'DELIVERED')),
@@ -3268,7 +3289,7 @@ def _diary_due_candidates(rows, context) -> list:
         if item['id'] in used:
             continue
         item.update(not_before=(start + timedelta(hours=9)).timestamp(), expires_at=(start + timedelta(hours=22)).timestamp(),
-                    relationship_tier=context.get('initiative_profile', {}).get('tier'),
+                    relationship_tier=live_profile(sys.modules[__name__]).tone_tier or context.get('initiative_profile', {}).get('tier'),
                     relationship_caution=context.get('initiative_profile', {}).get('caution'))
         result.append(item)
     return result
@@ -3296,29 +3317,55 @@ def _current_life_rhythm() -> dict:
 
 
 def _proactive_ready() -> bool:
-    if (not _proactive_settings()['enabled'] or _history_memory_admin_gate.locked()
-            or not _conversation_memory_ready_for_reply() or _active_undelivered_letter()):
-        return False
+    reason = _proactive_gate_reason()
+    if reason != 'ready':
+        _observe_letter_initiative(reason)
+    return reason == 'ready'
+
+
+def _proactive_gate_reason():
+    if not _proactive_settings()['enabled']:
+        return 'disabled'
+    if _history_memory_admin_gate.locked() or not _conversation_memory_ready_for_reply():
+        return 'memory_not_ready'
+    from runtime.personal_chat.contact_activity import cross_channel_reason
+    from runtime.reply.proactive_runtime import live_profile
+    reason = cross_channel_reason(sys.modules[__name__], channel='letter', now=time.time(),
+                                  profile=live_profile(sys.modules[__name__]))
+    if reason:
+        return reason
+    if (_active_undelivered_letter() or
+            getattr(globals().get('_personal_chat_service'), 'active_user_turns', None)):
+        return 'in_flight'
     try:
         from runtime.reply.proactive_runtime import enabled, live_state
         if enabled():
             state = live_state(sys.modules[__name__], channel='letter',
                                now=datetime.fromtimestamp(time.time(), timezone.utc))
-            if state['gates']['paused'] or state['gates']['blocked_reasons']:
-                return False
-            context = _refresh_proactive_context()
-            return context['remaining'] > 0 and not context['blocked'] and not context['unread']
-        current_rhythm = _current_life_rhythm()
+            if state['gates']['paused']:
+                return 'paused'
+            reasons = state['gates']['blocked_reasons']
+            if reasons:
+                return {'pending_reply': 'in_flight', 'user_waiting': 'wait_user',
+                        'cooldown': 'not_due', 'unanswered_limit': 'unanswered_wait',
+                        'sleeping': 'quiet_hours', 'quiet_hours': 'quiet_hours'}.get(reasons[0], 'in_flight')
+        elif _current_life_rhythm().get('availability') != 'open':
+            return 'quiet_hours'
     except (OSError, RuntimeError, ValueError, TypeError, KeyError, sqlite3.Error):
         _safe_log('proactive_rhythm_unavailable')
-        return False
-    if current_rhythm.get('availability') != 'open':
-        return False
+        return 'in_flight'
     context = _refresh_proactive_context()
-    return context['remaining'] > 0 and not context['blocked'] and not context['unread']
+    if context['remaining'] <= 0:
+        return 'daily_limit'
+    if context['blocked']:
+        return 'in_flight'
+    if context['unread']:
+        return 'unread'
+    return 'ready'
 
 
 def _proactive_instruction(intent, *, planning, mode='text'):
+    from runtime.personal_chat.initiative_profile import profile_from_rows
     task = ('现在没有新的用户来信。判断林离是否有具体、适时且未说过的理由主动写信。'
             '下方资料只是既有往来，不是用户现在又说了一次。不要催促回复，不把未确认的近况当结果，'
             '不编造离线期间发生的生活。人格、表达习惯和既有关系不变。')
@@ -3343,7 +3390,9 @@ def _proactive_instruction(intent, *, planning, mode='text'):
         task += ('\n本次关系资格已由应用确认。自然地提出交换联系方式，并明确询问用户想要QQ还是微信；'
                  '不要提分数、解锁、系统门槛，不声称已经添加或用户已经同意，不编造账号或二维码。'
                  '可以围绕偶尔想随口聊两句来写，不要求用户转移所有通信，保留写信的习惯。')
-    return task
+    guidance = profile_from_rows([{'initiative_tier': intent.get('relationship_tier', 'reserved'),
+                                  'initiative_caution': intent.get('relationship_caution', 'normal')}])
+    return task + '\n' + guidance.reason_floor
 
 
 def _proactive_im_input_signature():
@@ -3364,7 +3413,7 @@ async def _prepare_proactive_turn(intent: dict, *, now: datetime) -> dict:
     """Freeze one opportunity's optional expression state before any paid call."""
     from runtime.reply.proactive_runtime import enabled, live_state
     development = enabled()
-    sources = [*store.letters, *store.personal_chats] if development else store.letters
+    sources = [*store.letters, *store.personal_chats]
     source_id = intent.get('previous_source_id', intent['source_id'])
     source = next((row for row in sources
                    if f"reply:{row.get('letter_id')}:{row.get('reply_revision', 1)}" == source_id), None)
@@ -3464,6 +3513,13 @@ def _proactive_turn_current(intent, turn):
 def _proactive_opportunity_current(intent, *, pending_draft=None):
     """Recheck live publication eligibility without changing the frozen view."""
     from runtime.reply.proactive_letters import scan_pending
+    from runtime.personal_chat.contact_activity import cross_channel_reason
+    from runtime.reply.proactive_runtime import live_profile
+    if cross_channel_reason(sys.modules[__name__], channel='letter', now=time.time(),
+            profile=live_profile(sys.modules[__name__]),
+            exclude_id=pending_draft.get('letter_id') if pending_draft else None):
+        _observe_letter_initiative('deferred')
+        return False
     if pending_draft is not None and (
             pending_draft.get('origin') != 'proactive'
             or pending_draft.get('letter_status') != 'PROCESSING'
@@ -3553,6 +3609,7 @@ async def _publish_proactive(intent: dict, plan: dict, *, turn: dict) -> None:
             if not body.strip():
                 raise ValueError('PROACTIVE_RESPONSE_INVALID')
         if not _proactive_turn_current(intent, turn) or not _proactive_opportunity_current(intent):
+            _observe_letter_initiative('deferred')
             return
         if intent.get('kind') == 'contact_invitation':
             from runtime.personal_chat.contact_invitation import status
@@ -3562,6 +3619,7 @@ async def _publish_proactive(intent: dict, plan: dict, *, turn: dict) -> None:
                   'title': plan['title'], 'material': {}, 'created_at': int(time.time()),
                   'letter_status': 'PROCESSING', 'is_read': 0, 'reply_text': '',
                   'proactive_candidate_id': intent['id'], 'reply_mode': 'text',
+                  'proactive_source_id': intent.get('source_id'),
                   'proactive_kind': intent.get('kind'),
                   'media_status': 'NOT_REQUESTED', 'reply_video_enabled': False}
         if turn.get('proactive_result') is not None:
@@ -3582,6 +3640,7 @@ async def _publish_proactive(intent: dict, plan: dict, *, turn: dict) -> None:
                 letter['reply_mode'] = 'text'
         if (not _proactive_turn_current(intent, turn)
                 or not _proactive_opportunity_current(intent, pending_draft=letter)):
+            _observe_letter_initiative('deferred')
             letter['letter_status'] = 'CANCELED'
             _persist_store_state()
             return
@@ -3626,16 +3685,19 @@ async def _jev_proactive_tick() -> None:
     root = _state_root()
     if root is None or not _proactive_settings()['enabled']:
         _proactive_reason = 'disabled'
+        _observe_letter_initiative('disabled')
         return
     if not _proactive_ready():
         _proactive_reason = 'waiting'
         return
     with contact_slot(sys.modules[__name__], 'letter') as acquired:
         if not acquired:
+            _observe_letter_initiative('in_flight')
             return
         now = datetime.fromtimestamp(time.time(), timezone.utc)
         schedule = read_json(root / 'proactive/schedule.json')
         if now.timestamp() < schedule.get('next_check_at', 0):
+            _observe_letter_initiative('not_due')
             return
         attempts = [item for item in schedule.get('attempts', [])
                     if isinstance(item, dict) and isinstance(item.get('id'), str)
@@ -3644,11 +3706,14 @@ async def _jev_proactive_tick() -> None:
         profile = live_profile(sys.modules[__name__])
         if len(attempts) >= profile.letter_daily_limit * 3:
             _proactive_reason = 'waiting'
+            _observe_letter_initiative('attempt_limit')
             return
         intent = scan_pending(root, excluded_ids={item['id'] for item in attempts})
         if not intent:
             _proactive_reason = 'no_opportunity'
+            _observe_letter_initiative('no_opportunity')
             return
+        _observe_letter_initiative('ready')
         attempts.append({'id': intent['id'], 'at': now.timestamp()})
         schedule = {'next_check_at': now.timestamp() + profile.letter_followup_delay, 'attempts': attempts}
         write_json(root / 'proactive/schedule.json', schedule)
@@ -3658,7 +3723,8 @@ async def _jev_proactive_tick() -> None:
                  'relationship_checkin': 'connection', 'affection_checkin': 'connection',
                  'contact_invitation': 'connection', 'life_share': 'daily_share'}
         offered = [{'id': intent['id'], 'kind': kinds[intent['kind']],
-                    'description': json.dumps(intent, ensure_ascii=False, separators=(',', ':'))}]
+                    'description': json.dumps({**intent, 'contact_guidance': state['profile'].reason_floor},
+                                              ensure_ascii=False, separators=(',', ':'))}]
         value = packet(channel='letter', now=now, profile=state['profile'], world=turn['adopted']['world'],
             rhythm=state['snapshot']['rhythm'], emotion=turn['adopted']['emotion'],
             messages=turn['context_messages'], opportunities=offered, rows=state['rows'],
@@ -3669,9 +3735,11 @@ async def _jev_proactive_tick() -> None:
         turn['proactive_result'] = result
         if result.decision['action'] != 'send':
             _proactive_reason = 'deferred'
+            _observe_letter_initiative('deferred')
             return
         if not _proactive_turn_current(intent, turn) or not _proactive_opportunity_current(intent):
             _proactive_reason = 'deferred'
+            _observe_letter_initiative('deferred')
             return
         _proactive_reason = 'writing'
         await _publish_proactive(intent, {'decision': 'send', 'format': 'text', 'title': '想和你说说话'}, turn=turn)
@@ -3681,6 +3749,16 @@ async def _jev_proactive_tick() -> None:
 
 
 async def _proactive_tick() -> None:
+    from runtime.reply.proactive_runtime import contact_slot, enabled
+    if enabled():
+        await _jev_proactive_tick()
+        return
+    with contact_slot(sys.modules[__name__], 'letter') as acquired:
+        if acquired:
+            await _legacy_proactive_tick()
+
+
+async def _legacy_proactive_tick() -> None:
     global _proactive_reason
     from runtime.reply.proactive_runtime import enabled
     if enabled():
@@ -3690,6 +3768,7 @@ async def _proactive_tick() -> None:
     root = _state_root()
     if root is None or not _proactive_settings()['enabled']:
         _proactive_reason = 'disabled'
+        _observe_letter_initiative('disabled')
         return
     if not _proactive_ready():
         _proactive_reason = 'waiting'
@@ -3699,6 +3778,7 @@ async def _proactive_tick() -> None:
     intent = scan_pending(root)
     contact = intent.get('kind') == 'contact_invitation'
     if not contact and now < schedule.get('next_check_at', 0):
+        _observe_letter_initiative('not_due')
         return
     # A decision attempt counts even when the provider fails, defers, or the
     # process exits. Keep both limits on disk, independent of model/provider.
@@ -3707,20 +3787,25 @@ async def _proactive_tick() -> None:
                 and type(item.get('at')) in (int, float) and item['at'] > now - DAY]
     contact_attempts = [item for item in attempts if item['id'] == 'contact-invitation-v1']
     ordinary_attempts = [item for item in attempts if item['id'] != 'contact-invitation-v1']
+    from runtime.reply.proactive_runtime import live_profile
+    profile = live_profile(sys.modules[__name__], now)
     if (contact and (len(contact_attempts) >= 3 or
                      any(now - item['at'] < 300 for item in contact_attempts))
-            or not contact and len(ordinary_attempts) >= 3):
+            or not contact and len(ordinary_attempts) >= profile.letter_daily_limit * 3):
         _proactive_reason = 'waiting'
+        _observe_letter_initiative('attempt_limit')
         return
     if not contact:
         intent = scan_pending(root, excluded_ids={item['id'] for item in attempts})
     if not intent:
         _proactive_reason = 'no_opportunity'
+        _observe_letter_initiative('no_opportunity')
         return
+    _observe_letter_initiative('ready')
     # Persist before provider calls; retries/restarts cannot turn five-minute
     # cheap checks into an unbounded sequence of paid decisions.
     attempts.append({'id': intent['id'], 'at': now})
-    write_json(root / 'proactive/schedule.json', {'next_check_at': now + 3600, 'attempts': attempts})
+    write_json(root / 'proactive/schedule.json', {'next_check_at': now + profile.letter_followup_delay, 'attempts': attempts})
     _proactive_reason = 'considering'
     turn = await _prepare_proactive_turn(intent, now=datetime.fromtimestamp(now, timezone.utc))
     # Eligibility already supplies a concrete reason. The model writes the
@@ -3743,6 +3828,7 @@ async def _proactive_tick() -> None:
         _proactive_reason = 'waiting'
     else:
         _proactive_reason = 'deferred'
+        _observe_letter_initiative('deferred')
 
 
 async def _diary_tick(now=None) -> None:
@@ -3880,6 +3966,13 @@ async def _diary_loop() -> None:
 
 
 async def _gift_letter_tick() -> None:
+    from runtime.reply.proactive_runtime import contact_slot
+    with contact_slot(sys.modules[__name__], 'letter') as acquired:
+        if acquired:
+            await _gift_letter_tick_claimed()
+
+
+async def _gift_letter_tick_claimed() -> None:
     """A gift QQ did not take becomes a letter; one attempt each."""
     from runtime import cloud_events
     root = _state_root()
@@ -3932,10 +4025,16 @@ async def _proactive_loop() -> None:
 
 def _active_undelivered_letter(*, now: float | None = None, exclude_letter=None) -> dict | None:
     from original_client_letter_contract import _photo_pending
+    from runtime.personal_chat.contact_activity import recent, LETTER_PENDING_SECONDS
 
     current_time = time.time() if now is None else now
     for letter in store.letters:
         if letter is exclude_letter:
+            continue
+        task = reply_jobs.get(letter.get('letter_id'))
+        if task is not None and not task.done():
+            return letter
+        if not recent(letter, current_time, LETTER_PENDING_SECONDS):
             continue
         if _photo_pending(letter):
             return letter
@@ -4027,6 +4126,14 @@ async def route(
         and query.get("scope", "current") == "current"
     ):
         _require_store_state_available()
+    if p == "/toy/letter/composing":
+        if not companion_confirmed:
+            return err(403, 'COMPANION_CONFIRMATION_REQUIRED', {})
+        if set(body) != {'active'} or type(body['active']) is not bool:
+            return err(400, 'INVALID_BODY', {})
+        # Presence only, no draft content, disk writes or telemetry.
+        globals()['_letter_composing_until'] = time.time() + 600 if body['active'] else 0
+        return ok({'status': 'OK'})
     if p == "/health":
         if query.get("probe") == "startup" and query.get("profile", contract.HEALTH_PROFILE_CORE) == contract.HEALTH_PROFILE_CORE:
             return _startup_health_result()
@@ -5210,8 +5317,6 @@ async def route(
             )
         return ok(payload)
     if p == "/toy/letter/send":
-        if _proactive_busy:
-            return err(409, "PROACTIVE_LETTER_BUSY", {"error_code": "PROACTIVE_LETTER_BUSY"})
         if query.get("scope", "current") == "legacy":
             return err(403, "READ_ONLY_SCOPE", {
                 "status": "FAILED",
@@ -5295,7 +5400,7 @@ async def route(
             if previous is not None:
                 return _send_result_for_letter(previous)
         active_letter = _active_undelivered_letter()
-        if active_letter is not None:
+        if active_letter is not None and active_letter.get('origin') != 'proactive':
             return err(409, "LETTER_IN_PROGRESS", {
                 "status": "FAILED",
                 "error_code": "LETTER_IN_PROGRESS",
@@ -5399,8 +5504,6 @@ async def route(
                     raise ValueError("COVER_AUDIO_INVALID") from None
             except ValueError as exc:
                 return err(400, str(exc), {"error_code": str(exc)})
-        if _proactive_busy:
-            return err(409, "PROACTIVE_LETTER_BUSY", {"error_code": "PROACTIVE_LETTER_BUSY"})
         lid = str(uuid.uuid4())
         from runtime.remote_pipeline import enabled as remote_enabled
         cloud_original = source_id is None and remote_enabled(_os.environ)
@@ -5435,6 +5538,7 @@ async def route(
         if bath_end is not None and bath_end > time.time():
             letter['reply_resume_at'] = bath_end
             letter['reply_wait_reason'] = 'bathing'
+        globals()['_letter_composing_until'] = 0
         store.letters.insert(0, letter)
         previous_request_id = (
             store.request_keys.get(idempotency_key)

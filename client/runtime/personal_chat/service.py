@@ -92,6 +92,7 @@ class PersonalChatService:
         self.default_voice = default_voice
         self.speech_tasks = {}
         self.typing = {}
+        self.active_user_turns = set()
         self.consumer_tasks = {}
         # One owner shares memory/world across both channels; serialize exchanges.
         self.lock = asyncio.Lock()
@@ -334,11 +335,16 @@ class PersonalChatService:
 
     async def _handle_one(self, event, send, proactive=False, followup=None, proactive_revision=None,
                           proactive_eligible=None, gift=None):
+        key = getattr(event, 'exchange_id', None)
+        if not proactive:
+            self.active_user_turns.add(key)
         try:
             return await self._handle_one_impl(event, send, proactive, followup, proactive_revision,
                                                proactive_eligible, gift)
         finally:
             self._stop_typing(event)
+            if not proactive:
+                self.active_user_turns.discard(key)
 
     def _stop_typing(self, event):
         cancel = self.typing.pop(getattr(event, 'exchange_id', None), None)

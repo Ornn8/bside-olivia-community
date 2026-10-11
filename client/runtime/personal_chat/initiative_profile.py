@@ -25,6 +25,7 @@ class InitiativeProfile:
     letter_followup_delay: int
     letter_silence_delay: int | None
     reason_floor: str
+    tone_tier: str | None = None
 
     def __post_init__(self) -> None:
         if self.tier not in _TIERS or self.caution not in {"normal", "elevated", "high"}:
@@ -40,6 +41,10 @@ class InitiativeProfile:
     def rank(self) -> int:
         return _TIERS.index(self.tier)
 
+    @property
+    def tone_rank(self) -> int:
+        return _TIERS.index(self.tone_tier or self.tier)
+
     def public_view(self) -> dict[str, object]:
         """Safe behavioral projection; never expose hidden raw relationship scores."""
         return {
@@ -51,18 +56,18 @@ class InitiativeProfile:
 
 _BASE = {
     "reserved": InitiativeProfile(
-        "reserved", "normal", 2 * 3600, 6 * 3600, 2,
-        1, 24 * 3600, None,
-        "需要明确的未完话题、约定或具体关心理由，不为表现主动而闲聊。",
+        "reserved", "normal", 2 * 3600, 6 * 3600, 3,
+        1, 12 * 3600, 3 * 86400,
+        "可以基于具体的生活小事、上次话题或明确的关心主动联系；避免空洞寒暄、追问和施压。",
     ),
     "familiar": InitiativeProfile(
-        "familiar", "normal", 1 * 3600, 3 * 3600, 4,
-        1, 8 * 3600, 7 * 86400,
-        "可以主动延续共同兴趣、上次话题或具体生活关联；纯粹没事找话仍应克制。",
+        "familiar", "normal", 1 * 3600, 3 * 3600, 6,
+        2, 4 * 3600, 2 * 86400,
+        "可以主动分享自己的生活小事、延续共同兴趣或上次话题，不需要任务型理由；避免连续追问。",
     ),
     "trusted": InitiativeProfile(
         "trusted", "normal", 30 * 60, 90 * 60, 12,
-        2, 3 * 3600, 4 * 86400,
+        2, 3 * 3600, 1 * 86400,
         "可以分享小事、自己的状态、轻量关心和自然吐槽，不要求每次都有任务型理由。",
     ),
     "close": InitiativeProfile(
@@ -95,7 +100,7 @@ def _with_caution(profile: InitiativeProfile, caution: str) -> InitiativeProfile
         max(1, profile.letter_daily_limit - (1 if caution == "high" else 0)),
         round(profile.letter_followup_delay * multiplier),
         round(profile.letter_silence_delay * multiplier) if profile.letter_silence_delay else None,
-        reason,
+        reason, profile.tone_tier,
     )
 
 

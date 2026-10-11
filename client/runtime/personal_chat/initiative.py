@@ -11,6 +11,7 @@ from pathlib import Path
 from contextlib import closing
 from runtime.private_world.life_rhythm import LOCAL
 from runtime.personal_chat.initiative_profile import profile_from_rows, unanswered_wait
+from .contact_activity import blocks_initiative
 
 
 def delivered(row):
@@ -47,20 +48,11 @@ def _usual_user_gap(rows):
     return median(gaps) if gaps else None
 
 
-FAILED_TURN_QUIET = 6 * 3600
-
-
-def _retry_pending(row, now):
-    # She does not change the subject over a request that just failed, but a
-    # failure must not silence her until the user happens to write again.
-    created = row.get('created_at')
-    return created is None or now - float(created) < FAILED_TURN_QUIET
-
-
 class Initiative:
-    def __init__(self, rows, clock=time.time, interval=None, *, profile_provider=None, state_path=None):
+    def __init__(self, rows, clock=time.time, interval=None, *, profile_provider=None, state_path=None, active_provider=None):
         self.rows, self.clock = rows, clock
         self.profile_provider = profile_provider
+        self.active_provider = active_provider or (lambda: False)
         # Tests and explicit callers may pin a deterministic interval. Normal
         # runtime derives cadence from the persisted relationship profile.
         self.interval = interval
@@ -69,7 +61,8 @@ class Initiative:
         self.binding = None
         self.catch_up = False
         self._state_ok = True
-        self._observed = None
+        from runtime.diagnostics.reply_telemetry import InitiativeObserver
+        self.observer = InitiativeObserver()
         self._scheduled_profile = None
         self.due = clock() + self._next_interval()
 
@@ -162,10 +155,8 @@ class Initiative:
 
     def free(self):
         """No user turn in flight and no send of uncertain outcome."""
-        latest_user = next((r for r in reversed(self.rows) if r.get('origin') != 'proactive' and not r.get('superseded_by')), None)
-        if latest_user and latest_user.get('delivery_status') in {'RECEIVED','GENERATING','GENERATED','MEDIA_PENDING','SENDING','DELIVERY_UNCONFIRMED'}:
-            return False
-        return not any(r.get('delivery_status') in {'SENDING', 'DELIVERY_UNCONFIRMED', 'GENERATING'} for r in self.rows)
+        return not self.active_provider() and not any(r.get('delivery_status') != 'FAILED' and
+            blocks_initiative(r, self.clock(), im=True) for r in self.rows)
 
     def pending_followup(self):
         latest = next((r for r in reversed(self.rows) if controls_available(r) and 'followup_at' in r
@@ -181,17 +172,12 @@ class Initiative:
 
     def ready(self):
         reason = self._reason()
-        now = self.clock()
-        profile = self.profile()
-        state = (self.binding, profile.tier, reason, self.catch_up)
-        if self._observed is None or self._observed[0] != state or now - self._observed[1] >= 3600:
-            from runtime.diagnostics.reply_telemetry import emit
-            emit('initiative', 'ok' if reason == 'ready' else 'skipped',
-                 source=self.binding or '', channel='proactive', initiative={
-                     'tier': profile.tier, 'due_in_seconds': round(max(-86400, min(86400, self.due - now)), 3),
-                     'reason': reason, 'catch_up': self.catch_up})
-            self._observed = (state, now)
+        self.observe(reason)
         return reason == 'ready'
+
+    def observe(self, reason):
+        self.observer.record(reason, tier=self.profile().tier, now=self.clock(), due=self.due,
+                             source=self.binding or '', catch_up=self.catch_up)
 
     def _reason(self):
         now = self.clock()
@@ -201,8 +187,7 @@ class Initiative:
         if (latest_user and latest_user.get('companion_timing') == 'wait_user'
                 and latest_user.get('silence_reason') == 'USER_REQUESTED_WAIT' and not scheduled):
             return 'wait_user'  # A validated due appointment remains eligible.
-        if latest_user and (latest_user.get('delivery_status') in {'RECEIVED','GENERATING','GENERATED','MEDIA_PENDING','SENDING','DELIVERY_UNCONFIRMED'}
-                            or latest_user.get('delivery_status') == 'FAILED' and _retry_pending(latest_user, now)):
+        if self.active_provider() or latest_user and blocks_initiative(latest_user, now, im=True):
             return 'user_turn_open'
         if (not self.target or not self._state_ok or
                 callable(getattr(self.target[1], 'is_available', None)) and not self.target[1].is_available()):
@@ -225,8 +210,11 @@ class Initiative:
         if len(attempts) >= profile.im_attempt_limit and not scheduled:
             return 'attempt_limit'
         history = [r for r in self.rows if delivered(r)]
-        if any(r.get('delivery_status') in {'SENDING', 'DELIVERY_UNCONFIRMED'} for r in self.rows):
+        if any(r.get('delivery_status') in {'SENDING', 'DELIVERY_UNCONFIRMED'} and
+               blocks_initiative(r, now, im=True) for r in self.rows):
             return 'sending_uncertain'
+        if any(r.get('delivery_status') != 'FAILED' and blocks_initiative(r, now, im=True) for r in self.rows):
+            return 'user_turn_open'
         preference = next((r for r in reversed(self.rows)
                            if controls_available(r) and r.get('initiative_preference')), {})
         if not scheduled and preference.get('initiative_preference') == 'pause' and (

@@ -41,8 +41,8 @@ def test_due_survives_receipts_restart_and_single_overdue_catchup(tmp_path, monk
     assert restarted.due == now[0] + 7200
 
 
-def test_shallow_intervals_keep_attempt_limits():
-    for tier, low, high, limit in [('reserved', 2, 6, 2), ('familiar', 1, 3, 4)]:
+def test_shallow_intervals_and_authorized_attempt_limits():
+    for tier, low, high, limit in [('reserved', 2, 6, 3), ('familiar', 1, 3, 6)]:
         p = profile_from_rows([{'initiative_tier': tier}])
         assert (p.im_interval_min, p.im_interval_max, p.im_attempt_limit) == (low*3600, high*3600, limit)
 
@@ -130,12 +130,12 @@ def test_initiative_observation_throttle_and_gates(monkeypatch):
     policy.ready()
     assert len(observed) == 3
     cases = [
-        ([dict(delivery_status='RECEIVED')], 'user_turn_open'),
+        ([dict(delivery_status='RECEIVED', created_at=now[0])], 'user_turn_open'),
         ([dict(delivery_status='DELIVERED', companion_timing='wait_user', silence_reason='USER_REQUESTED_WAIT')], 'wait_user'),
         ([dict(delivery_status='DELIVERED', initiative_preference='pause')], 'paused'),
         ([dict(origin='proactive', delivery_status='DELIVERED', created_at=now[0])], 'unanswered_wait'),
         ([dict(origin='proactive', delivery_status='DELIVERY_UNCONFIRMED', created_at=now[0])], 'sending_uncertain'),
-        ([dict(origin='proactive', delivery_status='SKIPPED', created_at=now[0])] * 2, 'attempt_limit'),
+        ([dict(origin='proactive', delivery_status='SKIPPED', created_at=now[0])] * 3, 'attempt_limit'),
     ]
     for values, reason in cases:
         rows[:] = values
