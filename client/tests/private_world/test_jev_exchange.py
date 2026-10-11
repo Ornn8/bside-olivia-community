@@ -148,8 +148,9 @@ def test_quote_catalog_uses_shared_original_then_bound_identity():
     assert result['updates'][0]['quote'] == data['user_letter']
     assert result['updates'][0]['id'] == 'book'
     assert len(port.calls) == 2
-    assert port.calls[1][1]['update_0_existing_match']['criteria']['p0']['id'] == 'book'
-    assert port.calls[1][1]['update_0_existing_match']['criteria']['p0']['kind'] == 'shared'
+    # Every slot names entries of one shared directory; the durable id stays on the host.
+    assert port.calls[1][1]['update_0_existing_match']['criteria']['p0'] == 'p0'
+    assert port.calls[1][0]['exchange']['previous_state'] == {'p0': {'kind': 'shared', 'title': '寄书', 'status': 'unknown'}}
     assert set(port.calls[1][1]['update_0_applicability_kind']['criteria']) == {'none', 'shared'}
     assert all(data['user_letter'] in question['instructions'] for key, question in port.calls[1][1].items()
                if key.startswith('update_0_'))
@@ -183,11 +184,15 @@ def test_exchange_directory_drops_old_bodies_but_keeps_identity_state_and_curren
     def choose(key, q, state):
         assert 'MUST_STAY_HOST' not in str(state)
         if 'previous_state' in state['exchange']:
-            names = ('id', 'title', 'kind', 'actor', 'status') + (('updated_at',) if 'action_anchors' in state else ())
-            assert state['exchange']['previous_state']['shared'][0] == {key: data['previous_state']['shared'][0][key]
-                for key in names}
+            # The durable id and timestamps are host-side: the service matches by title/kind/status.
+            names = ('title', 'kind', 'actor', 'status')
+            expected = {key: data['previous_state']['shared'][0][key] for key in names}
+            if 'action_anchors' in state:
+                assert state['exchange']['previous_state']['shared'][0] == expected
+            else:
+                assert state['exchange']['previous_state'] == {'p0': expected}
         if key in ('update_0_identity', 'update_0_existing_match'):
-            assert q['criteria']['p0']['id'] == 'stable-book'
+            assert q['criteria']['p0'] == 'p0'
         assert state['exchange']['previous_observation']['note'] == '刚看完这一章。'
         assert state['sources']['user_letter'] == '书先别寄。'
         return {'update_0_quote': 'u0', 'update_0_status': 'shared_cancelled', 'update_0_identity': 'p0'}.get(key, first(key, q, state))
