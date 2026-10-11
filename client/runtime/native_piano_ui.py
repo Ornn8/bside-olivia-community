@@ -2,6 +2,7 @@
 
 JAVASCRIPT = r'''
 (() => {
+  if(typeof document==='undefined'||typeof document.querySelector!=='function')return;
   const marker=document.querySelector('[data-olivia-companion-settings]');
   const base=marker&&marker.getAttribute('data-api-base');if(!base)return;
   let caps=null,dialog=null,timer=null,busy=false;
