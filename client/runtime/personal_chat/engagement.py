@@ -22,7 +22,7 @@ def stamp(value):
 
 
 class Engagement:
-    """Cache append-ordered receipt tails, not copies of the historical corpus.
+    """Cache append-ordered receipt tails, not copies of the whole archive.
 
     Store lists append new receipts; merged QQ rows retain their original receipt
     rows. On first use walk backwards only to the seven-day boundary. Subsequent

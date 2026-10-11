@@ -20,7 +20,7 @@ def recent(row, now, seconds):
                 continue
         if type(value) in (int, float) and 0 < value <= now + 300 and math.isfinite(value):
             stamps.append(value)
-    # Undated historical rows cannot hold the scheduler forever. Live tasks
+    # Undated old rows cannot hold the scheduler forever. Live tasks
     # have a separate guard, including tasks resumed from these old records.
     return bool(stamps) and now - max(stamps) < seconds
 
@@ -52,7 +52,7 @@ def cross_channel_reason(server, *, channel, now, profile, exclude_id=None):
             if row.get('letter_id') == exclude_id:
                 continue
             # FAILED is no longer in flight. The existing latest-failed-turn
-            # backoff is owned by the schedulers, not every historical failure.
+            # backoff is owned by the schedulers, not every earlier failure.
             if row.get('delivery_status') != 'FAILED' and blocks_initiative(row, now):
                 return reason
             im = row.get('channel') in {'qq', 'wechat'} or row.get('reply_mode') == 'future_im'

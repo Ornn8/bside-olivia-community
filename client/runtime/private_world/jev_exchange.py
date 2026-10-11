@@ -25,7 +25,7 @@ EXCHANGE_MAX_INPUT_BYTES = min(45 * 1000, _GLOBAL_MAX_INPUT_BYTES)
 # updates) carries twelve slot questions: their instructions alone are ~23 KB. It may use 25%
 # more, still well under the ~65 KB the service takes; the alternative is losing the exchange.
 FULL_SLOTS_BOUND_FACTOR = 1.25
-# What the request may carry of a user's history. Both lists grow without bound over a
+# What the request may carry of what a user has accumulated. Both lists grow without bound over a
 # user's life; the request must not.
 MAX_KNOWN_ITEMS = 24          # previous_state entries: mentioned, then newest first
 MAX_MENTIONED_ITEMS = 8       # of which at most this many are picked by what the text mentions
@@ -96,7 +96,7 @@ def _bounded(items, texts, *, limit, mentioned_limit, words, open_first=lambda i
 
 
 def _bounded_previous(previous, texts):
-    """The known projects shown to the decision service: bounded, whatever the history."""
+    """The known projects shown to the decision service: bounded, however much has accumulated."""
     entries = [(group, item) for group in ('projects', 'shared') for item in previous.get(group, [])]
     if len(entries) <= MAX_KNOWN_ITEMS:
         return previous
@@ -369,7 +369,7 @@ async def _extract(port, data, instructions, request_id, level, update_slots, bo
     sources = {key: data.get(key, '') for key in ('user_letter', 'linli_reply')}
     anchors = _action_anchors(quotes, sources, with_atoms=atoms)
     proactive = data.get('origin') == 'proactive'
-    # Known items are bounded: a user's history must not decide whether the request fits.
+    # Known items are bounded: a user's accumulated records must not decide whether the request fits.
     texts = sources['user_letter'] + '\n' + sources['linli_reply']
     previous = _bounded_previous(data.get('previous_state') or {}, texts)
     projects = [item for group in ('projects', 'shared') for item in previous.get(group, [])]
