@@ -26,6 +26,8 @@ NAPCAT_REASONS = frozenset({'probe', 'status_probe_failed', 'confirmed_offline_r
                           'process_exit_restart', 'watchdog_failed'})
 V2_DEFAULTS = dict(error_code='UNKNOWN', close_code=None, transport_error=None,
                    in_flight=None, napcat_state=None, napcat_reason=None)
+DAILY_VIDEO_RESULTS = frozenset({'queued', 'source_unavailable', 'scene_unavailable',
+    'consent_required', 'capability_unavailable', 'photo_fallback', 'other'})
 
 STAGES = frozenset({'app', 'binding', 'recharge_page', 'received', 'generation',
                     'validation', 'media', 'send', 'reply', 'initiative'})
@@ -168,7 +170,7 @@ class Collector:
         return hmac.new(self.salt.encode(), str(source).encode(), hashlib.sha256).hexdigest()
 
     def _event(self, stage, status, *, source='', channel='client', attempt=0, duration_ms=None,
-               error=None, model=None, transport=None, initiative=None):
+               error=None, model=None, transport=None, initiative=None, daily_video_result=None):
         valid = status in TRANSPORT_STATUSES if stage == 'transport' else stage in STAGES and status in STATUSES
         if stage == 'transport' and channel != 'qq':
             return None
@@ -190,6 +192,9 @@ class Collector:
                      error if isinstance(error, str) and error in ERROR_CODES else 'UNKNOWN')
         from runtime.cloud_policy import policy_version
         extra['policy_version'] = policy_version()
+        if stage == 'media' and daily_video_result is not None:
+            extra['daily_video_result'] = (daily_video_result if isinstance(daily_video_result, str)
+                and daily_video_result in DAILY_VIDEO_RESULTS else 'other')
         if stage == 'initiative':
             extra['initiative'] = {key: initiative[key] for key in ('tier', 'due_in_seconds', 'reason', 'catch_up')}
             if 'medium' in initiative:
@@ -291,6 +296,18 @@ class Collector:
                             elapsed = int((self.clock()-previous[field+'_at'])*1000) if outcome!='started' and field+'_at' in previous else None
                             code = row.get(field.replace('_status', '_error_code')) or ('MEDIA_FAILED' if outcome=='failed' else None)
                             self._insert(db, self._event('media', outcome, duration_ms=elapsed, error=code, **fields))
+                    if row.get('share_video_event'):
+                        result = row.get('share_video_result')
+                        if result is not None:
+                            result = result if isinstance(result, str) and result in DAILY_VIDEO_RESULTS else 'other'
+                        current['daily_video_result'] = result
+                        if result and result != previous.get('daily_video_result'):
+                            self._insert(db, self._event('media', 'ok' if result == 'queued' else 'failed',
+                                                        daily_video_result=result, **fields))
+                        fallback = bool(row.get('share_video_photo_fallback') and row.get('image_delivery_status') == 'DELIVERED')
+                        current['daily_video_photo_fallback'] = fallback
+                        if fallback and not previous.get('daily_video_photo_fallback'):
+                            self._insert(db, self._event('media', 'ok', daily_video_result='photo_fallback', **fields))
                     db.execute('INSERT OR REPLACE INTO observed VALUES (?,?,?)', (trace, self.clock(), json.dumps(current)))
                 self._prune(db)
         except (OSError, sqlite3.Error, ValueError, TypeError):
@@ -305,6 +322,10 @@ class Collector:
             events = [dict(json.loads(row[1]), seq=row[0]) for row in
                     db.execute('SELECT seq,payload FROM queue ORDER BY seq LIMIT 100')] if self.enabled else []
             for event in events:
+                if schema not in (2, 3):
+                    event.pop('daily_video_result', None)
+                elif 'daily_video_result' in event and event['daily_video_result'] not in DAILY_VIDEO_RESULTS:
+                    event['daily_video_result'] = 'other'
                 if schema != 3 or not self.policy_version_supported:
                     event.pop('policy_version', None)
                 if schema != 3:

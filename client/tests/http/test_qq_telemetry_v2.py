@@ -111,3 +111,26 @@ def test_code_catalog_is_compiled_from_fixed_chat_codes():
     assert set(json.loads((root / 'reply_telemetry_codes.json').read_text())) == ERROR_CODES
     schema = json.loads((root / 'reply_telemetry_v2.schema.json').read_text())
     assert set(schema['properties']['events']['items']['properties']['error_code']['enum']) == ERROR_CODES | {'NONE', 'UNKNOWN'}
+
+
+def test_daily_video_results_are_content_free_whitelisted_and_deduplicated(collector_factory):
+    from runtime.diagnostics.reply_telemetry import DAILY_VIDEO_RESULTS
+    c = collector_factory()
+    c.account('synthetic')
+    for result in (*sorted(DAILY_VIDEO_RESULTS), 'private content', {'private': 'content'}):
+        c.emit('media', 'ok', daily_video_result=result)
+    batch = c.batch(2)
+    results = [e['daily_video_result'] for e in batch if 'daily_video_result' in e]
+    assert set(results) == DAILY_VIDEO_RESULTS and results[-2:] == ['other', 'other']
+    assert 'private' not in json.dumps(batch)
+    root = Path(__file__).parents[2] / 'contracts'
+    jsonschema.validate({'schema': 2, 'events': batch}, json.loads((root/'reply_telemetry_v2.schema.json').read_text()))
+    assert all('daily_video_result' not in e for e in c.batch(1))
+    c.ack([e['event_id'] for e in batch])
+    row = dict(letter_id='private-turn', created_at=c.clock(), channel='qq', delivery_status='DELIVERED',
+               share_video_event='private-source', share_video_result='source_unavailable',
+               share_video_photo_fallback=True, image_delivery_status='DELIVERED')
+    c.observe([row])
+    c.observe([row])
+    assert [e['daily_video_result'] for e in c.batch(2) if 'daily_video_result' in e] == ['source_unavailable', 'photo_fallback']
+    assert 'private' not in json.dumps(c.batch(2))

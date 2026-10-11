@@ -742,7 +742,9 @@ class PersonalChatService:
         if (not secondary_photo_allowed(row) or row.get('proactive_decision') is not None
                 or not callable(self.photo) or row.get('channel') != 'qq' or not callable(getattr(send, 'image', None))
                 or key in self.photo_tasks or row.get('image_delivery_status') in {'SENDING', 'UNKNOWN', 'DELIVERED'}
-                or row.get('image_status') in {'FAILED', 'SKIPPED'} and not primary_image):
+                or row.get('image_status') == 'FAILED' and not primary_image
+                or row.get('image_status') == 'SKIPPED' and not primary_image
+                and not (row.get('share_video_event') and row.get('share_video_status') != 'SHARE_QUEUED')):
             return
         async def deliver():
             try:
@@ -794,9 +796,12 @@ class PersonalChatService:
         binding = PersonalMessage(channel, account, owner, '', '').binding_id
         from runtime.image_reply import is_companion_image
         for row in self.rows:
+            video_fallback = (row.get('delivery_status') == 'DELIVERED' and row.get('share_video_event')
+                              and row.get('share_video_status') != 'SHARE_QUEUED'
+                              and row.get('image_status') != 'FAILED')
             if (row.get('channel') != channel or row.get('binding_id') != binding
-                    or row.get('delivery_status') != 'MEDIA_PENDING' or row.get('superseded_by')
-                    or not is_companion_image(row) or row.get('letter_id') in self.photo_tasks
+                    or not (video_fallback or row.get('delivery_status') == 'MEDIA_PENDING' and is_companion_image(row))
+                    or row.get('superseded_by') or row.get('letter_id') in self.photo_tasks
                     or row.get('image_delivery_status') in {'SENDING', 'UNKNOWN', 'DELIVERED'}):
                 continue
             if row.get('image_status') in {'PLANNING', 'GENERATING', 'RETRY_PENDING'}:

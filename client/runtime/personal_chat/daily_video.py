@@ -135,7 +135,7 @@ def is_current_activity(candidate, observed):
     Both sides must carry a structured place, or the video is not offered."""
     place, there = candidate.get('place'), (observed or {}).get('place')
     return bool(observed and observed.get('live') is True
-                and candidate.get('event_id') == observed.get('source_id')
+                and candidate.get('source_id', candidate.get('event_id')) == observed.get('source_id')
                 and isinstance(place, dict) and isinstance(there, dict)
                 and place.get('place_id') and place.get('place_id') == there.get('place_id')
                 and place.get('name') == there.get('name'))
@@ -169,6 +169,7 @@ class DailyVideoWorker:
         self.validator, self.quiet_seconds = validator, quiet_seconds
         self.clock = clock
         self.tasks, self.send = {}, None
+        self.share_lock = asyncio.Lock()
         self.closed = False
         self.user_revision = service.user_revision
         self.last_input = time.monotonic()
@@ -203,6 +204,8 @@ class DailyVideoWorker:
         if not callable(reader):
             return False
         try:
+            if candidate.get('event_kind') == 'moment':
+                candidate = dict(candidate, source_id=store.daily_video_source_id(candidate['event_id']))
             return is_current_activity(candidate, reader(now=now))
         except Exception:
             return False
@@ -236,6 +239,11 @@ class DailyVideoWorker:
         else:
             if not self._consented():
                 raise ValueError('DAILY_VIDEO_CONSENT_REQUIRED')
+            if value['event_kind'] == 'moment':
+                store = self.event_store() if callable(self.event_store) else self.event_store
+                if store is None:
+                    raise ValueError('DAILY_VIDEO_SOURCE_UNAVAILABLE')
+                store.reserve_daily_video_share(value, now=self.clock())
             row = dict(event_id=value['event_id'], input=value, binding=self.binding,
                        status='PENDING', delivery_status='PENDING', world_status='PENDING')
             self._save(row)  # Durable before any network request is scheduled.
@@ -303,11 +311,16 @@ class DailyVideoWorker:
                     target_date=datetime.fromisoformat(source['event_at']).astimezone(LOCAL).date().isoformat(),
                     **{key: source[key] for key in ('event_id', 'event_at', 'event_kind', 'detail', 'location')},
                     **({'place': source['place']} if source.get('place') else {}),
+                    **({'source_id': source['source_id']} if source.get('source_id') else {}),
                     **({'event_status': 'preparing'} if source.get('event_status') == 'preparing' else {})))
         return result
 
     async def share(self, candidate, author):
         """A short video of her current moment chosen in place of a photo: author once, then queue."""
+        async with self.share_lock:
+            return await self._share(candidate, author)
+
+    async def _share(self, candidate, author):
         existing = self.get(candidate['event_id'])
         if existing is not None:
             return existing
@@ -318,14 +331,35 @@ class DailyVideoWorker:
             raise ValueError('DAILY_VIDEO_SOURCE_UNAVAILABLE')  # She has moved on: it is no longer her moment.
         if not self.scenes or time.monotonic() - self.capabilities_at > 120:
             await self.refresh_capabilities()
+        if not self.scenes or candidate['event_kind'] == 'moment' and not self.moments:
+            raise ValueError('DAILY_VIDEO_CAPABILITY_UNAVAILABLE')
         if not any(scene['scene_id'] == candidate['scene_id'] and scene_matches(scene, candidate)
                    for scene in self.scenes):
             raise ValueError('DAILY_VIDEO_SCENE_UNAVAILABLE')
-        value = validate_input(await author(dict(candidate)))
+        if self.preparation(candidate['event_id']) is not None:
+            raise ValueError('DAILY_VIDEO_AUTHORING_UNKNOWN')
+        if candidate['event_kind'] == 'moment':
+            store.reserve_daily_video_share(candidate, now=self.clock())
+        preparation = dict(event_id=candidate['event_id'], candidate=candidate, status='AUTHORING')
+        with sqlite3.connect(self.database) as db:
+            if not db.execute('INSERT OR IGNORE INTO daily_video_preparations VALUES (?,?)',
+                              (candidate['event_id'], _json(preparation))).rowcount:
+                raise ValueError('DAILY_VIDEO_AUTHORING_UNKNOWN')
+        try:
+            value = validate_input(await author(dict(candidate)))
+        except BaseException:
+            preparation['status'] = 'UNKNOWN'
+            self._save_preparation(preparation)
+            raise
         if any(value[key] != candidate[key] for key in _FIELDS - {'spoken_text'}):
             raise ValueError('DAILY_VIDEO_SOURCE_UNAVAILABLE')
         if store is None or not store.daily_video_can_prepare(value, now=self.clock()):
             raise ValueError('DAILY_VIDEO_SOURCE_UNAVAILABLE')
+        if not self.scenes or candidate['event_kind'] == 'moment' and not self.moments:
+            raise ValueError('DAILY_VIDEO_CAPABILITY_UNAVAILABLE')
+        if not any(scene['scene_id'] == candidate['scene_id'] and scene_matches(scene, candidate)
+                   for scene in self.scenes):
+            raise ValueError('DAILY_VIDEO_SCENE_UNAVAILABLE')
         return await self.enqueue(value)
 
     async def intake_preparations(self):

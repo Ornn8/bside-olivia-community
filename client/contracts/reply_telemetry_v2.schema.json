@@ -388,6 +388,17 @@
               "status_probe_failed",
               "watchdog_failed"
             ]
+          },
+          "daily_video_result": {
+            "enum": [
+              "queued",
+              "source_unavailable",
+              "scene_unavailable",
+              "consent_required",
+              "capability_unavailable",
+              "photo_fallback",
+              "other"
+            ]
           }
         },
         "allOf": [

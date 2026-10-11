@@ -904,21 +904,27 @@ async def share_moment_video(server, row):
     worker = getattr(server, '_daily_video_worker', None)
     candidate = next((item for item in row.get('daily_video_candidates') or []
                       if item.get('event_id') == row['share_video_event']), None)
-    if worker is None or candidate is None:
-        row['share_video_status'] = 'DAILY_VIDEO_SOURCE_UNAVAILABLE'
-        await persist_chat(server)
-        return
     from .daily_video_author import author_share
     # Durable before the paid writer call: a crash leaves AUTHORING and never authors twice.
     row['share_video_status'] = 'SHARE_AUTHORING'
     await persist_chat(server)
     try:
+        if worker is None or getattr(worker, 'closed', False):
+            raise ValueError('DAILY_VIDEO_CAPABILITY_UNAVAILABLE')
+        if candidate is None:
+            raise ValueError('DAILY_VIDEO_SOURCE_UNAVAILABLE')
         await worker.share(candidate, lambda value: author_share(server, value, row))
         row['share_video_status'] = 'SHARE_QUEUED'
-    except ValueError as exc:
-        row['share_video_status'] = str(exc) if re.fullmatch(r'[A-Z_]{1,40}', str(exc)) else 'SHARE_FAILED'
-    except Exception:
-        row['share_video_status'] = 'SHARE_FAILED'
+    except Exception as exc:
+        code = getattr(exc, 'code', str(exc))
+        row['share_video_status'] = code if isinstance(code, str) and re.fullmatch(r'DAILY_VIDEO_[A-Z_]{1,80}', code) else 'SHARE_FAILED'
+    row['share_video_result'] = {
+        'SHARE_QUEUED': 'queued',
+        'DAILY_VIDEO_SOURCE_UNAVAILABLE': 'source_unavailable',
+        'DAILY_VIDEO_SCENE_UNAVAILABLE': 'scene_unavailable',
+        'DAILY_VIDEO_CONSENT_REQUIRED': 'consent_required',
+        'DAILY_VIDEO_CAPABILITY_UNAVAILABLE': 'capability_unavailable',
+    }.get(row['share_video_status'], 'other')
     await persist_chat(server)
 
 
@@ -934,9 +940,24 @@ async def deliver_photo(server, row, send):
     primary_image = is_companion_image(row)
     if row.get('delivery_status') != ('MEDIA_PENDING' if primary_image else 'DELIVERED'):
         return
+    if row.get('image_delivery_status') in {'SENDING', 'UNKNOWN', 'DELIVERED'}:
+        return
     await prepare_chat_photo(server, row, send)
     if row.get('share_video_event') and not row.get('share_video_status'):
         await share_moment_video(server, row)
+    if row.get('share_video_event') and row.get('share_video_status') != 'SHARE_QUEUED':
+        # Reconcile a crash after enqueue but before persisting the chat outcome.
+        worker = getattr(server, '_daily_video_worker', None)
+        queued = getattr(worker, 'get', lambda _: None)(row['share_video_event'])
+        if queued is not None:
+            row.update(share_video_status='SHARE_QUEUED', share_video_result='queued')
+            await persist_chat(server)
+        else:
+            from runtime.image_reply import start_video_photo_fallback
+            row.setdefault('share_video_result', 'other')
+            start_video_photo_fallback(row)
+            await persist_chat(server)
+            await prepare_chat_photo(server, row, send)
     if row.get('image_status') != 'COMPLETED' or not row.get('prepared_image'):
         return
     if callable(getattr(send, 'is_available', None)) and not send.is_available():

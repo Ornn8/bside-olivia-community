@@ -242,7 +242,7 @@ def test_the_matching_current_event_is_offered(tmp_path):
     occur(store, 'day:practice', NOW, 'practice', place('学校琴房', 'campus'))
     job = offering(tmp_path, store, moments=True)
     offered = job.candidates()
-    assert [(item['event_id'], item['event_kind']) for item in offered] == [('day:practice', 'moment')]
+    assert [(item['source_id'], item['event_kind']) for item in offered] == [('day:practice', 'moment')]
     assert offered[0]['place']['name'] == '学校琴房'
     occur(store, 'day:later-walk', NOW + timedelta(minutes=5), 'walk', PARK)
     job.clock = lambda: NOW + timedelta(minutes=6)
