@@ -27,6 +27,7 @@ from installer.component_update import (
 
 ACTION_PATH = "/toy/updates/local/action"
 STATUS_PATH = "/toy/updates/local/status"
+RESTART_PATH = "/toy/update/restart"
 CONFIRM_HEADER = "X-Olivia-Update-Action"
 SESSION_HEADER = "X-Olivia-Setup-Session"
 _MAX_JSON_BYTES = 8_192
@@ -49,6 +50,8 @@ class ComponentUpdater(Protocol):
     def apply(self, package: Path, manifest_sha256: str) -> Mapping[str, object]: ...
 
     def rollback(self) -> Mapping[str, object]: ...
+
+    def restart(self) -> None: ...
 
 
 SessionAuthorizer = Callable[[str], None]
@@ -130,6 +133,10 @@ class LocalComponentUpdater:
 
     def rollback(self) -> Mapping[str, object]:
         return rollback_component_update(self._installation)
+
+    def restart(self) -> None:
+        from installer.version_launcher import spawn_update_restart
+        spawn_update_restart(self._installation)
 
 
 def _normalize_origins(values: Sequence[str]) -> frozenset[str]:
@@ -343,6 +350,8 @@ def mount_original_client_update_api(
     app[_MOUNTED_KEY] = True
     control_lock = asyncio.Lock()
     picker = select_patch or _select_windows_patch
+    restart_pending = False
+    restart_started = False
 
     def apply_verified(package: Path) -> Mapping[str, object]:
         if package.suffix.casefold() == '.zip':
@@ -371,6 +380,7 @@ def mount_original_client_update_api(
         return web.Response(status=204, headers=_headers(origin, preflight=True))
 
     async def action(request: web.Request) -> web.Response:
+        nonlocal restart_pending
         origin = _authorize(request, confirmation=True)
         try:
             authorize_session(request.headers.get(SESSION_HEADER, ""))
@@ -412,7 +422,11 @@ def mount_original_client_update_api(
             raise UpdateAPIError("UPDATE_FIELDS_INVALID", status=400)
         try:
             async with control_lock:
+                if restart_started:
+                    raise UpdateAPIError("UPDATE_RESTART_IN_PROGRESS", status=409)
                 result = await asyncio.to_thread(call, *args)
+                result = _public_result(result)
+                restart_pending = True
         except UpdateAPIError:
             raise
         except ComponentUpdateError as exc:
@@ -422,7 +436,32 @@ def mount_original_client_update_api(
             raise UpdateAPIError(code, status=409) from exc
         except Exception as exc:
             raise UpdateAPIError("UPDATE_ACTION_UNAVAILABLE", status=503) from exc
-        return web.json_response(_public_result(result), headers=_headers(origin))
+        return web.json_response(result, headers=_headers(origin))
+
+    async def restart(request: web.Request) -> web.Response:
+        nonlocal restart_pending, restart_started
+        origin = _authorize(request, confirmation=True)
+        try:
+            authorize_session(request.headers.get(SESSION_HEADER, ""))
+        except Exception as exc:
+            raise UpdateAPIError("UPDATE_LOGIN_REQUIRED", status=403) from exc
+        if await _json_body(request) != {}:
+            raise UpdateAPIError("UPDATE_FIELDS_INVALID", status=400)
+        async with control_lock:
+            if not restart_pending or restart_started:
+                raise UpdateAPIError("UPDATE_RESTART_NOT_PENDING", status=409)
+            try:
+                await asyncio.to_thread(updater.restart)
+            except Exception as exc:
+                raise UpdateAPIError("UPDATE_RESTART_UNAVAILABLE", status=503) from exc
+            restart_pending = False
+            restart_started = True
+        response = web.json_response({"status": "RESTARTING"}, status=202, headers=_headers(origin))
+        await response.prepare(request)
+        await response.write_eof()
+        # Flush the acknowledgement before aiohttp performs its normal cleanup.
+        asyncio.get_running_loop().call_later(1, _exit_for_restart)
+        return response
 
     async def status(request: web.Request) -> web.Response:
         origin = _authorize(request, confirmation=False)
@@ -432,6 +471,12 @@ def mount_original_client_update_api(
     app.router.add_options(STATUS_PATH, options)
     app.router.add_post(ACTION_PATH, action)
     app.router.add_options(ACTION_PATH, options)
+    app.router.add_post(RESTART_PATH, restart)
+    app.router.add_options(RESTART_PATH, options)
+
+
+def _exit_for_restart() -> None:
+    raise web.GracefulExit()
 
 
 __all__ = [

@@ -10,6 +10,7 @@ import os
 import re
 import runpy
 import sys
+import subprocess
 import time
 from pathlib import Path, PurePosixPath
 
@@ -259,7 +260,8 @@ def _own_windows_start_process_tree() -> object | None:
     if not job:
         raise OSError(ctypes.get_last_error(), "CreateJobObjectW failed")
     limits = ExtendedLimitInformation()
-    limits.basic_limit_information.limit_flags = 0x00002000
+    # Only an explicitly detached restart helper may escape this owned tree.
+    limits.basic_limit_information.limit_flags = 0x00002000 | 0x00000800
     if not kernel32.SetInformationJobObject(
         job,
         9,
@@ -469,7 +471,7 @@ def _parse_arguments(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="olivia-version-launcher")
     parser.add_argument("--install-root", type=Path, required=True)
     parser.add_argument(
-        "action", choices=("start", "proactive-login", "configure", "uninstall")
+        "action", choices=("start", "proactive-login", "configure", "uninstall", "update-restart")
     )
     parser.add_argument("arguments", nargs=argparse.REMAINDER)
     return parser.parse_args(argv)
@@ -480,6 +482,8 @@ def _run_main(
     *,
     own_windows_tree: bool = False,
 ) -> int:
+    if args.action == "update-restart":
+        return _update_restart(args.install_root, Path(args.arguments[0]), int(args.arguments[1]))
     instance = None
     if args.action == "start":
         try:
@@ -518,6 +522,208 @@ def main(argv: list[str] | None = None) -> int:
 
 def _cli(argv: list[str] | None = None) -> int:
     return _run_main(_parse_arguments(argv), own_windows_tree=True)
+
+
+def _restart_event(root: Path, step: str, **fields: object) -> None:
+    _append_launcher_event(root, "update_restart_" + step, timestamp=time.time(), **fields)
+
+
+def _restart_python(root: Path) -> Path:
+    # START.cmd keeps runtime next to install/, not inside it.
+    return root.parent / "runtime" / "python-3.12.10-embed-amd64" / "pythonw.exe"
+
+
+def spawn_update_restart(root: Path) -> None:
+    import secrets
+
+    ready = root / "data" / "logs" / ("restart-" + secrets.token_hex(16) + ".ready")
+    ready.parent.mkdir(parents=True, exist_ok=True)
+    flags = (subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+             | subprocess.CREATE_BREAKAWAY_FROM_JOB)
+    try:
+        process = subprocess.Popen(
+            [str(_restart_python(root)), str(root / "launcher" / "version_launcher.py"),
+             "--install-root", str(root), "update-restart", str(ready), str(os.getpid())],
+            cwd=root, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, close_fds=True, creationflags=flags,
+        )
+    except OSError:
+        _restart_event(root, "failed", code="UPDATE_RESTART_HELPER_UNAVAILABLE")
+        raise
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        if ready.exists():
+            ready.unlink()
+            _restart_event(root, "accepted")
+            return
+        if process.poll() is not None:
+            break
+        time.sleep(0.05)
+    _restart_event(root, "failed", code="UPDATE_RESTART_HELPER_UNAVAILABLE")
+    raise RuntimeError("UPDATE_RESTART_HELPER_UNAVAILABLE")
+
+
+def _belongs_to_installation(root: Path, executable: str, command_line: str,
+                             pid: int, self_pid: int) -> bool:
+    import ntpath
+
+    if pid == self_pid:
+        return False
+    prefix = ntpath.normcase(ntpath.normpath(str(root))).rstrip("\\")
+    if executable and ntpath.normcase(ntpath.normpath(executable)).startswith(prefix + "\\"):
+        return True
+    # Match a complete path boundary, never another installation with this prefix.
+    command = command_line.replace("/", "\\").casefold()
+    return bool(re.search(r'(?:^|[\s"=])' + re.escape(prefix.casefold()) + r'(?=[\\"\s]|$)', command))
+
+
+def _restart_processes(root: Path):
+    """Retain native handles so PID reuse can never redirect timeout termination."""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD,
+                                                wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+    kernel.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
+    ps = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+    result = subprocess.run(
+        [str(ps), "-NoProfile", "-NonInteractive", "-Command",
+         "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; "
+         "@(Get-CimInstance Win32_Process | Select-Object ProcessId,ExecutablePath,CommandLine,"
+         "@{n='Created';e={$_.CreationDate.ToFileTimeUtc()}}) | ConvertTo-Json -Compress"],
+        capture_output=True, encoding="utf-8-sig", timeout=10, check=True,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    records = json.loads(result.stdout)
+    handles = []
+    for record in records:
+        pid = int(record["ProcessId"])
+        executable = record.get("ExecutablePath") or ""
+        if not _belongs_to_installation(root, executable, record.get("CommandLine") or "", pid, os.getpid()):
+            continue
+        handle = kernel.OpenProcess(0x1000 | 0x100000 | 0x0001, False, pid)
+        if not handle:
+            continue
+        buffer = ctypes.create_unicode_buffer(32768)
+        size = wintypes.DWORD(len(buffer))
+        created, exited, kernel_time, user_time = (wintypes.FILETIME() for _ in range(4))
+        identity = kernel.GetProcessTimes(handle, ctypes.byref(created), ctypes.byref(exited),
+                                         ctypes.byref(kernel_time), ctypes.byref(user_time))
+        created_ticks = (created.dwHighDateTime << 32) | created.dwLowDateTime
+        # Recheck the retained process identity, including command-line-only owners.
+        if (not identity or abs(created_ticks - int(record["Created"])) >= 10
+            or not kernel.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size))
+            or not executable or os.path.normcase(buffer.value) != os.path.normcase(executable)):
+            kernel.CloseHandle(handle)
+            continue
+        handles.append((pid, handle))
+    return kernel, handles
+
+
+def _close_restart_windows(pids: set[int]) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    user = ctypes.WinDLL("user32", use_last_error=True)
+    callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    user.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    user.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+
+    @callback_type
+    def close_window(window, _):
+        pid = wintypes.DWORD()
+        user.GetWindowThreadProcessId(window, ctypes.byref(pid))
+        if pid.value in pids:
+            user.PostMessageW(window, 0x0010, 0, 0)  # WM_CLOSE
+        return True
+
+    user.EnumWindows(close_window, 0)
+
+
+def _restart_failure_prompt() -> None:
+    import ctypes
+    ctypes.windll.user32.MessageBoxW(None, "Olivia 自动重启失败，请手动打开", "Olivia", 0x10 | 0x40000)
+
+
+def _wait_restart_processes(root: Path, kernel, handles) -> None:
+    deadline = time.monotonic() + 20
+    _restart_event(root, "waiting")
+    while any(kernel.WaitForSingleObject(handle, 0) != 0 for _, handle in handles):
+        if time.monotonic() >= deadline:
+            _restart_event(root, "timeout")
+            for _, handle in handles:
+                if kernel.WaitForSingleObject(handle, 0) != 0:
+                    if not kernel.TerminateProcess(handle, 0):
+                        raise RuntimeError("UPDATE_RESTART_STOP_FAILED")
+            if any(kernel.WaitForSingleObject(handle, 5000) != 0 for _, handle in handles):
+                raise RuntimeError("UPDATE_RESTART_STOP_FAILED")
+            break
+        time.sleep(0.1)
+    _restart_event(root, "stopped")
+
+
+def _update_restart(root: Path, ready: Path, owner_pid: int | None = None) -> int:
+    handles = []
+    try:
+        _restart_event(root, "helper_started")
+        kernel, handles = _restart_processes(root)
+        if owner_pid is not None and owner_pid not in {pid for pid, _ in handles}:
+            raise RuntimeError("UPDATE_RESTART_OWNER_UNAVAILABLE")
+        ready.touch()
+        deadline = time.monotonic() + 10
+        while ready.exists():
+            if time.monotonic() >= deadline:
+                raise RuntimeError("UPDATE_RESTART_ACK_TIMEOUT")
+            time.sleep(0.05)
+        # The backend acknowledges the response before closing itself.
+        time.sleep(1.5)
+        _close_restart_windows({pid for pid, _ in handles})
+        _wait_restart_processes(root, kernel, handles)
+        log = root / "data" / "logs" / "launcher.jsonl"
+        offset = log.stat().st_size
+        _restart_event(root, "starting")
+        process = subprocess.Popen(
+            [str(_restart_python(root)), str(root / "launcher" / "version_launcher.py"),
+             "--install-root", str(root), "start"], cwd=root,
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            close_fds=True, creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+        )
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline:
+            with log.open("rb") as stream:
+                stream.seek(offset)
+                events = stream.read().decode("utf-8", errors="replace").splitlines()
+            for line in events:
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                if (event.get("event") == "client_start"
+                    and any('"event": "backend_ready"' in item for item in events)):
+                    time.sleep(2)
+                    if process.poll() is not None:
+                        raise RuntimeError("UPDATE_RESTART_START_FAILED")
+                    _restart_event(root, "ready")
+                    return 0
+            if process.poll() is not None:
+                raise RuntimeError("UPDATE_RESTART_START_FAILED")
+            time.sleep(0.2)
+        raise RuntimeError("UPDATE_RESTART_START_TIMEOUT")
+    except Exception as exc:
+        code = str(exc) if isinstance(exc, RuntimeError) and re.fullmatch(r"UPDATE_RESTART_[A-Z_]+", str(exc)) else "UPDATE_RESTART_HELPER_FAILED"
+        _restart_event(root, "failed", code=code)
+        _restart_failure_prompt()
+        return 2
+    finally:
+        for _, handle in handles:
+            kernel.CloseHandle(handle)
+        ready.unlink(missing_ok=True)
 
 
 __all__ = ["VersionLauncherError", "main", "resolve_active_backend"]

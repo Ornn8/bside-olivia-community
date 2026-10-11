@@ -8,7 +8,7 @@ import pytest
 from original_client_settings_ui import BOOTSTRAP_JAVASCRIPT
 
 
-@pytest.mark.parametrize("outcome", ["success", "cancel", "offline"])
+@pytest.mark.parametrize("outcome", ["success", "cancel", "offline", "later", "restart_error"])
 def test_one_click_update(outcome):
     node = shutil.which("node")
     if not node:
@@ -22,6 +22,10 @@ def test_one_click_update(outcome):
 const assert = require('node:assert/strict');
 const {source, helper, outcome} = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
 const buttons = [], calls = [];
+const window = {setTimeout(resolve) {
+  if (outcome === 'later') buttons.find(b => b.textContent === '稍后手动重启').click();
+  resolve();
+}};
 function element(value = '') {
   return {textContent: value, children: [], disabled: false,
     append(...children) { this.children.push(...children); },
@@ -35,9 +39,13 @@ const button = (label, click) => { const b = element(label); b.click = click; bu
 const actions = () => element();
 const setButtonsBusy = (list, busy) => list.forEach(b => b.disabled = busy);
 const confirmAction = () => { throw Error('unexpected extra confirmation'); };
-const requestUpdate = async payload => {
+const requestUpdate = async (payload, path) => {
   calls.push(payload);
-  assert(buttons.every(b => b.disabled));
+  assert(buttons.filter(b => b.textContent !== '稍后手动重启').every(b => b.disabled));
+  if (path === '/toy/update/restart') {
+    if (outcome === 'restart_error') throw {code: 'UPDATE_RESTART_UNAVAILABLE'};
+    return {status: 'RESTARTING'};
+  }
   if (payload.action === 'select') return outcome === 'cancel'
     ? {status: 'CANCELLED'} : {status: 'SELECTED', package_path: 'F:/patch.oliviapatch'};
   assert.equal(payload.action, 'apply_verified');
@@ -49,13 +57,16 @@ const panel = element();
 render(panel);
 (async () => {
   await buttons.find(b => b.textContent === '选择补丁并更新').click();
-  assert.deepEqual(calls.map(c => c.action), outcome === 'cancel' ? ['select'] : ['select','apply_verified']);
+  assert.deepEqual(calls.map(c => c.action), outcome === 'cancel' ? ['select'] :
+    ['success','restart_error'].includes(outcome) ? ['select','apply_verified',undefined] : ['select','apply_verified']);
   assert(buttons.every(b => !b.disabled));
-  const result = panel.children.at(-1).textContent;
-  assert(result.includes(outcome === 'success' ? '1.2.3 已安装' : outcome === 'cancel' ? '已取消' : '尚未安装'));
+  const result = panel.children.at(-2).textContent;
+  assert(result.includes(['success','later','restart_error'].includes(outcome) ? '1.2.3 已安装' : outcome === 'cancel' ? '已取消' : '尚未安装'));
+  if (['later','restart_error'].includes(outcome)) assert(result.includes('关闭并重新打开 Olivia 后生效'));
+  if (outcome === 'success') assert(result.includes('正在自动重启 Olivia'));
   if (outcome === 'offline') {
     assert(panel.children.some(c => c.textContent.includes('patch.oliviapatch')));
-    assert.equal(panel.children.at(-1).__oliviaDiagnosticDetails.__oliviaCodeNode.textContent,'UPDATE_CHECKSUM_UNAVAILABLE');
+    assert.equal(panel.children.at(-2).__oliviaDiagnosticDetails.__oliviaCodeNode.textContent,'UPDATE_CHECKSUM_UNAVAILABLE');
     assert(!result.includes('UPDATE_CHECKSUM_UNAVAILABLE'));
   }
 })().catch(e => { console.error(e); process.exitCode = 1; });
