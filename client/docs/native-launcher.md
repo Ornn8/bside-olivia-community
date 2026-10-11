@@ -44,6 +44,8 @@ replaced with the native target; the old localized filename is removed only
 after the replacement is saved. A custom target, conflicting custom destination,
 or read-only shortcut is preserved. Refresh returns failed paths and continues
 with the other candidates. It does not recreate deleted shortcuts.
+When Inno Setup owns new shortcut creation, installer finalization still runs
+the existing-shortcut migration before reporting installation success.
 
 Shortcut I/O uses the native Unicode
 [IShellLinkW interface](https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/nn-shobjidl_core-ishelllinkw).

@@ -88,6 +88,20 @@ def test_reads_shortcut_written_by_legacy_wsh(tmp_path, native, monkeypatch):
     assert shortcut(path)["target"] == str(root / "Olivia.exe")
 
 
+@pytest.mark.parametrize("skip_new", [False, True])
+def test_setup_finalization_creates_or_refreshes_owned_links(tmp_path, skip_new):
+    source = (INSTALLER / "Install.ps1").read_text(encoding="utf-8-sig")
+    finalize = source[source.rindex("$LASTEXITCODE = 0"):source.rindex("Exit-ManagedInstallLock")]
+    (tmp_path / "Create-Shortcut.ps1").write_text(
+        "param([string]$InstallRoot, [switch]$RefreshExisting)\n"
+        "@{root=$InstallRoot;refresh=[bool]$RefreshExisting}|ConvertTo-Json -Compress\n", encoding="utf-8")
+    wrapper = tmp_path / "finalize.ps1"
+    wrapper.write_text("$Destination=$PSScriptRoot\n$SkipShortcut=$" + str(skip_new).lower()
+                       + "\n" + finalize, encoding="utf-8")
+    result = json.loads(powershell(["-File", str(wrapper)]).stdout)
+    assert result == {"root": str(tmp_path), "refresh": skip_new}
+
+
 @pytest.mark.parametrize("kind", ["cmd", "vbs", "native"])
 def test_migrates_both_locations_and_removes_old_name(installation, tmp_path, kind):
     root = installation

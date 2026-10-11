@@ -1979,23 +1979,19 @@ def test_inno_wrapper_creates_launch_shortcuts_and_offers_immediate_start() -> N
         line for line in script.splitlines() if 'Name: "desktopicon"' in line
     )
     assert "unchecked" not in desktop_task.casefold()
-    assert '[Icons]' in script
-    assert '{userprograms}\\Olivia"' in script
-    assert '{userdesktop}\\Olivia"' in script
+    assert '[Icons]' not in script  # Shared ownership checks also protect custom collisions in setup.
+    assert '{userprograms}\\Olivia.lnk' in script
+    assert '{userdesktop}\\Olivia.lnk' in script
     assert '[Run]' in script
     assert 'Description: "立即启动 Olivia"' in script
-    assert '{sys}\\wscript.exe' in script
-    assert '\\install\\START.vbs' in script
+    assert '{sys}\\wscript.exe' not in script
+    assert '\\install\\START.vbs' not in script
     assert '\\install\\START.cmd' not in script
-    hidden_launch = (
-        'Filename: "{sys}\\wscript.exe"; Parameters: "//B //Nologo '
-        '""{code:GetInstallRoot}\\install\\START.vbs"""'
-    )
-    assert script.count(hidden_launch) == 1
-    assert script.count('Filename: "{code:GetInstallRoot}\\install\\Olivia.exe"') == 2
-    assert script.count('WorkingDir: "{code:GetInstallRoot}\\install"') == 3
+    assert script.count('\\install\\launcher\\Create-Shortcut.ps1') == 2
+    assert script.count('Filename: "{code:GetInstallRoot}\\install\\Olivia.exe"') == 1
+    assert script.count('WorkingDir: "{code:GetInstallRoot}\\install"') == 1
     assert "' -SkipShortcut'" in script
-    assert 'IconFilename: "{code:GetInstallRoot}\\install\\olivia.ico"' in script
+    assert script.count('-ShortcutPath ""{user') == 2
 
 
 def test_install_ps1_supports_noninteractive_setup_without_optional_downloads() -> None:
