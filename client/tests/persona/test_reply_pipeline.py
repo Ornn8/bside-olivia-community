@@ -174,6 +174,10 @@ class RecordingProvider:
             model="synthetic",
         )
 
+    async def complete_scoped(self, messages: object, *, request_id: str | None = None, scope=None) -> GatewayResponse:
+        # Personal chat always asks for its JSON scope; tests may replace complete() on the instance.
+        return await self.complete(messages, request_id=request_id)
+
 
 class CompatibilityBridge:
     stream_enabled = False
