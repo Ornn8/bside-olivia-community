@@ -12,6 +12,13 @@
     }
   },
   "routes": {
+    "/toy/update/restart": {
+      "methods": ["POST", "OPTIONS"],
+      "request_fields": [],
+      "success_http_status": 202,
+      "status": "RESTARTING",
+      "precondition": "successful-apply-or-rollback-in-this-process-once"
+    },
     "/toy/updates/local/action": {
       "methods": ["POST", "OPTIONS"],
       "actions": {
@@ -43,6 +50,9 @@
     }
   },
   "error_http_statuses": {
+    "UPDATE_RESTART_NOT_PENDING": 409,
+    "UPDATE_RESTART_IN_PROGRESS": 409,
+    "UPDATE_RESTART_UNAVAILABLE": 503,
     "UPDATE_FIELDS_INVALID": 400,
     "UPDATE_MANIFEST_INVALID": 409,
     "UPDATE_CHECKSUM_UNAVAILABLE": 503,
