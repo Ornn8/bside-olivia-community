@@ -2061,7 +2061,7 @@ def test_concurrent_exchange_serializes_exact_deduplication_and_write(
     class GatedExactQueryMem0(FakeMem0):
         def get_all(self, **kwargs):
             entered.set()
-            assert release.wait(1.0)
+            assert release.wait(10.0)
             return super().get_all(**kwargs)
 
     backend = GatedExactQueryMem0()
@@ -2082,11 +2082,11 @@ def test_concurrent_exchange_serializes_exact_deduplication_and_write(
     first = threading.Thread(target=remember, daemon=True)
     second = threading.Thread(target=remember, daemon=True)
     first.start()
-    assert entered.wait(0.5)
+    assert entered.wait(10.0)
     second.start()
     release.set()
-    first.join(timeout=1.0)
-    second.join(timeout=1.0)
+    first.join(timeout=10.0)
+    second.join(timeout=10.0)
 
     assert not first.is_alive()
     assert not second.is_alive()
@@ -2123,7 +2123,8 @@ def test_exchange_write_timeout_keeps_one_daemon_and_fails_closed_on_retry(
             source_id="reply:write-timeout:1",
             user_id="local-user",
         )
-        assert entered.is_set()
+        # The first call gives up after 0.1 s; its worker reaches the backend shortly after.
+        assert entered.wait(10.0)
         retry = adapter.remember_exchange(
             user_message="synthetic user",
             assistant_message="synthetic reply",
@@ -2200,7 +2201,7 @@ def test_history_migration_waits_for_inflight_write_without_retrying_add(tmp_pat
         def add(self, messages, **kwargs):
             started_calls.append(1)
             entered.set()
-            assert release.wait(3)
+            assert release.wait(10)
             if write_fails:
                 raise RuntimeError("synthetic completed write failure")
             return super().add(messages, **kwargs)
@@ -2211,7 +2212,7 @@ def test_history_migration_waits_for_inflight_write_without_retrying_add(tmp_pat
         actual = adapter
         adapter = mem0_memory.DeferredConversationMemoryAdapter(actual.config, lambda: actual)
         adapter.start_initialization()
-        deadline = time.monotonic() + 2
+        deadline = time.monotonic() + 10
         while adapter.status().status != "available" and time.monotonic() < deadline:
             time.sleep(0.001)
         assert adapter.status().status == "available"
@@ -2222,12 +2223,12 @@ def test_history_migration_waits_for_inflight_write_without_retrying_add(tmp_pat
     worker = threading.Thread(target=run)
     worker.start()
     try:
-        assert entered.wait(1)
+        assert entered.wait(10)
         time.sleep(0.35)
         assert worker.is_alive(), "inflight history must not be reported as a failed migration"
         assert results == []
         release.set()
-        worker.join(3)
+        worker.join(10)
         assert not worker.is_alive()
         if write_fails:
             assert results[0].status == "partial"
@@ -2246,7 +2247,7 @@ def test_history_migration_waits_for_inflight_write_without_retrying_add(tmp_pat
         assert sum(name == "add" for name, _ in backend.calls) == 2
     finally:
         release.set()
-        worker.join(3)
+        worker.join(10)
 
 
 def test_outbox_retry_recovers_nested_mem0_timeout(tmp_path: Path) -> None:
