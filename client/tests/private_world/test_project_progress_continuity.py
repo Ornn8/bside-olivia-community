@@ -191,7 +191,7 @@ def test_all_project_identities_survive_explicit_input_budget_failure(tmp_path):
     assert len(before['projects']) == 30
 
 
-def test_many_closed_projects_keep_all_identities_without_stopping_world(tmp_path):
+def test_many_closed_projects_stay_bounded_without_stopping_world(tmp_path):
     store = DailyLifeStore(tmp_path / 'life.sqlite3')
     for index in range(143):
         store.publish_day('closed-source:' + str(index), CURRENT,
@@ -207,8 +207,12 @@ def test_many_closed_projects_keep_all_identities_without_stopping_world(tmp_pat
     runtime = DailyLifeRuntime(store, Gateway, lambda: '[]')
     asyncio.run(runtime.refresh(NOW))
     assert runtime.error_code is None and len(calls) == 1
-    rows = json.loads(calls[0][-1]['content'])['projects']
-    assert {p['id'] for p in rows} == {'active'} | {'closed:' + str(i) for i in range(143)}
+    request = json.loads(calls[0][-1]['content'])
+    rows = request['projects']
+    # A decision lists her open projects and only the latest finished identities;
+    # the rest stay in the journal and the request says so instead of growing.
+    assert {p['id'] for p in rows} == {'active'} | {'closed:' + str(i) for i in range(6)}
+    assert request['project_coverage']['finished_omitted'] == 137 and request['project_coverage']['open_omitted'] == 0
     assert len(next(p for p in rows if p['id'] == 'active')['history']) == 1
     for item in rows:
         if item['status'] == 'completed':

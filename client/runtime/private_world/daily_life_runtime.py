@@ -436,6 +436,7 @@ class DailyLifeRuntime:
                 world = state['world']
                 development = self.store.development_view(now)
                 development_basis = self.store.development_world_assessment(now)
+                projects, project_coverage = self.store.world_projects(now)
                 data = {"time": local_time.isoformat(), "persona": project_persona(persona, development),
                         "character_development": development,
                         "development_topics": development_topics,
@@ -443,7 +444,7 @@ class DailyLifeRuntime:
                         "world": world, "recent_life": self.store.recent_life(now),
                         "exchange_actions": exchange_actions,
                         "previous": state["current"],
-                        "projects": self.store.exchange_state(now=now, include_history=True)['projects'],
+                        "projects": projects, "project_coverage": project_coverage,
                         "rhythm": state["rhythm"],
                         "recent_observations": self.store._recent_observations(now)}
                 if duties is not None:

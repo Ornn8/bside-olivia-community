@@ -5,6 +5,14 @@ from datetime import datetime, timedelta, timezone
 from .world_decision import compile_decision
 from runtime.reply.jev_limits import JEV_MAX_INPUT_BYTES as SEMANTIC_REQUEST_MAX_BYTES
 
+# The upstream rejects by token count and refuses world decisions near 70 KB, below
+# the shared byte bound. Optional project time questions are deferred to a later
+# tick before the request passes the target; the compact wire form starts at the
+# compaction size; nothing above the limit is sent.
+_WORLD_TARGET_BYTES = 40 * 1024
+_WORLD_COMPACT_BYTES = 56 * 1024
+_WORLD_LIMIT_BYTES = 64 * 1024
+
 
 # These are available everyday actions/foods, not fixed personality preferences.
 _FOCUSES = {
@@ -305,7 +313,7 @@ async def decide(port, data, instructions):
     digit_fields = []
     from runtime.reply.companion_decision import _json
     packet_size = lambda: len(_json(dict(state=state, questions=questions, purpose='world-decision')).encode())
-    if packet_size() > SEMANTIC_REQUEST_MAX_BYTES:
+    if packet_size() > min(SEMANTIC_REQUEST_MAX_BYTES, _WORLD_COMPACT_BYTES):
         from .world_decision import LIFE_PROMPT
         if instructions.startswith(LIFE_PROMPT):
             state['world_contract'] = _COMPACT_WORLD_CONTRACT
@@ -341,8 +349,7 @@ async def decide(port, data, instructions):
     pending = sorted(project_timing.pending(data['projects']), key=lambda pair: (
         not pair[1].get('deadline_expired', False), pair[1]['updated_at'], pair[1]['id']))
     deferred = []
-    # Leave room under the hard bound, in the same proportion as before (30000/32768).
-    while packet_size() > SEMANTIC_REQUEST_MAX_BYTES * 30000 // 32768 and pending:
+    while packet_size() > min(SEMANTIC_REQUEST_MAX_BYTES * 30000 // 32768, _WORLD_TARGET_BYTES) and pending:
         index, _ = pending.pop()
         deferred.append(index)
         prefix = f'project_time_{index}_'
@@ -356,7 +363,7 @@ async def decide(port, data, instructions):
         state['project_timing_coverage'] = {'deferred_project_indices': sorted(deferred),
             'pending_count': len(deferred), 'meaning': '这些原项目完整保留，时限尚待后续正常世界tick解释，本次禁止推进或判完成；不是已取消。'}
     if (any(not q['criteria'] or len(q['criteria']) > 255 for q in questions.values())
-            or packet_size() > SEMANTIC_REQUEST_MAX_BYTES):
+            or packet_size() > min(SEMANTIC_REQUEST_MAX_BYTES, _WORLD_LIMIT_BYTES)):
         raise ValueError('JEV_INPUT_TOO_LARGE')
     answers = await port.ask(state, questions, purpose='world-decision')
     if (not isinstance(answers, dict) or set(answers) != set(questions)
