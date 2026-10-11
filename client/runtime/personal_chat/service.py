@@ -16,6 +16,11 @@ JEV_ERROR_CODES = _JEV_PORT_ERRORS | {
     'JEV_SERVICE_UNAVAILABLE', 'JEV_CONTEXT_BUDGET_EXCEEDED', 'JEV_INPUT_SUPERSEDED',
     'JEV_DECISION_NOT_SAVED', 'JEV_CONFIG_INVALID',
 }
+# A retry cannot succeed on an insufficient balance; it would only buy another generation.
+BALANCE_ERROR_CODES = frozenset({
+    'JEV_BALANCE_INSUFFICIENT', 'JEV_BILLING_HTTP_402', 'PERSONAL_CHAT_PROVIDER_QUOTA_EXHAUSTED',
+    'LLM_QUOTA_EXHAUSTED', 'GPU_INSUFFICIENT_BALANCE',
+})
 TURN_IS_CURRENT = ContextVar('personal_chat_turn_is_current', default=None)
 
 
@@ -285,6 +290,8 @@ class PersonalChatService:
                 text = '【系统提示】这条消息暂时没能回复，用量仍在核对。请勿反复重发同一条；你可以发送新消息继续聊天。'
             elif code == 'PERSONAL_CHAT_PROVIDER_BUSY':
                 text = '【系统提示】服务暂时无法受理这条回复，请稍后再试。'
+            elif code in BALANCE_ERROR_CODES:
+                text = '【系统提示】Olivia 账户余额不足，这条消息没能回复。请在“回信服务 → Olivia 账户”充值后再聊天。'
             else:
                 text = '【系统提示】这条消息的回复生成失败，暂时没能回复。可以稍后重新发一下。'
             await delivery_notice(row, correlated, self.persist, 'generation_failure_notice', text)
@@ -516,10 +523,12 @@ class PersonalChatService:
                         row['generation_interrupted'] = True
                     else:
                         code = str(exc)
+                    named = getattr(exc, 'code', None)
+                    balance = code in BALANCE_ERROR_CODES or isinstance(named, str) and named in BALANCE_ERROR_CODES
                     if code not in JEV_ERROR_CODES and not re.fullmatch(r'(?:PERSONAL_CHAT|IMAGE|LLM)_[A-Z0-9_]{1,80}', code):
-                        code = 'PERSONAL_CHAT_GENERATION_FAILED'
+                        code = 'PERSONAL_CHAT_PROVIDER_QUOTA_EXHAUSTED' if balance else 'PERSONAL_CHAT_GENERATION_FAILED'
                     row.update(delivery_status="FAILED", letter_status="FAILED", error_code=code)
-                    retryable = getattr(exc, 'retryable', None)
+                    retryable = False if balance else getattr(exc, 'retryable', None)
                     if type(retryable) is bool:
                         row['generation_retryable'] = retryable
                     from runtime.diagnostics.failure_context import provider_failure_context
@@ -586,7 +595,9 @@ class PersonalChatService:
                     from .speech import validate_script, validate_intent
                     validate_script(row['speech_script'])
                     validate_intent(row['speech_intent'])
-                if not file_speech and (row.get('companion_decision') is not None and row.get('companion_delivery') == 'audio_speech'
+                # Text chosen because speech could not be rendered is deliberate; a lost upload is not.
+                text_fallback = row.get('delivery_basis') in {'VOICE_RENDER_TIMEOUT', 'VOICE_RENDER_FAILED'}
+                if not file_speech and not text_fallback and (row.get('companion_decision') is not None and row.get('companion_delivery') == 'audio_speech'
                         or row.get('proactive_decision', {}).get('decision', {}).get('medium') == 'audio_speech'):
                     row.update(delivery_status='FAILED', letter_status='FAILED', error_code='JEV_PLAN_UNSUPPORTED')
                     await persist_state(self.persist)
