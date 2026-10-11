@@ -802,6 +802,31 @@ class DailyLifeStore:
         # A specific event (meal, walk...) keeps its own staging over the generic moment.
         return [source for source in sources if source['event_kind'] != 'moment' or source['event_id'] not in specific]
 
+    def observed_place(self, *, now: datetime) -> dict | None:
+        """The record every reply's world view takes her place from, and whether it still holds.
+
+        A photo reads its location from that view. A video offered as her moment has to
+        be this same record, matched by ids, so the two can never disagree about where she is."""
+        state = self.snapshot(now)
+        current = state['current']
+        if not current or not current.get('source_id'):
+            return None
+        return dict(source_id=current['source_id'], occurred_at=current['occurred_at'],
+                    place=current.get('place'), live=not state['stale'])
+
+    def daily_video_event_facts(self, request: dict) -> dict | None:
+        """What the world published about a video's event: location, activity, note and place."""
+        source_id = request['event_id']
+        with self._db() as db:
+            if request['event_kind'] == 'bath_finished':
+                bath = db.execute('SELECT completed_source_id FROM life_baths WHERE source_id=?', (source_id,)).fetchone()
+                source_id = bath[0] if bath and bath[0] else source_id
+            row = db.execute("SELECT payload FROM life_moments WHERE source_id=? AND kind='daily'", (source_id,)).fetchone()
+        if row is None:
+            return None
+        item = json.loads(row[0])
+        return {key: item[key] for key in ('location', 'activity', 'note', 'place') if item.get(key)}
+
     _NOT_MOMENTS = frozenset(('bath_started', 'bath_finished'))
 
     def _video_moment(self, db, start, now):

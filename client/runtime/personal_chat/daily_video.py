@@ -121,6 +121,26 @@ def select_candidate(value, candidates):
     return selected
 
 
+def tier_allows_video(settings):
+    """Daily videos are the 文字＋声音＋视频 tier's media; text and audio users never receive one."""
+    try:
+        return settings.tier_snapshot() == 'video'
+    except Exception:
+        return False  # An unreadable setting is never consent.
+
+
+def is_current_activity(candidate, observed):
+    """Her moment is the record the world view takes her place from: ids decide, never wording.
+
+    Both sides must carry a structured place, or the video is not offered."""
+    place, there = candidate.get('place'), (observed or {}).get('place')
+    return bool(observed and observed.get('live') is True
+                and candidate.get('event_id') == observed.get('source_id')
+                and isinstance(place, dict) and isinstance(there, dict)
+                and place.get('place_id') and place.get('place_id') == there.get('place_id')
+                and place.get('name') == there.get('name'))
+
+
 def scene_matches(scene, source):
     if source['event_kind'] == 'moment':
         # Announced by its own capability; public scene kinds stay legacy-only.
@@ -134,7 +154,8 @@ def scene_matches(scene, source):
 
 class DailyVideoWorker:
     def __init__(self, directory, service, binding, api_factory, event_store,
-                 *, validator=validate_video, quiet_seconds=2, clock=lambda: datetime.now(timezone.utc), author_candidate=None):
+                 *, validator=validate_video, quiet_seconds=2, clock=lambda: datetime.now(timezone.utc), author_candidate=None,
+                 consent=None):
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         self.database = self.directory / 'queue.sqlite3'
@@ -143,6 +164,8 @@ class DailyVideoWorker:
             raise ValueError('DAILY_VIDEO_BINDING_CONFLICT')
         self.api_factory, self.event_store = api_factory, event_store
         self.author_candidate = author_candidate
+        # The user's video tier. None means no settings are attached (tests, manual use).
+        self.consent = consent
         self.validator, self.quiet_seconds = validator, quiet_seconds
         self.clock = clock
         self.tasks, self.send = {}, None
@@ -165,6 +188,24 @@ class DailyVideoWorker:
                 if row.get('delivery_status') == 'SENDING':
                     row['delivery_status'] = 'UNKNOWN'
                     db.execute('UPDATE daily_video_jobs SET payload=? WHERE event_id=?', (_json(row), event_id))
+
+    def _consented(self):
+        check = getattr(self, 'consent', None)
+        if check is None:
+            return True
+        try:
+            return bool(check())
+        except Exception:
+            return False
+
+    def _is_current(self, candidate, store, now):
+        reader = getattr(store, 'observed_place', None)
+        if not callable(reader):
+            return False
+        try:
+            return is_current_activity(candidate, reader(now=now))
+        except Exception:
+            return False
 
     def _save(self, row):
         with sqlite3.connect(self.database) as db:
@@ -193,6 +234,8 @@ class DailyVideoWorker:
             if row['binding'] != self.binding:
                 raise ValueError('DAILY_VIDEO_BINDING_CONFLICT')
         else:
+            if not self._consented():
+                raise ValueError('DAILY_VIDEO_CONSENT_REQUIRED')
             row = dict(event_id=value['event_id'], input=value, binding=self.binding,
                        status='PENDING', delivery_status='PENDING', world_status='PENDING')
             self._save(row)  # Durable before any network request is scheduled.
@@ -226,17 +269,32 @@ class DailyVideoWorker:
         except Exception:
             pass
 
-    def candidates(self, *, now=None):
-        """No model call: scene aliases are approved and owned by the server."""
+    def candidates(self, *, now=None, current_only=True):
+        """No model call: scene aliases are approved and owned by the server.
+
+        Nothing is offered without the user's video tier. A chat offer is her current
+        moment, so by default only the event her world view puts her in qualifies; a
+        background clip prepared ahead of an event (current_only=False) is not presented as now."""
         now = now or self.clock()
-        if not self.scenes or time.monotonic() - self.capabilities_at > 120:
+        if not self._consented() or not self.scenes or time.monotonic() - self.capabilities_at > 120:
             return []
         store = self.event_store() if callable(self.event_store) else self.event_store
         if store is None or not callable(getattr(store, 'daily_video_sources', None)):
             return []
         result = []
+        observed = None
+        if current_only:
+            reader = getattr(store, 'observed_place', None)
+            if not callable(reader):
+                return []
+            try:
+                observed = reader(now=now)
+            except Exception:
+                return []
         for source in store.daily_video_sources(now=now, moment=self.moments):
             if self.get(source['event_id']) is not None or self.preparation(source['event_id']) is not None:
+                continue
+            if current_only and not is_current_activity(source, observed):
                 continue
             ordered = sorted(self.scenes, key=lambda s: s['scene_id']=='daily_place')
             scene = next((scene for scene in ordered if scene_matches(scene, source)), None)
@@ -253,6 +311,11 @@ class DailyVideoWorker:
         existing = self.get(candidate['event_id'])
         if existing is not None:
             return existing
+        if not self._consented():
+            raise ValueError('DAILY_VIDEO_CONSENT_REQUIRED')
+        store = self.event_store() if callable(self.event_store) else self.event_store
+        if not self._is_current(candidate, store, self.clock()):
+            raise ValueError('DAILY_VIDEO_SOURCE_UNAVAILABLE')  # She has moved on: it is no longer her moment.
         if not self.scenes or time.monotonic() - self.capabilities_at > 120:
             await self.refresh_capabilities()
         if not any(scene['scene_id'] == candidate['scene_id'] and scene_matches(scene, candidate)
@@ -261,7 +324,6 @@ class DailyVideoWorker:
         value = validate_input(await author(dict(candidate)))
         if any(value[key] != candidate[key] for key in _FIELDS - {'spoken_text'}):
             raise ValueError('DAILY_VIDEO_SOURCE_UNAVAILABLE')
-        store = self.event_store() if callable(self.event_store) else self.event_store
         if store is None or not store.daily_video_can_prepare(value, now=self.clock()):
             raise ValueError('DAILY_VIDEO_SOURCE_UNAVAILABLE')
         return await self.enqueue(value)
@@ -270,7 +332,7 @@ class DailyVideoWorker:
         """Author real bath starts independently of new messages or the chat lock."""
         if self.closed or self.author_candidate is None:
             return
-        for candidate in self.candidates():
+        for candidate in self.candidates(current_only=False):
             if candidate.get('event_status') != 'preparing':
                 continue
             row = dict(event_id=candidate['event_id'], candidate=candidate, status='AUTHORING')
@@ -324,6 +386,9 @@ class DailyVideoWorker:
                             and scene_matches(scene, frozen)
                             for scene in self.scenes):
                         raise ValueError('DAILY_VIDEO_SCENE_UNAVAILABLE')
+                    store = self.event_store() if callable(self.event_store) else self.event_store
+                    if not self._is_current(frozen, store, self.clock()):
+                        raise ValueError('DAILY_VIDEO_SOURCE_UNAVAILABLE')
                 store = self.event_store() if callable(self.event_store) else self.event_store
                 if store is None or not store.daily_video_can_prepare(value, now=self.clock()):
                     raise ValueError('DAILY_VIDEO_SOURCE_UNAVAILABLE')
@@ -368,7 +433,13 @@ class DailyVideoWorker:
         if (self.closed or key in self.tasks or row['binding'] != self.binding
                 or row['delivery_status'] in {'SENDING', 'UNKNOWN'}
                 or row['status'] == 'FAILED'
-                or row['delivery_status'] == 'DELIVERED' and row['world_status'] == 'COMMITTED'):
+                or row['delivery_status'] == 'DELIVERED' and row['world_status'] == 'COMMITTED'
+                and row.get('memory_status') != 'PENDING'):
+            return
+        if row['delivery_status'] != 'DELIVERED' and not self._consented():
+            # The tier no longer allows video: neither generate nor send, and never revive it silently.
+            row.update(status='FAILED', error_code='DAILY_VIDEO_CONSENT_REQUIRED')
+            self._save(row)
             return
         if row['status'] == 'READY' and row['delivery_status'] != 'DELIVERED' and not self._can_send(row):
             return
@@ -386,6 +457,7 @@ class DailyVideoWorker:
             output = self.directory / (identity + '.mp4')
             if row['delivery_status'] == 'DELIVERED':
                 self._commit(row)
+                await self._remember(row)
                 from runtime.gpu_cleanup import acknowledge_result
                 await acknowledge_result(self.api_factory(), row['task_id'], output)
                 return
@@ -445,10 +517,12 @@ class DailyVideoWorker:
                     row['delivery_status'] = 'UNKNOWN'
                     self._save(row)
                     raise
+                # Only an acknowledged send owes the conversation a memory record.
                 row.update(delivery_status='DELIVERED', message_id=str(message_id),
-                           delivered_at=self.clock().isoformat())
+                           delivered_at=self.clock().isoformat(), memory_status='PENDING')
                 self._save(row)
             self._commit(row)
+            await self._remember(row)
             # Acknowledging remote cleanup is safe only after the QQ receipt.
             from runtime.gpu_cleanup import acknowledge_result
             await acknowledge_result(self.api_factory(), row['task_id'], output)
@@ -466,7 +540,7 @@ class DailyVideoWorker:
             self.user_revision = self.service.user_revision
             self.last_input = time.monotonic()
         store = self.event_store() if callable(self.event_store) else self.event_store
-        return (store is not None and callable(getattr(self.send, 'video', None))
+        return (self._consented() and store is not None and callable(getattr(self.send, 'video', None))
                 and getattr(self.send, 'is_available', lambda: True)()
                 and not self.service.pending('qq')
                 and time.monotonic() - self.last_input >= self.quiet_seconds
@@ -481,6 +555,37 @@ class DailyVideoWorker:
             raise RuntimeError('DAILY_VIDEO_WORLD_UNAVAILABLE')
         store.record_media_delivery(event)
         row['world_status'] = 'COMMITTED'
+        self._save(row)
+
+    async def _remember(self, row):
+        """One memory record per delivered video, from facts already known and without any model call.
+
+        Videos delivered before this existed carry no memory_status and are left alone."""
+        if row.get('memory_status') != 'PENDING':
+            return
+        from . import daily_video_memory as memory
+        from .events import PersonalMessage
+        from .service import persist_state
+        try:
+            store = self.event_store() if callable(self.event_store) else self.event_store
+            reader = getattr(store, 'daily_video_event_facts', None)
+            try:
+                facts = reader(row['input']) if callable(reader) else None
+            except Exception:
+                facts = None
+            delivered_at = datetime.fromisoformat(row['delivered_at'])
+            record = memory.build(row['input'], facts=facts, caption=capture_caption(row['input'], delivered_at),
+                                  delivered_at=delivered_at)
+            owner = PersonalMessage('qq', *self.binding, '', '').binding_id
+            outcome = memory.attach(self.service.rows, owner, record)
+            if outcome != 'NO_CONVERSATION':
+                await persist_state(self.service.persist)
+            row['memory_status'] = outcome if outcome == 'NO_CONVERSATION' else 'COMMITTED'
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            row['memory_attempts'] = row.get('memory_attempts', 0) + 1
+            row['memory_status'] = 'FAILED' if row['memory_attempts'] >= 5 else 'PENDING'
         self._save(row)
 
     async def wait_idle(self):

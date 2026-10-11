@@ -462,11 +462,13 @@ async def _generate_billed(server, event, row):
                          and os.environ.get('OLIVIA_GPU_API_URL') and os.environ.get('OLIVIA_GPU_API_KEY'))
     daily_worker = getattr(server, '_daily_video_worker', None)
     if 'daily_video_candidates' not in row:
-        # Her current moment is offered exactly when a photo could be: it is the
-        # same proactive share, and the photo switch is the user's media consent.
+        # Videos belong to the video tier alone. Her current moment is also offered
+        # exactly when a photo could be: the photo switch is the user's media consent.
+        from .daily_video import tier_allows_video
         row['daily_video_candidates'] = ([candidate for candidate in daily_worker.candidates()
                                           if candidate['event_kind'] != 'moment' or image_offered]
-            if event.channel == 'qq' and daily_worker is not None else [])
+            if event.channel == 'qq' and daily_worker is not None
+            and tier_allows_video(getattr(server, 'video_reply_settings_store', None)) else [])
         await persist_chat(server)
     daily_candidates = row['daily_video_candidates'] if event.channel == 'qq' else []
     semantic_kinds = ['text'] + (['audio_speech'] if voice_available else [])
@@ -1251,14 +1253,15 @@ def install_personal_chat(app, server):
                        "errors": {}, "roundtrips": {}, "last_seen_at": {}, "journal": journal,
                        "delivery_health": {}, "e2e_verified_at": {}, "connection_tests": {}}
             if 'qq' in bindings:
-                from .daily_video import DailyVideoWorker
+                from .daily_video import DailyVideoWorker, tier_allows_video
                 from .daily_video_author import author_preparation
                 from runtime.remote_generation import RemoteGeneration
                 runtime['daily_video'] = DailyVideoWorker(server._state_root() / 'media' / 'daily-video',
                     service, bindings['qq'],
                     lambda: RemoteGeneration(os.environ.get('OLIVIA_GPU_API_URL', ''), os.environ.get('OLIVIA_GPU_API_KEY', '')),
                     lambda: getattr(getattr(server, 'daily_life_runtime', None), 'store', None),
-                    author_candidate=lambda candidate: author_preparation(server, candidate))
+                    author_candidate=lambda candidate: author_preparation(server, candidate),
+                    consent=lambda: tier_allows_video(getattr(server, 'video_reply_settings_store', None)))
                 server._daily_video_worker = runtime['daily_video']
             if 'qq' in config:
                 from .backfill import status as backfill_status

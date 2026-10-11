@@ -86,8 +86,12 @@ def world(tmp_path):
     return DailyLifeStore(tmp_path / 'world.sqlite')
 
 
-def publish(store, data):
-    store.publish_day(data['event_id'], {'location': '住处', 'activity': '整理桌边', 'note': '整理好了一小块。'},
+HOME = dict(place_id='home', name='住处', setting='住处，沿用已有布局与陈设。', stage='arrived')
+
+
+def publish(store, data, place=None):
+    store.publish_day(data['event_id'], {'location': '住处', 'activity': '整理桌边', 'note': '整理好了一小块。',
+        **({'place': place} if place else {})},
         [], occurred_at=datetime.fromisoformat(data['event_at']), activity_kind='housework')
 
 
@@ -631,7 +635,8 @@ def test_native_lifecycle_cancels_owned_generation_and_restores_original_order(t
         monkeypatch.setattr(qq, 'run_qq', listen)
         server = SimpleNamespace(store=local_server.Store(), _state_root=lambda: tmp_path,
             _require_store_state_available=lambda: None, _persist_store_state=lambda: None,
-            _safe_log=lambda *args, **kwargs: None, daily_life_runtime=SimpleNamespace(store=store))
+            _safe_log=lambda *args, **kwargs: None, daily_life_runtime=SimpleNamespace(store=store),
+            video_reply_settings_store=SimpleNamespace(tier_snapshot=lambda: 'video'))
         def application():
             app = web.Application()
             backend.install_personal_chat(app, server)
@@ -923,7 +928,7 @@ def test_invalid_daily_video_optional_metadata_preserves_text_reply(selection):
 
 def test_server_scene_alias_is_required_and_caps_failure_holds_new_spending(tmp_path):
     store = world(tmp_path)
-    publish(store, payload())
+    publish(store, payload(), HOME)
     async def scenario():
         chat, api = service(), API()
         job = worker(tmp_path, store, chat, api)
