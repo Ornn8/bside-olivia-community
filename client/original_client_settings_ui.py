@@ -3725,6 +3725,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         LLM_SERVICE_UNAVAILABLE:"大模型服务暂时不可用，请稍后重试。持续失败请将诊断包交给服务提供方排查；无需重装本地组件。",
         LLM_USAGE_PENDING:"这次模型请求中断，用量等待核对，请暂勿反复寄信并保留诊断包。",
         LLM_REQUEST_DUPLICATE:"这次请求已经提交，请先查看原信件状态。",
+        LETTER_IN_PROGRESS:"这封信正在生成回信，请先等待完成，不要重复寄出。",
+        LETTER_SUPERSEDED:"这封信已经重新寄出，请回到信箱查看最新一封信的状态。",
+        LETTER_RESEND_NOT_ALLOWED:"这封信当前不能重寄，请回到信箱刷新状态。",
         REPLY_ROUTE_INVALID_RESULT:"大模型返回的回信形式无法识别，请重试；若持续出现，请导出诊断包。",
         MEM0_EMBEDDING_CACHE_UNAVAILABLE:"长期记忆模型尚未安装或校验未通过。请打开本地陪伴的长期记忆页面，安装或修复模型后重试。",
         MEM0_IMPORT_FAILED:"长期记忆运行组件缺失或无法加载。请在本地陪伴中修复长期记忆组件后重试。",
@@ -3738,7 +3741,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       const memoryImportFailure = /^MEM0_INIT_IMPORT_[A-Z_]+_(?:IMPORT|MODULE_MISSING)$/.test(code || "");
       error.message = (messages[code] || (memoryImportFailure
         ? "长期记忆运行组件加载失败，当前无法生成回信。请修复长期记忆组件后重试，信件草稿已保留。"
-        : fallback)) + (code ? `（${code}）` : "") + "信件尚未寄出。";
+        : fallback)) + (code ? `（${code}）` : "") + (resending ? "本次没有重复寄出。" : "信件尚未寄出。");
       throw error;
     }
     requireUnchangedComposer();

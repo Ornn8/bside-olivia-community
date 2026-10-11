@@ -78,6 +78,10 @@ def test_backend_generate_uses_real_pipeline_persona_memory_and_world(tmp_path, 
     channel, user, reply_text = sample
     class Provider:
         stream_enabled = False
+        async def complete_scoped(self, messages, *, request_id=None, scope):
+            assert scope is GatewayRequestScope.PERSONAL_CHAT_JSON
+            return await self.complete(messages, request_id=request_id)
+
         async def complete(self, messages, *, request_id=None):
             calls.append(tuple(dict(m) for m in messages))
             if failure_code:
@@ -161,6 +165,7 @@ def test_backend_generate_uses_real_pipeline_persona_memory_and_world(tmp_path, 
     async def bounded_run(request, context):
         from runtime.personal_chat.presentation import CURRENT
         assert CURRENT.get()['raw_user_text'] == event.text
+        assert request.gateway_scope is GatewayRequestScope.PERSONAL_CHAT_JSON
         assert request.content == event.text + CURRENT.get()['incoming_observation_context']
         if failure_code == 'outer_timeout':
             raise TimeoutError()

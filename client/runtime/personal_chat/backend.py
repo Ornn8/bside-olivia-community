@@ -13,6 +13,7 @@ from time import monotonic
 from pathlib import Path
 
 from aiohttp import web
+from llm_gateway import GatewayRequestScope
 
 from .service import JEV_ERROR_CODES, PersonalChatService, persist_state
 from runtime.private_world.life_rhythm import LOCAL
@@ -561,8 +562,7 @@ async def _generate_billed(server, event, row):
         request = ReplyRequest(content=content or '应用主动聊天检查：现在是否有值得和对方分享的话？没有则跳过。', request_id="personal-chat:" + attempt_id,
             idempotency_key=attempt_id,
             max_input_chars=adapter.config.max_input_chars,
-            gateway_scope=(server.GatewayRequestScope.PERSONAL_CHAT_JSON
-                           if server.supports_scoped_reasoning(adapter.config) else None))
+            gateway_scope=GatewayRequestScope.PERSONAL_CHAT_JSON)
         try:
             result = await asyncio.wait_for(server.reply_pipeline.run(request,
                 context),
