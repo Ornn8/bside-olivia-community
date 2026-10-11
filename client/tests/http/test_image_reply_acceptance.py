@@ -215,6 +215,7 @@ def test_cloud_catalog_failure_keeps_old_settings_available(tmp_path, monkeypatc
     import local_server as server
     from runtime import remote_generation
     from runtime.cloud_service import CloudError
+    monkeypatch.setattr(server, '_LAST_IMAGE_CAPABILITY', {})  # no catalog was ever read
     settings = VideoReplySettingsStore.initialize(tmp_path)
     monkeypatch.setattr(server, 'video_reply_settings_store', settings)
     monkeypatch.setattr(server, '_route_readiness', lambda: {})
@@ -280,3 +281,35 @@ def test_image_model_catalog_rejects_invalid_prices(prices):
         {'id': 'local-image', 'display_name': '本地模型', 'resolutions': ['1K'],
          'price_ranges_cents': prices}
     ]}}) == {'models': []}
+
+
+def test_a_slow_catalog_read_keeps_the_model_choice_and_lets_a_switch_save(tmp_path, monkeypatch):
+    import local_server as server
+    from runtime import remote_generation
+    monkeypatch.setattr(server, '_LAST_IMAGE_CAPABILITY', {})
+    settings = VideoReplySettingsStore.initialize(tmp_path)
+    monkeypatch.setattr(server, 'video_reply_settings_store', settings)
+    monkeypatch.setattr(server, '_route_readiness', lambda: {})
+    caps = {'kinds': ['image'], 'shared_assets': [], 'image': {'models': [
+        {'id': 'photo-a', 'display_name': 'A', 'resolutions': ['1K']},
+        {'id': 'photo-b', 'display_name': 'B', 'resolutions': ['1K']}], 'default_model': 'photo-a'}}
+    slow = {'on': False}
+    class Cloud:
+        def __init__(self, *args): self.url, self.token = 'synthetic', 'synthetic'
+        async def request(self, action, data):
+            if slow['on']:
+                raise TimeoutError()
+            return caps
+    monkeypatch.setattr(remote_generation, 'RemoteGeneration', Cloud)
+    async def scenario():
+        assert (await server.route('GET', '/toy/settings/reply-routes', {}, {}))['data']['image_capability']['models']
+        slow['on'] = True  # the next reads are slow, e.g. a poor network to the service
+        state = (await server.route('GET', '/toy/settings/reply-routes', {}, {}))['data']
+        assert [m['id'] for m in state['image_capability']['models']] == ['photo-a', 'photo-b']
+        result = await server.route('POST', '/toy/settings/reply-routes', {
+            'request_id': 'video_reply_setting:switch-b', 'image': {'enabled': True, 'resolution': '1K', 'model': 'photo-b'}}, {})
+        assert result['code'] == 0 and settings.image_snapshot()['model'] == 'photo-b'
+        result = await server.route('POST', '/toy/settings/reply-routes', {
+            'request_id': 'video_reply_setting:switch-a', 'image': {'enabled': True, 'resolution': '1K', 'model': 'photo-a'}}, {})
+        assert result['code'] == 0 and settings.image_snapshot()['model'] == 'photo-a'
+    asyncio.run(scenario())

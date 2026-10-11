@@ -193,6 +193,9 @@ _PUBLIC_SONG_EMOTIONS = frozenset(
 )
 
 
+# The last image model catalog the service returned, reused when a later read is slow.
+_LAST_IMAGE_CAPABILITY = {}
+
 def _sanitized_music_render_metadata(value: object) -> dict[str, object]:
     if not isinstance(value, Mapping):
         return {}
@@ -4858,9 +4861,14 @@ async def route(
                 api = RemoteGeneration(_os.environ.get('OLIVIA_GPU_API_URL', ''), _os.environ.get('OLIVIA_GPU_API_KEY', ''))
                 if not api.url or not api.token:
                     return None
-                return image_model_capability(await asyncio.wait_for(api.request('capabilities', {}), 3))
+                result = image_model_capability(await asyncio.wait_for(api.request('capabilities', {}), 8))
             except (CloudError, TimeoutError):
-                return None
+                # A slow or failed read keeps the last catalog: losing it hid the model choice
+                # and turned an ordinary save into a failure.
+                return _LAST_IMAGE_CAPABILITY.get('value')
+            if result is not None and result.get('models'):
+                _LAST_IMAGE_CAPABILITY['value'] = result
+            return result
         try:
             if method == "POST":
                 if 'image' in body:
