@@ -4733,7 +4733,7 @@ async def route(
 
     if p == "/toy/settings/reply-routes":
         from runtime.wardrobe import catalog
-        from runtime.video_reply_settings import image_model_capability, require_image_model
+        from runtime.video_reply_settings import delisted_fallback, image_model_capability, require_image_model
         async def image_capability():
             from runtime.remote_generation import RemoteGeneration
             from runtime.cloud_service import CloudError
@@ -4754,7 +4754,13 @@ async def route(
                                        and (image['enabled'] is False or saved['enabled'] is True))
                     if 'model' in image and not retaining_saved:
                         capability = await image_capability()
-                        require_image_model(image, {'image': capability} if capability is not None else {})
+                        if (capability is not None and capability['models'] and image['model'] == saved.get('model')
+                                and not any(item['id'] == image['model'] for item in capability['models'])):
+                            # The saved model was delisted: fall back to the service default
+                            # instead of locking the user out of every image setting.
+                            image = body['image'] = delisted_fallback(image, capability)
+                        else:
+                            require_image_model(image, {'image': capability} if capability is not None else {})
                 if set(body) == {'request_id', 'wardrobe'}:
                     return ok(video_reply_settings_store.mutate_wardrobe(body['request_id'], body['wardrobe']))
                 if set(body) == {"request_id", "tier", "image"}:

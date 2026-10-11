@@ -4641,27 +4641,10 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       setButtonsBusy([exportButton], true);
       state.textContent = "正在生成诊断包…";
       try {
-        // Ask where to save first, while the click still counts as a user action.
-        let handle = null;
-        if (typeof window.showSaveFilePicker === "function") {
-          try {
-            handle = await window.showSaveFilePicker({suggestedName: "olivia-diagnostic-bundle.zip",
-              types: [{description: "诊断包", accept: {"application/zip": [".zip"]}}]});
-          } catch (error) {
-            if (error && error.name === "AbortError") { state.textContent = "已取消导出。"; return; }
-            handle = null;  // No picker here: the app saves to Downloads below.
-          }
-        }
-        if (handle) {
-          const blob = await requestDiagnosticExport();
-          const writable = await handle.createWritable();
-          await writable.write(blob);
-          await writable.close();
-          state.textContent = `诊断包已保存为「${handle.name}」。`;
-        } else {
-          const saved = await requestDiagnosticSave();
-          state.textContent = `诊断包已保存到「下载」文件夹：${saved.file_name}，已为你打开所在位置。`;
-        }
+        // Always the Downloads folder. The system save dialog could open behind the app
+        // window and leave the export waiting on a dialog the user never saw.
+        const saved = await requestDiagnosticSave();
+        state.textContent = `诊断包已保存到「下载」文件夹：${saved.file_name}，已为你打开所在位置。`;
       } catch (error) {
         const code = error && typeof error.code === "string"
           ? error.code

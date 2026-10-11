@@ -196,6 +196,16 @@ def test_settings_only_accept_models_and_resolutions_advertised_by_cloud(tmp_pat
         # Users can still disable an unavailable saved model.
         assert (await server.route('POST', '/toy/settings/reply-routes', {
             'request_id': 'video_reply_setting:disable', 'image': {**selected, 'enabled': False}}, {}))['code'] == 0
+        # A delisted saved model must not lock the user out: turning images back on
+        # falls back to the service default instead of failing.
+        caps['image']['models'] = [{'id': 'other-photo', 'display_name': 'Other', 'resolutions': ['2K']}]
+        assert (await server.route('POST', '/toy/settings/reply-routes', {
+            'request_id': 'video_reply_setting:enable-after-retirement', 'image': selected}, {}))['code'] == 0
+        assert settings.image_snapshot() == {'enabled': True, 'resolution': '2K'}
+        # A model the cloud never offered is still refused.
+        response = await server.route('POST', '/toy/settings/reply-routes', {
+            'request_id': 'video_reply_setting:never-offered', 'image': {**selected, 'model': 'never-offered'}}, {})
+        assert response['code'] != 0 and response['data']['error_code'] == 'IMAGE_MODEL_UNAVAILABLE'
         caps['image'].pop('models')
         assert 'image_capability' not in (await server.route('GET', '/toy/settings/reply-routes', {}, {}))['data']
     asyncio.run(scenario())
