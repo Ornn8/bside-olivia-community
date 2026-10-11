@@ -84,6 +84,11 @@ _BASE = {
 
 
 def _with_caution(profile: InitiativeProfile, caution: str) -> InitiativeProfile:
+    from dataclasses import replace
+    from runtime.cloud_policy import get_policy
+    limits = get_policy('proactive')['intervals'][profile.tier]
+    profile = replace(profile, im_interval_min=limits['min_minutes'] * 60,
+                      im_interval_max=limits['max_minutes'] * 60)
     if caution == "normal":
         return profile
     multiplier = 2.0 if caution == "high" else 1.5
@@ -127,8 +132,13 @@ def tier_from_snapshot(snapshot) -> str:
     return "reserved"
 
 
-def profile_from_snapshot(snapshot) -> InitiativeProfile:
+def profile_from_snapshot(snapshot, history=None) -> InitiativeProfile:
     tier = tier_from_snapshot(snapshot)
+    if history is not None:
+        from runtime.memory.effective_relationship import effective_relationship_stage
+        stage = effective_relationship_stage(snapshot, history)
+        tier = {'familiar': 'familiar', 'friend': 'trusted', 'trusted_friend': 'trusted',
+                'close': 'close', 'committed': 'committed'}.get(stage, 'reserved')
     tension = int(getattr(snapshot, "tension", 0) or 0) if snapshot is not None else 0
     caution = "high" if tension >= 70 else "elevated" if tension >= 35 else "normal"
     return _with_caution(_BASE[tier], caution)
@@ -151,10 +161,10 @@ def profile_from_rows(rows: list[dict]) -> InitiativeProfile:
             return _with_caution(_BASE[tier], caution)
     for row in reversed(ordered):
         if row.get("contact_qualification") is True:
-            return _BASE["close"]
+            return _with_caution(_BASE["close"], 'normal')
         if type(row.get("contact_qualification")) is bool:
-            return _BASE["familiar"]
-    return _BASE["reserved"]
+            return _with_caution(_BASE["familiar"], 'normal')
+    return _with_caution(_BASE["reserved"], 'normal')
 
 
 def unanswered_wait(profile: InitiativeProfile, usual_gap: float | None, unanswered: int) -> float:

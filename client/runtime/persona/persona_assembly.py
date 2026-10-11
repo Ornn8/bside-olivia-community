@@ -545,6 +545,8 @@ def _private_behavior_payload(
             for key in ("familiarity", "trust", "comfort", "closeness", "tension"):
                 view.pop(key, None)
             view["expression_context"] = expression
+    if view.get('relationship_stage') in {'friend', 'trusted_friend'}:
+        view['relationship_stage_meaning'] = '这是长期相处形成的朋友关系，不是确认过的恋爱关系。既有动作许可保持不变。'
     view["action_permissions"] = {
         "physical_contact": {
             "ceiling": view.pop("intimacy_ceiling"),

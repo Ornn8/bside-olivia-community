@@ -116,10 +116,11 @@ class OriginalClientServerError(RuntimeError):
 class PrivateWorldControlReadAdapter:
     """Project typed PrivateWorld state into the qualitative settings view."""
 
-    def __init__(self, port: PrivateWorldPort) -> None:
+    def __init__(self, port: PrivateWorldPort, history_provider=None) -> None:
         if not isinstance(port, PrivateWorldPort):
             raise TypeError("a PrivateWorld port is required")
         self._port = port
+        self._history_provider = history_provider
 
     def snapshot(self) -> Mapping[str, object]:
         try:
@@ -132,7 +133,8 @@ class PrivateWorldControlReadAdapter:
             raise OriginalClientServerError(
                 "COMPANION_PRIVATE_WORLD_INVALID"
             )
-        projected = project_private_world(snapshot)
+        history = self._history_provider() if self._history_provider else {}
+        projected = project_private_world(snapshot, history)
         behavior = projected.behavior.to_dict()
         return {
             "version": snapshot.version,
@@ -852,13 +854,14 @@ def create_original_client_server_runtime(
     task_snapshot_provider: Callable[[], Sequence[Mapping[str, object]]] | None = None,
     history_import_provider: Callable[[], Mapping[str, object]] | None = None,
     cloud_service: object | None = None,
+    relationship_history_provider=None,
 ) -> OriginalClientServerRuntime:
     """Mount original-client adapters before the toy catch-all."""
 
     if not callable(fallback_handler):
         raise TypeError("a fallback request handler is required")
     private_read = (
-        PrivateWorldControlReadAdapter(private_world)
+        PrivateWorldControlReadAdapter(private_world, relationship_history_provider)
         if private_world is not None
         else None
     )
@@ -1317,6 +1320,7 @@ def create_configured_original_client_server_runtime(
             safe["error_code"] = migration.get("error_code") or data.get("error_code") or result.get("message")
         return project_history_import(safe)
 
+    from runtime.memory.effective_relationship import relationship_history
     runtime = create_original_client_server_runtime(
         fallback,
         memory_admin=memory_admin,
@@ -1338,6 +1342,7 @@ def create_configured_original_client_server_runtime(
         task_snapshot_provider=task_snapshot,
         history_import_provider=history_import_snapshot,
         cloud_service=cloud_service,
+        relationship_history_provider=lambda: relationship_history(getattr(server_module, 'store', None)),
     )
     life_runtime = getattr(server_module, 'daily_life_runtime', None)
     if life_runtime is not None:

@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from .events import PersonalMessage
 from runtime.reply.character_emotion_context import rebind_expression_context
 from runtime.reply.companion_decision import ERROR_CODES as _JEV_PORT_ERRORS
+from runtime.cloud_policy import get_policy
 JEV_ERROR_CODES = _JEV_PORT_ERRORS | {
     'JEV_PLAN_UNSUPPORTED', 'JEV_CONTEXT_UNAVAILABLE', 'JEV_STORED_DECISION_INVALID',
     'JEV_SERVICE_UNAVAILABLE', 'JEV_CONTEXT_BUDGET_EXCEEDED', 'JEV_INPUT_SUPERSEDED',
@@ -44,7 +45,7 @@ def _clear_draft(row):
                 'generation_context_at', 'stage_timing_seconds', 'stage_actual_calls', 'stage_cache_hits',
                 'degraded_stages', 'default_voice_status', 'default_voice_seconds', 'default_voice_duration',
                 'voice_prepare_seconds', 'voice_prepare_status', 'voice_prepare_timeout_seconds',
-                'generation_retryable', 'generation_failure_context', 'generation_failures',
+                'generation_retryable', 'generation_failure_context', 'generation_failures', 'generation_notice_code',
                 'silence_reason', 'skip_reason', 'user_controls_applied',
                 'daily_video_request', 'daily_video_status', 'daily_video_error_code', 'daily_video_candidates',
                 'writer_checkpoint', 'generation_run_id', 'generation_attempt_id', 'generation_recovery',
@@ -285,15 +286,9 @@ class PersonalChatService:
                     or not sources & row.get('source_messages', {}).keys()):
                 continue
             correlated = send.for_exchange(event) if callable(getattr(send, 'for_exchange', None)) else send
-            code = row.get('error_code')
-            if code in {'PERSONAL_CHAT_PROVIDER_USAGE_PENDING', 'PERSONAL_CHAT_PROVIDER_REQUEST_DUPLICATE'}:
-                text = '【系统提示】这条消息暂时没能回复，用量仍在核对。请勿反复重发同一条；你可以发送新消息继续聊天。'
-            elif code == 'PERSONAL_CHAT_PROVIDER_BUSY':
-                text = '【系统提示】服务暂时无法受理这条回复，请稍后再试。'
-            elif code in BALANCE_ERROR_CODES:
-                text = '【系统提示】Olivia 账户余额不足，这条消息没能回复。请在“回信服务 → Olivia 账户”充值后再聊天。'
-            else:
-                text = '【系统提示】这条消息的回复生成失败，暂时没能回复。可以稍后重新发一下。'
+            code = row.get('generation_notice_code') or row.get('error_code')
+            notices = get_policy('notices')
+            text = notices.get(code, notices['DEFAULT'])
             await delivery_notice(row, correlated, self.persist, 'generation_failure_notice', text)
             return
 
@@ -524,11 +519,17 @@ class PersonalChatService:
                     else:
                         code = str(exc)
                     named = getattr(exc, 'code', None)
+                    no_retry = get_policy('generation_retry')['no_retry_codes']
+                    blocked_retry = code in no_retry or isinstance(named, str) and named in no_retry
                     balance = code in BALANCE_ERROR_CODES or isinstance(named, str) and named in BALANCE_ERROR_CODES
-                    if code not in JEV_ERROR_CODES and not re.fullmatch(r'(?:PERSONAL_CHAT|IMAGE|LLM)_[A-Z0-9_]{1,80}', code):
+                    if isinstance(named, str) and named in no_retry:
+                        code = named
+                    if code in get_policy('notices'):
+                        row['generation_notice_code'] = code
+                    if (code not in no_retry or code in BALANCE_ERROR_CODES) and code not in JEV_ERROR_CODES and not re.fullmatch(r'(?:PERSONAL_CHAT|IMAGE|LLM)_[A-Z0-9_]{1,80}', code):
                         code = 'PERSONAL_CHAT_PROVIDER_QUOTA_EXHAUSTED' if balance else 'PERSONAL_CHAT_GENERATION_FAILED'
                     row.update(delivery_status="FAILED", letter_status="FAILED", error_code=code)
-                    retryable = False if balance else getattr(exc, 'retryable', None)
+                    retryable = False if blocked_retry else getattr(exc, 'retryable', None)
                     if type(retryable) is bool:
                         row['generation_retryable'] = retryable
                     from runtime.diagnostics.failure_context import provider_failure_context

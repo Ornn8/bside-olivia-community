@@ -1031,7 +1031,8 @@ class LetterAdapter:
         except Exception:
             private_snapshot = PrivateWorldSnapshot()
             world_state_available = False
-        projected = project_private_world(private_snapshot)
+        from runtime.memory.effective_relationship import relationship_history
+        projected = project_private_world(private_snapshot, relationship_history(store))
         facts = tuple(
             TrustedWorldFact(
                 fact_id=f"private.nickname.{index}",
