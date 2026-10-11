@@ -21,6 +21,7 @@ def test_update_errors_are_readable_and_reuse_one_diagnostic_node() -> None:
     helper = BOOTSTRAP_JAVASCRIPT.split('  const setDiagnosticDetails =', 1)[1].split('  const memoryClearFailureMessage =', 1)[0]
     panel = BOOTSTRAP_JAVASCRIPT.split('  const renderLocalUpdatePanel =', 1)[1].split('  const loadDialogData =', 1)[0]
     run_js('''const assert=require('assert');
+const window={setTimeout:resolve=>resolve()};
 class Element {constructor(tag){this.tag=tag;this.children=[];this.style={};}
 append(...items){for(const item of items){if(item.parentElement){item.parentElement.children=item.parentElement.children.filter(x=>x!==item)}item.parentElement=this;this.children.push(item)}}
 replaceChildren(...items){this.children=[];this.append(...items)}setAttribute(){} }

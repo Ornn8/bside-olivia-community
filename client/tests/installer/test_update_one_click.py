@@ -60,13 +60,13 @@ render(panel);
   assert.deepEqual(calls.map(c => c.action), outcome === 'cancel' ? ['select'] :
     ['success','restart_error'].includes(outcome) ? ['select','apply_verified',undefined] : ['select','apply_verified']);
   assert(buttons.every(b => !b.disabled));
-  const result = panel.children.at(-2).textContent;
+  const result = panel.children.at(-1).textContent;
   assert(result.includes(['success','later','restart_error'].includes(outcome) ? '1.2.3 已安装' : outcome === 'cancel' ? '已取消' : '尚未安装'));
   if (['later','restart_error'].includes(outcome)) assert(result.includes('关闭并重新打开 Olivia 后生效'));
   if (outcome === 'success') assert(result.includes('正在自动重启 Olivia'));
   if (outcome === 'offline') {
     assert(panel.children.some(c => c.textContent.includes('patch.oliviapatch')));
-    assert.equal(panel.children.at(-2).__oliviaDiagnosticDetails.__oliviaCodeNode.textContent,'UPDATE_CHECKSUM_UNAVAILABLE');
+    assert.equal(panel.children.at(-1).__oliviaDiagnosticDetails.__oliviaCodeNode.textContent,'UPDATE_CHECKSUM_UNAVAILABLE');
     assert(!result.includes('UPDATE_CHECKSUM_UNAVAILABLE'));
   }
 })().catch(e => { console.error(e); process.exitCode = 1; });

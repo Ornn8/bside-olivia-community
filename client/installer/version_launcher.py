@@ -260,8 +260,7 @@ def _own_windows_start_process_tree() -> object | None:
     if not job:
         raise OSError(ctypes.get_last_error(), "CreateJobObjectW failed")
     limits = ExtendedLimitInformation()
-    # Only an explicitly detached restart helper may escape this owned tree.
-    limits.basic_limit_information.limit_flags = 0x00002000 | 0x00000800
+    limits.basic_limit_information.limit_flags = 0x00002000
     if not kernel32.SetInformationJobObject(
         job,
         9,
@@ -538,16 +537,31 @@ def spawn_update_restart(root: Path) -> None:
 
     ready = root / "data" / "logs" / ("restart-" + secrets.token_hex(16) + ".ready")
     ready.parent.mkdir(parents=True, exist_ok=True)
-    flags = (subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
-             | subprocess.CREATE_BREAKAWAY_FROM_JOB)
     try:
-        process = subprocess.Popen(
-            [str(_restart_python(root)), str(root / "launcher" / "version_launcher.py"),
-             "--install-root", str(root), "update-restart", str(ready), str(os.getpid())],
-            cwd=root, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL, close_fds=True, creationflags=flags,
+        # The existing launcher's kill-on-close Job forbids breakaway. WMI creates
+        # the helper outside that Job, including when upgrading an older launcher.
+        powershell = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+        command = subprocess.list2cmdline([
+            str(_restart_python(root)), str(root / "launcher" / "version_launcher.py"),
+            "--install-root", str(root), "update-restart", str(ready), str(os.getpid()),
+        ])
+        result = subprocess.run(
+            [str(powershell), "-NoProfile", "-NonInteractive", "-Command",
+             "[Console]::InputEncoding=[System.Text.Encoding]::UTF8; "
+             "$p=[Console]::In.ReadToEnd() | ConvertFrom-Json; "
+             "$s=New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property "
+             "@{CreateFlags=[uint32]520;ShowWindow=[uint16]0;EnvironmentVariables=[string[]]$p.environment}; "
+             "$r=Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments "
+             "@{CommandLine=[string]$p.command;CurrentDirectory=[string]$p.cwd;ProcessStartupInformation=$s}; "
+             "if ($r.ReturnValue -ne 0) {exit 1}"],
+            input=json.dumps({"command": command, "cwd": str(root),
+                              "environment": [f"{key}={value}" for key, value in os.environ.items()]}, ensure_ascii=False),
+            capture_output=True, encoding="utf-8", timeout=15,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
-    except OSError:
+        if result.returncode:
+            raise RuntimeError("UPDATE_RESTART_HELPER_UNAVAILABLE")
+    except (OSError, subprocess.SubprocessError, RuntimeError):
         _restart_event(root, "failed", code="UPDATE_RESTART_HELPER_UNAVAILABLE")
         raise
     deadline = time.monotonic() + 15
@@ -556,8 +570,6 @@ def spawn_update_restart(root: Path) -> None:
             ready.unlink()
             _restart_event(root, "accepted")
             return
-        if process.poll() is not None:
-            break
         time.sleep(0.05)
     _restart_event(root, "failed", code="UPDATE_RESTART_HELPER_UNAVAILABLE")
     raise RuntimeError("UPDATE_RESTART_HELPER_UNAVAILABLE")

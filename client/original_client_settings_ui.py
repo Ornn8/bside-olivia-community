@@ -2577,8 +2577,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const result = text("p", "", "text-text-secondary text-body-m font-regular");
     result.setAttribute("aria-live", "polite");
     let restartCancelled = false;
-    const later = button("稍后手动重启", () => { restartCancelled = true; });
-    later.hidden = true;
+    let later;
     const restartAfterUpdate = async (payload, rolledBack = false) => {
       const installed = rolledBack ? `已回滚到 ${payload.version}` : `版本 ${payload.version} 已安装`;
       const manual = `${installed}，关闭并重新打开 Olivia 后生效。`;
@@ -2672,6 +2671,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         setButtonsBusy([choose, install, rollback], false);
       }
     });
+    later = button("稍后手动重启", () => { restartCancelled = true; });
+    later.hidden = true;
     const controls = actions();
     controls.append(choose);
     const manual = document.createElement("details");
@@ -2686,8 +2687,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       selectedPatch,
       controls,
       manual,
-      result,
-      later
+      later,
+      result
     );
   };
 

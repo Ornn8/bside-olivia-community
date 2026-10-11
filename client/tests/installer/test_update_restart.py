@@ -1,4 +1,5 @@
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -7,6 +8,25 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from installer import version_launcher as launcher
 import original_client_update_api as api
+
+
+def test_spawn_escapes_old_job_and_waits_for_handshake(tmp_path, monkeypatch):
+    def run(command, **kwargs):
+        assert "CreateFlags=[uint32]520" in command[-1]
+        assert "ShowWindow=[uint16]0" in command[-1]
+        assert kwargs["creationflags"] == launcher.subprocess.CREATE_NO_WINDOW
+        payload = json.loads(kwargs["input"])
+        assert 'pythonw.exe' in payload['command'] and 'update-restart' in payload['command']
+        assert payload['cwd'] == str(tmp_path)
+        (tmp_path / 'data/logs/restart-test.ready').touch()
+        return launcher.subprocess.CompletedProcess(command, 0)
+
+    import secrets
+    monkeypatch.setattr(secrets, 'token_hex', lambda size: 'test')
+    monkeypatch.setattr(launcher.subprocess, 'run', run)
+    launcher.spawn_update_restart(tmp_path)
+    assert not (tmp_path / 'data/logs/restart-test.ready').exists()
+    assert 'update_restart_accepted' in (tmp_path / 'data/logs/launcher.jsonl').read_text()
 
 
 @pytest.mark.parametrize("action", ["apply", "rollback"])
