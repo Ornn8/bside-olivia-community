@@ -9,6 +9,17 @@ from pathlib import Path
 import sys
 
 
+def octave_shift(source_f0, reference_f0) -> int:
+    """Whole octaves that bring the source singer into her range; keeps the song's key."""
+    import numpy as np
+    source, reference = source_f0[source_f0 > 0], reference_f0[reference_f0 > 0]
+    if source.size < 50 or reference.size < 50:
+        return 0
+    semitones = 12 * float(np.log2(np.median(reference) / np.median(source)))
+    # A male source sits about an octave below her; small differences are her own melody.
+    return 12 if semitones >= 7 else -12 if semitones <= -7 else 0
+
+
 def run(root: Path, source: Path, reference: Path, output: Path) -> None:
     os.environ.update(HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1",
                       HF_HUB_DISABLE_TELEMETRY="1")
@@ -45,6 +56,8 @@ def run(root: Path, source: Path, reference: Path, output: Path) -> None:
         hop_size=config.audio.hop_size, verbose=False)
     source_f0 = extractor.process(str(source))
     reference_f0 = extractor.process(str(reference))
+    pitch_shift = octave_shift(source_f0, reference_f0)
+    print(f"SOULX_SVC_OCTAVE_SHIFT {pitch_shift}", file=sys.stderr, flush=True)
     del extractor
     gc.collect()
     torch.cuda.empty_cache()
@@ -74,9 +87,9 @@ def run(root: Path, source: Path, reference: Path, output: Path) -> None:
             pt_wav=load(reference), gt_wav=load(source),
             pt_f0=torch.from_numpy(reference_f0).unsqueeze(0).to("cuda"),
             gt_f0=torch.from_numpy(source_f0).unsqueeze(0).to("cuda"),
-            auto_shift=False, pitch_shift=0, n_steps=32, cfg=1.0, use_fp16=True)
+            auto_shift=False, pitch_shift=pitch_shift, n_steps=32, cfg=1.0, use_fp16=True)
     audio = generated.squeeze().float().cpu().numpy()
-    if shift != 0 or not np.isfinite(audio).all() or not audio.size or np.max(np.abs(audio)) == 0:
+    if shift != pitch_shift or not np.isfinite(audio).all() or not audio.size or np.max(np.abs(audio)) == 0:
         raise RuntimeError("SOULX_SVC_OUTPUT_INVALID")
     # Preserve unclipped floating-point samples for the final two-stem mix.
     sf.write(str(output), audio, config.audio.sample_rate, subtype="FLOAT")
