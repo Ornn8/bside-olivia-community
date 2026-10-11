@@ -91,6 +91,7 @@ class Collector:
         self.lock = threading.RLock()
         self.last_error = None
         self.schema = 1
+        self.policy_version_supported = False
         self.model = lambda: 'unknown'
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._db() as db:
@@ -141,6 +142,7 @@ class Collector:
                 db.execute('DELETE FROM observed')
             self.owner, self.since, self.salt = digest, since, salt
             self.schema = 1
+            self.policy_version_supported = False
             if digest: self.emit('app', 'ok')
             return True
 
@@ -186,6 +188,8 @@ class Collector:
             except Exception: model = 'unknown'
         extra = dict(V2_DEFAULTS, error_code='NONE' if not error else
                      error if isinstance(error, str) and error in ERROR_CODES else 'UNKNOWN')
+        from runtime.cloud_policy import policy_version
+        extra['policy_version'] = policy_version()
         if stage == 'initiative':
             extra['initiative'] = {key: initiative[key] for key in ('tier', 'due_in_seconds', 'reason', 'catch_up')}
             if 'medium' in initiative:
@@ -301,6 +305,8 @@ class Collector:
             events = [dict(json.loads(row[1]), seq=row[0]) for row in
                     db.execute('SELECT seq,payload FROM queue ORDER BY seq LIMIT 100')] if self.enabled else []
             for event in events:
+                if schema != 3 or not self.policy_version_supported:
+                    event.pop('policy_version', None)
                 if schema != 3:
                     event.pop('timing_seconds', None)
                 elif 'timing_seconds' in event:
@@ -326,17 +332,22 @@ class Collector:
             if not events: return
             result = await send(events)
             expected = [e['event_id'] for e in events]
-            if (not isinstance(result, dict) or set(result) not in ({'accepted'}, {'accepted', 'supported_schemas'})
+            if (not isinstance(result, dict) or set(result) not in ({'accepted'}, {'accepted', 'supported_schemas'},
+                    {'accepted', 'supported_schemas', 'policy_version_supported'})
                     or result.get('accepted') != expected):
                 raise ValueError('bad acknowledgment')
             supported = result.get('supported_schemas', [])
+            if 'policy_version_supported' in result and type(result['policy_version_supported']) is not bool:
+                raise ValueError('bad capabilities')
             if (not isinstance(supported, list) or any(type(value) is not int for value in supported)):
                 raise ValueError('bad capabilities')
             self.ack(expected)
+            self.policy_version_supported = result.get('policy_version_supported') is True
             self.schema = 3 if 3 in supported else 2 if 2 in supported else 1
             self.last_error = None
         except (OSError, sqlite3.Error, ValueError, RuntimeError, TimeoutError):
             self.schema = 1
+            self.policy_version_supported = False
             self.last_error = 'TELEMETRY_UPLOAD_FAILED'
 
 

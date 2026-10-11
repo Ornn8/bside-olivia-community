@@ -32,8 +32,17 @@
     "routes": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["/toy/updates/local/action"],
+      "required": ["/toy/updates/local/action", "/toy/update/restart"],
       "properties": {
+        "/toy/update/restart": {
+          "const": {
+            "methods": ["POST", "OPTIONS"],
+            "request_fields": [],
+            "success_http_status": 202,
+            "status": "RESTARTING",
+            "precondition": "successful-apply-or-rollback-in-this-process-once"
+          }
+        },
         "/toy/updates/local/action": {
           "type": "object",
           "additionalProperties": false,

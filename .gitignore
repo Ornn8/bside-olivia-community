@@ -142,6 +142,7 @@ client/docs/*
 !client/docs/MEMORY_BROWSER.md
 !client/docs/QQ_LONG_SPEECH.md
 !client/docs/REPLY_TELEMETRY.md
+!client/docs/client-policy.md
 !client/docs/PRIVATE_WORLD_LETTER_ACCEPTANCE_20260905.md
 !client/docs/JEV_EXCHANGE_ACCEPTANCE.md
 client/docs/reviews/*
@@ -162,6 +163,7 @@ client/docs/reviews/*
 !client/docs/INTEGRATION_B09_B10A.md
 !client/docs/B11_ACCEPTANCE_STANDARD.md
 !client/docs/WINDOWS_FULL_PATCH.md
+!client/docs/native-launcher.md
 !client/docs/reviews/
 !client/docs/reviews/baseline-hardening-evidence.md
 !client/docs/reviews/b08-live-evidence.md

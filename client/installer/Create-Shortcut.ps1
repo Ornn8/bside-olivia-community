@@ -1,204 +1,171 @@
 ﻿[CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)]
-    [string]$InstallRoot,
+    [Parameter(Mandatory = $true)][string]$InstallRoot,
     [string]$ShortcutPath,
+    [string]$DesktopPath = $env:OLIVIA_SHORTCUT_DESKTOP,
+    [string]$ProgramsPath = $env:OLIVIA_SHORTCUT_PROGRAMS,
     [switch]$RefreshExisting,
     [switch]$RemoveExisting
 )
 
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path -LiteralPath $InstallRoot).Path
+$native = Join-Path $root 'Olivia.exe'
 $start = Join-Path $root 'START.cmd'
 $startHidden = Join-Path $root 'START.vbs'
-$startHiddenTemplate = Join-Path $PSScriptRoot 'start_hidden.vbs.txt'
 $wscript = Join-Path $env:WINDIR 'System32\wscript.exe'
-$hiddenArguments = '//B //Nologo "' + $startHidden + '"'
-
-if ($RemoveExisting) {
-    $shortcutPaths = if ($ShortcutPath) { @($ShortcutPath) } else {
-        @(foreach ($folderName in @('Desktop', 'Programs')) {
-            try {
-                $folder = [Environment]::GetFolderPath($folderName)
-                if ($folder) {
-                    $candidate = Join-Path $folder 'Olivia 本地版.lnk'
-                    if (Test-Path -LiteralPath $candidate -PathType Leaf) {
-                        $candidate
-                    }
-                }
-            }
-            catch {
-                # One unavailable shell folder must not suppress the other.
-            }
-        })
-    }
-    $shell = New-Object -ComObject WScript.Shell
-    foreach ($path in $shortcutPaths) {
+# Use the Unicode Shell interface rather than WSH's ANSI shortcut properties.
+if (-not ('OliviaShortcut' -as [type])) {
+Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.Text;
+using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.ComTypes;
+[ComImport, Guid("00021401-0000-0000-C000-000000000046")]
+internal class ShellLinkObject { }
+[ComImport, Guid("000214F9-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+internal interface IShellLinkW {
+    void GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder path, int count, IntPtr data, uint flags);
+    void GetIDList(out IntPtr id);
+    void SetIDList(IntPtr id);
+    void GetDescription([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder value, int count);
+    void SetDescription([MarshalAs(UnmanagedType.LPWStr)] string value);
+    void GetWorkingDirectory([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder value, int count);
+    void SetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] string value);
+    void GetArguments([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder value, int count);
+    void SetArguments([MarshalAs(UnmanagedType.LPWStr)] string value);
+    void GetHotkey(out short value);
+    void SetHotkey(short value);
+    void GetShowCmd(out int value);
+    void SetShowCmd(int value);
+    void GetIconLocation([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder value, int count, out int index);
+    void SetIconLocation([MarshalAs(UnmanagedType.LPWStr)] string value, int index);
+    void SetRelativePath([MarshalAs(UnmanagedType.LPWStr)] string value, uint reserved);
+    void Resolve(IntPtr window, uint flags);
+    void SetPath([MarshalAs(UnmanagedType.LPWStr)] string value);
+}
+public sealed class OliviaShortcut {
+    private readonly string path;
+    public string TargetPath = "", Arguments = "", WorkingDirectory = "", Description = "", IconLocation = "";
+    public OliviaShortcut(string path) {
+        this.path = path;
+        if (!File.Exists(path)) return;
+        var link = (IShellLinkW)new ShellLinkObject();
         try {
-            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
-            $shortcut = $shell.CreateShortcut($path)
-            $target = [IO.Path]::GetFullPath([string]$shortcut.TargetPath)
-            $isLegacyShortcut = [string]::Equals(
-                $target, [IO.Path]::GetFullPath($start), [StringComparison]::OrdinalIgnoreCase
-            )
-            $isHiddenShortcut = [string]::Equals(
-                $target, [IO.Path]::GetFullPath($wscript), [StringComparison]::OrdinalIgnoreCase
-            ) -and [string]::Equals(
-                [string]$shortcut.Arguments, $hiddenArguments, [StringComparison]::OrdinalIgnoreCase
-            )
-            if ($isLegacyShortcut -or $isHiddenShortcut) {
-                Remove-Item -LiteralPath $path -Force
-            }
-        }
-        catch {
-            # Shortcut cleanup is best-effort and must not block safe uninstall.
-        }
+            ((IPersistFile)link).Load(path, 0);
+            var text = new StringBuilder(32768);
+            link.GetPath(text, text.Capacity, IntPtr.Zero, 0); TargetPath = text.ToString();
+            text.Clear(); link.GetArguments(text, text.Capacity); Arguments = text.ToString();
+            text.Clear(); link.GetWorkingDirectory(text, text.Capacity); WorkingDirectory = text.ToString();
+            text.Clear(); link.GetDescription(text, text.Capacity); Description = text.ToString();
+            int index; text.Clear(); link.GetIconLocation(text, text.Capacity, out index);
+            if (text.Length > 0) IconLocation = text + "," + index;
+        } finally { Marshal.FinalReleaseComObject(link); }
     }
-    [pscustomobject]@{ status = 'SHORTCUTS_REMOVED' }
-    return
-}
-
-$markerPath = Join-Path $root '.olivia-full-patch.json'
-if (-not (Test-Path -LiteralPath $start -PathType Leaf)) {
-    throw 'LOCAL_START_ENTRYPOINT_NOT_FOUND'
-}
-if (-not (Test-Path -LiteralPath $startHiddenTemplate -PathType Leaf)) {
-    throw 'LOCAL_HIDDEN_START_TEMPLATE_NOT_FOUND'
-}
-if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf)) {
-    throw 'PATCH_MARKER_NOT_FOUND'
-}
-
-$marker = Get-Content -Raw -LiteralPath $markerPath | ConvertFrom-Json
-$client = Join-Path $root (Join-Path 'app' (Join-Path ([string]$marker.client_version) 'Olivia.exe'))
-if (-not (Test-Path -LiteralPath $client -PathType Leaf)) {
-    throw 'ISOLATED_CLIENT_NOT_FOUND'
-}
-
-function Resolve-OliviaIcon {
-    $statePath = Join-Path $root '.olivia-update-state.json'
-    if (Test-Path -LiteralPath $statePath -PathType Leaf) {
+    public void Save() {
+        var link = (IShellLinkW)new ShellLinkObject();
         try {
-            $state = Get-Content -Raw -LiteralPath $statePath | ConvertFrom-Json
-            $payloadPath = [string]$state.active_components.local_backend.payload_path
-            if ($payloadPath -and -not [IO.Path]::IsPathRooted($payloadPath) -and
-                ($payloadPath -split '[\\/]') -notcontains '..') {
-                $activeIcon = Join-Path $root (Join-Path ($payloadPath -replace '/', '\') 'installer\assets\olivia.ico')
-                if (Test-Path -LiteralPath $activeIcon -PathType Leaf) {
-                    return (Resolve-Path -LiteralPath $activeIcon).Path
-                }
+            link.SetPath(TargetPath); link.SetArguments(Arguments);
+            link.SetWorkingDirectory(WorkingDirectory); link.SetDescription(Description);
+            if (IconLocation.Length > 0) {
+                int comma = IconLocation.LastIndexOf(',');
+                link.SetIconLocation(IconLocation.Substring(0, comma), Int32.Parse(IconLocation.Substring(comma + 1)));
             }
-        }
-        catch {
-            # Fall back to the initial packaged icon or client executable.
-        }
+            ((IPersistFile)link).Save(path, true);
+        } finally { Marshal.FinalReleaseComObject(link); }
     }
-    $packagedIcon = Join-Path $root 'local_backend\installer\assets\olivia.ico'
-    if (Test-Path -LiteralPath $packagedIcon -PathType Leaf) {
-        return (Resolve-Path -LiteralPath $packagedIcon).Path
-    }
-    return $client
+}
+'@
 }
 
-$icon = Resolve-OliviaIcon
+function Open-Shortcut([string]$Path) { return New-Object OliviaShortcut($Path) }
 
-$hiddenLauncher = [IO.File]::ReadAllText($startHiddenTemplate, [Text.Encoding]::UTF8)
-$hiddenLauncherTemp = $startHidden + '.tmp-' + [Guid]::NewGuid().ToString('N')
-try {
-    [IO.File]::WriteAllText($hiddenLauncherTemp, $hiddenLauncher, [Text.Encoding]::Unicode)
-    Move-Item -LiteralPath $hiddenLauncherTemp -Destination $startHidden -Force
-}
-finally {
-    if (Test-Path -LiteralPath $hiddenLauncherTemp -PathType Leaf) {
-        Remove-Item -LiteralPath $hiddenLauncherTemp -Force
-    }
+function Test-SamePath([string]$Left, [string]$Right) {
+    if (-not $Left -or -not $Right) { return $false }
+    return [string]::Equals([IO.Path]::GetFullPath($Left), [IO.Path]::GetFullPath($Right), [StringComparison]::OrdinalIgnoreCase)
 }
 
-if ($RefreshExisting) {
-    $shortcutPaths = @()
-    if ($ShortcutPath) {
-        try {
-            if (Test-Path -LiteralPath $ShortcutPath -PathType Leaf) {
-                $shortcutPaths += $ShortcutPath
-            }
-        }
-        catch {
-            # Explicit refresh is optional; leave the candidate list empty.
-        }
-    }
-    else {
-        foreach ($folderName in @('Desktop', 'Programs')) {
-            try {
-                $folder = [Environment]::GetFolderPath($folderName)
-                if ($folder) {
-                    $candidate = Join-Path $folder 'Olivia 本地版.lnk'
-                    if (Test-Path -LiteralPath $candidate -PathType Leaf) {
-                        $shortcutPaths += $candidate
-                    }
-                }
-            }
-            catch {
-                # One unavailable shell folder must not suppress the other.
-            }
-        }
-    }
-}
-elseif ($ShortcutPath) {
-    $shortcutPaths = @($ShortcutPath)
-}
-else {
-    $shortcutPaths = @(
-        (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Olivia 本地版.lnk')
-    )
+function Test-OwnedShortcut($Shortcut) {
+    if (Test-SamePath $Shortcut.TargetPath $start) { return $true }
+    if (Test-SamePath $Shortcut.TargetPath $native) { return -not $Shortcut.Arguments }
+    if (-not (Test-SamePath $Shortcut.TargetPath $wscript)) { return $false }
+    # Accept only our VBS and known host switches, never another script/argument.
+    $arguments = [string]$Shortcut.Arguments
+    if ($arguments -notmatch '^\s*(?:(?://B|//Nologo)\s+)*"([^"]+)"\s*$') { return $false }
+    return Test-SamePath $Matches[1] $startHidden
 }
 
-$shell = New-Object -ComObject WScript.Shell
-foreach ($path in $shortcutPaths) {
+$folders = @()
+foreach ($folderName in @('Desktop', 'Programs')) {
     try {
-        $shortcutParent = Split-Path -Parent $path
-        if ($shortcutParent) {
-            New-Item -ItemType Directory -Force -Path $shortcutParent | Out-Null
-        }
-        $shortcut = $shell.CreateShortcut($path)
-        if ($RefreshExisting) {
-            $target = [IO.Path]::GetFullPath([string]$shortcut.TargetPath)
-            $isLegacyShortcut = [string]::Equals(
-                $target,
-                [IO.Path]::GetFullPath($start),
-                [StringComparison]::OrdinalIgnoreCase
-            )
-            $isHiddenShortcut = [string]::Equals(
-                $target,
-                [IO.Path]::GetFullPath($wscript),
-                [StringComparison]::OrdinalIgnoreCase
-            ) -and [string]::Equals(
-                [string]$shortcut.Arguments,
-                $hiddenArguments,
-                [StringComparison]::OrdinalIgnoreCase
-            )
-            if (-not ($isLegacyShortcut -or $isHiddenShortcut)) {
-                continue
+        $folder = if ($folderName -eq 'Desktop') { $DesktopPath } else { $ProgramsPath }
+        if (-not $folder) { $folder = [Environment]::GetFolderPath($folderName) }
+        if ($folder) { $folders += $folder }
+    }
+    catch { }
+}
+if ($ShortcutPath) { $candidates = @($ShortcutPath) }
+else {
+    $candidates = @(foreach ($folder in $folders) {
+        foreach ($name in @('Olivia.lnk', 'Olivia 本地版.lnk')) {
+            $candidate = Join-Path $folder $name
+            try {
+                if (Test-Path -LiteralPath $candidate -PathType Leaf) { $candidate }
             }
+            catch { }
         }
-        $shortcut.TargetPath = $wscript
-        $shortcut.Arguments = $hiddenArguments
+    })
+    if (-not $RefreshExisting -and -not $RemoveExisting) {
+        $desktop = if ($DesktopPath) { $DesktopPath } else { [Environment]::GetFolderPath('Desktop') }
+        $candidates = @((Join-Path $desktop 'Olivia.lnk')) + $candidates | Select-Object -Unique
+    }
+}
+
+if (-not $RemoveExisting) {
+    if (-not (Test-Path -LiteralPath $native -PathType Leaf)) { throw 'NATIVE_LAUNCHER_NOT_FOUND' }
+    $icon = Join-Path $root 'olivia.ico'
+    if (-not (Test-Path -LiteralPath $icon -PathType Leaf)) { throw 'NATIVE_ICON_NOT_FOUND' }
+}
+$changed = @()
+$failed = @()
+foreach ($path in $candidates) {
+    $temporary = $null
+    try {
+        $exists = Test-Path -LiteralPath $path -PathType Leaf
+        if ($exists -and -not (Test-OwnedShortcut (Open-Shortcut $path))) { continue }
+        if ($RemoveExisting) {
+            if ($exists) { Remove-Item -LiteralPath $path -Force; $changed += $path }
+            continue
+        }
+        if ($RefreshExisting -and -not $exists) { continue }
+        if ($exists -and (Get-Item -LiteralPath $path).IsReadOnly) { throw 'SHORTCUT_READ_ONLY' }
+        $parent = Split-Path -Parent $path
+        $destination = if ((Split-Path -Leaf $path) -eq 'Olivia 本地版.lnk') { Join-Path $parent 'Olivia.lnk' } else { $path }
+        if ((Test-Path -LiteralPath $destination -PathType Leaf)) {
+            if (-not (Test-OwnedShortcut (Open-Shortcut $destination))) { continue }
+            if ((Get-Item -LiteralPath $destination).IsReadOnly) { throw 'SHORTCUT_READ_ONLY' }
+        }
+        New-Item -ItemType Directory -Force -Path $parent | Out-Null
+        $temporary = Join-Path $parent ('.olivia-' + [Guid]::NewGuid().ToString('N') + '.lnk')
+        $shortcut = Open-Shortcut $temporary
+        $shortcut.TargetPath = $native
+        $shortcut.Arguments = ''
         $shortcut.WorkingDirectory = $root
-        $shortcut.Description = 'Olivia local client and backend'
+        $shortcut.Description = 'Olivia'
         $shortcut.IconLocation = "$icon,0"
         $shortcut.Save()
+        Move-Item -LiteralPath $temporary -Destination $destination -Force
+        if (-not (Test-SamePath $path $destination)) { Remove-Item -LiteralPath $path }
+        $changed += $destination
     }
     catch {
-        if (-not $RefreshExisting) {
-            throw
-        }
-        # Refresh every other discovered shortcut even if one cannot be saved.
+        $failed += $path
+        if (-not $RefreshExisting -and -not $RemoveExisting) { throw }
+    }
+    finally {
+        if ($temporary -and (Test-Path -LiteralPath $temporary)) { Remove-Item -LiteralPath $temporary -Force }
     }
 }
-
-$resultStatus = if ($RefreshExisting) { 'SHORTCUTS_REFRESHED' } else { 'SHORTCUT_CREATED' }
-$resultShortcut = if (@($shortcutPaths).Count -eq 1) { [string]$shortcutPaths[0] } else { $null }
-[pscustomobject]@{
-    status = $resultStatus
-    shortcut = $resultShortcut
-    shortcuts = @($shortcutPaths)
-} | ConvertTo-Json -Compress
+$status = if ($RemoveExisting) { 'SHORTCUTS_REMOVED' } elseif ($RefreshExisting) { 'SHORTCUTS_REFRESHED' } else { 'SHORTCUT_CREATED' }
+[pscustomobject]@{ status = $status; shortcuts = @($changed); failed = @($failed) } | ConvertTo-Json -Compress

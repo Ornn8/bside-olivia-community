@@ -1465,7 +1465,7 @@ function Complete-ManagedPrivateRuntimeSidecarTransaction {
 }
 
 function Get-ManagedInstallTransactionNames {
-    return @('local_backend', 'launcher', 'START.cmd', 'START.vbs', 'CONFIGURE.cmd', 'UNINSTALL.cmd', '.olivia-full-patch.json', '.olivia-update-state.json', 'versions')
+    return @('local_backend', 'launcher', 'START.cmd', 'START.vbs', 'Olivia.exe', 'olivia.ico', 'CONFIGURE.cmd', 'UNINSTALL.cmd', '.olivia-full-patch.json', '.olivia-update-state.json', 'versions')
 }
 
 function Get-FreshInstallTransactionNames {
@@ -2153,6 +2153,10 @@ if (-not $SetupResultPath) { $installOutput | Write-Output }
 $LASTEXITCODE = 0
 if (-not $SkipShortcut) {
     & (Join-Path $PSScriptRoot 'Create-Shortcut.ps1') -InstallRoot $Destination
+}
+else {
+    try { & (Join-Path $PSScriptRoot 'Create-Shortcut.ps1') -InstallRoot $Destination -RefreshExisting }
+    catch { Write-Warning 'SHORTCUT_REFRESH_FAILED' }
 }
 Exit-ManagedInstallLock
 if ($SetupResultPath) {

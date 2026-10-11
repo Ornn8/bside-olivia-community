@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("synthetic_native_compiler")
+
 from installer import component_package
 from installer import __main__ as installer_cli
 from installer.component_package import (
@@ -46,6 +48,8 @@ def _clean_payload_repo(tmp_path: Path) -> tuple[Path, str]:
         "installer/configure.py",
         "installer/start_local.py",
         "installer/uninstall.py",
+        "installer/assets/olivia.ico",
+        "installer/Create-Shortcut.ps1",
     ):
         target = source.joinpath(*relative.split("/"))
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -74,6 +78,22 @@ def _managed_installation(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     return installation
+
+
+def test_update_manifest_contains_native_launcher_and_hash(tmp_path):
+    source, commit = _clean_payload_repo(tmp_path)
+    package = tmp_path / "native.oliviapatch"
+    build_component_package(source, package, version="2.2.16", expected_source_commit=commit)
+    with zipfile.ZipFile(package) as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+        entries = {row["path"]: row for row in manifest["files"]}
+        for relative in ("installer/olivia_launcher/Olivia.exe", "installer/olivia_launcher/Olivia.exe.sha256"):
+            content = archive.read("payload/" + relative)
+            assert entries[relative]["size_bytes"] == len(content)
+            assert entries[relative]["sha256"] == hashlib.sha256(content).hexdigest()
+        executable = archive.read("payload/installer/olivia_launcher/Olivia.exe")
+        assert executable.startswith(b"MZ")
+        assert archive.read("payload/installer/olivia_launcher/Olivia.exe.sha256").strip().decode() == hashlib.sha256(executable).hexdigest()
 
 
 def test_build_update_cli_stages_explicit_hash_pinned_startup_video(tmp_path):

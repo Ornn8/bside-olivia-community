@@ -149,7 +149,8 @@ def test_contact_priority_bypasses_ordinary_cooldown_and_planning(tmp_path, monk
 def test_invitation_publication_is_once_and_uses_existing_commit(monkeypatch, tmp_path):
     import local_server as server
     from runtime.reply.proactive_letters import scan_pending, write_json
-    monkeypatch.setattr(server.time, 'time', lambda: 4000)
+    # Publication is checked after the effective familiar-stage cooldown.
+    monkeypatch.setattr(server.time, 'time', lambda: 10000)
     monkeypatch.setattr(server, '_state_root', lambda: tmp_path)
     monkeypatch.setattr(server, 'daily_life_runtime', None)
     write_json(tmp_path / 'proactive/settings.json', {'enabled': True})
@@ -169,9 +170,9 @@ def test_invitation_publication_is_once_and_uses_existing_commit(monkeypatch, tm
         return '不然我们加个联系方式吧，你想用QQ还是微信？'
     monkeypatch.setattr(server, '_proactive_complete', complete)
     server._refresh_proactive_context()
-    intent = scan_pending(tmp_path, now=4000)
+    intent = scan_pending(tmp_path, now=10000)
     assert intent.get('kind') == 'contact_invitation'
-    turn = asyncio.run(server._prepare_proactive_turn(intent, now=datetime.fromtimestamp(4000, timezone.utc)))
+    turn = asyncio.run(server._prepare_proactive_turn(intent, now=datetime.fromtimestamp(10000, timezone.utc)))
     asyncio.run(server._publish_proactive(intent, {'title': '聊两句', 'format': 'text'}, turn=turn))
     assert status(rows, HIGH)['state'] == 'invited'
     assert rows[-1]['content'] == '' and rows[-1]['origin'] == 'proactive'

@@ -48,6 +48,8 @@ class RelationshipStage(str, Enum):
     UNKNOWN = "unknown"
     ACQUAINTANCE = "acquaintance"
     FAMILIAR = "familiar"
+    FRIEND = "friend"
+    TRUSTED_FRIEND = "trusted_friend"
     CLOSE = "close"
     COMMITTED = "committed"
 
@@ -55,7 +57,7 @@ class RelationshipStage(str, Enum):
 # Share the meaning of this state between the writer and quality decisions.
 # A conversational feeling does not mutate the stage or grant an action.
 RELATIONSHIP_FACT_AUTHORITY = (
-    "关系阶段与动作许可记录已确认的身份和权限，不是交流感受的评级。"
+    "朋友阶段可据长期相处推导；亲密身份和动作权限仍需明确确认。"
     "当下觉得聊得来、更亲近、开心或接受赞美不等于恋爱、排他承诺、私人称呼或身体接触许可。"
     "不虚构身份、权限或共同经历，保留已确认的感情与边界。"
     "按可定位原话的说话人、含义、条件和时间承接历史，先回应有没有答应，再澄清用词。"
@@ -76,6 +78,8 @@ _STAGE_ORDER = (
     RelationshipStage.UNKNOWN,
     RelationshipStage.ACQUAINTANCE,
     RelationshipStage.FAMILIAR,
+    RelationshipStage.FRIEND,
+    RelationshipStage.TRUSTED_FRIEND,
     RelationshipStage.CLOSE,
     RelationshipStage.COMMITTED,
 )
@@ -99,7 +103,7 @@ def intimacy_ceiling_for_stage(
         resolved_stage = RelationshipStage(stage)
     except (TypeError, ValueError):
         raise ReplyContextError("relationship stage is invalid") from None
-    if resolved_stage in _STAGE_ORDER[:3]:
+    if resolved_stage in _STAGE_ORDER[:5]:
         return IntimacyTier.NONE
     if resolved_stage is RelationshipStage.CLOSE:
         return IntimacyTier.LIGHT_CONTACT

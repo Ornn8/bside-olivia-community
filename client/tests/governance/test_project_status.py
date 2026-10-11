@@ -44,7 +44,7 @@ def test_intimacy_model_contract_is_documented_without_dynamic_status_rows() -> 
         "constitution.relationship_may_commit",
     ):
         assert marker in model
-    assert "schema v3" in private_world
+    assert "schema v4" in private_world
     assert "intimacy_grants" in private_world
     assert "intimacy_ceiling" in projection
     assert "granted_intimacy" in projection

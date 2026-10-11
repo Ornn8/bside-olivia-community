@@ -740,11 +740,11 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     }
   };
 
-  const requestUpdate = async (body) => {
+  const requestUpdate = async (body, path = UPDATE_ACTION_PATH) => {
     if (!setupSessionToken) {
       await requestSetup(SETUP_STATUS_PATH);
     }
-    const endpoint = new URL(UPDATE_ACTION_PATH, apiBase);
+    const endpoint = new URL(path, apiBase);
     const controller = new AbortController();
     const timeoutMs = body.action === "select" ? 310000 : 120000;
     const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
@@ -1614,16 +1614,11 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           if (!alive() || !area.isConnected) return;
           if (!result || result.status !== "READY" || !result.levels) throw new Error("RELATIONSHIP_UNAVAILABLE");
           const stages = {unknown:"尚未确定", acquaintance:"初识", familiar:"逐渐熟悉", friend:"朋友", trusted_friend:"信赖的朋友", close:"亲近", committed:"稳定的亲密关系"};
-          const levels = {unknown:"尚未确定", low:"较低", medium:"中等", high:"较高"};
+          const descriptions = {unknown:"你们的关系还在慢慢建立。", acquaintance:"你们刚认识不久，她对你还有些拘谨。", familiar:"你们渐渐熟了，聊得来的话题越来越多。", friend:"你们已经是朋友了，她跟你在一起很自在。", trusted_friend:"你们是彼此信赖的朋友，她愿意跟你说心里话。", close:"你们很亲近，她会想你，也愿意让你知道。", committed:"你们已经确认了彼此的关系。"};
           content.replaceChildren(text("p", `关系阶段：${stages[result.relationship_stage] || "尚未确定"}`, "text-text-body text-body-m"));
-          const list = document.createElement("dl");
-          list.style.cssText = "display:grid;grid-template-columns:auto 1fr;gap:8px 24px;margin:0";
-          for (const [key, label] of [["familiarity","熟悉"],["trust","信任"],["comfort","自在"],["closeness","亲近"],["tension","紧张"]]) {
-            const value = text("dd", levels[result.levels[key]] || "尚未确定", "text-text-body text-body-m");
-            value.style.margin = "0";
-            list.append(text("dt", label, "text-text-secondary text-body-m"), value);
-          }
-          content.append(list, text("p", "这里读取既有关系记录；生活动态的刷新不会增加好感或改变关系阶段。", "text-text-secondary text-caption-m"));
+          content.append(text("p", descriptions[result.relationship_stage] || descriptions.unknown, "text-text-body text-body-m"));
+          if (result.levels.tension === "high") content.append(text("p", "最近你们之间有点小别扭。", "text-text-secondary text-body-m"));
+          content.append(text("p", "这里读取既有关系记录；生活动态的刷新不会增加好感或改变关系阶段。", "text-text-secondary text-caption-m"));
           loaded = true;
         } catch (_error) {
           content.replaceChildren(text("p", "关系状态暂时无法读取。", "text-text-secondary text-body-m"), button("重试读取关系", read));
@@ -2567,7 +2562,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const heading = text("h3", "本地补丁", "text-text-title text-title-m");
     const summary = text(
       "p",
-      "下载我们发布的更新 ZIP，直接选择即可校验并安装，无需解压、联网获取校验码或手动填写。也支持原来的 .oliviapatch 文件。安装后关闭并重新打开 Olivia 生效。",
+      "下载我们发布的更新 ZIP，直接选择即可校验并安装，无需解压、联网获取校验码或手动填写。也支持原来的 .oliviapatch 文件。安装后会自动重启 Olivia，也可选择稍后手动重启。",
       "text-text-secondary text-body-m font-regular"
     );
     let packagePath = "";
@@ -2581,6 +2576,31 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     digest.input.autocomplete = "off";
     const result = text("p", "", "text-text-secondary text-body-m font-regular");
     result.setAttribute("aria-live", "polite");
+    let restartCancelled = false;
+    let later;
+    const restartAfterUpdate = async (payload, rolledBack = false) => {
+      const installed = rolledBack ? `已回滚到 ${payload.version}` : `版本 ${payload.version} 已安装`;
+      const manual = `${installed}，关闭并重新打开 Olivia 后生效。`;
+      restartCancelled = false;
+      later.hidden = false;
+      for (let seconds = 5; seconds > 0; seconds -= 1) {
+        result.textContent = `${installed}，正在自动重启 Olivia…（${seconds} 秒）`;
+        await new Promise((resolve) => window.setTimeout(resolve, 1000));
+        if (restartCancelled) {
+          later.hidden = true;
+          result.textContent = manual;
+          return;
+        }
+      }
+      later.hidden = true;
+      try {
+        await requestUpdate({}, "/toy/update/restart");
+        result.textContent = `${installed}，正在自动重启 Olivia…`;
+      } catch (error) {
+        result.textContent = manual;
+        setDiagnosticDetails(result, error?.code || "UPDATE_RESTART_UNAVAILABLE");
+      }
+    };
     const choose = button("选择补丁并更新", async () => {
       setDiagnosticDetails(result, []);
       setButtonsBusy([choose, install, rollback], true);
@@ -2592,7 +2612,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           selectedPatch.textContent = `已选择：${packagePath.split(/[\\/]/).pop()}`;
           result.textContent = /\.zip$/i.test(packagePath) ? "正在校验更新 ZIP 并安装……" : "正在获取官方校验值并安装补丁……";
           const applied = await requestUpdate({ action: "apply_verified", package_path: packagePath });
-          result.textContent = `版本 ${applied.version} 已安装，关闭并重新打开 Olivia 后生效。`;
+          await restartAfterUpdate(applied);
         } else if (payload.status === "CANCELLED") {
           result.textContent = "已取消，本次未安装补丁。";
         }
@@ -2628,7 +2648,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           package_path: packagePath,
           manifest_sha256: manifestSha256,
         });
-        result.textContent = `版本 ${payload.version} 已安装，关闭并重新打开 Olivia 后生效。`;
+        await restartAfterUpdate(payload);
       } catch (error) {
         result.textContent = "补丁未能安装。请确认更新包已下载完整、校验值填写正确，然后重试。";
         setDiagnosticDetails(result, error?.code || "UPDATE_ACTION_UNAVAILABLE");
@@ -2638,12 +2658,12 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     });
     const rollback = button("回滚上一版本", async () => {
       setDiagnosticDetails(result, []);
-      if (!await confirmAction("确认回滚到上一版本？关闭并重新打开 Olivia 后生效。")) return;
+      if (!await confirmAction("确认回滚到上一版本？完成后将自动重启 Olivia。")) return;
       setButtonsBusy([choose, install, rollback], true);
       result.textContent = "正在切换到上一版本……";
       try {
         const payload = await requestUpdate({ action: "rollback" });
-        result.textContent = `已回滚到版本 ${payload.version}，关闭并重新打开 Olivia 后生效。`;
+        await restartAfterUpdate(payload, true);
       } catch (error) {
         result.textContent = "暂时无法恢复上一版本。请关闭其他 Olivia 窗口后重试；如果没有上一版本，可导入新的修复补丁。";
         setDiagnosticDetails(result, error?.code || "UPDATE_ACTION_UNAVAILABLE");
@@ -2651,6 +2671,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         setButtonsBusy([choose, install, rollback], false);
       }
     });
+    later = button("稍后手动重启", () => { restartCancelled = true; });
+    later.hidden = true;
     const controls = actions();
     controls.append(choose);
     const manual = document.createElement("details");
@@ -2665,6 +2687,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       selectedPatch,
       controls,
       manual,
+      later,
       result
     );
   };
