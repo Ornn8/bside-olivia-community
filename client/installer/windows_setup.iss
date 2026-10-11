@@ -53,12 +53,11 @@ Source: "{#PayloadRoot}\LICENSE"; DestDir: "{code:GetPayloadRoot}"; Flags: ignor
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加选项："
 
-[Icons]
-Name: "{userprograms}\Olivia 本地版"; Filename: "{sys}\wscript.exe"; Parameters: "//B //Nologo ""{code:GetInstallRoot}\install\START.vbs"""; WorkingDir: "{code:GetInstallRoot}\install"; IconFilename: "{code:GetInstallRoot}\install\local_backend\installer\assets\olivia.ico"; Check: InstallCompleted and not WizardNoIcons
-Name: "{userdesktop}\Olivia 本地版"; Filename: "{sys}\wscript.exe"; Parameters: "//B //Nologo ""{code:GetInstallRoot}\install\START.vbs"""; WorkingDir: "{code:GetInstallRoot}\install"; IconFilename: "{code:GetInstallRoot}\install\local_backend\installer\assets\olivia.ico"; Tasks: desktopicon; Check: InstallCompleted and not WizardNoIcons
-
 [Run]
-Filename: "{sys}\wscript.exe"; Parameters: "//B //Nologo ""{code:GetInstallRoot}\install\START.vbs"""; Description: "立即启动 Olivia"; WorkingDir: "{code:GetInstallRoot}\install"; Flags: postinstall nowait skipifsilent; Check: InstallCompleted
+; The shared helper checks ownership before replacing a same-name shortcut.
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File ""{code:GetInstallRoot}\install\launcher\Create-Shortcut.ps1"" -InstallRoot ""{code:GetInstallRoot}\install"" -ShortcutPath ""{userprograms}\Olivia.lnk"""; Flags: runhidden; Check: InstallCompleted and not WizardNoIcons
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File ""{code:GetInstallRoot}\install\launcher\Create-Shortcut.ps1"" -InstallRoot ""{code:GetInstallRoot}\install"" -ShortcutPath ""{userdesktop}\Olivia.lnk"""; Flags: runhidden; Tasks: desktopicon; Check: InstallCompleted and not WizardNoIcons
+Filename: "{code:GetInstallRoot}\install\Olivia.exe"; Description: "立即启动 Olivia"; WorkingDir: "{code:GetInstallRoot}\install"; Flags: postinstall nowait skipifsilent; Check: InstallCompleted
 
 [Code]
 var

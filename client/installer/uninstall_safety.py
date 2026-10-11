@@ -16,6 +16,8 @@ OWNED_PATHS = (
     "versions",
     "START.cmd",
     "START.vbs",
+    "Olivia.exe",
+    "olivia.ico",
     "CONFIGURE.cmd",
     "UNINSTALL.cmd",
     "runtime/mem0-site-packages",

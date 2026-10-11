@@ -4,6 +4,10 @@ import shutil
 import subprocess
 import zipfile
 
+import pytest
+
+pytestmark = pytest.mark.usefixtures("synthetic_native_compiler")
+
 from installer.component_package import build_component_package
 from installer.full_patch import (
     PAYLOAD_REQUIRED_RELATIVE_FILES,

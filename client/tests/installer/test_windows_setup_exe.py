@@ -12,6 +12,8 @@ import zipfile
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("synthetic_native_compiler")
+
 import installer.build_windows_setup as setup_builder
 from installer.build_windows_setup import (
     BUILD_CONTROL_FILES,
@@ -26,6 +28,14 @@ from installer.build_windows_setup import (
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_native_launcher_is_allowlisted_with_reproducible_build_inputs():
+    assert _is_release_file("installer/olivia_launcher/Olivia.exe")
+    assert _is_release_file("installer/olivia_launcher/Olivia.exe.sha256")
+    assert _is_release_file("installer/native_launcher.py")
+    assert {"installer/build_native_launcher.py", "installer/olivia_launcher/Program.cs",
+            "installer/olivia_launcher/app.manifest"} <= BUILD_CONTROL_FILES
 
 
 def test_setup_builder_direct_entrypoint_reaches_argument_parser() -> None:
@@ -1969,22 +1979,19 @@ def test_inno_wrapper_creates_launch_shortcuts_and_offers_immediate_start() -> N
         line for line in script.splitlines() if 'Name: "desktopicon"' in line
     )
     assert "unchecked" not in desktop_task.casefold()
-    assert '[Icons]' in script
-    assert '{userprograms}\\Olivia 本地版' in script
-    assert '{userdesktop}\\Olivia 本地版' in script
+    assert '[Icons]' not in script  # Shared ownership checks also protect custom collisions in setup.
+    assert '{userprograms}\\Olivia.lnk' in script
+    assert '{userdesktop}\\Olivia.lnk' in script
     assert '[Run]' in script
     assert 'Description: "立即启动 Olivia"' in script
-    assert '{sys}\\wscript.exe' in script
-    assert '\\install\\START.vbs' in script
+    assert '{sys}\\wscript.exe' not in script
+    assert '\\install\\START.vbs' not in script
     assert '\\install\\START.cmd' not in script
-    hidden_launch = (
-        'Filename: "{sys}\\wscript.exe"; Parameters: "//B //Nologo '
-        '""{code:GetInstallRoot}\\install\\START.vbs"""'
-    )
-    assert script.count(hidden_launch) == 3
-    assert script.count('WorkingDir: "{code:GetInstallRoot}\\install"') == 3
+    assert script.count('\\install\\launcher\\Create-Shortcut.ps1') == 2
+    assert script.count('Filename: "{code:GetInstallRoot}\\install\\Olivia.exe"') == 1
+    assert script.count('WorkingDir: "{code:GetInstallRoot}\\install"') == 1
     assert "' -SkipShortcut'" in script
-    assert 'IconFilename: "{code:GetInstallRoot}\\install\\local_backend\\installer\\assets\\olivia.ico"' in script
+    assert script.count('-ShortcutPath ""{user') == 2
 
 
 def test_install_ps1_supports_noninteractive_setup_without_optional_downloads() -> None:
