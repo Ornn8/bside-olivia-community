@@ -1023,6 +1023,8 @@ def test_render_musical_reply_keeps_spoken_then_transition_then_performance(
         order.append("mix")
         assert Path(vocals).read_bytes() == b"linli-vocals"
         assert Path(accompaniment).read_bytes() == b"piano"
+        # The converted voice is leveled to the separated source vocal it was converted from.
+        assert Path(_kwargs["reference"]).read_bytes() == b"vocals"
         _write(Path(destination), b"converted-song")
 
     monkeypatch.setattr(music_reply, "convert_singing_voice", fake_convert, raising=False)

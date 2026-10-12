@@ -89,3 +89,25 @@ def test_only_a_requested_photo_announces_that_it_failed(monkeypatch, primary):
         # A casual snapshot that did not come out is simply not sent.
         assert messages == (['照片这次没生成成功，没能发给你。稍后再试一下。'] if primary else [])
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(('error_code', 'expected'), [
+    ('GPU_INSUFFICIENT_BALANCE', '照片这次没生成成功，没能发给你。Olivia 可用余额不足，请充值后重试。'),
+    ('IMAGE_GENERATION_FAILED', '照片这次没生成成功，没能发给你。稍后再试一下。'),
+])
+def test_requested_photo_failure_tells_the_user_to_top_up_only_for_a_refused_balance(monkeypatch, error_code, expected):
+    monkeypatch.setattr('runtime.image_reply.is_companion_image', lambda row: True)
+    async def scenario():
+        messages = []
+        async def photo(row, send):
+            row.update(image_status='FAILED', image_error_code=error_code)
+        async def send(text):
+            messages.append(text)
+            return 'ack'
+        send.image = lambda path: None
+        row = dict(letter_id='synthetic-balance', channel='qq', delivery_status='DELIVERED')
+        service = PersonalChatService([row], lambda: None, None, None, {}, photo=photo)
+        service._schedule_photo(row, send)
+        await asyncio.gather(*service.photo_tasks.values())
+        assert messages == [expected]
+    asyncio.run(scenario())

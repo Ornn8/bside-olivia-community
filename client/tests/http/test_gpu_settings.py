@@ -134,9 +134,23 @@ def test_paid_quote_uses_only_the_olivia_account_key(tmp_path, monkeypatch):
             for video,expected in [(True,500),(False,300)]:
                 quote=await (await client.post(path,json={'action':'billing_quote','video':video,'original':True},headers=headers)).json()
                 assert quote['paid'] and quote['max_charge_cents']==expected
+            # Any positive balance passes the precheck; the server lets media take it negative once.
             available[0]=299
-            denied=await client.post(path,json={'action':'billing_quote','video':False,'original':True},headers=headers)
-            assert denied.status==402
+            low=await client.post(path,json={'action':'billing_quote','video':False,'original':True},headers=headers)
+            assert low.status==200
+            quote=await low.json()
+            assert quote['max_charge_cents']==300 and quote['balance_cents']==299
+            available[0]=1
+            one_cent=await client.post(path,json={'action':'billing_quote','video':False,'original':True},headers=headers)
+            assert one_cent.status==200
+            quote=await one_cent.json()
+            assert quote['max_charge_cents']==300 and quote['balance_cents']==1
+            for balance in (0,-5):
+                available[0]=balance
+                for body in ({'video':False,'original':True},{'video':True,'original':True},{'video':False,'original':False}):
+                    denied=await client.post(path,json={'action':'billing_quote',**body},headers=headers)
+                    assert denied.status==402
+                    assert (await denied.json())['error_code']=='GPU_INSUFFICIENT_BALANCE'
             music_price[0] = {'version': 'synthetic-new-song-price', 'min_cents': 120, 'max_cents': 130}
             available[0] = 130
             response = await client.post(path,json={'action':'billing_quote','video':False,'original':True},headers=headers)
@@ -149,7 +163,8 @@ def test_paid_quote_uses_only_the_olivia_account_key(tmp_path, monkeypatch):
             music = await (await client.post(path,json={'action':'music_settings_status'},headers=headers)).json()
             assert music['original_music_retail_price'] == music_price[0]
             available[0] = 129
-            assert (await client.post(path,json={'action':'billing_quote','video':False,'original':True},headers=headers)).status == 402
+            quote = await (await client.post(path,json={'action':'billing_quote','video':False,'original':True},headers=headers)).json()
+            assert quote['max_charge_cents'] == 130 and quote['balance_cents'] == 129
             music_price[0] = {**music_price[0], 'max_cents': True}
             assert (await client.post(path,json={'action':'billing_quote','video':False,'original':True},headers=headers)).status == 502
             music_price[0] = None
@@ -157,6 +172,8 @@ def test_paid_quote_uses_only_the_olivia_account_key(tmp_path, monkeypatch):
             still_audio=await client.post(path,json={'action':'billing_quote','video':False,'original':False},headers=headers)
             assert still_audio.status==200
             available[0]=99
+            assert (await client.post(path,json={'action':'billing_quote','video':False,'original':False},headers=headers)).status==200
+            available[0]=0
             denied=await client.post(path,json={'action':'billing_quote','video':False,'original':False},headers=headers)
             assert denied.status==402
             assert (await denied.json())['error_code']=='GPU_INSUFFICIENT_BALANCE'

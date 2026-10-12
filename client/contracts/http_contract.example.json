@@ -322,6 +322,10 @@
       "GPU_RECOVERY_REQUIRED": {
         "status": "UNAVAILABLE",
         "retryable": true
+      },
+      "GPU_INSUFFICIENT_BALANCE": {
+        "status": "FAILED",
+        "retryable": true
       }
     }
   },
