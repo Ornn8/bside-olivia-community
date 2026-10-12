@@ -71,9 +71,10 @@ def test_memoir_uses_two_passes(tmp_path):
 
 def test_style_rotation_and_length_tiers():
     from runtime.diary.diary import choose_style, length_range, STYLES
-    recent = [{'style': style} for style in STYLES[:3]]
-    assert choose_style('2026-10-07', recent, False) not in STYLES[:3]
-    assert choose_style('2026-10-07', recent, False) == choose_style('2026-10-07', recent, False)
+    recent = [{'style': 'prose'}] * 3
+    assert STYLES == ('prose',)
+    assert choose_style('2026-10-07', recent, False) == 'prose'
+    assert choose_style('2026-10-07', [], False) == 'prose'
     assert choose_style('2026-10-07', recent, True) == 'short'
     assert length_range(10, []) == (60, 150)
     assert length_range(100, []) == (250, 600)
