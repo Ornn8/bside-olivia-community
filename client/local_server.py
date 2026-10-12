@@ -3936,7 +3936,9 @@ async def _diary_tick(now=None) -> None:
                 life=day_life(getattr(daily_life_runtime, 'store', None), day, outfit), now=now,
                 relationship_stage=stage, videos=videos)
         except (GatewayError, asyncio.TimeoutError, OSError, RuntimeError, ValueError, TypeError, KeyError, sqlite3.Error) as exc:
-            diary_store.failed(day, type(exc).__name__)
+            # Unreached writer (offline, service down) costs nothing: retry later without using an attempt.
+            record = diary_store.deferred if isinstance(exc, (ProviderUnavailable, ConnectionError)) else diary_store.failed
+            record(day, type(exc).__name__)
             _safe_log('diary_write_failed', error_code=getattr(exc, 'code', None) or type(exc).__name__)
             continue
         if outcome == 'empty':
@@ -3968,7 +3970,8 @@ async def _write_memoirs_once(months) -> None:
                 _memoir_state['done' if outcome == 'written' or diary_store.entry(month) else 'failed'] += 1
             except (GatewayError, asyncio.TimeoutError, OSError, RuntimeError, ValueError, TypeError, KeyError, sqlite3.Error) as exc:
                 _memoir_state['failed'] += 1
-                diary_store.failed(month, type(exc).__name__)
+                record = diary_store.deferred if isinstance(exc, (ProviderUnavailable, ConnectionError)) else diary_store.failed
+                record(month, type(exc).__name__)
                 _safe_log('diary_memoir_failed', error_code=getattr(exc, 'code', None) or type(exc).__name__)
     finally:
         _memoir_state['running'] = False

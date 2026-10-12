@@ -67,16 +67,20 @@ SCHEMA = {'type': 'object', 'additionalProperties': False, 'required': ['title',
 
 
 def _without_counts(value):
+    # Lengths and counts are fitted locally (validate), so a long label never fails a paid entry.
     if isinstance(value, dict):
-        return {k: _without_counts(v) for k, v in value.items() if k not in {'minItems', 'maxItems'}}
+        return {k: _without_counts(v) for k, v in value.items()
+                if k not in {'minItems', 'maxItems', 'minLength', 'maxLength'}}
     return value
 
 
 FORMAT = {'type': 'json_schema', 'json_schema': {'name': 'diary_entry', 'strict': True, 'schema': _without_counts(SCHEMA)}}
 _VALIDATOR = Draft202012Validator(SCHEMA)
+_FACT_VALIDATOR = Draft202012Validator(_FACT)
 REVISE_SCHEMA['properties'] = {key: SCHEMA['properties'][key] for key in ('title', 'mood', 'body')}
 REVISE_FORMAT = {'type': 'json_schema', 'json_schema': {
-    'name': 'diary_revision', 'strict': True, 'schema': REVISE_SCHEMA}}
+    'name': 'diary_revision', 'strict': True, 'schema': _without_counts(REVISE_SCHEMA)}}
+_PHRASE_END = re.compile(r'[，。！？、；：,.!?;:…—～~\s]')
 _DATE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
 
 PROMPT = '''你是林离。一天结束了，你在睡前写今天的日记。这本日记他会看到，是你们之间的小秘密；可你写的时候，是写给自己的。
@@ -171,7 +175,34 @@ def _normalized(text):
     return re.sub(r'\s+', '', text or '')
 
 
+def _clip(text, limit):
+    """Fit a short label to its limit, preferring its first phrase over a cut word."""
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    head = _PHRASE_END.split(text, 1)[0]
+    return head if 2 <= len(head) <= limit else text[:limit]
+
+
+def _fitted(value):
+    """Over-long labels are clipped and malformed facts dropped instead of failing the entry."""
+    if not isinstance(value, dict):
+        return value
+    value = dict(value)
+    for key, limit in (('title', 20), ('mood', 8)):
+        if isinstance(value.get(key), str):
+            value[key] = _clip(value[key], limit)
+    body = value.get('body')
+    if isinstance(body, str) and len(body) > 1500:
+        end = max(body.rfind(mark, 0, 1500) for mark in '。！？\n')
+        value['body'] = body[:end + 1] if end > 0 else body[:1500]
+    if isinstance(value.get('facts'), list):
+        value['facts'] = [fact for fact in value['facts'] if _FACT_VALIDATOR.is_valid(fact)][:8]
+    return value
+
+
 def validate(value, messages):
+    value = _fitted(value)
     _VALIDATOR.validate(value)
     title, mood, body = (value[key].strip() for key in ('title', 'mood', 'body'))
     if not title or not body:
@@ -461,6 +492,12 @@ class DiaryStore:
             row = db.execute('SELECT attempts,last_at FROM diary_attempts WHERE day=?', (day,)).fetchone()
         return row is None or row['attempts'] < MAX_ATTEMPTS and time.time() - row['last_at'] >= RETRY_AFTER
 
+    def deferred(self, day, reason):
+        """Nothing reached the writer (offline, service down): wait without using an attempt."""
+        with self._db() as db:
+            db.execute('INSERT INTO diary_attempts VALUES (?,0,?,?) ON CONFLICT(day) DO UPDATE SET '
+                       'last_at=excluded.last_at,reason=excluded.reason', (day, time.time(), reason))
+
     def failed(self, day, reason):
         with self._db() as db:
             db.execute('INSERT INTO diary_attempts VALUES (?,1,?,?) ON CONFLICT(day) DO UPDATE SET '
@@ -740,7 +777,7 @@ async def _write(store, gateway, day, rows, *, persona, life=None, now=None, tim
                 revised = await _complete(gateway, prefix + '-revise:' + day, REVISE_PROMPT,
                     {**work['packet'], 'draft': {k: work['entry'][k] for k in ('title', 'mood', 'body')}},
                     REVISE_FORMAT, timeout_seconds, model=work['model'])
-                Draft202012Validator(REVISE_SCHEMA).validate(revised)
+                Draft202012Validator(_without_counts(REVISE_SCHEMA)).validate(revised)
                 entry = validate({**revised, 'facts': work['entry']['facts']}, work['packet']['messages'])
                 low, high = work['packet']['length_range']
                 if not low <= len(_normalized(entry['body'])) <= high:
