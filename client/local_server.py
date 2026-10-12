@@ -196,7 +196,7 @@ _PUBLIC_SONG_EMOTIONS = frozenset(
 _LAST_IMAGE_CAPABILITY = {}
 
 
-async def _image_capability(*, allow_cached=True):
+async def _image_capability(*, allow_cached=True, disk=True):
     from runtime.remote_generation import RemoteGeneration
     from runtime.cloud_service import CloudError
     from runtime.video_reply_settings import image_model_capability
@@ -219,6 +219,8 @@ async def _image_capability(*, allow_cached=True):
             return None
         if key in _LAST_IMAGE_CAPABILITY:
             return copy.deepcopy(_LAST_IMAGE_CAPABILITY[key])
+        if not disk:
+            return None
         try:
             result = image_model_capability({'image': json.loads(path.read_text(encoding='utf8'))}) if path else None
         except (OSError, ValueError, UnicodeError):
@@ -4919,7 +4921,9 @@ async def route(
                     retaining_saved = (image.get('model') == saved.get('model') and image['resolution'] == saved['resolution']
                                        and (image['enabled'] is False or saved['enabled'] is True))
                     if 'model' in image and not retaining_saved:
-                        capability = await _image_capability(allow_cached=False)
+                        # A catalog this process already read keeps a switch saving through a slow
+                        # read; the disk copy only shows choices and never authorizes a change.
+                        capability = await _image_capability(disk=False)
                         if (capability is not None and capability['models'] and image['model'] == saved.get('model')
                                 and not any(item['id'] == image['model'] for item in capability['models'])):
                             # The saved model was delisted: fall back to the service default
