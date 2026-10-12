@@ -236,7 +236,7 @@ def test_launcher_silently_ignores_retired_custom_provider(
 
     assert unprotected == []
     assert environment["OLIVIA_LLM_BASE_URL"] == "https://api.bside-moon.cn/v1"
-    assert environment["OLIVIA_LLM_MODEL"] == "claude-sonnet-5-5"
+    assert environment["OLIVIA_LLM_MODEL"] == "claude-haiku-5-5"
     assert environment["OLIVIA_LLM_API_KEY_ENV"] == "OLIVIA_LLM_API_KEY"
     assert "OLIVIA_LLM_API_KEY" not in environment
     assert "DEEPSEEK_API_KEY" not in environment
@@ -273,7 +273,7 @@ def test_launcher_adopts_saved_account_key_over_retired_provider(
     assert environment["OLIVIA_LLM_API_KEY"] == "account-key"
     assert retired_name not in unprotected
     saved = json.loads((config_root / "llm.json").read_text(encoding="utf-8"))
-    assert saved["base_url"] == "https://api.bside-moon.cn/v1" and saved["model"] == "claude-sonnet-5-5"
+    assert saved["base_url"] == "https://api.bside-moon.cn/v1" and saved["model"] == "claude-haiku-5-5"
     assert json.loads((config_root / "llm.retired.json").read_text(encoding="utf-8")) == retired
     # The setup API sees the same binding, so the account shows as connected.
     setup = LLMSetupService(data_root, protect=lambda value: value, unprotect=lambda value: value)
@@ -303,6 +303,28 @@ def test_launcher_does_not_replace_an_existing_relay_binding(tmp_path: Path) -> 
         **config, "base_url": "https://api.bside-moon.cn/v1",
     }
     assert not (config_root / "llm.retired.json").exists()
+
+
+def test_launcher_keeps_a_saved_sonnet_binding_when_the_default_is_haiku(tmp_path: Path) -> None:
+    """Only new bindings get the default model; a saved valid model is never reset."""
+    data_root = tmp_path / "data"
+    config_root = data_root / "config"
+    config_root.mkdir(parents=True)
+    key_name = f"deepseek_api_key.{'b' * 32}.dpapi"
+    (config_root / key_name).write_bytes(b"bound-relay-key")
+    config = {"schema_version": 3, "provider": "openai_compatible", "base_url": "https://api.bside-moon.cn/v1",
+              "model": "claude-sonnet-5-5", "max_retries": 2, "requires_api_key": True, "key_file": key_name,
+              "key_sha256": hashlib.sha256(b"bound-relay-key").hexdigest()}
+    (config_root / "llm.json").write_text(json.dumps(config), encoding="utf-8")
+    (config_root / "olivia_relay_key.dpapi").write_text("same-account-key", encoding="utf-8")
+    before = (config_root / "llm.json").read_bytes()
+
+    environment = start_local._load_llm_environment({}, data_root)
+
+    assert environment["OLIVIA_LLM_MODEL"] == "claude-sonnet-5-5"
+    assert (config_root / "llm.json").read_bytes() == before
+    assert not (config_root / "llm.retired.json").exists()
+    assert not (config_root / "olivia_model_routes.json").exists()
 
 
 def test_launcher_reuses_saved_non_deepseek_provider_schema_on_restart(
@@ -675,7 +697,7 @@ def test_launcher_ignores_invalid_user_managed_llm_config(tmp_path: Path) -> Non
     )
 
     assert environment["OLIVIA_LLM_BASE_URL"] == "https://api.bside-moon.cn/v1"
-    assert environment["OLIVIA_LLM_MODEL"] == "claude-sonnet-5-5"
+    assert environment["OLIVIA_LLM_MODEL"] == "claude-haiku-5-5"
     assert environment["OLIVIA_LLM_PROVIDER"] == "none"
     assert "DEEPSEEK_API_KEY" not in environment
     assert "OPENAI_API_KEY" not in environment
@@ -1607,7 +1629,7 @@ def test_launcher_supplies_gemini_defaults_when_llm_overrides_are_absent(
     defaults = {
         "OLIVIA_LLM_PROVIDER": "openai_compatible",
         "OLIVIA_LLM_BASE_URL": "https://api.bside-moon.cn/v1",
-        "OLIVIA_LLM_MODEL": "claude-sonnet-5-5",
+        "OLIVIA_LLM_MODEL": "claude-haiku-5-5",
         "OLIVIA_LLM_API_KEY_ENV": "OLIVIA_LLM_API_KEY",
         "OLIVIA_LLM_API_STYLE": "chat_completions",
         "OLIVIA_LLM_STREAM": "true",
