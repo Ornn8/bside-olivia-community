@@ -147,6 +147,11 @@ PAYLOAD_REQUIRED_ROOT_FILES = {
     "video_capability_install.py",
 }
 PAYLOAD_REQUIRED_RELATIVE_FILES = {
+    "runtime/piano.py",
+    "runtime/piano_collection.py",
+    "runtime/native_piano.py",
+    "runtime/native_piano_ui.py",
+    "runtime/personal_chat/piano.py",
     "installer/olivia_launcher/Olivia.exe",
     "installer/olivia_launcher/Olivia.exe.sha256",
     "installer/native_launcher.py",
