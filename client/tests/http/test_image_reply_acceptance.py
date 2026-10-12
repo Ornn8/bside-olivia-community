@@ -283,7 +283,7 @@ def test_image_model_catalog_rejects_invalid_prices(prices):
     ]}}) == {'models': []}
 
 
-def test_a_slow_catalog_read_keeps_the_model_choice_and_lets_a_switch_save(tmp_path, monkeypatch):
+def test_a_slow_catalog_read_keeps_choices_but_rejects_unverified_switches(tmp_path, monkeypatch):
     import local_server as server
     from runtime import remote_generation
     monkeypatch.setattr(server, '_LAST_IMAGE_CAPABILITY', {})
@@ -308,8 +308,15 @@ def test_a_slow_catalog_read_keeps_the_model_choice_and_lets_a_switch_save(tmp_p
         assert [m['id'] for m in state['image_capability']['models']] == ['photo-a', 'photo-b']
         result = await server.route('POST', '/toy/settings/reply-routes', {
             'request_id': 'video_reply_setting:switch-b', 'image': {'enabled': True, 'resolution': '1K', 'model': 'photo-b'}}, {})
-        assert result['code'] == 0 and settings.image_snapshot()['model'] == 'photo-b'
+        assert result['code'] == 503 and 'model' not in settings.image_snapshot()
         result = await server.route('POST', '/toy/settings/reply-routes', {
             'request_id': 'video_reply_setting:switch-a', 'image': {'enabled': True, 'resolution': '1K', 'model': 'photo-a'}}, {})
-        assert result['code'] == 0 and settings.image_snapshot()['model'] == 'photo-a'
+        assert result['code'] == 503 and 'model' not in settings.image_snapshot()
     asyncio.run(scenario())
+
+
+@pytest.fixture(autouse=True)
+def isolated_image_catalog(tmp_path, monkeypatch):
+    import local_server as server
+    monkeypatch.setattr(server, '_state_root', lambda: tmp_path)
+    monkeypatch.setattr(server, '_LAST_IMAGE_CAPABILITY', {})
