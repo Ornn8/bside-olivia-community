@@ -441,9 +441,15 @@ class CanonicalMemoryOutbox:
                            for media in media_memory_rows(row))
         video_rows = tuple(video for row in chats if isinstance(row, Mapping)
                            for video in video_memory_rows(row))
+        from runtime.piano import memory_rows as piano_memory_rows
+        jobs = payload.get('midi_jobs', [])
+        if not isinstance(jobs, list):
+            raise ConversationMemoryOutboxError('MEMORY_OUTBOX_STATE_INVALID')
+        piano_rows = tuple(item for row in (*chats, *jobs) if isinstance(row, Mapping)
+                           for item in piano_memory_rows(row))
         return (*tuple(row for row in letters if isinstance(row, Mapping)),
                 *tuple(row for row in chats if isinstance(row, Mapping)
-                       and row.get("delivery_status") == "DELIVERED"), *image_rows, *media_rows, *video_rows)
+                       and row.get("delivery_status") == "DELIVERED"), *image_rows, *media_rows, *video_rows, *piano_rows)
 
     def _terminal_sources(self) -> set[str]:
         try:

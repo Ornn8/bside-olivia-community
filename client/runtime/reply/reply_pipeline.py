@@ -523,6 +523,7 @@ class ReplyPipeline:
                     as_of=context.trusted_time.instant.isoformat(), kinds=kinds,
                     cached=metadata.get('companion_decision'),
                     speech_enabled=(chat_metadata or {}).get('speech_enabled') is True,
+                    piano_experience=(chat_metadata or {}).get('piano_experience'),
                     bedtime_offer=(context.mode is ReplyMode.FUTURE_IM and (chat_metadata or {}).get('channel') == 'qq'
                                    and (chat_metadata or {}).get('bedtime_offer_enabled') is True
                                    and not (chat_metadata or {}).get('proactive')),
@@ -538,7 +539,7 @@ class ReplyPipeline:
                 companion_timing, companion_delivery = delivery_for(decision, kinds=kinds,
                     daily_video=bool(daily_experience))
                 if degraded and (companion_delivery not in {None, 'text'}
-                                 or companion_decision.get('speech_request')):
+                                 or companion_decision.get('speech_request') or companion_decision.get('piano_request')):
                     # Missing world context cannot turn a valid requested media
                     # plan into a completed text reply. Keep its requirements.
                     return PipelineResult(getattr(request, 'request_id', ''), ReplyState.FAILED,
@@ -594,7 +595,24 @@ class ReplyPipeline:
               and (companion_decision or {}).get('speech_offer') in {'none', 'bedtime', 'clarify'}):
             from runtime.personal_chat.speech import BEDTIME_OFFER_INSTRUCTION
             speech_note = BEDTIME_OFFER_INSTRUCTION[(companion_decision or {})['speech_offer']]
-        final_notes = tuple(note for note in (decision_note, generation_note, speech_note) if note)
+        piano_note = ''
+        if not degraded and not reconsidered_silence and (chat_metadata or {}).get('piano_experience'):
+            from runtime.piano import task_input, writer_instruction
+            caps = chat_metadata['piano_experience']
+            intent = (companion_decision or {}).get('piano_request')
+            midi = chat_metadata.get('piano_midi')
+            if midi and (not intent or intent['source'] != 'midi'):
+                intent = dict(source='midi', piece_hint=midi['title'], seconds=min(60, caps['max_seconds']))
+            if intent:
+                try:
+                    payload = task_input(intent, caps, midi, chat_metadata.get('piano_pieces', ()))
+                    piano_note = writer_instruction(payload, caps)
+                    speech_note = ''
+                except ValueError:
+                    piano_note = '没有唯一匹配的已上传 MIDI。自然地问对方指的是哪一首，或请对方上传 MIDI；不编造曲目，不承诺已经录好。'
+        from runtime.piano_collection import environment_context
+        collection_note = environment_context() if context.mode is ReplyMode.TEXT_LETTER else ''
+        final_notes = tuple(note for note in (decision_note, generation_note, speech_note, piano_note, collection_note) if note)
         # Content-only legacy requests keep their adapter-owned assembly path.
         if decision_note and isinstance(prepared, ReplyRequest) and prepared.messages is None:
             prepared = replace(prepared, messages=prepared.normalized_messages())

@@ -85,6 +85,11 @@ async def _recover_chat_loop(server, runtime, *, interval_seconds=30):
             pass
 
 
+async def deliver_piano(server, row, send):
+    from .piano import deliver
+    await deliver(server, row, send)
+
+
 async def deliver_speech(server,row,send):
     from .speech import deliver
     return await deliver(server,row,send)
@@ -446,6 +451,8 @@ async def _generate_billed(server, event, row):
     observation_context = incoming_context(row)
     if event.media:
         observation_context += incoming_media.incoming_context(row)
+    from runtime.piano import recent_context
+    observation_context += recent_context(server, event.binding_id)
     content = event.text + observation_context
     source = server._CURRENT_LETTER_MEMORY_SOURCE.set(f"reply:{event.exchange_id}:1")
     receipt = server._CURRENT_LETTER_RECEIPT.set(datetime.fromisoformat(row["life_received_at"]))
@@ -459,6 +466,10 @@ async def _generate_billed(server, event, row):
     voice_available = voice_block is None
     from .speech import supported as speech_supported
     speech_enabled = event.channel == 'qq' and await speech_supported(os.environ)
+    from runtime import piano
+    piano_caps = await piano.capabilities(os.environ) if event.channel == 'qq' else None
+    from runtime.piano_collection import pieces as saved_pieces
+    piano_pieces = saved_pieces(server) if piano_caps else []
     row['voice_ready'] = voice_available
     image_offered = bool(event.channel == 'qq' and row.get('image_available') and row['image_reply_settings'].get('enabled')
                          and os.environ.get('OLIVIA_GPU_API_URL') and os.environ.get('OLIVIA_GPU_API_KEY'))
@@ -580,6 +591,10 @@ async def _generate_billed(server, event, row):
                                     channel=event.channel, binding_id=event.binding_id),
                                 'structured': True, 'raw_user_text': event.text,
                                 'speech_enabled': speech_enabled,
+                                'piano_experience': ({**piano_caps, 'midi_available': bool(row.get('piano_midi') or piano_pieces),
+                                                      'pieces': [piece['title'] for piece in piano_pieces[:200]]} if piano_caps else None),
+                                'piano_midi': row.get('piano_midi') if piano_caps else None,
+                                'piano_pieces': piano_pieces,
                                 'bedtime_offer_enabled': speech_enabled,
                                 'daily_video_candidates': daily_candidates,
                                 'incoming_observation_context': observation_context,
@@ -817,7 +832,27 @@ async def _generate_billed(server, event, row):
         from runtime.reply.character_emotion_context import store_expression_context
         store_expression_context(row, getattr(result, 'expression_context', None), text)
         speech_intent = (row.get('companion_decision') or {}).get('speech_request')
+        piano_intent = (row.get('companion_decision') or {}).get('piano_request')
+        if piano_caps and row.get('piano_midi') and (not piano_intent or piano_intent['source'] != 'midi'):
+            piano_intent = dict(source='midi', piece_hint=row['piano_midi']['title'], seconds=min(60, piano_caps['max_seconds']))
+        if piano_caps and piano_intent and not row.get('degraded_stages'):
+            try:
+                payload = piano.task_input(piano_intent, piano_caps, row.get('piano_midi'), piano_pieces)
+                timing = (row.get('companion_decision') or {}).get('plan', {}).get('proposal', {}).get('timing')
+                if timing not in {'wait_user', 'defer', 'no_reply'}:
+                    from runtime.piano_collection import account, upload
+                    if payload['source'] == 'midi':
+                        from runtime.remote_generation import RemoteGeneration
+                        selected = next(p for p in piano_pieces if p['asset'] == payload['midi_asset'])
+                        api = RemoteGeneration(os.environ.get('OLIVIA_GPU_API_URL', ''), os.environ.get('OLIVIA_GPU_API_KEY', ''))
+                        await upload(server, api, selected, piano_caps['max_midi_bytes'])
+                    row.update(piano_account=account(server), piano_input=payload, piano_status='PENDING', piano_delivery_status='PENDING', requested_format='text')
+                    mode = 'text'
+            except ValueError:
+                row['piano_status'] = 'REQUEST_UNAVAILABLE'
         script = decision.get('speech')
+        if row.get('piano_input'):
+            script = None
         if speech_intent and not script and event.channel == 'qq':
             # Requested long audio the writer left out: the reply still goes out, recorded for diagnosis.
             row['speech_status'] = 'WRITER_OMITTED'
@@ -885,6 +920,9 @@ async def _generate_billed(server, event, row):
 async def commit(server, row):
     if row.get("delivery_status") != "DELIVERED":
         return
+    if row.get('piano_delivery_status') == 'DELIVERED':
+        from runtime.piano import remember
+        await remember(server, row['letter_id'], row['piano_meta'], channel='qq')
     failures = []
     from runtime.image_understanding import commit_image_memory
     # Memory first: the daily-life extraction can be slow and must never hold it back.
@@ -904,21 +942,27 @@ async def share_moment_video(server, row):
     worker = getattr(server, '_daily_video_worker', None)
     candidate = next((item for item in row.get('daily_video_candidates') or []
                       if item.get('event_id') == row['share_video_event']), None)
-    if worker is None or candidate is None:
-        row['share_video_status'] = 'DAILY_VIDEO_SOURCE_UNAVAILABLE'
-        await persist_chat(server)
-        return
     from .daily_video_author import author_share
     # Durable before the paid writer call: a crash leaves AUTHORING and never authors twice.
     row['share_video_status'] = 'SHARE_AUTHORING'
     await persist_chat(server)
     try:
+        if worker is None or getattr(worker, 'closed', False):
+            raise ValueError('DAILY_VIDEO_CAPABILITY_UNAVAILABLE')
+        if candidate is None:
+            raise ValueError('DAILY_VIDEO_SOURCE_UNAVAILABLE')
         await worker.share(candidate, lambda value: author_share(server, value, row))
         row['share_video_status'] = 'SHARE_QUEUED'
-    except ValueError as exc:
-        row['share_video_status'] = str(exc) if re.fullmatch(r'[A-Z_]{1,40}', str(exc)) else 'SHARE_FAILED'
-    except Exception:
-        row['share_video_status'] = 'SHARE_FAILED'
+    except Exception as exc:
+        code = getattr(exc, 'code', str(exc))
+        row['share_video_status'] = code if isinstance(code, str) and re.fullmatch(r'DAILY_VIDEO_[A-Z_]{1,80}', code) else 'SHARE_FAILED'
+    row['share_video_result'] = {
+        'SHARE_QUEUED': 'queued',
+        'DAILY_VIDEO_SOURCE_UNAVAILABLE': 'source_unavailable',
+        'DAILY_VIDEO_SCENE_UNAVAILABLE': 'scene_unavailable',
+        'DAILY_VIDEO_CONSENT_REQUIRED': 'consent_required',
+        'DAILY_VIDEO_CAPABILITY_UNAVAILABLE': 'capability_unavailable',
+    }.get(row['share_video_status'], 'other')
     await persist_chat(server)
 
 
@@ -934,9 +978,24 @@ async def deliver_photo(server, row, send):
     primary_image = is_companion_image(row)
     if row.get('delivery_status') != ('MEDIA_PENDING' if primary_image else 'DELIVERED'):
         return
+    if row.get('image_delivery_status') in {'SENDING', 'UNKNOWN', 'DELIVERED'}:
+        return
     await prepare_chat_photo(server, row, send)
     if row.get('share_video_event') and not row.get('share_video_status'):
         await share_moment_video(server, row)
+    if row.get('share_video_event') and row.get('share_video_status') != 'SHARE_QUEUED':
+        # Reconcile a crash after enqueue but before persisting the chat outcome.
+        worker = getattr(server, '_daily_video_worker', None)
+        queued = getattr(worker, 'get', lambda _: None)(row['share_video_event'])
+        if queued is not None:
+            row.update(share_video_status='SHARE_QUEUED', share_video_result='queued')
+            await persist_chat(server)
+        else:
+            from runtime.image_reply import start_video_photo_fallback
+            row.setdefault('share_video_result', 'other')
+            start_video_photo_fallback(row)
+            await persist_chat(server)
+            await prepare_chat_photo(server, row, send)
     if row.get('image_status') != 'COMPLETED' or not row.get('prepared_image'):
         return
     if callable(getattr(send, 'is_available', None)) and not send.is_available():
@@ -1244,6 +1303,7 @@ def install_personal_chat(app, server):
                 photo=lambda row, send: deliver_photo(server, row, send),
                 prepare_photo=lambda row, send: prepare_chat_photo(server, row, send),
                 speech=lambda row, send: deliver_speech(server,row,send),
+                piano=lambda row, send: deliver_piano(server, row, send),
                 default_voice=lambda row, send: deliver_default_voice(server,row,send), inspect_writer=inspect_writer)
             server._personal_chat_service = service
             # Recovery runs in _recover_chat_loop right after startup; awaiting it here

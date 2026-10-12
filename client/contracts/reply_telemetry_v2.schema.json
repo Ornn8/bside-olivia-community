@@ -17,6 +17,8 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
+        "if": {"required": ["daily_video_result"]},
+        "then": {"properties": {"stage": {"const": "media"}}},
         "required": [
           "event_id",
           "trace_id",
@@ -387,6 +389,17 @@
               "process_exit_restart",
               "status_probe_failed",
               "watchdog_failed"
+            ]
+          },
+          "daily_video_result": {
+            "enum": [
+              "queued",
+              "source_unavailable",
+              "scene_unavailable",
+              "consent_required",
+              "capability_unavailable",
+              "photo_fallback",
+              "other"
             ]
           }
         },

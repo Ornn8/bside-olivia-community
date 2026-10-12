@@ -739,7 +739,6 @@ def test_unimplemented_write_routes_return_http_501_not_success() -> None:
         "/toy/editProfile",
         "/toy/createFeedback",
         "/toy/generateShareToken",
-        "/toy/genObjectUploadUrl",
         "/toy/midi/importShareCode",
     )
 
@@ -783,9 +782,14 @@ def test_llm_failure_is_explicit_failed_without_placeholder_text(monkeypatch) ->
     assert "LLM 未就绪" not in str(local_server.store.letters[0])
 
 
-def test_midi_unimplemented_is_terminal_and_cancel_is_idempotent() -> None:
+def test_midi_disabled_does_not_create_a_fake_job(monkeypatch) -> None:
     import asyncio
     import local_server
+    from runtime import native_piano
+    from runtime.cloud_service import CloudError
+    async def disabled(_server):
+        raise CloudError('PIANO_UNAVAILABLE', 503)
+    monkeypatch.setattr(native_piano, 'enabled', disabled)
 
     local_server.store.midi_jobs.clear()
     created = asyncio.run(
@@ -797,32 +801,31 @@ def test_midi_unimplemented_is_terminal_and_cancel_is_idempotent() -> None:
         )
     )
 
-    assert created["code"] == 501
-    assert created["data"]["status"] == "NOT_IMPLEMENTED"
-    job_id = created["data"]["job_id"]
-    listed = asyncio.run(local_server.route("GET", "/toy/midi/listJobs", {}, {}))
-    assert listed["data"]["list"][0]["status"] == "NOT_IMPLEMENTED"
-
-    first_cancel = asyncio.run(
-        local_server.route("POST", "/toy/midi/cancelGenerate", {"jobId": job_id}, {})
-    )
-    second_cancel = asyncio.run(
-        local_server.route("POST", "/toy/midi/cancelGenerate", {"jobId": job_id}, {})
-    )
-    assert first_cancel["data"]["status"] == "NOT_IMPLEMENTED"
-    assert second_cancel["data"]["status"] == "NOT_IMPLEMENTED"
+    assert created["code"] == 503
+    assert created["data"]["error_code"] == "PIANO_UNAVAILABLE"
+    assert local_server.store.midi_jobs == []
+    caps = asyncio.run(local_server.route("GET", "/toy/midi/capabilities", {}, {}))
+    assert caps['data'] == {'enabled': False}
 
 
-def test_midi_cancel_only_changes_cancellable_jobs() -> None:
+def test_midi_cancel_only_changes_cancellable_jobs(monkeypatch) -> None:
     import asyncio
 
     import local_server
+    from runtime import native_piano
+    async def enabled(_server):
+        return {'enabled': True}
+    class API:
+        async def request(self, action, data):
+            assert action == 'cancel'
+            return {'task_id': data['task_id'], 'status': 'cancelled'}
+    monkeypatch.setattr(native_piano, 'enabled', enabled)
+    monkeypatch.setattr(native_piano, 'api', lambda _: API())
 
     local_server.store.midi_jobs[:] = [
-        {"job_id": "processing-synthetic", "state": 1, "status": "PROCESSING"},
-        {"job_id": "completed-synthetic", "state": 3, "status": "COMPLETED"},
-        {"job_id": "failed-synthetic", "state": 5, "status": "FAILED"},
-        {"job_id": "not-implemented-synthetic", "state": 5, "status": "NOT_IMPLEMENTED"},
+        {"job_id": "processing-synthetic", "task_id": "one", "state": 1, "status": "queued"},
+        {"job_id": "completed-synthetic", "task_id": "two", "state": 3, "status": "succeeded"},
+        {"job_id": "failed-synthetic", "task_id": "three", "state": 5, "status": "failed"},
     ]
 
     def cancel(job_id: str) -> str:
@@ -831,11 +834,10 @@ def test_midi_cancel_only_changes_cancellable_jobs() -> None:
         )
         return result["data"]["status"]
 
-    assert cancel("processing-synthetic") == "CANCELED"
-    assert cancel("processing-synthetic") == "CANCELED"
-    assert cancel("completed-synthetic") == "COMPLETED"
-    assert cancel("failed-synthetic") == "FAILED"
-    assert cancel("not-implemented-synthetic") == "NOT_IMPLEMENTED"
+    assert cancel("processing-synthetic") == "cancelled"
+    assert cancel("processing-synthetic") == "cancelled"
+    assert cancel("completed-synthetic") == "succeeded"
+    assert cancel("failed-synthetic") == "failed"
 
 
 def test_unknown_midi_cancel_and_delete_are_http_404() -> None:

@@ -39,10 +39,17 @@ class RemoteGeneration:
         # Clients up to 2.2.13 fail a whole QQ turn when her current moment is offered as a
         # video, so the service announces moment videos only to clients that say they can take one.
         headers['X-Olivia-Daily-Video-Moment'] = '1'
+        headers['X-Olivia-Piano'] = '1'
         payload = None
         if action == 'submit':
-            if set(data) != {'request_id', 'kind', 'input'} or data['kind'] not in ('tts', 'cover', 'image', 'video', 'original', 'lipsync', 'separate', 'cover_video', 'original_video', 'daily_video') or not isinstance(data['input'], dict):
+            if set(data) != {'request_id', 'kind', 'input'} or data['kind'] not in ('tts', 'cover', 'image', 'video', 'original', 'lipsync', 'separate', 'cover_video', 'original_video', 'daily_video', 'piano') or not isinstance(data['input'], dict):
                 raise CloudError('GPU_REQUEST_INVALID', 400)
+            if data['kind'] == 'piano':
+                from runtime.piano import validate_input
+                try:
+                    validate_input(data['input'])
+                except ValueError:
+                    raise CloudError('GPU_REQUEST_INVALID', 400) from None
             if data['kind'] == 'daily_video':
                 from runtime.personal_chat.daily_video import validate_input
                 try:
@@ -54,6 +61,13 @@ class RemoteGeneration:
             payload = data
             headers['Idempotency-Key'] = data['request_id']
             headers['X-Olivia-Max-Charge-Cents'] = str(121 if data['kind'] == 'image' else 500 if data['kind'] in ('video', 'lipsync', 'cover_video', 'original_video', 'daily_video') else 300 if data['kind'] == 'original' else 100)
+            if data['kind'] == 'piano':
+                from runtime.piano import capability
+                caps = capability(await self.request('capabilities', {}))
+                if (not caps or data['input']['seconds'] > caps['max_seconds']
+                        or data['input']['source'] == 'original' and not caps['original']):
+                    raise CloudError('GPU_CAPABILITY_UNAVAILABLE', 503)
+                headers['X-Olivia-Max-Charge-Cents'] = str(max(span[1] for span in caps['price_ranges_cents'].values()))
             path, method = '/v1/tasks', 'POST'
         elif action == 'capabilities' and data == {}:
             path, method = '/v1/capabilities', 'GET'
@@ -213,7 +227,13 @@ class RemoteGeneration:
                         or speech.get('sample_rate')!=48000 or type(speech.get('duration_seconds')) not in (float,int)
                         or not 10<speech['duration_seconds']<=900):
                     raise ValueError()
+            piano_meta = result.get('piano_meta')
+            if piano_meta is not None:
+                from runtime.piano import validate_meta
+                # Status reads have no input; enforce the source bound at the owning task.
+                piano_meta = validate_meta(piano_meta, source=None)
             return {'task_id': result['task_id'], 'status': result['status'], 'outputs': cleaned,
+                    **({'piano_meta': piano_meta} if piano_meta is not None else {}),
                     'stage': result.get('stage', ''), **({'media_plan':plan} if plan is not None else {}),
                     **({'speech':speech} if speech is not None else {}),
                     **({'share_video':shared} if shared is not None else {})}
@@ -247,8 +267,19 @@ class RemoteGeneration:
 
     async def upload(self, path):
         path = Path(path)
-        if path.suffix.lower() not in ('.wav', '.mp3', '.flac', '.mp4', '.png', '.jpg') or not 0 < path.stat().st_size <= 268435456:
+        if path.suffix.lower() not in ('.wav', '.mp3', '.flac', '.mp4', '.png', '.jpg', '.mid', '.midi') or not 0 < path.stat().st_size <= 268435456:
             raise CloudError('GPU_ASSET_INVALID', 400)
+        if path.suffix.lower() in {'.mid', '.midi'}:
+            from runtime.piano import capability, validate_midi
+            caps = capability(await self.request('capabilities', {}))
+            if not caps:
+                raise CloudError('GPU_CAPABILITY_UNAVAILABLE', 503)
+            if path.stat().st_size > caps['max_midi_bytes']:
+                raise CloudError('GPU_ASSET_INVALID', 400)
+            try:
+                validate_midi(path.name, path.read_bytes(), caps['max_midi_bytes'])
+            except ValueError:
+                raise CloudError('GPU_ASSET_INVALID', 400) from None
         if not self.url or not self.token: raise CloudError('GPU_NOT_CONFIGURED', 503)
         try:
             async with ClientSession(timeout=ClientTimeout(total=600), trust_env=False, connector=TCPConnector(ssl=gpu_tls_context())) as session:
@@ -267,7 +298,14 @@ class RemoteGeneration:
 
     async def generate(self, kind, data, output, *, assets=None, timeout=3600, validate=None, receipt_path=None):
         caps = await self.request('capabilities', {})
-        if kind not in caps['kinds']: raise CloudError('GPU_CAPABILITY_UNAVAILABLE', 503)
+        if kind != 'piano' and kind not in caps['kinds']: raise CloudError('GPU_CAPABILITY_UNAVAILABLE', 503)
+        if kind == 'piano':
+            from runtime.piano import capability
+            piano = capability(caps)
+            if not piano or data.get('seconds', 121) > piano['max_seconds']:
+                raise CloudError('GPU_CAPABILITY_UNAVAILABLE', 503)
+            if data.get('source') == 'original' and not piano['original']:
+                raise CloudError('GPU_CAPABILITY_UNAVAILABLE', 503)
         if kind == 'daily_video' and caps.get('daily_video_enabled') is not True:
             raise CloudError('GPU_CAPABILITY_UNAVAILABLE', 503)
         data = dict(data)
@@ -281,7 +319,7 @@ class RemoteGeneration:
                     hashes[field] = hashlib.file_digest(source, 'sha256').hexdigest()
             fingerprint = hashlib.sha256(json.dumps([self.url, hashlib.sha256(self.token.encode()).hexdigest(),
                 kind, data, hashes], sort_keys=True).encode()).hexdigest()
-            video_receipt = kind in {'video', 'lipsync', 'cover_video', 'original_video', 'daily_video'}
+            video_receipt = kind in {'video', 'lipsync', 'cover_video', 'original_video', 'daily_video', 'piano'}
             try:
                 saved = json.loads(receipt.read_text(encoding='utf-8'))
                 if not isinstance(saved, dict) or saved.get('fingerprint') != fingerprint:
@@ -352,12 +390,16 @@ class RemoteGeneration:
             await asyncio.sleep(1)
             task = await self._status(task['task_id'])
             progress('generation', task)
-        if receipt and task['status'] in ('failed', 'cancelled') and kind != 'daily_video' and not data.get('speech_mode'):
+        if receipt and task['status'] in ('failed', 'cancelled') and kind not in ('daily_video', 'piano') and not data.get('speech_mode'):
             receipt.unlink(missing_ok=True)
         if task['status'] == 'succeeded':
+            if kind == 'piano':
+                from runtime.piano import validate_meta
+                task['piano_meta'] = validate_meta(task.get('piano_meta'), source=data['source'],
+                    original_max_seconds=piano['original_max_seconds'])
             progress('download', task)
         result = await self._download(task, output, validate=validate)
-        if (caps.get('result_acknowledgement') is True and kind not in ('cover_video', 'original_video', 'daily_video')
+        if (caps.get('result_acknowledgement') is True and kind not in ('cover_video', 'original_video', 'daily_video', 'piano')
                 and not data.get('speech_mode')):
             from runtime.gpu_cleanup import acknowledge_result
             await acknowledge_result(self, task['task_id'], output)

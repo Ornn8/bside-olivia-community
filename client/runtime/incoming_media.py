@@ -43,13 +43,13 @@ def gif_frames(path):
         return result
 
 
-async def acquire(result, target):
+async def acquire(result, target, *, max_bytes=MAX_BYTES):
     """Accept bounded bytes or trusted QQ CDN URLs, never returned local paths."""
     if not isinstance(result, dict):
         raise ValueError('QQ_MEDIA_INVALID')
     encoded = result.get('base64')
     if isinstance(encoded, str):
-        if len(encoded) > 4 * ((MAX_BYTES + 2) // 3):
+        if len(encoded) > 4 * ((max_bytes + 2) // 3):
             raise ValueError('MEDIA_INPUT_TOO_LARGE')
         data = base64.b64decode(encoded, validate=True)
     else:
@@ -63,9 +63,9 @@ async def acquire(result, target):
                 data = bytearray()
                 async for chunk in response.content.iter_chunked(65536):
                     data.extend(chunk)
-                    if len(data) > MAX_BYTES:
+                    if len(data) > max_bytes:
                         raise ValueError('MEDIA_INPUT_TOO_LARGE')
-    if not data or len(data) > MAX_BYTES:
+    if not data or len(data) > max_bytes:
         raise ValueError('MEDIA_INPUT_TOO_LARGE')
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_suffix('.part')
@@ -147,7 +147,10 @@ async def understand_incoming(server, event, row):
     observations = row.setdefault('incoming_media_observations', [])
     attempted = row.setdefault('incoming_media_attempted', [])
     failed = 0
+    from runtime.personal_chat.piano import receive_midi
     for identifier, kind, reference, name in event.media:
+        if kind == 'file' and await receive_midi(server, event, row, identifier, reference, name):
+            continue
         identity = hashlib.sha256(json.dumps([identifier, kind, reference, name]).encode()).hexdigest()
         if any(item.get('input_id') == identity for item in observations):
             continue
@@ -198,7 +201,8 @@ def evidence(row):
 def incoming_context(row):
     return '\n[系统媒体观察，非用户原话]\n' + json.dumps({'meaning': BOUNDARY,
         'current_turn_has_media': bool(row.get('incoming_media')), 'media': evidence(row),
-        'unrecognized_count': row.get('incoming_media_failed', 0)}, ensure_ascii=False)
+        'unrecognized_count': row.get('incoming_media_failed', 0),
+        **({'piano_file': row['piano_file_notice']} if row.get('piano_file_notice') else {})}, ensure_ascii=False)
 
 
 def media_memory_rows(row):

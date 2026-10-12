@@ -371,6 +371,13 @@ class DailyLifeStore:
                     source_id TEXT PRIMARY KEY, request_sha256 TEXT NOT NULL,
                     task_id TEXT NOT NULL, verified_at TEXT NOT NULL,
                     source_sha256 TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS life_video_moments (
+                    event_id TEXT PRIMARY KEY, source_id TEXT NOT NULL,
+                    share_day TEXT NOT NULL, share_index INTEGER NOT NULL,
+                    event_at TEXT NOT NULL, reserved_at TEXT,
+                    UNIQUE(source_id, share_day, share_index));
+                CREATE TABLE IF NOT EXISTS life_video_failed_shares (
+                    event_id TEXT PRIMARY KEY, failed_at TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS life_baths (
                     source_id TEXT PRIMARY KEY, started_at TEXT NOT NULL,
                     completed_source_id TEXT UNIQUE, completed_at TEXT);
@@ -754,6 +761,7 @@ class DailyLifeStore:
         start = now.astimezone(LOCAL).replace(hour=0, minute=0, second=0, microsecond=0)
         sources = []
         with self._db() as db:
+            db.execute('BEGIN IMMEDIATE')
             if moment:
                 current = self._video_moment(db, start, now)
                 if current is not None:
@@ -800,7 +808,7 @@ class DailyLifeStore:
                     break
         specific = {source['event_id'] for source in sources if source['event_kind'] != 'moment'}
         # A specific event (meal, walk...) keeps its own staging over the generic moment.
-        return [source for source in sources if source['event_kind'] != 'moment' or source['event_id'] not in specific]
+        return [source for source in sources if source['event_kind'] != 'moment' or source['source_id'] not in specific]
 
     def observed_place(self, *, now: datetime) -> dict | None:
         """The record every reply's world view takes her place from, and whether it still holds.
@@ -818,6 +826,8 @@ class DailyLifeStore:
         """What the world published about a video's event: location, activity, note and place."""
         source_id = request['event_id']
         with self._db() as db:
+            if request['event_kind'] == 'moment':
+                source_id = self._video_source_id(db, source_id)
             if request['event_kind'] == 'bath_finished':
                 bath = db.execute('SELECT completed_source_id FROM life_baths WHERE source_id=?', (source_id,)).fetchone()
                 source_id = bath[0] if bath and bath[0] else source_id
@@ -829,23 +839,86 @@ class DailyLifeStore:
 
     _NOT_MOMENTS = frozenset(('bath_started', 'bath_finished'))
 
+    @staticmethod
+    def _video_source_id(db, event_id):
+        row = db.execute('SELECT source_id FROM life_video_moments WHERE event_id=?', (event_id,)).fetchone()
+        return row[0] if row else event_id  # Old queues retain their original source identity.
+
+    def daily_video_source_id(self, event_id):
+        with self._db() as db:
+            return self._video_source_id(db, event_id)
+
+    @staticmethod
+    def _moment_budget(db, source_id, now):
+        attempts = db.execute(
+            'SELECT m.reserved_at,f.failed_at FROM life_video_moments m '
+            'LEFT JOIN life_video_failed_shares f ON f.event_id=m.event_id '
+            'WHERE m.source_id=? AND m.reserved_at IS NOT NULL', (source_id,)).fetchall()
+        stamps = [datetime.fromisoformat(row[0]) for row in attempts if row[1] is None]
+        failures = [datetime.fromisoformat(row[1]) for row in attempts if row[1] is not None]
+        legacy = db.execute('SELECT verified_at FROM life_media_reservations WHERE source_id=?', (source_id,)).fetchone()
+        if legacy:
+            stamps.append(datetime.fromisoformat(legacy[0]))
+        today = now.astimezone(LOCAL).date()
+        count = sum(stamp.astimezone(LOCAL).date() == today for stamp in stamps)
+        cooldowns = stamps + failures
+        return count, not cooldowns or now - max(cooldowns) >= timedelta(minutes=30)
+
+    def fail_daily_video_share(self, event_id, *, now):
+        """Release an unqueued attempt; retain its first failure time for cooldown."""
+        with self._db() as db:
+            db.execute('INSERT OR IGNORE INTO life_video_failed_shares '
+                       'SELECT event_id,? FROM life_video_moments WHERE event_id=? AND reserved_at IS NOT NULL '
+                       'AND NOT EXISTS (SELECT 1 FROM life_media_reservations WHERE source_id=event_id)',
+                       (_time(now), event_id))
+
+    def reserve_daily_video_share(self, request, *, now):
+        """Claim a share before paid work; concurrent callers cannot bypass its budget."""
+        if request['event_kind'] != 'moment':
+            return False
+        with self._db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            if not self._daily_video_event_matches(db, request, now):
+                raise ValueError('DAILY_VIDEO_SOURCE_UNAVAILABLE')
+            if db.execute('SELECT 1 FROM life_video_failed_shares WHERE event_id=?', (request['event_id'],)).fetchone():
+                raise ValueError('DAILY_VIDEO_SOURCE_UNAVAILABLE')
+            share = db.execute('SELECT * FROM life_video_moments WHERE event_id=?', (request['event_id'],)).fetchone()
+            if share is None or share['reserved_at']:
+                return False
+            count, ready = self._moment_budget(db, share['source_id'], now)
+            if count >= 4 or not ready or share['share_day'] != now.astimezone(LOCAL).date().isoformat():
+                raise ValueError('DAILY_VIDEO_SOURCE_UNAVAILABLE')
+            db.execute('UPDATE life_video_moments SET reserved_at=? WHERE event_id=?', (_time(now), request['event_id']))
+            return True
+
     def _video_moment(self, db, start, now):
-        """Her current arrived place today, once: the same share a photo would be."""
-        row = db.execute("SELECT payload FROM life_current WHERE id=1").fetchone()
-        current = json.loads(row[0]) if row else {}
+        """Stable local share identities bound to the current live source, including overnight."""
+        state = self._snapshot(db, now)
+        current = state['current'] or {}
         source_id = current.get('source_id')
-        if not source_id:
+        if not source_id or state['stale']:
             return None
         stored = db.execute("SELECT occurred_at,payload FROM life_moments WHERE source_id=? AND kind='daily'",
                             (source_id,)).fetchone()
-        if not stored or not _time(start) <= stored[0] <= _time(now):
+        if not stored or stored[0] > _time(now):
             return None
         item = json.loads(stored[1])
         place = item.get('place')
-        if (not place or place.get('stage') != 'arrived' or item.get('activity_kind') in self._NOT_MOMENTS
-                or db.execute('SELECT 1 FROM life_media_reservations WHERE source_id=?', (source_id,)).fetchone()):
+        if not place or place.get('stage') != 'arrived' or item.get('activity_kind') in self._NOT_MOMENTS:
             return None
-        return dict(event_id=source_id, event_at=stored[0], event_kind='moment', location=item.get('location'),
+        count, ready = self._moment_budget(db, source_id, now)
+        if count >= 4 or not ready:
+            return None
+        day = start.date().isoformat()
+        share = db.execute('SELECT event_id,event_at,share_index,reserved_at FROM life_video_moments '
+                           'WHERE source_id=? AND share_day=? ORDER BY share_index DESC LIMIT 1', (source_id, day)).fetchone()
+        if share is None or share['reserved_at'] is not None:
+            index = max(count, share['share_index'] if share else 0) + 1
+            event_id = 'moment:' + hashlib.sha256(_json([source_id, day, index]).encode()).hexdigest()
+            share = (event_id, _time(now))
+            db.execute('INSERT INTO life_video_moments VALUES (?,?,?,?,?,NULL)',
+                       (event_id, source_id, day, index, share[1]))
+        return dict(event_id=share[0], source_id=source_id, event_at=share[1], event_kind='moment', location=item.get('location'),
                     detail=item.get('note', '')[:180], place=place)
 
     def reserve_daily_video_delivery(self, request: dict, *, task_id: str,
@@ -857,6 +930,8 @@ class DailyLifeStore:
         stamp = _time(now)
         if not isinstance(task_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', task_id):
             raise ValueError('DAILY_VIDEO_TASK_INVALID')
+        if request['event_kind'] == 'moment':
+            self.reserve_daily_video_share(request, now=now)
         digest = hashlib.sha256(json.dumps(request, sort_keys=True, ensure_ascii=False, allow_nan=False).encode()).hexdigest()
         with self._db() as db:
             db.execute('BEGIN IMMEDIATE')
@@ -872,6 +947,8 @@ class DailyLifeStore:
             bath = db.execute('SELECT completed_source_id FROM life_baths WHERE source_id=?',
                               (request['event_id'],)).fetchone() if request['event_kind'] == 'bath_finished' else None
             source_id = bath[0] if bath else request['event_id']
+            if request['event_kind'] == 'moment':
+                source_id = self._video_source_id(db, source_id)
             source = db.execute("SELECT payload FROM life_moments WHERE source_id=? AND kind='daily'",
                                 (source_id,)).fetchone()
             if source is None:
@@ -888,14 +965,15 @@ class DailyLifeStore:
         return self.record_media_delivery(make_daily_delivery(request, task_id=task_id,
             message_id=message_id, occurred_at=delivered_at))
 
-    @staticmethod
-    def _daily_video_event_matches(db, request, now):
+    def _daily_video_event_matches(self, db, request, now):
         when = datetime.fromisoformat(request['event_at'])
         if when > now:
             return False
+        source_id = (self._video_source_id(db, request['event_id'])
+                     if request['event_kind'] == 'moment' else request['event_id'])
         if request.get('place'):
             source = db.execute("SELECT payload FROM life_moments WHERE source_id=? AND kind='daily'",
-                                (request['event_id'],)).fetchone()
+                                (source_id,)).fetchone()
             if not source or json.loads(source[0]).get('place') != request['place']:
                 return False
         if request['event_kind'] == 'bath_finished':
@@ -911,12 +989,15 @@ class DailyLifeStore:
                 return (episode.get('activity_kind') == 'bath_finished'
                         and episode.get('result', {}).get('status') == 'completed')
         row = db.execute("SELECT occurred_at,payload FROM life_moments WHERE source_id=? AND kind='daily'",
-                         (request['event_id'],)).fetchone()
+                         (source_id,)).fetchone()
         if request['event_kind'] == 'moment':
             if not row:
                 return False
             payload = json.loads(row[1])
-            return (datetime.fromisoformat(row[0]) == when and bool(request.get('place'))
+            share = db.execute('SELECT event_at FROM life_video_moments WHERE event_id=?', (request['event_id'],)).fetchone()
+            state = self._snapshot(db, now)
+            return (not state['stale'] and (state['current'] or {}).get('source_id') == source_id
+                    and datetime.fromisoformat(share[0] if share else row[0]) == when and bool(request.get('place'))
                     and payload.get('place') == request['place']
                     and payload.get('activity_kind') not in DailyLifeStore._NOT_MOMENTS)
         if row:

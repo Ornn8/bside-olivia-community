@@ -361,15 +361,12 @@ ROUTES: dict[str, dict[str, Any]] = {
     "/toy/genObjectUploadUrl": _route(
         ["POST"],
         "music.midi_upload",
-        state="not_implemented",
-        error_code="MIDI_UPLOAD_NOT_IMPLEMENTED",
     ),
     "/toy/midi/generate": _route(
         ["POST"],
         "music.midi_generate",
-        state="not_implemented",
-        error_code="MIDI_NOT_IMPLEMENTED",
     ),
+    "/toy/midi/capabilities": _route(["GET"], "music.midi_jobs", read_only=True),
     "/toy/midi/getGenerateResult": _route(["GET"], "music.midi_jobs", read_only=True),
     "/toy/midi/listJobs": _route(["GET"], "music.midi_jobs", read_only=True),
     "/toy/midi/batchGetResult": _route(["GET"], "music.midi_jobs", read_only=True),
