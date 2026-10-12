@@ -209,7 +209,7 @@ async def _image_capability(*, allow_cached=True, disk=True):
         return None
     root = _state_root()
     # Credentials identify the service account without storing the token on disk.
-    digest = hashlib.sha256(json.dumps([api.url, api.token]).encode('utf8')).hexdigest()
+    digest = hashlib.sha256(api.url.encode('utf8') + b'\n' + api.token.encode('utf8')).hexdigest()
     key = (str(root), digest)
     path = root / 'image-catalog' / (digest + '.json') if root is not None else None
     try:
