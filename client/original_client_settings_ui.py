@@ -3942,6 +3942,20 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     });
     imageControls.append(imageToggle,imageModelLabel,imageSizes);
     const imageHelp=text('p','','text-text-secondary text-caption-m');
+    const imageCatalogStatus=text('p','','text-text-secondary text-caption-m');imageCatalogStatus.setAttribute('role','status');
+    let catalogRetry=0, catalogTimer=null;
+    const retryCatalog=()=>{
+      if(imageCapability){clearTimeout(catalogTimer);catalogTimer=null;imageCatalogStatus.textContent='';return;}
+      if(catalogRetry>=3&&catalogTimer===null){imageCatalogStatus.textContent='';return;}
+      imageCatalogStatus.textContent='正在读取可用的图片模型…';
+      if(catalogTimer!==null||!container.isConnected)return;
+      catalogTimer=setTimeout(async()=>{
+        catalogTimer=null;
+        if(!container.isConnected)return;
+        catalogRetry++;
+        await hydrate(true);
+      },[2000,5000,10000][catalogRetry]);
+    };
     const nodes = {};
     const detail = text("p", "", "text-text-secondary text-body-m font-regular");
     const status = text("p", "正在读取设置…", "text-text-secondary text-caption-m font-regular"); status.setAttribute("role", "status");
@@ -3977,18 +3991,21 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         status.textContent="已保存。已接收的信件继续按原设置处理。";busy=false;render(); }
       catch (_) { busy=false;await hydrate();status.textContent="没有保存成功，已恢复为原来的设置，请重试。"; }
     };
-    const hydrate=async()=>{
+    const hydrate=async(catalogOnly=false)=>{
       try {
         const result=await routeRequest("/toy/settings/reply-routes");
+        imageCapability=result.image_capability||imageCapability;
+        if(catalogOnly&&selected!==null)return;
+        if(busy)return;
         selected=result.tier || (Object.values(result.routes||{}).some(Boolean) ? "video" : "text");
         imageEnabled=result.image?.enabled===true;imageResolution=result.image?.resolution||'1K';
         imageModel=result.image?.model||'';imageCapability=result.image_capability||null;
         if(!labels[selected]) throw Error("invalid tier");
         status.textContent=result.tier_configured===false ? "当前沿用旧设置，点选一个档位即统一生效。" : "";
-      } catch (_) { selected=null;status.textContent="设置读取失败，请稍后重新打开设置页。"; }
-      render();
+      } catch (_) { if(selected===null)status.textContent="设置读取失败，请稍后重新打开设置页。"; }
+      finally { render();retryCatalog(); }
     };
-    container.append(choices,detail,imageControls,imageHelp,status);section.append(container);
+    container.append(choices,detail,imageControls,imageHelp,imageCatalogStatus,status);section.append(container);
     refreshVideoReplySetting=()=>container.isConnected ? hydrate() : Promise.resolve(); void hydrate();
   };
 
@@ -4260,6 +4277,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       .od-new{width:8px;height:8px;border-radius:50%;background:#e58a7a;display:inline-block}
       .od-card p{color:#acb0b4;margin:8px 0 0;line-height:1.6}
       .od-entry h2{font-size:24px;margin:6px 0 4px}.od-entry .od-body p{line-height:1.9;margin:0 0 12px;font-size:16px}
+      .od-photo{display:block;max-width:100%;max-height:360px;object-fit:contain;border-radius:10px;margin:16px 0 20px}
       .od-comments{border-top:1px solid #383a3e;margin-top:24px;padding-top:16px;display:grid;gap:10px}
       .od-comment{background:#222327;border-radius:10px;padding:10px 14px;line-height:1.6}
       .od-comment small{display:block;color:#8f9398;font-size:12px}
@@ -4331,7 +4349,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       if(!info.months.length){box.append(text('p','以前的信都已经整理好了。'));main.replaceChildren(box);return;}
       const words=Math.max(1,Math.round(info.chars/10000));
       box.append(text('p',`她会把以前每个月和你的信、聊天各写成一篇回忆，一共 ${info.months.length} 个月，约 ${words} 万字的旧信。`),
-        text('p','按你选的回信模型计费，费用大致相当于让她回 '+Math.max(1,Math.ceil(info.chars/6000))+' 封长信。记下的约定、纪念日和称呼，以后聊天时她都会记得。'));
+        text('p','按你选的日记模型完成初稿和改稿，两次调用正常计费。记下的约定、纪念日和称呼，以后聊天时她都会记得。'));
       if(info.failed)box.append(text('p',`上次有 ${info.failed} 个月没写成，可以再试一次。`));
       const start=button('开始整理',async()=>{
         start.disabled=true;
@@ -4353,7 +4371,12 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       const time=text('time',diaryDate(entry.day));time.style.color='#acb0b4';
       const body=document.createElement('div');body.className='od-body';
       for(const paragraph of entry.body.split(/\n+/).filter(Boolean))body.append(text('p',paragraph));
-      article.append(back,document.createElement('br'),time,text('h2',entry.title),body);
+      article.append(back,document.createElement('br'),time,text('h2',entry.title));
+      if(typeof entry.photo==='string'&&/^\/toy\/media\/photo-[a-f0-9]{32}\.png$/.test(entry.photo)){
+        const photo=document.createElement('img');photo.className='od-photo';photo.alt='她当天发来的照片';
+        photo.addEventListener('error',()=>photo.remove());photo.src=new URL(entry.photo,apiBase).href;article.append(photo);
+      }
+      article.append(body);
       const comments=document.createElement('section');comments.className='od-comments';
       comments.append(text('strong','你的留言'));
       for(const comment of entry.comments){const item=document.createElement('div');item.className='od-comment';
@@ -4375,6 +4398,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       });
       actions.append(remove,send);comments.append(input,actions,status);
       main.replaceChildren(article,comments);
+      main.scrollTop=0;
     };
     void showList();
   };

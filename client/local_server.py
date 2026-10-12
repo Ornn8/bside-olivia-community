@@ -192,8 +192,69 @@ _PUBLIC_SONG_EMOTIONS = frozenset(
 )
 
 
-# The last image model catalog the service returned, reused when a later read is slow.
+# Display-only catalogs, isolated by data root and service credentials.
 _LAST_IMAGE_CAPABILITY = {}
+
+
+async def _image_capability(*, allow_cached=True, disk=True):
+    from runtime.remote_generation import RemoteGeneration
+    from runtime.cloud_service import CloudError
+    from runtime.video_reply_settings import image_model_capability
+
+    try:
+        api = RemoteGeneration(_os.environ.get('OLIVIA_GPU_API_URL', ''), _os.environ.get('OLIVIA_GPU_API_KEY', ''))
+    except CloudError:
+        return None
+    if not api.url or not api.token:
+        return None
+    root = _state_root()
+    # Credentials identify the service account without storing the token on disk.
+    digest = hashlib.sha256(api.url.encode('utf8') + b'\n' + api.token.encode('utf8')).hexdigest()
+    key = (str(root), digest)
+    path = root / 'image-catalog' / (digest + '.json') if root is not None else None
+    try:
+        result = image_model_capability(await asyncio.wait_for(api.request('capabilities', {}), 8))
+    except (CloudError, TimeoutError):
+        if not allow_cached:
+            return None
+        if key in _LAST_IMAGE_CAPABILITY:
+            return copy.deepcopy(_LAST_IMAGE_CAPABILITY[key])
+        if not disk:
+            return None
+        try:
+            result = image_model_capability({'image': json.loads(path.read_text(encoding='utf8'))}) if path else None
+        except (OSError, ValueError, UnicodeError):
+            return None
+        if result is not None and result.get('models'):
+            _LAST_IMAGE_CAPABILITY[key] = result
+            return copy.deepcopy(result)
+        return None
+    if result is not None and result.get('models'):
+        _LAST_IMAGE_CAPABILITY[key] = copy.deepcopy(result)
+        if path is not None:
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                _atomic_write_store_file(path, json.dumps(result, ensure_ascii=True))
+            except (OSError, UnicodeError):
+                pass  # Cache storage must not make settings unavailable.
+    return result
+
+
+async def _warm_image_catalog():
+    result = await _image_capability(allow_cached=False)
+    if not result or not result.get('models'):
+        await asyncio.sleep(30)
+        await _image_capability(allow_cached=False)
+
+
+async def _image_catalog_lifecycle(_app):
+    task = asyncio.create_task(_warm_image_catalog())
+    try:
+        yield
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
 
 def _sanitized_music_render_metadata(value: object) -> dict[str, object]:
     if not isinstance(value, Mapping):
@@ -3832,6 +3893,34 @@ async def _legacy_proactive_tick() -> None:
         _observe_letter_initiative('deferred')
 
 
+def _diary_extras(day):
+    from runtime.diary.diary import _optional, SHANGHAI
+    from runtime.memory.effective_relationship import effective_relationship_stage, relationship_history
+    stage = _optional(lambda: effective_relationship_stage(private_world_port.snapshot(), relationship_history(store)), 'unknown')
+    def videos():
+        worker = globals().get('_daily_video_worker')
+        if worker is None:
+            return []
+        with sqlite3.connect(worker.database) as db:
+            rows = [json.loads(raw) for (raw,) in db.execute('SELECT payload FROM daily_video_jobs')]
+        return [row for row in rows if row.get('binding') == worker.binding]
+    outfit = _optional(lambda: diary_store.wardrobe(datetime.fromisoformat(day).replace(tzinfo=SHANGHAI)), None)
+    return stage, _optional(videos, []), (outfit or {}).get('today')
+
+
+def _diary_public_entry(entry):
+    photo = entry.get('photo')
+    entry = {**entry, 'photo': None}
+    try:
+        root = _media_root()
+        target = Path(photo).resolve() if photo else None
+        if root and target and target.parent == root and _MEDIA_NAME.fullmatch(target.name):
+            entry['photo'] = '/toy/media/' + target.name
+    except (OSError, ValueError):
+        pass
+    return entry
+
+
 async def _diary_tick(now=None) -> None:
     from runtime.diary.diary import due_days, write_day, day_life
     from runtime.private_world.daily_life_runtime import life_persona
@@ -3841,16 +3930,18 @@ async def _diary_tick(now=None) -> None:
     rows = [*store.letters, *store.personal_chats]
     for day in due_days(diary_store, now)[:2]:
         try:
+            stage, videos, outfit = _diary_extras(day)
             outcome = await write_day(diary_store, letters_adapter.gateway, day, rows,
                 persona=life_persona(letters_adapter.persona_v2_path),
-                life=day_life(getattr(daily_life_runtime, 'store', None), day), now=now)
+                life=day_life(getattr(daily_life_runtime, 'store', None), day, outfit), now=now,
+                relationship_stage=stage, videos=videos)
         except (GatewayError, asyncio.TimeoutError, OSError, RuntimeError, ValueError, TypeError, KeyError, sqlite3.Error) as exc:
             diary_store.failed(day, type(exc).__name__)
             _safe_log('diary_write_failed', error_code=getattr(exc, 'code', None) or type(exc).__name__)
             continue
         if outcome == 'empty':
             diary_store.skip(day, 'EMPTY_DAY')
-        else:
+        elif outcome == 'written':
             _safe_log('diary_written')
 
 
@@ -3870,11 +3961,14 @@ async def _write_memoirs_once(months) -> None:
         rows = [*store.letters, *store.personal_chats]
         for month in months:
             try:
-                await write_month(diary_store, letters_adapter.gateway, month, rows,
-                                  persona=life_persona(letters_adapter.persona_v2_path))
-                _memoir_state['done'] += 1
+                stage, videos, _ = _diary_extras(month + '-01')
+                outcome = await write_month(diary_store, letters_adapter.gateway, month, rows,
+                                  persona=life_persona(letters_adapter.persona_v2_path),
+                                  relationship_stage=stage, videos=videos)
+                _memoir_state['done' if outcome == 'written' or diary_store.entry(month) else 'failed'] += 1
             except (GatewayError, asyncio.TimeoutError, OSError, RuntimeError, ValueError, TypeError, KeyError, sqlite3.Error) as exc:
                 _memoir_state['failed'] += 1
+                diary_store.failed(month, type(exc).__name__)
                 _safe_log('diary_memoir_failed', error_code=getattr(exc, 'code', None) or type(exc).__name__)
     finally:
         _memoir_state['running'] = False
@@ -4810,7 +4904,7 @@ async def route(
                 if entry is None:
                     return err(404, 'DIARY_ENTRY_NOT_FOUND', {'error_code': 'DIARY_ENTRY_NOT_FOUND'})
                 diary_store.mark_seen(entry['day'])
-                return ok(entry)
+                return ok(_diary_public_entry(entry))
             if method != 'POST':
                 return err(405, 'METHOD_NOT_ALLOWED', {})
             if not companion_confirmed:
@@ -4837,7 +4931,7 @@ async def route(
                 return ok({'started': len(set(months))})
             if p == '/toy/diary/comment' and set(body) == {'day', 'text'}:
                 diary_store.add_comment(str(body['day']), body['text'], datetime.now(timezone.utc))
-                return ok(diary_store.entry(str(body['day'])))
+                return ok(_diary_public_entry(diary_store.entry(str(body['day']))))
             if p == '/toy/diary/delete' and set(body) == {'day'}:
                 diary_store.delete(str(body['day']))
                 return ok({'deleted': str(body['day'])})
@@ -4850,22 +4944,7 @@ async def route(
 
     if p == "/toy/settings/reply-routes":
         from runtime.wardrobe import catalog
-        from runtime.video_reply_settings import delisted_fallback, image_model_capability, require_image_model
-        async def image_capability():
-            from runtime.remote_generation import RemoteGeneration
-            from runtime.cloud_service import CloudError
-            try:
-                api = RemoteGeneration(_os.environ.get('OLIVIA_GPU_API_URL', ''), _os.environ.get('OLIVIA_GPU_API_KEY', ''))
-                if not api.url or not api.token:
-                    return None
-                result = image_model_capability(await asyncio.wait_for(api.request('capabilities', {}), 8))
-            except (CloudError, TimeoutError):
-                # A slow or failed read keeps the last catalog: losing it hid the model choice
-                # and turned an ordinary save into a failure.
-                return _LAST_IMAGE_CAPABILITY.get('value')
-            if result is not None and result.get('models'):
-                _LAST_IMAGE_CAPABILITY['value'] = result
-            return result
+        from runtime.video_reply_settings import delisted_fallback, require_image_model
         try:
             if method == "POST":
                 if 'image' in body:
@@ -4875,7 +4954,9 @@ async def route(
                     retaining_saved = (image.get('model') == saved.get('model') and image['resolution'] == saved['resolution']
                                        and (image['enabled'] is False or saved['enabled'] is True))
                     if 'model' in image and not retaining_saved:
-                        capability = await image_capability()
+                        # A catalog this process already read keeps a switch saving through a slow
+                        # read; the disk copy only shows choices and never authorizes a change.
+                        capability = await _image_capability(disk=False)
                         if (capability is not None and capability['models'] and image['model'] == saved.get('model')
                                 and not any(item['id'] == image['model'] for item in capability['models'])):
                             # The saved model was delisted: fall back to the service default
@@ -4894,7 +4975,7 @@ async def route(
                 if set(body) not in ({"request_id", "routes"}, {"request_id", "routes", "videos"}):
                     return err(400, "VIDEO_REPLY_SETTING_PAYLOAD_INVALID", {})
                 return ok(video_reply_settings_store.mutate_routes(body["request_id"], body["routes"], body.get("videos")))
-            capability = await image_capability()
+            capability = await _image_capability()
             return ok({"state": "available", "image": video_reply_settings_store.image_snapshot(),
                        **({'image_capability': capability} if capability is not None else {}),
                        "wardrobe": video_reply_settings_store.wardrobe_snapshot(), "wardrobe_styles": catalog(),
@@ -6417,6 +6498,7 @@ def install_reply_task_lifecycle(app: web.Application) -> None:
 
     app.on_startup.append(_start_conversation_memory)
     app.on_startup.append(_start_reply_tasks)
+    app.cleanup_ctx.append(_image_catalog_lifecycle)
     from runtime.personal_chat.backend import install_personal_chat
     import sys
     install_personal_chat(app, sys.modules[__name__])
