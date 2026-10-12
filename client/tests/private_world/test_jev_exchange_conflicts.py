@@ -28,7 +28,6 @@ def quote_ref(state, text):
 
 # Every other fact an exchange can carry, answered the same way in every scenario below.
 FACTS = {
-    'world_update': 'reconsider',
     'current_quote': lambda state: quote_ref(state, RECORDED),
     'relationship': 'meaningful_exchange',
     'relationship_user_quote': lambda state: quote_ref(state, USER_SENTENCE),
@@ -119,7 +118,7 @@ def test_every_other_fact_is_produced_when_no_updates_conflict():
     assert payload['routine'] == {'sleep_minute': 1410, 'utc_offset_minutes': 480, 'quote': USER_SENTENCE}
     assert payload['boundaries'] == [{'action': 'set', 'boundary_id': None, 'quote': BOUNDARY}]
     assert payload['addressing'] == {'user_calls_linli': '小林，'}
-    assert payload['current_quote'] == RECORDED and payload['world_update'] == 'reconsider'
+    assert payload['current_quote'] == RECORDED
 
 
 def test_kind_mismatch_detaches_the_update_into_a_new_item_of_its_own_kind():

@@ -729,8 +729,8 @@ def test_addressing_profile_keeps_latest_exact_quotes_per_side(tmp_path):
     assert store.addressing_profile(now=now - timedelta(days=3)) == {}
 
 
-def test_exchange_commit_keeps_addressing_and_world_gate_from_one_request(tmp_path, monkeypatch):
-    """Addressing and the world-update gate ride on exchange-facts; the commit must accept them."""
+def test_exchange_commit_keeps_addressing_and_records_the_world_check(tmp_path, monkeypatch):
+    """Addressing rides on exchange-facts; the world check is its own small request."""
     import asyncio
     from datetime import datetime, timezone
     from runtime.private_world.daily_life import DailyLifeStore
@@ -744,7 +744,7 @@ def test_exchange_commit_keeps_addressing_and_world_gate_from_one_request(tmp_pa
             if purpose == 'exchange-facts':
                 quote = next(k for k, (s, e) in state['quotes'].items() if k.startswith('u')
                              and state['sources']['user_letter'][s:e] == '小离，')
-                answers.update(address_linli_quote=quote, world_update='none')
+                answers.update(address_linli_quote=quote)
             return answers
 
     monkeypatch.setattr('runtime.reply.jev_questions.configured_questions', lambda: Port())
@@ -753,6 +753,7 @@ def test_exchange_commit_keeps_addressing_and_world_gate_from_one_request(tmp_pa
     now = datetime(2026, 9, 29, 4, tzinfo=timezone.utc)
     assert asyncio.run(runtime.consume_exchange('reply:x:1', '小离，今天项目返工了。', '辛苦了。', occurred_at=now))
     assert 'exchange-world-update' not in purposes and purposes.count('exchange-facts') == 1
+    assert purposes.count('exchange-world-check') == 1
     assert [q['quote'] for q in store.addressing_profile(now=now)['user_calls_linli']] == ['小离，']
     with store._db() as db:
         assert db.execute('SELECT decision FROM life_exchange_world_gate WHERE source_id=?', ('reply:x:1',)).fetchone()[0] == 'none'

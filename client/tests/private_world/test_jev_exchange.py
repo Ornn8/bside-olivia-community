@@ -391,7 +391,7 @@ def test_realistic_letter_with_existing_projects_fits_one_packet():
     state, questions, purpose = port.calls[0]
     size = len(json.dumps(dict(state=state, questions=questions, purpose=purpose), ensure_ascii=False, separators=(',', ':')).encode())
     assert size < JEV_MAX_INPUT_BYTES
-    assert len(questions) == 17  # anchors and independent facts; routine values depend on its proof
+    assert len(questions) == 16  # anchors and independent facts; routine values depend on its proof
     assert state['sources'] == {key: data[key] for key in ('user_letter', 'linli_reply')}
     assert _EXCHANGE_LIFE_PROMPT not in str(state)
     assert all(value == key for key, value in questions['update_0_quote']['criteria'].items() if key != 'none')

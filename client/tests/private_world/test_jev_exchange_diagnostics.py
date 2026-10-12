@@ -72,7 +72,7 @@ def test_diagnostics_retain_both_phases_without_private_inputs_or_fact_fields():
     for private in (PRIVATE_TEXT, PRIVATE_REQUEST_ID, 'PRIVATE_USER_TEXT', 'PRIVATE_PROJECT_ID',
                     'PRIVATE_PROJECT_TITLE', 'PRIVATE_INSTRUCTIONS', 'PRIVATE_BILLING_RECEIPT'):
         assert private not in encoded
-    assert set(result) == {'updates', 'current_quote', 'relationship', 'routine', 'boundaries', 'addressing', 'world_update'}
+    assert set(result) == {'updates', 'current_quote', 'relationship', 'routine', 'boundaries', 'addressing'}
     assert result['updates'][0]['status'] == 'completed'
     assert len(port.calls) == 2
 

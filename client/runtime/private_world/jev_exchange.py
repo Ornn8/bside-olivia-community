@@ -626,12 +626,6 @@ async def _extract(port, data, instructions, request_id, level, update_slots, bo
              'linli': '角色本人的独立生活行动或真实计划',
              'shared': '面向用户的定向交付或交付承诺、双方安排、请求用户配合；已完成的交付也属此类'}
     questions = {'current_quote': _q('她明确描述自己现在活动的完整原句；与既有观察或时间矛盾、只有打算则none。', quote_options(reply)),
-        # Formerly its own request (exchange-world-update) right after this one.
-        'world_update': _q('判断这次已送达回复后是否需要启动世界更新链路。明确新行动意向、开始/调整当前活动或待办，'
-            '以及当前活动完成、停止、取消、失败或结果变化，都需要重新决策；例如previous_observation或meals_today仍显示正在吃，'
-            '回复明确说“吃完了，碗也洗了”，必须reconsider。纯聊天、解释旧事、已经记录的相同结果不需要；只由用户问“吃完了吗”、'
-            '引用他人的完成说法、假设或“等吃完再洗碗”不能判断已经完成。reconsider只启动核验，不确认完成事实。',
-            {'none': '没有需处理的新变化，无需更新', 'reconsider': '有新的行动意向或开始/完成/停止/取消/失败/结果变化，需要启动核验与更新'}),
         'capacity': _q(f'完整表达有效独立变更是否超{update_slots}项、持续边界是否超{boundary_slots}项、或有独立行动无法由action_anchors.text定位并由完整support与sources证实？',
                        {'ok': '容量足够且可完整表达', 'unsupported': '超容量或不能完整表达'})}
     for i in range(update_slots):
@@ -766,7 +760,7 @@ async def _extract(port, data, instructions, request_id, level, update_slots, bo
         for i in range(4):
             answers[f'boundary_{i}_action'] = 'none' if answers[f'boundary_{i}_quote'] == 'none' else 'new'
     payload = {'updates': [], 'current_quote': None, 'relationship': None, 'routine': None, 'boundaries': [],
-               'addressing': {}, 'world_update': answers['world_update']}
+               'addressing': {}}
     def evidence(field, catalog):
         key = answers[field]
         if key not in catalog:

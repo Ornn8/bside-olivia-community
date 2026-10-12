@@ -18,8 +18,8 @@ class WorldSelector:
     async def ask(self, state, questions, *, purpose):
         if purpose == 'reply-world-selection':
             return {key: 'must' for key in questions}
-        if purpose == 'exchange-world-update':
-            return {'world_update': 'none'}  # These exchanges change no physical activity.
+        if purpose == 'exchange-world-check':
+            return {key: 'none' for key in questions}  # These exchanges change no physical activity.
         assert purpose in {'exchange-facts', 'exchange-conduct'}, purpose
         answers = {key: 'none' if 'none' in q['criteria'] else next(iter(q['criteria']))
                    for key, q in questions.items()}

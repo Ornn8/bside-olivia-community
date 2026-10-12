@@ -5,6 +5,8 @@ import json
 
 LOCAL = timezone(timedelta(hours=8))
 HOURS = {'breakfast': 8, 'lunch': 12, 'dinner': 18}
+# Preparation or travel before eating begins, by how the meal is had.
+STAGE_DELAY_MINUTES = {'cook': 25, 'delivery': 30, 'dine_out': 20, 'takeaway': 20}
 TERMINAL = {'eaten', 'skipped'}
 
 
@@ -143,8 +145,8 @@ def options(slot, old, now, *, classes=(), prospective=False, plan=None):
         elif preparing and candidate['status'] == 'eating':
             candidate['meal_stage'] = 'eating'
         elif candidate['status'] == 'eating' and mode != 'canteen':
-            stage, delay = {'cook': ('preparing',25), 'delivery': ('ordered',30),
-                            'dine_out': ('travelling',20), 'takeaway': ('collecting',20)}[mode]
+            stage = {'cook': 'preparing', 'delivery': 'ordered', 'dine_out': 'travelling', 'takeaway': 'collecting'}[mode]
+            delay = STAGE_DELAY_MINUTES[mode]
             candidate.update(status='planned', meal_stage=stage, started_at=None,
                              scheduled_for=(now+timedelta(minutes=delay)).isoformat())
         else:
@@ -193,50 +195,63 @@ def _chosen_for_action(candidates, chosen, action):
     return next((key for key in family if index is not None and key.split('_')[1] == index), family[0])
 
 
-async def advance(store, port, now):
-    """At most one JEV call per due meal; failures retain a durable backoff."""
+def _conversation_candidates(store, slot, old, candidates, now, key, basis, snapshot, classes, plan):
+    """What was just said can start a meal, end it, or reopen a skipped one."""
+    actions = []
+    if not old or old['status'] == 'planned':
+        # What was just said (she is called to the table, food is served)
+        # informs this decision too, not only a reconsidered skip.
+        actions = store.pending_exchange_actions(now)
+    if old and old['status'] in {'skipped', 'eating'}:
+        actions = store.pending_exchange_actions(now, after=datetime.fromisoformat(old['occurred_at']))
+        with store._db() as db:
+            reviewed = {r[0] for r in db.execute('SELECT source_id FROM life_meal_exchange_review WHERE meal_key=?', (key,))}
+        actions = [a for a in actions if a['source_id'] not in reviewed]
+        # Reconsider after meaningful autonomous changes as well as new
+        # conversation. Persist the review so polling/restarts do not bill
+        # again for the same boundary or recovery event.
+        with store._db() as db:
+            review = db.execute('SELECT reviewed_at,basis FROM life_meal_recheck WHERE meal_key=?', (key,)).fetchone()
+        last = datetime.fromisoformat(review[0] if review else old.get('recorded_at') or old['occurred_at'])
+        prior_basis = review[1] if review else _recheck_basis(snapshot, last)
+        autonomous = now >= last + timedelta(hours=2) or basis != prior_basis
+        if actions and old['status'] == 'eating':
+            start = datetime.fromisoformat(old.get('started_at') or old['occurred_at'])
+            candidates = {'continue_eating': old}
+            if now > start:
+                candidates['finish_now'] = _candidate(slot, old['food'], 'eaten', now, now, started=start)
+        elif old['status'] == 'skipped' and (actions or autonomous) and now < _cutoff(slot, now):
+            candidates = {'keep_skipped': old}
+            for name, candidate in options(slot, None, now, classes=classes, prospective=True, plan=plan).items():
+                if name.startswith(('eat_', 'plan_')):
+                    candidates[name.replace('eat_', 'start_').replace('plan_', 'later_')] = candidate
+    return actions, candidates
+
+
+async def advance(store, port, now, *, follow=None):
+    """At most one JEV call per due meal; failures retain a durable backoff.
+
+    The slots a day schedule (follow) covers are moved along by it, with no call.
+    """
     now = now.astimezone(timezone.utc)
     today = now.astimezone(LOCAL).date().isoformat()
     from .day_plan import load as load_day_plan
     plan = load_day_plan(store, now)
     for slot in HOURS:
+        # A slot the schedule does not cover is decided the usual way.
+        driven = follow if follow is not None and slot in follow.meals else None
         snapshot = store.snapshot(now)
         old = next((m for m in snapshot['world']['meals'] if m['date']==today and m['slot']==slot), None)
         classes = list(snapshot['world']['schedule'].get('classes', []))
         sleep = snapshot['rhythm'].get('authored_sleep')
         if sleep and sleep['status'] == 'sleeping':
             classes.append({'start': sleep['started_at'], 'end': sleep['end_at']})
-        candidates = options(slot, old, now, classes=classes, plan=plan)
+        candidates = options(slot, old, now, classes=classes, plan=plan if driven is None else driven.plan(slot))
         key = today+':'+slot
         basis = _recheck_basis(snapshot, now)
         actions = []
-        if not old or old['status'] == 'planned':
-            # What was just said (she is called to the table, food is served)
-            # informs this decision too, not only a reconsidered skip.
-            actions = store.pending_exchange_actions(now)
-        if old and old['status'] in {'skipped', 'eating'}:
-            actions = store.pending_exchange_actions(now, after=datetime.fromisoformat(old['occurred_at']))
-            with store._db() as db:
-                reviewed = {r[0] for r in db.execute('SELECT source_id FROM life_meal_exchange_review WHERE meal_key=?', (key,))}
-            actions = [a for a in actions if a['source_id'] not in reviewed]
-            # Reconsider after meaningful autonomous changes as well as new
-            # conversation. Persist the review so polling/restarts do not bill
-            # again for the same boundary or recovery event.
-            with store._db() as db:
-                review = db.execute('SELECT reviewed_at,basis FROM life_meal_recheck WHERE meal_key=?', (key,)).fetchone()
-            last = datetime.fromisoformat(review[0] if review else old.get('recorded_at') or old['occurred_at'])
-            prior_basis = review[1] if review else _recheck_basis(snapshot, last)
-            autonomous = now >= last + timedelta(hours=2) or basis != prior_basis
-            if actions and old['status'] == 'eating':
-                start = datetime.fromisoformat(old.get('started_at') or old['occurred_at'])
-                candidates = {'continue_eating': old}
-                if now > start:
-                    candidates['finish_now'] = _candidate(slot, old['food'], 'eaten', now, now, started=start)
-            elif old['status'] == 'skipped' and (actions or autonomous) and now < _cutoff(slot, now):
-                candidates = {'keep_skipped': old}
-                for name, candidate in options(slot, None, now, classes=classes, prospective=True, plan=plan).items():
-                    if name.startswith(('eat_', 'plan_')):
-                        candidates[name.replace('eat_', 'start_').replace('plan_', 'later_')] = candidate
+        if driven is None:
+            actions, candidates = _conversation_candidates(store, slot, old, candidates, now, key, basis, snapshot, classes, plan)
         if not old or old['status'] != 'eating':
             def outside_class(candidate):
                 value = candidate.get('started_at') or candidate.get('scheduled_for')
@@ -260,98 +275,169 @@ async def advance(store, port, now):
         if retry and now < datetime.fromisoformat(retry[1]):
             continue
         try:
-            # Food options come from available life choices, not persona taste.
-            today = now.astimezone(LOCAL).date().isoformat()
-            state = dict(time=now.isoformat(), slot=slot,
-                         world={'schedule': snapshot['world'].get('schedule', {}),
-                                'meals': [m for m in snapshot['world'].get('meals', []) if m.get('date') == today]},
-                         current={k: snapshot['current'][k] for k in ('activity', 'activity_kind', 'occurred_at')
-                                  if snapshot.get('current') and k in snapshot['current']},
-                         rhythm={k: snapshot['rhythm'][k] for k in ('phase', 'rest', 'wellbeing', 'note', 'recovery', 'authored_sleep')
-                                 if k in snapshot['rhythm']},
-                         previous_meal=old, exchange_actions=actions,
-                          exchange_rule='本轮是角色的自主生活更新，不要求收到交流才可以吃饭。previous_meal.skipped只说明过去那次没吃，不能当成本次继续不吃的理由；下课或恢复后可新开始补吃。exchange_actions中user_text是对方的话：对方做好饭端上、叫她来吃，可作为她现在开始吃的理由，但对方的话不能证明她已吃完。新交流中的已经吃完仍须核对原来的eating记录；仅询问、计划、引语不能证明完成。已有eating且明确报告本餐已吃完，可选finish_now；否则continue_eating。',
-                         recovery=all(c.get('recovered',False) for c in candidates.values()))
-            eaten = [m for m in snapshot['world']['meals'] if m['status'] == 'eaten']
-            last_eaten = max(eaten, key=lambda m: m.get('finished_at') or m['occurred_at'], default=None)
-            state['last_eaten'] = ({k: last_eaten[k] for k in ('slot', 'food', 'occurred_at', 'finished_at') if k in last_eaten}
-                                   if last_eaten else None)
-            # Factor exact shared fields only: each candidate is reconstructed
-            # by overlaying its fields onto these defaults, without losing time
-            # bounds, food, start/finish provenance or recovery semantics.
-            first = next(iter(candidates.values()))
-            defaults = {k: v for k, v in first.items()
-                        if all(k in c and c[k] == v for c in candidates.values())}
-            offered = {key: {k: v for k, v in c.items() if k not in defaults}
-                       for key, c in candidates.items()}
-            decision_state = {**state, 'meal_candidate_defaults': defaults,
-                'meal_candidate_rule': 'Each meal criterion is the complete event formed by overlaying its fields on meal_candidate_defaults. Missing criterion fields retain the exact shared values, including nulls; an empty criterion means the defaults themselves.'}
-            families = list(dict.fromkeys(f for f in map(_family, candidates) if f))
-            answers = await port.ask(decision_state, {'meal':dict(instructions=
-                '从候选选择虚拟角色此刻要执行的新用餐行动，不是判断原文是否已经记载吃过饭。选项会成为新的生活事件，不需要旧事实预先证明新的开始或计划。'
-                '她不能因没有用户消息或没有旧用餐记录就不吃；旧skipped只是历史。结合课表、身体作息、当日其他餐和既有活动选择。'
-                'recovered表示离线期间缺失的角色生活，由你在合理候选时间补演并明确标记，不能伪称观察事实。'
-                '已有开始进食则在给定时长中结束；已吃完不可重吃，跳过不等于全天不能再吃。'
-                '下课后有空闲且长时间未进食，应选择开始或稍后用餐。没食欲、不能用餐等理由不能凭空假定，也不能仅凭疲劳推断；只有确有本轮原因才选keep_skipped。'
-                '计划是未来安排，不提前写成已吃；下课或恢复后可以选择新的补吃。食物不是人格固定口味，兼顾变化。'
-                '若有action题，本题选与action所选行动一致的候选，只决定具体食物与时间。', criteria=offered),
-                **({'action': dict(instructions='这顿饭她此刻怎么安排？按课表、作息、当日其他餐和本轮交流判断；没有具体原因时她会正常吃饭。',
-                                   criteria={name: _ACTION_CRITERIA[name] for name in families})} if len(families) > 1 else {})},
-                purpose='world-meal-lifecycle')
-            chosen = answers.get('meal') if isinstance(answers,dict) else None
-            if chosen not in candidates:
-                raise ValueError('MEAL_DECISION_INVALID')
-            action = answers.get('action')
-            chosen = _chosen_for_action(candidates, chosen, action if action in families else None)
-            meal = candidates[chosen]
-            if old and old.get('mode') and meal['status']=='eaten':
-                meal.update({k: old[k] for k in ('mode','place') if k in old}, meal_stage='finished')
-            if chosen in {'keep_skipped', 'continue_eating'}:
-                with store._db() as db:
-                    db.executemany('INSERT OR IGNORE INTO life_meal_exchange_review VALUES (?,?)',
-                                   [(key,a['source_id']) for a in actions])
-                    db.execute('DELETE FROM life_meal_retry WHERE meal_key=?', (key,))
-                    db.execute('INSERT OR REPLACE INTO life_meal_recheck VALUES (?,?,?)', (key, now.isoformat(), basis))
-                continue
+            if driven is None:
+                picked = await _ask_meal(port, store, slot, old, candidates, actions, snapshot, now, key, basis)
+                if picked is None:
+                    continue
+                meal, state = picked
+            else:
+                chosen = driven.choose(slot, candidates, old, now)
+                if chosen is None:
+                    continue
+                meal, state = candidates[chosen], None
+                if old and old.get('mode') and meal['status']=='eaten':
+                    meal.update({k: old[k] for k in ('mode','place') if k in old}, meal_stage='finished')
             source = 'meal:' + hashlib.sha256((key+':'+meal['status']+':'+meal['occurred_at']).encode()).hexdigest()[:32]
             meal = {**meal, 'source_id':source}
-            from .life_episode import create as create_episode, save as save_episode
-            episode = await create_episode(port, source, now, 'meal', state, meal=meal)
-            with store._db() as db:
-                db.execute('BEGIN IMMEDIATE')
-                current = next((m for m in store._world(db, now)['meals'] if m['date']==today and m['slot']==slot),None)
-                if current != old:
-                    continue  # Concurrent author advanced it; do not overwrite.
-                db.execute('INSERT OR IGNORE INTO life_meal_events VALUES (?,?,?)',
-                           (source, now.isoformat(), json.dumps(meal,ensure_ascii=False)))
-                db.executemany('INSERT OR IGNORE INTO life_meal_exchange_review VALUES (?,?)',
-                               [(key,a['source_id']) for a in actions])
-                save_episode(db, episode, source, now)
-                if meal['status'] == 'eating' or meal.get('meal_stage') in {'ordered','preparing','travelling','collecting'}:
-                    # This is a newly authored present action, so the main
-                    # world view must not keep saying she is practising/asleep.
-                    titles = {'breakfast':'早餐','lunch':'午餐','dinner':'晚餐'}
-                    previous = snapshot.get('current') or {}
-                    place = meal.get('place')
-                    stage = meal.get('meal_stage')
-                    if stage in {'travelling', 'collecting', 'ordered'}:
-                        # Destination is a plan until the next authored arrival.
-                        location = previous.get('location') or '住处'
-                    else:
-                        location = place['name'] if place else previous.get('location') or '住处'
-                    description = {'ordered':'已下单，等待外卖', 'preparing':'正在准备餐食',
-                        'travelling':'准备出门就餐', 'collecting':'准备买饭带回'}.get(stage,'正在吃')
-                    activity = dict(source_id=source, occurred_at=now.isoformat(),
-                        location=location, activity=description+titles[slot],
-                        note=description+'：'+meal['food']+'。', activity_kind='meal', progress=[], meals=[],
-                        **({'place':place} if place and stage not in {'travelling','collecting','ordered'} else
-                           {'place':previous['place']} if previous.get('place') else {}))
-                    db.execute('INSERT OR IGNORE INTO life_moments VALUES (?,?,?,?)',
-                               (source, now.isoformat(), 'daily', json.dumps(activity,ensure_ascii=False)))
-                db.execute('DELETE FROM life_meal_retry WHERE meal_key=?',(key,))
-                db.execute('INSERT OR REPLACE INTO life_meal_recheck VALUES (?,?,?)', (key, now.isoformat(), basis))
+            episode = None
+            if state is not None:
+                from .life_episode import create as create_episode
+                episode = await create_episode(port, source, now, 'meal', state, meal=meal)
+            commit(store, snapshot, slot, old, meal, now, key, basis, actions, episode)
         except Exception:
             with store._db() as db:
                 failures = min((retry[0] if retry else 0)+1,5)
                 retry_at = now+timedelta(minutes=min(5*2**(failures-1),60))
                 db.execute('INSERT OR REPLACE INTO life_meal_retry VALUES (?,?,?)',(key,failures,retry_at.isoformat()))
+
+
+async def _ask_meal(port, store, slot, old, candidates, actions, snapshot, now, key, basis):
+    """The model's pick among the candidates; None when it keeps the current meal state."""
+    # Food options come from available life choices, not persona taste.
+    today = now.astimezone(LOCAL).date().isoformat()
+    state = dict(time=now.isoformat(), slot=slot,
+                 world={'schedule': snapshot['world'].get('schedule', {}),
+                        'meals': [m for m in snapshot['world'].get('meals', []) if m.get('date') == today]},
+                 current={k: snapshot['current'][k] for k in ('activity', 'activity_kind', 'occurred_at')
+                          if snapshot.get('current') and k in snapshot['current']},
+                 rhythm={k: snapshot['rhythm'][k] for k in ('phase', 'rest', 'wellbeing', 'note', 'recovery', 'authored_sleep')
+                         if k in snapshot['rhythm']},
+                 previous_meal=old, exchange_actions=actions,
+                  exchange_rule='本轮是角色的自主生活更新，不要求收到交流才可以吃饭。previous_meal.skipped只说明过去那次没吃，不能当成本次继续不吃的理由；下课或恢复后可新开始补吃。exchange_actions中user_text是对方的话：对方做好饭端上、叫她来吃，可作为她现在开始吃的理由，但对方的话不能证明她已吃完。新交流中的已经吃完仍须核对原来的eating记录；仅询问、计划、引语不能证明完成。已有eating且明确报告本餐已吃完，可选finish_now；否则continue_eating。',
+                 recovery=all(c.get('recovered',False) for c in candidates.values()))
+    eaten = [m for m in snapshot['world']['meals'] if m['status'] == 'eaten']
+    last_eaten = max(eaten, key=lambda m: m.get('finished_at') or m['occurred_at'], default=None)
+    state['last_eaten'] = ({k: last_eaten[k] for k in ('slot', 'food', 'occurred_at', 'finished_at') if k in last_eaten}
+                           if last_eaten else None)
+    # Factor exact shared fields only: each candidate is reconstructed
+    # by overlaying its fields onto these defaults, without losing time
+    # bounds, food, start/finish provenance or recovery semantics.
+    first = next(iter(candidates.values()))
+    defaults = {k: v for k, v in first.items()
+                if all(k in c and c[k] == v for c in candidates.values())}
+    offered = {key: {k: v for k, v in c.items() if k not in defaults}
+               for key, c in candidates.items()}
+    decision_state = {**state, 'meal_candidate_defaults': defaults,
+        'meal_candidate_rule': 'Each meal criterion is the complete event formed by overlaying its fields on meal_candidate_defaults. Missing criterion fields retain the exact shared values, including nulls; an empty criterion means the defaults themselves.'}
+    families = list(dict.fromkeys(f for f in map(_family, candidates) if f))
+    answers = await port.ask(decision_state, {'meal':dict(instructions=
+        '从候选选择虚拟角色此刻要执行的新用餐行动，不是判断原文是否已经记载吃过饭。选项会成为新的生活事件，不需要旧事实预先证明新的开始或计划。'
+        '她不能因没有用户消息或没有旧用餐记录就不吃；旧skipped只是历史。结合课表、身体作息、当日其他餐和既有活动选择。'
+        'recovered表示离线期间缺失的角色生活，由你在合理候选时间补演并明确标记，不能伪称观察事实。'
+        '已有开始进食则在给定时长中结束；已吃完不可重吃，跳过不等于全天不能再吃。'
+        '下课后有空闲且长时间未进食，应选择开始或稍后用餐。没食欲、不能用餐等理由不能凭空假定，也不能仅凭疲劳推断；只有确有本轮原因才选keep_skipped。'
+        '计划是未来安排，不提前写成已吃；下课或恢复后可以选择新的补吃。食物不是人格固定口味，兼顾变化。'
+        '若有action题，本题选与action所选行动一致的候选，只决定具体食物与时间。', criteria=offered),
+        **({'action': dict(instructions='这顿饭她此刻怎么安排？按课表、作息、当日其他餐和本轮交流判断；没有具体原因时她会正常吃饭。',
+                           criteria={name: _ACTION_CRITERIA[name] for name in families})} if len(families) > 1 else {})},
+        purpose='world-meal-lifecycle')
+    chosen = answers.get('meal') if isinstance(answers,dict) else None
+    if chosen not in candidates:
+        raise ValueError('MEAL_DECISION_INVALID')
+    action = answers.get('action')
+    chosen = _chosen_for_action(candidates, chosen, action if action in families else None)
+    meal = candidates[chosen]
+    if old and old.get('mode') and meal['status']=='eaten':
+        meal.update({k: old[k] for k in ('mode','place') if k in old}, meal_stage='finished')
+    if chosen in {'keep_skipped', 'continue_eating'}:
+        with store._db() as db:
+            db.executemany('INSERT OR IGNORE INTO life_meal_exchange_review VALUES (?,?)',
+                           [(key,a['source_id']) for a in actions])
+            db.execute('DELETE FROM life_meal_retry WHERE meal_key=?', (key,))
+            db.execute('INSERT OR REPLACE INTO life_meal_recheck VALUES (?,?,?)', (key, now.isoformat(), basis))
+        return None
+    return meal, state
+
+
+def commit(store, snapshot, slot, old, meal, now, key, basis, actions, episode):
+    """Record one meal action unless another author advanced the meal meanwhile."""
+    from .life_episode import save as save_episode
+    today = now.astimezone(LOCAL).date().isoformat()
+    source = meal['source_id']
+    with store._db() as db:
+        db.execute('BEGIN IMMEDIATE')
+        current = next((m for m in store._world(db, now)['meals'] if m['date']==today and m['slot']==slot),None)
+        if current != old:
+            return False  # Concurrent author advanced it; do not overwrite.
+        db.execute('INSERT OR IGNORE INTO life_meal_events VALUES (?,?,?)',
+                   (source, now.isoformat(), json.dumps(meal,ensure_ascii=False)))
+        db.executemany('INSERT OR IGNORE INTO life_meal_exchange_review VALUES (?,?)',
+                       [(key,a['source_id']) for a in actions])
+        save_episode(db, episode, source, now)
+        if meal['status'] == 'eating' or meal.get('meal_stage') in {'ordered','preparing','travelling','collecting'}:
+            # This is a newly authored present action, so the main
+            # world view must not keep saying she is practising/asleep.
+            titles = {'breakfast':'早餐','lunch':'午餐','dinner':'晚餐'}
+            previous = snapshot.get('current') or {}
+            place = meal.get('place')
+            stage = meal.get('meal_stage')
+            if stage in {'travelling', 'collecting', 'ordered'}:
+                # Destination is a plan until the next authored arrival.
+                location = previous.get('location') or '住处'
+            else:
+                location = place['name'] if place else previous.get('location') or '住处'
+            description = {'ordered':'已下单，等待外卖', 'preparing':'正在准备餐食',
+                'travelling':'准备出门就餐', 'collecting':'准备买饭带回'}.get(stage,'正在吃')
+            activity = dict(source_id=source, occurred_at=now.isoformat(),
+                location=location, activity=description+titles[slot],
+                note=description+'：'+meal['food']+'。', activity_kind='meal', progress=[], meals=[],
+                **({'place':place} if place and stage not in {'travelling','collecting','ordered'} else
+                   {'place':previous['place']} if previous.get('place') else {}))
+            db.execute('INSERT OR IGNORE INTO life_moments VALUES (?,?,?,?)',
+                       (source, now.isoformat(), 'daily', json.dumps(activity,ensure_ascii=False)))
+        db.execute('DELETE FROM life_meal_retry WHERE meal_key=?',(key,))
+        db.execute('INSERT OR REPLACE INTO life_meal_recheck VALUES (?,?,?)', (key, now.isoformat(), basis))
+    return True
+
+
+def finish(store, slot, now):
+    """She has finished the meal she is eating: record it as eaten now."""
+    now = now.astimezone(timezone.utc)
+    today = now.astimezone(LOCAL).date().isoformat()
+    snapshot = store.snapshot(now)
+    old = next((m for m in snapshot['world']['meals'] if m['date'] == today and m['slot'] == slot), None)
+    if not old or old['status'] != 'eating':
+        return False
+    started = datetime.fromisoformat(old.get('started_at') or old['occurred_at'])
+    meal = _candidate(slot, old['food'], 'eaten', max(now, started), now, started=started)
+    meal.update({k: old[k] for k in ('mode', 'place') if k in old})
+    if 'mode' in old:
+        meal['meal_stage'] = 'finished'
+    key = today + ':' + slot
+    meal['source_id'] = 'meal:' + hashlib.sha256((key + ':eaten:' + meal['occurred_at']).encode()).hexdigest()[:32]
+    return commit(store, snapshot, slot, old, meal, now, key, _recheck_basis(snapshot, now), [], None)
+
+
+class Schedule:
+    """Picks each due meal action from a day schedule instead of asking a model."""
+
+    def __init__(self, meals):
+        # slot -> {'entry': food or {food, mode, place}, 'start': datetime, 'duration': minutes, 'skip': bool}
+        self.meals = meals
+
+    def plan(self, slot):
+        item = self.meals.get(slot)
+        return {'meals': {slot: [item['entry']]}} if item else {}
+
+    def choose(self, slot, candidates, old, now):
+        item = self.meals.get(slot)
+        if item is None:
+            return None
+        if item.get('skip'):
+            return 'skipped' if 'skipped' in candidates else None
+        if old and old['status'] == 'eating':
+            wanted = f"finished_{item['duration']}"
+            return wanted if wanted in candidates else None
+        if now < item['start']:
+            return None
+        return next((key for key in ('recovered_0_0', 'eat_0') if key in candidates), None)

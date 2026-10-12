@@ -51,86 +51,78 @@ def test_exchange_actions_excludes_future_old_and_non_action_chat(tmp_path):
     assert not store.pending_exchange_actions(now, after=now)
 
 
-@pytest.mark.parametrize('decision', ['none', 'reconsider'])
-def test_delivered_exchange_gate_is_separate_durable_and_recovers_existing_source(tmp_path, monkeypatch, decision):
+class CheckPort:
+    """Answers the per-exchange world check; records what it was asked."""
+
+    def __init__(self, change='none'):
+        self.change, self.calls = change, []
+
+    async def ask(self, state, questions, *, purpose):
+        self.calls.append((state, questions, purpose))
+        return {key: self.change if key == 'change' else 'none' for key in questions}
+
+
+@pytest.mark.parametrize(('change', 'decision'), [('none', 'none'), ('outside', 'reconsider')])
+def test_delivered_exchange_check_is_one_request_durable_and_recovers_existing_source(tmp_path, monkeypatch, change, decision):
     now = datetime.now(timezone.utc)
     store = DailyLifeStore(tmp_path / 'life.db')
-    # Simulate a delivery recorded before the new gate was installed, including
-    # a case whose exchange extractor found no current action.
+    # A delivery recorded before its check ran: replaying it asks once, then never again.
     store.record_exchange('reply:existing', '去吃饭吧', '我这就去。', [], occurred_at=now)
-    calls, scheduled = [], []
-
-    class Port:
-        async def ask(self, state, questions, *, purpose):
-            calls.append((state, questions, purpose))
-            return {'world_update': decision}
-
-    monkeypatch.setattr('runtime.reply.jev_questions.configured_questions', lambda: Port())
+    port, scheduled = CheckPort(change), []
+    monkeypatch.setattr('runtime.reply.jev_questions.configured_questions', lambda: port)
     runtime = DailyLifeRuntime(store, lambda: None, lambda: '')
     monkeypatch.setattr(runtime, 'schedule_refresh', scheduled.append)
     for _ in range(2):
         assert not asyncio.run(runtime.consume_exchange('reply:existing', '去吃饭吧', '我这就去。', occurred_at=now))
-    assert len(calls) == 1
-    assert calls[0][2] == 'exchange-world-update'
-    assert set(calls[0][0]) == {'occurred_at', 'assessed_at', 'user_text', 'delivered_reply', 'current', 'meals'}
+    assert len(port.calls) == 1
+    state, questions, purpose = port.calls[0]
+    assert purpose == 'exchange-world-check'
+    # Only the exchange's own words and the world as it stands; no persona, no journal.
+    assert set(state) == {'contract', 'exchange', 'current', 'meals_today', 'projects', 'quotes', 'quote_contract'}
+    assert state['exchange']['user_text'] == '去吃饭吧' and state['exchange']['reply_text'] == '我这就去。'
+    # Without a laid-out day only a plain no, an agreed meal or a full decision can follow.
+    assert set(questions['change']['criteria']) == {'none', 'meal', 'outside'}
+    assert {key for key in questions['meal']['criteria'] if key != 'none'} <= {'agreed_breakfast', 'agreed_lunch', 'agreed_dinner'}
     assert bool(scheduled) == (decision == 'reconsider')
     actions = DailyLifeStore(store.path).pending_exchange_actions(now)
     assert bool(actions) == (decision == 'reconsider')
     if actions:
         assert actions[0]['reply_text'] == '我这就去。'
-        assert actions[0]['current'] is None
+    with store._db() as db:
+        assert db.execute('SELECT decision FROM life_exchange_world_gate').fetchone()[0] == decision
 
 
-def test_failed_gate_does_not_schedule_or_mark_approved_and_can_retry(tmp_path, monkeypatch):
+def test_a_check_that_cannot_be_answered_changes_nothing_and_does_not_lose_the_exchange(tmp_path, monkeypatch):
     now = datetime.now(timezone.utc)
     store = DailyLifeStore(tmp_path / 'life.db')
     store.record_exchange('reply:existing', '去吃饭吧', '我这就去。', [], occurred_at=now)
+    outcome = []
+
     class Port:
         async def ask(self, *args, **kwargs):
+            outcome.append(1)
             raise RuntimeError('JEV_UNAVAILABLE')
+
     monkeypatch.setattr('runtime.reply.jev_questions.configured_questions', lambda: Port())
     runtime = DailyLifeRuntime(store, lambda: None, lambda: '')
     scheduled = []
     monkeypatch.setattr(runtime, 'schedule_refresh', scheduled.append)
-    with pytest.raises(RuntimeError, match='JEV_UNAVAILABLE'):
-        asyncio.run(runtime.consume_exchange('reply:existing', '去吃饭吧', '我这就去。', occurred_at=now))
-    assert not scheduled
-    assert not store.pending_exchange_actions(now)
+    assert asyncio.run(runtime.consume_exchange('reply:existing', '去吃饭吧', '我这就去。', occurred_at=now)) is False
+    assert runtime.world_check_error_code == 'JEV_UNAVAILABLE'
+    assert not scheduled and not store.pending_exchange_actions(now)
     with store._db() as db:
         assert db.execute('SELECT count(*) FROM life_exchange_world_gate').fetchone()[0] == 0
+    # Nothing was marked checked, so a later replay asks again.
+    asyncio.run(runtime.consume_exchange('reply:existing', '去吃饭吧', '我这就去。', occurred_at=now))
+    assert len(outcome) == 2
 
 
-@pytest.mark.parametrize(('user_text', 'reply_text', 'decision'), [
-    ('吃完了吗？', '吃完了，碗也已经洗了。', 'reconsider'),
-    ('吃完了吗？', '我还在吃。', 'none'),
-    ('你刚才说什么？', '她说吃完了，碗也洗了。', 'none'),
-    ('你接下来干嘛？', '等吃完再洗碗。', 'none'),
-])
-def test_completion_gate_contract_and_old_negative_migration(tmp_path, monkeypatch, user_text, reply_text, decision):
+def test_a_proactive_message_is_checked_too_with_no_user_words(tmp_path, monkeypatch):
     now = datetime.now(timezone.utc)
     store = DailyLifeStore(tmp_path / 'life.db')
-    store.record_exchange('reply:existing', user_text, reply_text, [], occurred_at=now)
-    with store._db() as db:
-        db.execute('INSERT INTO life_exchange_world_gate VALUES (?,?,?)', ('reply:existing', 'none', reply_text))
-    calls, scheduled = [], []
-    class Port:
-        async def ask(self, state, questions, *, purpose):
-            calls.append(state)
-            contract = questions['world_update']['instructions']
-            assert '完成、停止、取消、失败或结果变化' in contract
-            assert '不能因为完成说法尚未得到世界核验' in contract
-            assert '只由用户问' in contract and '引用他人的' in contract and '假设' in contract
-            assert state['delivered_reply'] == reply_text
-            return {'world_update': decision}
-    monkeypatch.setattr('runtime.reply.jev_questions.configured_questions', lambda: Port())
+    port = CheckPort()
+    monkeypatch.setattr('runtime.reply.jev_questions.configured_questions', lambda: port)
     runtime = DailyLifeRuntime(store, lambda: None, lambda: '')
-    monkeypatch.setattr(runtime, 'schedule_refresh', scheduled.append)
-    for _ in range(2):
-        asyncio.run(runtime.consume_exchange('reply:existing', user_text, reply_text, occurred_at=now))
-    assert len(calls) == 1
-    assert bool(scheduled) == (decision == 'reconsider')
-    with store._db() as db:
-        assert db.execute('SELECT version FROM life_exchange_world_gate_versions').fetchone()[0] == 2
-        assert db.execute('SELECT decision FROM life_exchange_world_gate').fetchone()[0] == decision
-    # The gate never publishes a meal or completes a world action by itself.
-    assert not store.snapshot(now)['world']['meals']
+    store.record_exchange('reply:p:1', '', '我想你了。', [], occurred_at=now, origin='proactive')
+    asyncio.run(runtime.consume_exchange('reply:p:1', '', '我想你了。', occurred_at=now, origin='proactive'))
+    assert [call[0]['exchange']['origin'] for call in port.calls] == ['proactive']
