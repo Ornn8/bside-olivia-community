@@ -2,6 +2,10 @@
 
 每个版本的完整内容、升级方式和已知问题见 [`docs/releases/`](docs/releases/) 下对应的更新说明；附件以 [GitHub Releases](https://github.com/Ornn8/bside-olivia-community/releases) 为准。
 
+## 2.3.2 - 2026-10-13
+
+第一次打开、还没有 Key 时直接进入「账户」页领取 Key，记忆包就绪后不再弹初始设置；新账户回复默认 Claude Haiku 5.5、日记默认 Claude Opus 5.5；歌曲人声按原曲响度对齐伴奏；日常视频分享更多；余额不足时提示充值。详见 [2.3.2 更新说明](docs/releases/v2.3.2.md)。
+
 ## 2.3.1 - 2026-10-12
 
 日记两遍成稿：一整篇她自己视角的散文，参考当天的照片、视频、语音和她的生活，并配一张当天的照片；月度回忆同样先写再改；服务暂时连不上时图片模型选择不再消失。详见 [2.3.1 更新说明](docs/releases/v2.3.1.md)。
