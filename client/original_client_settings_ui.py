@@ -3942,6 +3942,20 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     });
     imageControls.append(imageToggle,imageModelLabel,imageSizes);
     const imageHelp=text('p','','text-text-secondary text-caption-m');
+    const imageCatalogStatus=text('p','','text-text-secondary text-caption-m');imageCatalogStatus.setAttribute('role','status');
+    let catalogRetry=0, catalogTimer=null;
+    const retryCatalog=()=>{
+      if(imageCapability){clearTimeout(catalogTimer);catalogTimer=null;imageCatalogStatus.textContent='';return;}
+      if(catalogRetry>=3&&catalogTimer===null){imageCatalogStatus.textContent='';return;}
+      imageCatalogStatus.textContent='正在读取可用的图片模型…';
+      if(catalogTimer!==null||!container.isConnected)return;
+      catalogTimer=setTimeout(async()=>{
+        catalogTimer=null;
+        if(!container.isConnected)return;
+        catalogRetry++;
+        await hydrate(true);
+      },[2000,5000,10000][catalogRetry]);
+    };
     const nodes = {};
     const detail = text("p", "", "text-text-secondary text-body-m font-regular");
     const status = text("p", "正在读取设置…", "text-text-secondary text-caption-m font-regular"); status.setAttribute("role", "status");
@@ -3977,18 +3991,21 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         status.textContent="已保存。已接收的信件继续按原设置处理。";busy=false;render(); }
       catch (_) { busy=false;await hydrate();status.textContent="没有保存成功，已恢复为原来的设置，请重试。"; }
     };
-    const hydrate=async()=>{
+    const hydrate=async(catalogOnly=false)=>{
       try {
         const result=await routeRequest("/toy/settings/reply-routes");
+        imageCapability=result.image_capability||imageCapability;
+        if(catalogOnly&&selected!==null)return;
+        if(busy)return;
         selected=result.tier || (Object.values(result.routes||{}).some(Boolean) ? "video" : "text");
         imageEnabled=result.image?.enabled===true;imageResolution=result.image?.resolution||'1K';
         imageModel=result.image?.model||'';imageCapability=result.image_capability||null;
         if(!labels[selected]) throw Error("invalid tier");
         status.textContent=result.tier_configured===false ? "当前沿用旧设置，点选一个档位即统一生效。" : "";
-      } catch (_) { selected=null;status.textContent="设置读取失败，请稍后重新打开设置页。"; }
-      render();
+      } catch (_) { if(selected===null)status.textContent="设置读取失败，请稍后重新打开设置页。"; }
+      finally { render();retryCatalog(); }
     };
-    container.append(choices,detail,imageControls,imageHelp,status);section.append(container);
+    container.append(choices,detail,imageControls,imageHelp,imageCatalogStatus,status);section.append(container);
     refreshVideoReplySetting=()=>container.isConnected ? hydrate() : Promise.resolve(); void hydrate();
   };
 

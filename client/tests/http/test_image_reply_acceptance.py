@@ -313,3 +313,10 @@ def test_a_slow_catalog_read_keeps_the_model_choice_and_lets_a_switch_save(tmp_p
             'request_id': 'video_reply_setting:switch-a', 'image': {'enabled': True, 'resolution': '1K', 'model': 'photo-a'}}, {})
         assert result['code'] == 0 and settings.image_snapshot()['model'] == 'photo-a'
     asyncio.run(scenario())
+
+
+@pytest.fixture(autouse=True)
+def isolated_image_catalog(tmp_path, monkeypatch):
+    import local_server as server
+    monkeypatch.setattr(server, '_state_root', lambda: tmp_path)
+    monkeypatch.setattr(server, '_LAST_IMAGE_CAPABILITY', {})

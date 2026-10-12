@@ -192,8 +192,69 @@ _PUBLIC_SONG_EMOTIONS = frozenset(
 )
 
 
-# The last image model catalog the service returned, reused when a later read is slow.
+# Display-only catalogs, isolated by data root and service credentials.
 _LAST_IMAGE_CAPABILITY = {}
+
+
+async def _image_capability(*, allow_cached=True, disk=True):
+    from runtime.remote_generation import RemoteGeneration
+    from runtime.cloud_service import CloudError
+    from runtime.video_reply_settings import image_model_capability
+
+    try:
+        api = RemoteGeneration(_os.environ.get('OLIVIA_GPU_API_URL', ''), _os.environ.get('OLIVIA_GPU_API_KEY', ''))
+    except CloudError:
+        return None
+    if not api.url or not api.token:
+        return None
+    root = _state_root()
+    # Credentials identify the service account without storing the token on disk.
+    digest = hashlib.sha256(json.dumps([api.url, api.token]).encode('utf8')).hexdigest()
+    key = (str(root), digest)
+    path = root / 'image-catalog' / (digest + '.json') if root is not None else None
+    try:
+        result = image_model_capability(await asyncio.wait_for(api.request('capabilities', {}), 8))
+    except (CloudError, TimeoutError):
+        if not allow_cached:
+            return None
+        if key in _LAST_IMAGE_CAPABILITY:
+            return copy.deepcopy(_LAST_IMAGE_CAPABILITY[key])
+        if not disk:
+            return None
+        try:
+            result = image_model_capability({'image': json.loads(path.read_text(encoding='utf8'))}) if path else None
+        except (OSError, ValueError, UnicodeError):
+            return None
+        if result is not None and result.get('models'):
+            _LAST_IMAGE_CAPABILITY[key] = result
+            return copy.deepcopy(result)
+        return None
+    if result is not None and result.get('models'):
+        _LAST_IMAGE_CAPABILITY[key] = copy.deepcopy(result)
+        if path is not None:
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                _atomic_write_store_file(path, json.dumps(result, ensure_ascii=True))
+            except (OSError, UnicodeError):
+                pass  # Cache storage must not make settings unavailable.
+    return result
+
+
+async def _warm_image_catalog():
+    result = await _image_capability(allow_cached=False)
+    if not result or not result.get('models'):
+        await asyncio.sleep(30)
+        await _image_capability(allow_cached=False)
+
+
+async def _image_catalog_lifecycle(_app):
+    task = asyncio.create_task(_warm_image_catalog())
+    try:
+        yield
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
 
 def _sanitized_music_render_metadata(value: object) -> dict[str, object]:
     if not isinstance(value, Mapping):
@@ -4883,22 +4944,7 @@ async def route(
 
     if p == "/toy/settings/reply-routes":
         from runtime.wardrobe import catalog
-        from runtime.video_reply_settings import delisted_fallback, image_model_capability, require_image_model
-        async def image_capability():
-            from runtime.remote_generation import RemoteGeneration
-            from runtime.cloud_service import CloudError
-            try:
-                api = RemoteGeneration(_os.environ.get('OLIVIA_GPU_API_URL', ''), _os.environ.get('OLIVIA_GPU_API_KEY', ''))
-                if not api.url or not api.token:
-                    return None
-                result = image_model_capability(await asyncio.wait_for(api.request('capabilities', {}), 8))
-            except (CloudError, TimeoutError):
-                # A slow or failed read keeps the last catalog: losing it hid the model choice
-                # and turned an ordinary save into a failure.
-                return _LAST_IMAGE_CAPABILITY.get('value')
-            if result is not None and result.get('models'):
-                _LAST_IMAGE_CAPABILITY['value'] = result
-            return result
+        from runtime.video_reply_settings import delisted_fallback, require_image_model
         try:
             if method == "POST":
                 if 'image' in body:
@@ -4908,7 +4954,9 @@ async def route(
                     retaining_saved = (image.get('model') == saved.get('model') and image['resolution'] == saved['resolution']
                                        and (image['enabled'] is False or saved['enabled'] is True))
                     if 'model' in image and not retaining_saved:
-                        capability = await image_capability()
+                        # A catalog this process already read keeps a switch saving through a slow
+                        # read; the disk copy only shows choices and never authorizes a change.
+                        capability = await _image_capability(disk=False)
                         if (capability is not None and capability['models'] and image['model'] == saved.get('model')
                                 and not any(item['id'] == image['model'] for item in capability['models'])):
                             # The saved model was delisted: fall back to the service default
@@ -4927,7 +4975,7 @@ async def route(
                 if set(body) not in ({"request_id", "routes"}, {"request_id", "routes", "videos"}):
                     return err(400, "VIDEO_REPLY_SETTING_PAYLOAD_INVALID", {})
                 return ok(video_reply_settings_store.mutate_routes(body["request_id"], body["routes"], body.get("videos")))
-            capability = await image_capability()
+            capability = await _image_capability()
             return ok({"state": "available", "image": video_reply_settings_store.image_snapshot(),
                        **({'image_capability': capability} if capability is not None else {}),
                        "wardrobe": video_reply_settings_store.wardrobe_snapshot(), "wardrobe_styles": catalog(),
@@ -6450,6 +6498,7 @@ def install_reply_task_lifecycle(app: web.Application) -> None:
 
     app.on_startup.append(_start_conversation_memory)
     app.on_startup.append(_start_reply_tasks)
+    app.cleanup_ctx.append(_image_catalog_lifecycle)
     from runtime.personal_chat.backend import install_personal_chat
     import sys
     install_personal_chat(app, sys.modules[__name__])
