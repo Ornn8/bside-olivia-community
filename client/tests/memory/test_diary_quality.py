@@ -77,8 +77,39 @@ def test_style_rotation_and_length_tiers():
     assert choose_style('2026-10-07', recent, True) == 'short'
     assert length_range(10, []) == (60, 150)
     assert length_range(100, []) == (250, 600)
-    assert length_range(100, [{'kind': 'photo'}]) == (250, 900)
+    assert length_range(100, [{'kind': 'photo'}]) == (250, 600)
     assert length_range(2000, []) == (250, 900)
+
+
+@pytest.mark.parametrize('user_chars,kinds,expected', [
+    (1199, [], (250, 600)),
+    (1200, [], (250, 900)),
+    (100, ['photo', 'photo'], (250, 600)),
+    (100, ['photo', 'photo', 'photo'], (250, 900)),
+    (100, ['photo', 'daily_video'], (250, 900)),
+    (100, ['voice', 'piano'], (250, 900)),
+    (100, ['speech', 'music'], (250, 900)),
+    (100, ['story', 'asmr'], (250, 600)),
+    (100, ['music', 'cover'], (250, 600)),
+    (100, ['story', 'asmr', 'asmr_story'], (250, 900)),
+    (100, ['gift', 'pet', 'clothes'], (250, 600)),
+    (100, ['photo', 'gift', 'pet'], (250, 600)),
+    (39, ['photo', 'daily_video', 'piano'], (60, 150)),
+    (40, ['photo', 'daily_video'], (250, 900)),
+])
+def test_rich_day_requires_enough_text_items_or_media_types(user_chars, kinds, expected):
+    from runtime.diary.diary import length_range
+    assert length_range(user_chars, [{'kind': kind} for kind in kinds]) == expected
+
+
+def test_undelivered_media_cannot_make_a_day_rich():
+    from runtime.diary.diary import length_range, sent_material
+    photo = dict(ROWS[0], image_delivery_status='DELIVERED', image_delivered_at=DAY.isoformat())
+    pending = dict(ROWS[0], image_delivery_status='PENDING', speech_delivery_status='UNKNOWN',
+                   piano_delivery_status='READY')
+    videos = [{'delivery_status': 'PENDING', 'delivered_at': DAY.isoformat(), 'input': {'spoken_text': '你好'}}]
+    sent, _ = sent_material([photo, pending, pending], '2026-10-07', videos)
+    assert length_range(100, sent) == (250, 600)
 
 
 def test_packet_budget_drops_low_priority_first():

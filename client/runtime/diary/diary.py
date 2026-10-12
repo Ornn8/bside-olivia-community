@@ -581,7 +581,11 @@ def choose_style(day, recent, short):
 def length_range(user_chars, sent):
     if user_chars < SHORT_DAY_CHARS:
         return (60, 150)
-    rich = user_chars >= 1500 or any(item.get('kind') in {'photo', 'daily_video', 'music', 'cover', 'piano'} for item in sent)
+    media_types = {'photo': 'photo', 'daily_video': 'daily_video', 'piano': 'piano',
+                   'voice': 'voice', 'speech': 'voice', 'story': 'voice', 'asmr': 'voice', 'asmr_story': 'voice',
+                   'music': 'song', 'cover': 'song'}
+    delivered = [media_types[item['kind']] for item in sent if item.get('kind') in media_types]
+    rich = user_chars >= 1200 or len(delivered) >= 3 or len(set(delivered)) >= 2
     return (250, 900 if rich else 600)
 
 
