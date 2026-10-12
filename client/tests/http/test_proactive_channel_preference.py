@@ -215,20 +215,28 @@ def test_the_chat_backend_publishes_whether_qq_can_start_contact_and_withdraws_i
     (folder / 'config.json').write_text(json.dumps({'qq': {'url': 'ws://127.0.0.1:3001', 'account': '100', 'owner': '200'}}),
                                         encoding='utf-8')
     (folder / 'setup-choice.json').write_text(json.dumps({'channels': ['qq']}), encoding='utf-8')
-    seen = []
+    seen, voice = [], [True]
     async def listen_qq(url, token, account, owner, handler, stop, **kwargs):
-        kwargs.get('state_callback', lambda _state: None)('CONNECTED')
+        state = kwargs.get('state_callback', lambda _state: None)
+        state('CONNECTED')
         seen.append(server._qq_contact_ready())  # Connected, but nobody has written yet: no target to start from.
-        sender = SimpleNamespace(is_available=lambda: True)
+        sender = SimpleNamespace(is_available=lambda: True, audio=lambda path: None)
         handler.ready('qq', sender)
         seen.append(server._qq_contact_ready())
+        voice[0] = False  # No voice configured: QQ cannot start her own contact.
+        seen.append(server._qq_contact_ready())
+        voice[0] = True
         sender.is_available = lambda: False
+        seen.append(server._qq_contact_ready())
+        sender.is_available = lambda: True
+        state('RECONNECTING')
         seen.append(server._qq_contact_ready())
         await stop.wait()
     monkeypatch.setattr(qq, 'run_qq', listen_qq)
     server = SimpleNamespace(store=local_server.Store(), _state_root=lambda: tmp_path,
         _require_store_state_available=lambda: None, _persist_store_state=lambda: None,
-        _safe_log=lambda *a, **k: None, _atomic_write_store_file=local_server._atomic_write_store_file)
+        _safe_log=lambda *a, **k: None, _atomic_write_store_file=local_server._atomic_write_store_file,
+        _voice_reply_configured=lambda _: voice[0])
     async def run_once():
         app = web.Application()
         backend.install_personal_chat(app, server)
@@ -238,5 +246,5 @@ def test_the_chat_backend_publishes_whether_qq_can_start_contact_and_withdraws_i
         assert callable(server._qq_contact_ready)
         await runner.cleanup()
     asyncio.run(run_once())
-    assert seen == [False, True, False]
+    assert seen == [False, True, False, False, False]
     assert server._qq_contact_ready is None

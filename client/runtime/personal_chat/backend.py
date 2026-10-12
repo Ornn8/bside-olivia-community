@@ -1353,10 +1353,14 @@ def install_personal_chat(app, server):
             from .contact_activity import cross_channel_reason
             from .engagement import initiating_channel
             def qq_ready():
+                # Her own contact on QQ is a voice message, so QQ that cannot speak cannot start it.
                 target = initiative.target
-                return bool(target and target[0].channel in selected_channels(server)
-                            and runtime['status'].get(target[0].channel) == 'CONNECTED'
-                            and (not callable(getattr(target[1], 'is_available', None)) or target[1].is_available()))
+                return bool(target and target[0].channel == 'qq' and 'qq' in selected_channels(server)
+                            and runtime['status'].get('qq') == 'CONNECTED'
+                            and (not callable(getattr(target[1], 'is_available', None)) or target[1].is_available())
+                            and callable(getattr(target[1], 'audio', None))
+                            and callable(getattr(server, '_voice_reply_configured', None))
+                            and server._voice_reply_configured(os.environ))
             initiative = Initiative(server.store.personal_chats,
                 active_provider=lambda: bool(cross_channel_reason(
                     server, channel='qq', now=datetime.now().timestamp(), profile=proactive_runtime.live_profile(server))),
