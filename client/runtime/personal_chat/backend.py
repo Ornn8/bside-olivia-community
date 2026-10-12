@@ -1329,13 +1329,13 @@ def install_personal_chat(app, server):
                        "delivery_health": {}, "e2e_verified_at": {}, "connection_tests": {}}
             if 'qq' in bindings:
                 from .daily_video import DailyVideoWorker, tier_allows_video
+                from .daily_video_author import author_preparation
                 from runtime.remote_generation import RemoteGeneration
-                # No author_candidate: the worker never prepares a clip on its own. A video leaves only
-                # inside a reply, because contact she starts on her own carries no video.
                 runtime['daily_video'] = DailyVideoWorker(server._state_root() / 'media' / 'daily-video',
                     service, bindings['qq'],
                     lambda: RemoteGeneration(os.environ.get('OLIVIA_GPU_API_URL', ''), os.environ.get('OLIVIA_GPU_API_KEY', '')),
                     lambda: getattr(getattr(server, 'daily_life_runtime', None), 'store', None),
+                    author_candidate=lambda candidate: author_preparation(server, candidate),
                     consent=lambda: tier_allows_video(getattr(server, 'video_reply_settings_store', None)))
                 server._daily_video_worker = runtime['daily_video']
             if 'qq' in config:
