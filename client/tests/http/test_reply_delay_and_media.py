@@ -442,6 +442,56 @@ def test_public_detail_distinguishes_directed_tts_gate_terminal_states(
     assert detail["media_retryable"] is expected_retryable
 
 
+def test_refused_balance_is_kept_as_a_retryable_failure_in_letter_detail(
+    tmp_path: Path, monkeypatch
+) -> None:
+    letter_id = "media-insufficient-balance"
+    letter = {
+        "letter_id": letter_id,
+        "content": "synthetic letter",
+        "reply_text": "林" * 190,
+        "reply_mode": ReplyMode.SPOKEN_VIDEO.value,
+        "letter_status": "COMPLETED",
+        "media_status": "PENDING",
+        "reply_not_before": 0.0,
+    }
+    local_server.store.letters[:] = [letter]
+    monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(tmp_path))
+    monkeypatch.setattr(local_server, "_persist_media_state", lambda: None)
+
+    def refused(*_args, **_kwargs):
+        from runtime.cloud_service import CloudError
+
+        raise CloudError("GPU_INSUFFICIENT_BALANCE", 402)
+
+    monkeypatch.setattr(local_server, "require_breeze_hardware", refused)
+
+    asyncio.run(
+        local_server._render_media_job(
+            letter_id, letter["content"], letter["reply_text"], ReplyMode.SPOKEN_VIDEO.value
+        )
+    )
+
+    assert (letter["media_status"], letter["media_error_code"], letter["media_retryable"]) == (
+        "FAILED", "GPU_INSUFFICIENT_BALANCE", True
+    )
+    detail = asyncio.run(
+        local_server.route("GET", "/toy/letter/detail", {}, {"letter_id": letter_id})
+    )["data"]
+    assert (detail["media_status"], detail["media_error_code"], detail["media_retryable"]) == (
+        "FAILED", "GPU_INSUFFICIENT_BALANCE", True
+    )
+
+
+def test_letter_media_progress_ui_asks_the_user_to_top_up() -> None:
+    from original_client_settings_ui import BOOTSTRAP_JAVASCRIPT
+
+    assert (
+        "cloudErrors.GPU_INSUFFICIENT_BALANCE='Olivia 可用余额不足，请充值后重试。';"
+        in BOOTSTRAP_JAVASCRIPT
+    )
+
+
 @pytest.mark.parametrize(
     ("stored_status", "expected"),
     [

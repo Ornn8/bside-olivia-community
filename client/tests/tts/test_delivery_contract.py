@@ -109,6 +109,7 @@ def test_directed_delivery_error_schema_is_stable() -> None:
             "retryable": True,
         },
         "MEDIA_PROVIDER_UNAVAILABLE": {"status": "UNAVAILABLE", "retryable": True},
+        "GPU_INSUFFICIENT_BALANCE": {"status": "FAILED", "retryable": True},
         "TTS_CONTENT_GATE_UNAVAILABLE": {
             "status": "UNAVAILABLE",
             "retryable": True,
