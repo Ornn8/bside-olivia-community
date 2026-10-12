@@ -4260,6 +4260,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       .od-new{width:8px;height:8px;border-radius:50%;background:#e58a7a;display:inline-block}
       .od-card p{color:#acb0b4;margin:8px 0 0;line-height:1.6}
       .od-entry h2{font-size:24px;margin:6px 0 4px}.od-entry .od-body p{line-height:1.9;margin:0 0 12px;font-size:16px}
+      .od-photo{display:block;max-width:100%;max-height:360px;object-fit:contain;border-radius:10px;margin:16px 0 20px}
       .od-comments{border-top:1px solid #383a3e;margin-top:24px;padding-top:16px;display:grid;gap:10px}
       .od-comment{background:#222327;border-radius:10px;padding:10px 14px;line-height:1.6}
       .od-comment small{display:block;color:#8f9398;font-size:12px}
@@ -4331,7 +4332,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       if(!info.months.length){box.append(text('p','以前的信都已经整理好了。'));main.replaceChildren(box);return;}
       const words=Math.max(1,Math.round(info.chars/10000));
       box.append(text('p',`她会把以前每个月和你的信、聊天各写成一篇回忆，一共 ${info.months.length} 个月，约 ${words} 万字的旧信。`),
-        text('p','按你选的回信模型计费，费用大致相当于让她回 '+Math.max(1,Math.ceil(info.chars/6000))+' 封长信。记下的约定、纪念日和称呼，以后聊天时她都会记得。'));
+        text('p','按你选的日记模型完成初稿和改稿，两次调用正常计费。记下的约定、纪念日和称呼，以后聊天时她都会记得。'));
       if(info.failed)box.append(text('p',`上次有 ${info.failed} 个月没写成，可以再试一次。`));
       const start=button('开始整理',async()=>{
         start.disabled=true;
@@ -4353,7 +4354,12 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       const time=text('time',diaryDate(entry.day));time.style.color='#acb0b4';
       const body=document.createElement('div');body.className='od-body';
       for(const paragraph of entry.body.split(/\n+/).filter(Boolean))body.append(text('p',paragraph));
-      article.append(back,document.createElement('br'),time,text('h2',entry.title),body);
+      article.append(back,document.createElement('br'),time,text('h2',entry.title));
+      if(typeof entry.photo==='string'&&/^\/toy\/media\/photo-[a-f0-9]{32}\.png$/.test(entry.photo)){
+        const photo=document.createElement('img');photo.className='od-photo';photo.alt='她当天发来的照片';
+        photo.addEventListener('error',()=>photo.remove());photo.src=new URL(entry.photo,apiBase).href;article.append(photo);
+      }
+      article.append(body);
       const comments=document.createElement('section');comments.className='od-comments';
       comments.append(text('strong','你的留言'));
       for(const comment of entry.comments){const item=document.createElement('div');item.className='od-comment';
@@ -4375,6 +4381,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       });
       actions.append(remove,send);comments.append(input,actions,status);
       main.replaceChildren(article,comments);
+      main.scrollTop=0;
     };
     void showList();
   };

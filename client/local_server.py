@@ -3832,6 +3832,34 @@ async def _legacy_proactive_tick() -> None:
         _observe_letter_initiative('deferred')
 
 
+def _diary_extras(day):
+    from runtime.diary.diary import _optional, SHANGHAI
+    from runtime.memory.effective_relationship import effective_relationship_stage, relationship_history
+    stage = _optional(lambda: effective_relationship_stage(private_world_port.snapshot(), relationship_history(store)), 'unknown')
+    def videos():
+        worker = globals().get('_daily_video_worker')
+        if worker is None:
+            return []
+        with sqlite3.connect(worker.database) as db:
+            rows = [json.loads(raw) for (raw,) in db.execute('SELECT payload FROM daily_video_jobs')]
+        return [row for row in rows if row.get('binding') == worker.binding]
+    outfit = _optional(lambda: diary_store.wardrobe(datetime.fromisoformat(day).replace(tzinfo=SHANGHAI)), None)
+    return stage, _optional(videos, []), (outfit or {}).get('today')
+
+
+def _diary_public_entry(entry):
+    photo = entry.get('photo')
+    entry = {**entry, 'photo': None}
+    try:
+        root = _media_root()
+        target = Path(photo).resolve() if photo else None
+        if root and target and target.parent == root and _MEDIA_NAME.fullmatch(target.name):
+            entry['photo'] = '/toy/media/' + target.name
+    except (OSError, ValueError):
+        pass
+    return entry
+
+
 async def _diary_tick(now=None) -> None:
     from runtime.diary.diary import due_days, write_day, day_life
     from runtime.private_world.daily_life_runtime import life_persona
@@ -3841,16 +3869,18 @@ async def _diary_tick(now=None) -> None:
     rows = [*store.letters, *store.personal_chats]
     for day in due_days(diary_store, now)[:2]:
         try:
+            stage, videos, outfit = _diary_extras(day)
             outcome = await write_day(diary_store, letters_adapter.gateway, day, rows,
                 persona=life_persona(letters_adapter.persona_v2_path),
-                life=day_life(getattr(daily_life_runtime, 'store', None), day), now=now)
+                life=day_life(getattr(daily_life_runtime, 'store', None), day, outfit), now=now,
+                relationship_stage=stage, videos=videos)
         except (GatewayError, asyncio.TimeoutError, OSError, RuntimeError, ValueError, TypeError, KeyError, sqlite3.Error) as exc:
             diary_store.failed(day, type(exc).__name__)
             _safe_log('diary_write_failed', error_code=getattr(exc, 'code', None) or type(exc).__name__)
             continue
         if outcome == 'empty':
             diary_store.skip(day, 'EMPTY_DAY')
-        else:
+        elif outcome == 'written':
             _safe_log('diary_written')
 
 
@@ -3870,11 +3900,14 @@ async def _write_memoirs_once(months) -> None:
         rows = [*store.letters, *store.personal_chats]
         for month in months:
             try:
-                await write_month(diary_store, letters_adapter.gateway, month, rows,
-                                  persona=life_persona(letters_adapter.persona_v2_path))
-                _memoir_state['done'] += 1
+                stage, videos, _ = _diary_extras(month + '-01')
+                outcome = await write_month(diary_store, letters_adapter.gateway, month, rows,
+                                  persona=life_persona(letters_adapter.persona_v2_path),
+                                  relationship_stage=stage, videos=videos)
+                _memoir_state['done' if outcome == 'written' or diary_store.entry(month) else 'failed'] += 1
             except (GatewayError, asyncio.TimeoutError, OSError, RuntimeError, ValueError, TypeError, KeyError, sqlite3.Error) as exc:
                 _memoir_state['failed'] += 1
+                diary_store.failed(month, type(exc).__name__)
                 _safe_log('diary_memoir_failed', error_code=getattr(exc, 'code', None) or type(exc).__name__)
     finally:
         _memoir_state['running'] = False
@@ -4810,7 +4843,7 @@ async def route(
                 if entry is None:
                     return err(404, 'DIARY_ENTRY_NOT_FOUND', {'error_code': 'DIARY_ENTRY_NOT_FOUND'})
                 diary_store.mark_seen(entry['day'])
-                return ok(entry)
+                return ok(_diary_public_entry(entry))
             if method != 'POST':
                 return err(405, 'METHOD_NOT_ALLOWED', {})
             if not companion_confirmed:
@@ -4837,7 +4870,7 @@ async def route(
                 return ok({'started': len(set(months))})
             if p == '/toy/diary/comment' and set(body) == {'day', 'text'}:
                 diary_store.add_comment(str(body['day']), body['text'], datetime.now(timezone.utc))
-                return ok(diary_store.entry(str(body['day'])))
+                return ok(_diary_public_entry(diary_store.entry(str(body['day']))))
             if p == '/toy/diary/delete' and set(body) == {'day'}:
                 diary_store.delete(str(body['day']))
                 return ok({'deleted': str(body['day'])})

@@ -70,3 +70,28 @@ assert items[0]['remembered']['text'] == '我们的纪念日' and items[0]['not_
 rows.append({'origin': 'proactive', 'proactive_candidate_id': items[0]['id']})
 assert server._diary_due_candidates(rows, {}) == []
 ''')
+
+
+def test_diary_photo_is_local_media_only_and_missing_is_harmless(tmp_path):
+    run_isolated(tmp_path, r'''
+import asyncio
+from datetime import datetime, timezone
+from pathlib import Path
+import local_server as server
+from runtime.diary.diary import DiaryStore
+root = Path(server._os.environ['OLIVIA_LOCAL_DATA_ROOT'])
+media = root / 'media'
+media.mkdir(exist_ok=True)
+photo = media / ('photo-' + 'a' * 32 + '.png')
+photo.write_bytes(b'local fixture')
+store = DiaryStore(root / 'diary-photo.sqlite3')
+server.diary_store = store
+store.save('2026-10-07', {'title':'t','mood':'m','body':'b','facts':[]},
+    now=datetime.now(timezone.utc), model='m', short=True, photo=str(photo))
+def read():
+    return asyncio.run(server.route('GET','/toy/diary/entry',None,{'day':'2026-10-07'}))['data']
+assert read()['photo'] == '/toy/media/' + photo.name
+assert server._diary_public_entry({'photo':str(root / 'elsewhere.png')})['photo'] is None
+photo.unlink()
+assert read()['photo'] is None and read()['body'] == 'b'
+''')

@@ -14,6 +14,7 @@ import tempfile
 
 USES = ('qq', 'letter', 'diary')
 CURRENT = ContextVar('olivia_model_use', default=None)
+_PINNED = ContextVar('olivia_pinned_model', default=None)
 _path = None
 _cache = (None, {})
 
@@ -84,8 +85,21 @@ def using(use):
         CURRENT.reset(token)
 
 
+@contextmanager
+def pinned_model(base_url, model):
+    """Keep a multi-pass operation on the model chosen at its start."""
+    token = _PINNED.set((base_url, model) if base_url and model else None)
+    try:
+        yield
+    finally:
+        _PINNED.reset(token)
+
+
 def routed_model(base_url, model):
     """The model for this request: the use's own choice on the Olivia account, else the main model."""
+    pinned = _PINNED.get()
+    if pinned is not None and pinned[0] == base_url:
+        return pinned[1]
     use = CURRENT.get()
     if use is None or not model:
         return model
