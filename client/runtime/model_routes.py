@@ -75,6 +75,17 @@ def save(routes):
     return routes
 
 
+def save_if_absent(routes):
+    """First-run defaults: write only when no routes file exists (a damaged file counts as existing)."""
+    routes = validate(routes)
+    if _path is None:
+        raise OSError('MODEL_ROUTES_UNAVAILABLE')
+    if _path.exists():
+        return False
+    save(routes)
+    return True
+
+
 @contextmanager
 def using(use):
     """Calls made inside (including tasks and threads started here) belong to this use."""

@@ -9,8 +9,13 @@ from runtime.remote_generation import gpu_tls_context
 from runtime.official_endpoints import API_BASE, canonical_api_base
 
 RELAY_BASE = API_BASE
-RELAY_MODEL = 'claude-sonnet-5-5'
+# Written only for a NEW binding and used as the fallback when no valid model is saved;
+# a saved valid llm.json model is never replaced by it.
+RELAY_MODEL = 'claude-haiku-5-5'
+# Price-multiplier display baseline only; it is not a default model.
 RELAY_MULTIPLIER_BASELINE = 'claude-sonnet-5-5'
+# First-run routes for a brand-new account: replies follow the main model, the diary uses Opus.
+NEW_ACCOUNT_ROUTES = {'qq': None, 'letter': None, 'diary': 'claude-opus-5-5'}
 RELAY_MODELS = frozenset({RELAY_MODEL, 'gemini-3.8-flash', 'qwen3.7-flash', 'claude-opus-5-5',
     'claude-sonnet-5-5', 'claude-opus-4-6', 'qwen3.8-max', 'claude-fable-5-1',
     'gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-luna', 'claude-haiku-5-5'})
@@ -165,7 +170,15 @@ def mount_relay_api(app, setup):
                         pending_path.touch()
                         store_key(key)  # Persist before the network call, so retries reuse the same identity.
                     await relay_request(RELAY_BASE, key, 'POST', '/accounts', {})
+                    # A pending marker means this call (or its retry) registered a brand-new key;
+                    # reconnecting an already-registered key never reaches the routes below.
+                    new_account = pending_path.exists()
                     pending_path.unlink(missing_ok=True)
+                    if new_account:
+                        try:
+                            model_routes.save_if_absent(NEW_ACCOUNT_ROUTES)
+                        except (OSError, ValueError):
+                            pass  # The diary then simply follows the main model.
                     return web.json_response({'registered':True, 'key_prefix':key[:15]}, headers=_headers(origin))
                 elif operation == 'import_key':
                     key = data['key'].strip() if isinstance(data['key'], str) else data['key']

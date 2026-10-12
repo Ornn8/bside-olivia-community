@@ -42,11 +42,11 @@ def test_select_model_keeps_encrypted_key_and_runtime_choice_across_reconnect(
             response = await client.post('/toy/relay/action', headers=headers, json={'action': 'models'})
             if expected_default is None:
                 assert response.status == 503
-                assert service._config().model == 'claude-sonnet-5-5'
+                assert service._config().model == 'claude-haiku-5-5'
                 return
             assert response.status == 200
             catalog = await response.json()
-            assert catalog['selected_model'] == 'claude-sonnet-5-5'
+            assert catalog['selected_model'] == 'claude-haiku-5-5'
             assert catalog['baseline_model'] == 'claude-sonnet-5-5'
             rows = {row['id']: row for row in catalog['models']}
             assert 'actual_model' not in rows['qwen3.7-flash']
@@ -56,7 +56,7 @@ def test_select_model_keeps_encrypted_key_and_runtime_choice_across_reconnect(
                 assert (rows[model]['input_multiplier'], rows[model]['output_multiplier']) == expected
             response = await client.post('/toy/relay/action', headers=headers, json={'action': 'connect'})
             assert response.status == 200
-            assert service._config().model == 'claude-sonnet-5-5'
+            assert service._config().model == 'claude-haiku-5-5'
             response = await client.post('/toy/relay/action', headers=headers, json={'action': 'select_model', 'model': 'qwen3.7-flash'})
             assert response.status == 200
             response = await client.post('/toy/relay/action', headers=headers, json={'action': 'connect'})
