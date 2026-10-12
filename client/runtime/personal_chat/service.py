@@ -44,7 +44,7 @@ def _clear_draft(row):
                 'piano_input', 'piano_status', 'piano_delivery_status', 'piano_midi', 'piano_file_notice', 'piano_input_error',
                 'proactive_decision', 'proactive_basis', 'proactive_opportunity', 'generation_failure_notice',
                 'generation_context_at', 'stage_timing_seconds', 'stage_actual_calls', 'stage_cache_hits',
-                'degraded_stages', 'default_voice_status', 'default_voice_seconds', 'default_voice_duration',
+                'degraded_stages', 'reply_length', 'default_voice_status', 'default_voice_seconds', 'default_voice_duration',
                 'voice_prepare_seconds', 'voice_prepare_status', 'voice_prepare_timeout_seconds',
                 'generation_retryable', 'generation_failure_context', 'generation_failures', 'generation_notice_code',
                 'silence_reason', 'skip_reason', 'user_controls_applied',

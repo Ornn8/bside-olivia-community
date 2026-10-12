@@ -156,8 +156,8 @@ def test_backend_generate_uses_real_pipeline_persona_memory_and_world(tmp_path, 
                 source='user', evidence_kind='media_observation')]
         monkeypatch.setattr('runtime.incoming_media.understand_incoming', recognize)
     if envelope_variant == 'repeated_reply':
-        server.store.personal_chats.append(dict(channel=channel, binding_id=event.binding_id,
-            delivery_status='DELIVERED', reply_text=reply_text))
+        server.store.personal_chats.append(dict(letter_id='im-previous', channel=channel, binding_id=event.binding_id,
+            delivery_status='DELIVERED', content=user, reply_text=reply_text))
     original_run = pipeline.run
     def chat_timeout(mode):
         assert mode == ReplyMode.FUTURE_IM.value
@@ -166,6 +166,8 @@ def test_backend_generate_uses_real_pipeline_persona_memory_and_world(tmp_path, 
     async def bounded_run(request, context):
         from runtime.personal_chat.presentation import CURRENT
         assert CURRENT.get()['raw_user_text'] == event.text
+        assert CURRENT.get()['recent_messages'] == ([{'role': 'user', 'text': user}, {'role': 'her', 'text': reply_text}]
+                                                    if envelope_variant == 'repeated_reply' else [])
         assert request.gateway_scope is GatewayRequestScope.PERSONAL_CHAT_JSON
         assert request.content == event.text + CURRENT.get()['incoming_observation_context']
         if failure_code == 'outer_timeout':

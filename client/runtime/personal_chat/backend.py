@@ -625,13 +625,16 @@ async def _generate_billed(server, event, row):
                                 'letter_invitation_allowed': allowed,
                                 'sticker_choices': sticker_choices,
                                 'proactive': row.get('origin') == 'proactive', **proactive_metadata})
-    from .context import READ_WINDOW, freeze_read_window
+    from .context import READ_WINDOW, freeze_read_window, recent_messages
     from itertools import chain
     read_window = None
     try:
-        read_window = READ_WINDOW.set(freeze_read_window(
+        window = freeze_read_window(
             chain(getattr(server.store, 'letters', []), server.store.personal_chats),
-            channel=event.channel, binding_id=event.binding_id, current_id=event.exchange_id))
+            channel=event.channel, binding_id=event.binding_id, current_id=event.exchange_id)
+        read_window = READ_WINDOW.set(window)
+        # The reply-length judgment sees only these, never the writer's full context.
+        CURRENT.get()['recent_messages'] = recent_messages(window, channel=event.channel, binding_id=event.binding_id)
         attempt_id = event.exchange_id + (f':input-{revision}' if revision else '') + ':' + str(row.get('generation_attempts', 1))
         if row.get('gift_id') and not content:
             from runtime.cloud_events import instruction
@@ -672,7 +675,8 @@ async def _generate_billed(server, event, row):
         quality_fields = ('quality_status', 'reviewer_calls', 'rewrite_calls', 'decision_rejection_reason',
                           'decision_dropped_media',
                           'quality_error_code', 'quality_failure_stage', 'quality_violation_codes',
-                          'stage_timing_seconds', 'stage_cache_hits', 'stage_actual_calls', 'degraded_stages')
+                          'stage_timing_seconds', 'stage_cache_hits', 'stage_actual_calls', 'degraded_stages',
+                          'reply_length')
         quality = project_chat_task({'channel': event.channel, **{
             field: getattr(result, field, None) for field in quality_fields},
             'quality_error_code': getattr(result, 'error_code', None),

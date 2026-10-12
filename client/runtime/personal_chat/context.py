@@ -88,3 +88,26 @@ def freeze_read_window(rows, *, channel, binding_id, current_id):
     for index, row in enumerate(delivered):
         row['_read_order'] = index
     return tuple(delivered)
+
+
+def recent_messages(window, *, channel, binding_id, limit=10, max_chars=500):
+    """The last messages of one conversation, both sides, oldest first.
+
+    Reads only the frozen window: a user message that is still waiting for its
+    reply counts, an undelivered draft does not.
+    """
+    def excerpt(text):
+        text = text.strip()
+        if len(text) <= max_chars:
+            return text
+        edge = max_chars // 2
+        return text[:edge] + '\n[中间省略]\n' + text[-edge:]
+    messages = []
+    for row in window:
+        if row.get('channel') != channel or row.get('binding_id') != binding_id:
+            continue
+        for role, field in (('user', 'content'), ('her', 'reply_text')):
+            text = row.get(field)
+            if isinstance(text, str) and text.strip():
+                messages.append({'role': role, 'text': excerpt(text)})
+    return messages[-limit:]
