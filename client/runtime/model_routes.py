@@ -60,6 +60,7 @@ def validate(routes):
 
 
 def save(routes):
+    global _cache
     routes = validate(routes)
     if _path is None:
         raise OSError('MODEL_ROUTES_UNAVAILABLE')
@@ -72,6 +73,8 @@ def save(routes):
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
+    # Two saves can share one file timestamp on Windows; never serve the older cache.
+    _cache = (None, {})
     return routes
 
 
