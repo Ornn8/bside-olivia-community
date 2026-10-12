@@ -347,6 +347,25 @@ async def _jev_photo_plan(server, row, content, text, reference, photo_id, port)
     return {**plan, 'prompt': value['prompt']}
 
 
+def start_video_photo_fallback(row):
+    """Freeze one new photo attempt; retries keep its own receipt and request identity."""
+    if row.get('share_video_photo_fallback'):
+        return
+    request = row.get('image_server_request')
+    if request:
+        reference = dict(request['reference'])
+        reference.pop('video_moments', None)
+        reference['requested_image'] = True
+        request = dict(request, reference=reference)
+    for key in ('image_generation_binding', 'image_receipt_required', 'image_recovery_required',
+                'image_plan', 'image_cloud_task_id', 'image_cloud_status', 'image_error_code',
+                'image_retry_at', 'image_generation_failures'):
+        row.pop(key, None)
+    row.update(share_video_photo_fallback=True, image_status='PENDING')
+    if request:
+        row['image_server_request'] = request
+
+
 async def prepare(server, row, content, text, *, channel='letter', on_ready=None):
     """Recover the saved request through bounded transient failures, never a new job."""
     if not secondary_photo_allowed(row):
@@ -413,6 +432,8 @@ async def _prepare_once(server, row, content, text, *, channel='letter', on_read
     try:
         identity = str(row.get('letter_id') or row.get('exchange_id') or row.get('id'))
         if identity == 'None': raise ValueError('IMAGE_ID_INVALID')
+        if row.get('share_video_photo_fallback'):
+            identity += ':video-photo-fallback'
         photo_id = hashlib.sha256((channel+':'+identity).encode()).hexdigest()[:32]
         caps = await api.request('capabilities', {})
         # A delisted model must not create new work, but a frozen receipt must
@@ -555,7 +576,8 @@ async def _server_photo(server, row, content, text, api, photo_id, settings, pro
     if row.get('image_wardrobe_protocol')=='daily':
         from runtime.wardrobe import CLOUD_CATALOG_PROTOCOL
         reference['wardrobe']={'mode':'daily','catalog_version':CLOUD_CATALOG_PROTOCOL}
-    reference['requested_image'] = is_companion_image(row) or row.get('gift_photo') is True
+    reference['requested_image'] = (is_companion_image(row) or row.get('gift_photo') is True
+                                    or row.get('share_video_photo_fallback') is True)
     if channel == 'qq' and not reference['requested_image'] and row.get('daily_video_candidates'):
         # Her current moments: the cloud planner may share one as a short video instead.
         moments = [{key: item[key][:200] for key in ('event_id', 'event_kind', 'detail', 'location')
@@ -601,8 +623,10 @@ async def _server_photo(server, row, content, text, api, photo_id, settings, pro
     if task.get('stage')=='skipped':
         row['image_status']='SKIPPED'
         shared = task.get('share_video')
-        if shared and any(item.get('event_id') == shared for item in row.get('daily_video_candidates') or []):
+        if shared and not row.get('share_video_photo_fallback'):
             row['share_video_event'] = shared
+        if row.get('share_video_photo_fallback'):
+            raise ValueError('IMAGE_PLAN_INVALID')
         server._persist_store_state()
         return
     plan=task.get('media_plan')
