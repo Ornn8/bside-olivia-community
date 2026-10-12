@@ -13,7 +13,7 @@ import time
 import urllib.error
 import urllib.request
 
-from runtime.diagnostics.jev_pricing import CURRENT_PRICE_VERSION, INPUT_RATE_UNITS, PRICE_VERSION
+from runtime.diagnostics.jev_pricing import CURRENT_PRICE_VERSION, INPUT_RATE_UNITS, MINIMUM_UNITS, PRICE_VERSION
 
 
 @dataclass(frozen=True)
@@ -158,9 +158,10 @@ def settle_receipt_sync(billing, expected_body_digest):
         raise ValueError('JEV_BILLING_UNAVAILABLE') from None
     rate = INPUT_RATE_UNITS.get(result.get('price_version')) if isinstance(result, dict) else None
     amount = receipt['input_tokens'] * (rate or 0)
-    # Exact usage, or the published minimum when usage is below it. A charge
+    # Exact usage, or the settled version's minimum when usage is below it. A charge
     # that is neither is a real mismatch, reported as such (not "unavailable").
-    allowed = {amount} | ({MINIMUM_CHARGE_UNITS} if 0 < amount < MINIMUM_CHARGE_UNITS else set())
+    minimum = MINIMUM_UNITS.get(result.get('price_version'), MINIMUM_CHARGE_UNITS) if isinstance(result, dict) else MINIMUM_CHARGE_UNITS
+    allowed = {amount} | ({minimum} if 0 < amount < minimum else set())
     if (not isinstance(result, dict) or result.get('status') != 'settled'
             or result.get('turn_id') != turn.turn_id
             or result.get('operation_id') != receipt['operation_id']

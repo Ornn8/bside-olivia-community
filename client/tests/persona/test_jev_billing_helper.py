@@ -216,7 +216,8 @@ def test_account_key_missing_only_when_billing_needs_a_key(monkeypatch):
 
 
 @pytest.mark.parametrize('version,rate,ok', [
-    ('jev-input-cny-20261012-v3', 169, True),   # declared current price
+    ('jev-input-cny-20261013-v4', 169, True),   # declared current settlement version
+    ('jev-input-cny-20261012-v3', 169, True),   # a server that has not applied v4 yet
     ('jev-input-cny-20261012-v3', 135, False),  # price does not match its version
     ('jev-input-cny-20261002-v2', 135, True),   # a server that has not applied v3 yet
     ('jev-input-cny-20260928-v1', 150, True),   # a server that has not applied it yet
@@ -228,10 +229,28 @@ def test_settlement_is_verified_against_its_declared_price_version(configured, m
     answer = result(signed(tokens))
     answer.update(price_version=version, charged_units=tokens * rate, debited_units=tokens * rate)
     monkeypatch.setattr(billing, '_post_settlement', lambda *a: answer)
-    assert billing.MINIMUM_HEADER['X-Olivia-JEV-Price'] == 'jev-input-cny-20261012-v3'
+    assert billing.MINIMUM_HEADER['X-Olivia-JEV-Price'] == 'jev-input-cny-20261013-v4'
     with billing.billing_scope('synthetic:turn'):
         if ok:
             assert billing.settle_receipt_sync(signed(tokens), DIGEST)['charged_units'] == tokens * rate
         else:
             with pytest.raises(ValueError, match='JEV_BILLING_RESPONSE_INVALID'):
                 billing.settle_receipt_sync(signed(tokens), DIGEST)
+
+
+@pytest.mark.parametrize('version,charged,ok', [
+    ('jev-input-cny-20261013-v4', 2_000_000, True),   # v4 floor for a small judgment
+    ('jev-input-cny-20261013-v4', 1_000_000, False),  # the older floor is not v4's
+    ('jev-input-cny-20261012-v3', 1_000_000, True),   # v3 keeps its floor
+    ('jev-input-cny-20261012-v3', 2_000_000, False),
+])
+def test_each_settlement_version_has_its_own_floor(configured, monkeypatch, version, charged, ok):
+    answer = result(signed(100))
+    answer.update(price_version=version, charged_units=charged, debited_units=charged)
+    monkeypatch.setattr(billing, '_post_settlement', lambda *a: answer)
+    with billing.billing_scope('synthetic:turn'):
+        if ok:
+            assert billing.settle_receipt_sync(signed(100), DIGEST)['charged_units'] == charged
+        else:
+            with pytest.raises(ValueError, match='JEV_BILLING_RESPONSE_INVALID'):
+                billing.settle_receipt_sync(signed(100), DIGEST)

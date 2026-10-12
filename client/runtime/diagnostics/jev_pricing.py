@@ -6,9 +6,13 @@ PRICE_VERSION = 'jev-input-cny-20260928-v1'  # version of the signed usage recei
 # the server charges that rate (2026-10-02: 10% lower) and reports the version.
 DISCOUNT_PRICE_VERSION = 'jev-input-cny-20261002-v2'
 # 2026-10-12: settlement version v3. Clients that do not declare it keep their version.
-CURRENT_PRICE_VERSION = 'jev-input-cny-20261012-v3'
+SETTLEMENT_V3 = 'jev-input-cny-20261012-v3'
+# 2026-10-13: settlement version v4, the v3 rate with its own per-judgment floor.
+CURRENT_PRICE_VERSION = 'jev-input-cny-20261013-v4'
 INPUT_RATE_UNITS = {PRICE_VERSION: 150, DISCOUNT_PRICE_VERSION: 135,
-                    CURRENT_PRICE_VERSION: 169}  # 1 yuan = 100,000,000 units
+                    SETTLEMENT_V3: 169, CURRENT_PRICE_VERSION: 169}  # 1 yuan = 100,000,000 units
+# Smallest charge for a judgment whose usage is above zero; versions not listed use 1_000_000.
+MINIMUM_UNITS = {CURRENT_PRICE_VERSION: 2_000_000}
 INPUT_CNY_PER_MILLION = Decimal('1.69')
 OUTPUT_CNY_PER_MILLION = Decimal('0')
 
