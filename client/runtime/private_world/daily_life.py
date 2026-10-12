@@ -885,8 +885,9 @@ class DailyLifeStore:
             share = db.execute('SELECT * FROM life_video_moments WHERE event_id=?', (request['event_id'],)).fetchone()
             if share is None or share['reserved_at']:
                 return False
-            count, ready = self._moment_budget(db, share['source_id'], now)
-            if count >= 4 or not ready or share['share_day'] != now.astimezone(LOCAL).date().isoformat():
+            # Only the 30-minute spacing limits a moment: a long stay in one place keeps its videos.
+            _, ready = self._moment_budget(db, share['source_id'], now)
+            if not ready or share['share_day'] != now.astimezone(LOCAL).date().isoformat():
                 raise ValueError('DAILY_VIDEO_SOURCE_UNAVAILABLE')
             db.execute('UPDATE life_video_moments SET reserved_at=? WHERE event_id=?', (_time(now), request['event_id']))
             return True
@@ -907,7 +908,7 @@ class DailyLifeStore:
         if not place or place.get('stage') != 'arrived' or item.get('activity_kind') in self._NOT_MOMENTS:
             return None
         count, ready = self._moment_budget(db, source_id, now)
-        if count >= 4 or not ready:
+        if not ready:
             return None
         day = start.date().isoformat()
         share = db.execute('SELECT event_id,event_at,share_index,reserved_at FROM life_video_moments '
