@@ -2083,7 +2083,8 @@ def render_musical_reply(
          lambda partial: convert_singing_voice(vocals, singing_reference, partial,
              environment=provider_paths.environment, ffmpeg_path=ffmpeg_path)),
         ("mixed_song", mixed_song, {"converted_vocals": converted_vocals, "accompaniment": accompaniment},
-         lambda partial: mix_song_voice(converted_vocals, accompaniment, partial, ffmpeg_path=ffmpeg_path)),
+         lambda partial: mix_song_voice(converted_vocals, accompaniment, partial, ffmpeg_path=ffmpeg_path,
+                                        reference=vocals)),
     ):
         if _stage_reusable(manifest, name, destination, upstream=upstream, **audio_gate):
             continue

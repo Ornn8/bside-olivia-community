@@ -72,7 +72,7 @@ def request_for(store, now):
 
 
 @pytest.mark.real_user_idle
-def test_repeat_interval_daily_limit_and_stable_offer(tmp_path):
+def test_repeat_interval_without_daily_cap_and_stable_offer(tmp_path):
     start = NOW.replace(hour=11)
     store = moment_store(tmp_path, start)
     identities = []
@@ -90,7 +90,9 @@ def test_repeat_interval_daily_limit_and_stable_offer(tmp_path):
         assert store.reserve_daily_video_delivery(request, task_id=f'task-{index}', now=now)
         assert not store.reserve_daily_video_delivery(request, task_id=f'task-{index}', now=now)
     assert len(set(identities)) == 4
-    assert worker_for(store).candidates(now=start+timedelta(hours=2)) == []
+    # A long stay in one place keeps offering a video every 30 minutes.
+    fifth = request_for(store, start+timedelta(hours=2))
+    assert fifth['event_id'] not in identities and store.reserve_daily_video_share(fifth, now=start+timedelta(hours=2))
 
 
 def test_midnight_keeps_current_source_and_cooldown(tmp_path):
@@ -179,7 +181,8 @@ def test_failed_attempt_releases_limit_but_cools_down_from_failure(tmp_path):
         assert request['event_id'] not in ids
         ids.add(request['event_id'])
         store.reserve_daily_video_delivery(request, task_id=f'queued-{index}', now=now)
-    assert worker_for(store).candidates(now=failed_at+timedelta(minutes=150)) == []
+    assert worker_for(store).candidates(now=failed_at+timedelta(minutes=149)) == []
+    assert request_for(store, failed_at+timedelta(minutes=150))['event_id'] not in ids
     with pytest.raises(ValueError, match='DAILY_VIDEO_SOURCE_UNAVAILABLE'):
         store.reserve_daily_video_share(failed, now=failed_at+timedelta(minutes=150))
 

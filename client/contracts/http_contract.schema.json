@@ -323,6 +323,9 @@
             },
             "GPU_RECOVERY_REQUIRED": {
               "$ref": "#/$defs/media_error"
+            },
+            "GPU_INSUFFICIENT_BALANCE": {
+              "$ref": "#/$defs/media_error"
             }
           }
         }

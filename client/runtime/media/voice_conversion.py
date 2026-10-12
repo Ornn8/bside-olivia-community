@@ -5,6 +5,7 @@ import functools
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -84,7 +85,17 @@ def _duration(path, ffmpeg_path):
         raise VoiceConversionError("VOICE_AUDIO_INVALID") from None
 
 
-def _stems(first, second, output, *, ffmpeg_path):
+def _loudness(path, ffmpeg_path):
+    """EBU R128 integrated loudness in LUFS; None when the stem is (near) silent."""
+    raw = subprocess.run([str(ffmpeg_path), "-nostdin", "-hide_banner", "-i", str(path), "-af",
+                          "ebur128=framelog=quiet", "-f", "null", "-"], capture_output=True, check=False,
+                         timeout=180, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    found = re.findall(rb"I:\s*(-?[0-9.]+) LUFS", raw.stderr)
+    value = float(found[-1]) if raw.returncode == 0 and found else None
+    return value if value is not None and value > -60 else None
+
+
+def _stems(first, second, output, *, ffmpeg_path, second_gain_db=0.0):
     if ffmpeg_path is None or not Path(ffmpeg_path).is_file():
         raise VoiceConversionError("FFMPEG_UNAVAILABLE")
     duration = _duration(first, ffmpeg_path)
@@ -92,7 +103,8 @@ def _stems(first, second, output, *, ffmpeg_path):
         raise VoiceConversionError("VOICE_STEM_DURATION_MISMATCH")
     # Keep the source timeline and stereo piano image; never concatenate stems.
     filters = ("[0:a]aresample=44100:first_pts=0,aformat=channel_layouts=stereo[a];"
-               "[1:a]aresample=44100:first_pts=0,aformat=channel_layouts=stereo,apad[b];"
+               "[1:a]aresample=44100:first_pts=0,aformat=channel_layouts=stereo,"
+               f"volume={second_gain_db:.2f}dB,apad[b];"
                "[a][b]amix=inputs=2:duration=first:normalize=0:weights='1 1',"
                "alimiter=limit=0.95:level=false:latency=true")
     _run([str(ffmpeg_path), "-hide_banner", "-loglevel", "error", "-y", "-i", str(first),
@@ -100,8 +112,15 @@ def _stems(first, second, output, *, ffmpeg_path):
          "VOICE_STEM_MIX_FAILED")
 
 
-def mix_song_voice(vocals, accompaniment, output, *, ffmpeg_path):
-    _stems(accompaniment, vocals, output, ffmpeg_path=ffmpeg_path)
+def mix_song_voice(vocals, accompaniment, output, *, ffmpeg_path, reference=None):
+    # The converted voice is leveled to the source vocal, so the song keeps its own balance:
+    # conversion output loudness does not follow its input.
+    gain = 0.0
+    if reference is not None and ffmpeg_path is not None and Path(ffmpeg_path).is_file():
+        source, converted = _loudness(reference, ffmpeg_path), _loudness(vocals, ffmpeg_path)
+        if source is not None and converted is not None:
+            gain = max(-12.0, min(12.0, source - converted))
+    _stems(accompaniment, vocals, output, ffmpeg_path=ffmpeg_path, second_gain_db=gain)
 
 
 @functools.lru_cache(maxsize=256)
