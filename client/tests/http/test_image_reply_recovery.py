@@ -229,6 +229,9 @@ def test_server_terminal_failure_never_creates_auto_retry(tmp_path, monkeypatch,
         server, row, calls = setup(tmp_path, monkeypatch, failure)
         await image_reply.prepare(server, row, 'photo', 'Okay')
         assert row['image_status'] == 'FAILED'
+        if failure == 'balance':
+            # The QQ failure notice keys off this code to ask for a top-up.
+            assert row['image_error_code'] == 'GPU_INSUFFICIENT_BALANCE'
         await image_reply.prepare(server, row, 'photo', 'Okay')
         assert len(calls['submits']) == 1
     asyncio.run(scenario())

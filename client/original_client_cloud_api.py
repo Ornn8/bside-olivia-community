@@ -56,7 +56,8 @@ def mount_cloud_api(app, service, setup, gpu_settings=None):
                             if not body['video']:
                                 amount = price['max_cents']
                     account = await api.request('billing_account', {})
-                    if account['balance_cents'] < amount:
+                    # Media may take a positive balance negative once (server rule since 2026-10-13).
+                    if account['balance_cents'] < 1:
                         raise CloudError('GPU_INSUFFICIENT_BALANCE', 402)
                     result.update(max_charge_cents=amount, balance_cents=account['balance_cents'])
                 return web.json_response(result, headers=_headers(origin))
