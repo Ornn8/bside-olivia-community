@@ -6326,6 +6326,7 @@ async def _refresh_daily_life_periodically() -> None:
 
 async def _start_reply_tasks(_app: web.Application) -> None:
     global _proactive_task, _gift_task
+    _start_jev_settlement()
     if _refresh_contact_relationship_projection():
         try:
             _persist_store_state()
@@ -6450,8 +6451,23 @@ def _start_conversation_memory_initialization(loop: asyncio.AbstractEventLoop) -
     return False
 
 
+def _start_jev_settlement() -> None:
+    """Settle judgment receipts in the background and resume any left by an earlier run."""
+    root = _state_root()
+    if root is None:
+        return
+    from runtime.reply.jev_billing import configure_settlement_outbox
+    try:
+        configure_settlement_outbox(root)
+    except (OSError, ValueError, RuntimeError):
+        _safe_log('jev_settlement_outbox_unavailable')
+
+
 async def _stop_reply_tasks(_app: web.Application) -> None:
     global _proactive_task, _gift_task, _history_relationship_task, _history_relationship_queue
+    from runtime.reply.jev_billing import shutdown_settlement_outbox
+    # Receipts still queued stay on disk and settle on the next start.
+    await asyncio.to_thread(shutdown_settlement_outbox, 3.0)
     if _history_relationship_task is not None:
         _history_relationship_task.cancel()
         await asyncio.gather(_history_relationship_task, return_exceptions=True)
