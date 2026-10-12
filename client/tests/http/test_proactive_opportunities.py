@@ -113,7 +113,7 @@ async def main():
     assert row['reply_mode'] == 'text' and row['media_status'] == 'NOT_REQUESTED'
     assert row['reply_revision'] == 1
     assert not row.get('reply_audio_url') and not row.get('media_deliveries')
-    assert not row.get('image_status') and not row.get('gift_photo')
+    assert not row.get('image_status') and not row.get('prepared_image')
     assert server.letter_to_out(row)['reply_allowed'] is False
     assert row['published_at'] <= time.time()
     assert row['private_world_status'] == 'PENDING'

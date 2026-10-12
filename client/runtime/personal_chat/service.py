@@ -330,22 +330,22 @@ class PersonalChatService:
                              for key, text in remaining.items()])
             return await self._handle_one(fresh, send.for_exchange(fresh) if callable(getattr(send, 'for_exchange', None)) else send)
 
-    async def proactive(self, event, send, eligible=lambda: True, followup=None, gift=None):
+    async def proactive(self, event, send, eligible=lambda: True, followup=None):
         revision = self.user_revision
         async with self.batch_lock:
             if not eligible() or revision != self.user_revision:
                 return
-            await self._handle_one(event, send, proactive=True, followup=followup, gift=gift,
+            await self._handle_one(event, send, proactive=True, followup=followup,
                                    proactive_revision=revision, proactive_eligible=eligible)
 
     async def _handle_one(self, event, send, proactive=False, followup=None, proactive_revision=None,
-                          proactive_eligible=None, gift=None):
+                          proactive_eligible=None):
         key = getattr(event, 'exchange_id', None)
         if not proactive:
             self.active_user_turns.add(key)
         try:
             return await self._handle_one_impl(event, send, proactive, followup, proactive_revision,
-                                               proactive_eligible, gift)
+                                               proactive_eligible)
         finally:
             self._stop_typing(event)
             if not proactive:
@@ -360,7 +360,7 @@ class PersonalChatService:
                 logging.getLogger(__name__).debug('ONEBOT_TYPING_STOP_UNAVAILABLE')
 
     async def _handle_one_impl(self, event, send, proactive=False, followup=None, proactive_revision=None,
-                               proactive_eligible=None, gift=None):
+                               proactive_eligible=None):
         if not isinstance(event, PersonalMessage) or self.bindings.get(event.channel) != (event.account_id, event.owner_id):
             raise ValueError("PERSONAL_CHAT_OWNER_MISMATCH")
         if (not event.text.strip() and not proactive) or len(event.text) > 10000:
@@ -418,8 +418,6 @@ class PersonalChatService:
                     row.update(origin='proactive', source_messages={})
                     if followup:
                         row.update(followup_source_id=followup['letter_id'], followup_quote=followup['followup_quote'])
-                    if gift:
-                        row.update(gift_id=gift['id'], gift_brief=gift['brief'], gift_photo=gift['photo'])
                 self.rows.append(row)
                 await persist_state(self.persist)
             if not proactive and _sent_time(row):

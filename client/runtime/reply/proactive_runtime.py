@@ -22,9 +22,8 @@ def live_profile(server, now=None):
 
 
 def unprompted(row):
-    """Contact she starts on her own. A gift answer to a top-up is a reply, not initiative."""
-    return (row.get('origin') == 'proactive' and not row.get('gift_id')
-            and row.get('proactive_kind') != 'gift')
+    """Contact she starts on her own, as opposed to a reply."""
+    return row.get('origin') == 'proactive'
 
 
 @contextmanager

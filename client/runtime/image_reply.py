@@ -467,7 +467,7 @@ async def _prepare_once(server, row, content, text, *, channel='letter', on_read
             return
         if 'image_plan' not in row:
             reference = _photo_reference(row, text)
-            reference['requested_image'] = is_companion_image(row) or row.get('gift_photo') is True
+            reference['requested_image'] = is_companion_image(row)
             current_location = reference['world_current_location']
             from runtime.reply.jev_questions import configured_questions
             questions_port = configured_questions()
@@ -579,8 +579,7 @@ async def _server_photo(server, row, content, text, api, photo_id, settings, pro
     if row.get('image_wardrobe_protocol')=='daily':
         from runtime.wardrobe import CLOUD_CATALOG_PROTOCOL
         reference['wardrobe']={'mode':'daily','catalog_version':CLOUD_CATALOG_PROTOCOL}
-    reference['requested_image'] = (is_companion_image(row) or row.get('gift_photo') is True
-                                    or row.get('share_video_photo_fallback') is True)
+    reference['requested_image'] = is_companion_image(row) or row.get('share_video_photo_fallback') is True
     if channel == 'qq' and not reference['requested_image'] and row.get('daily_video_candidates'):
         # Her current moments: the cloud planner may share one as a short video instead.
         moments = [{key: item[key][:200] for key in ('event_id', 'event_kind', 'detail', 'location')

@@ -119,7 +119,7 @@ def test_a_contact_the_owner_asked_for_keeps_its_channel():
 def contact_world(monkeypatch, tmp_path, world, *, status='CONNECTED'):
     calls = []
     class Service:
-        async def proactive(self, event, send, eligible, followup=None, gift=None):
+        async def proactive(self, event, send, eligible, followup=None):
             calls.append(event.exchange_id)
     monkeypatch.setattr(backend, 'selected_channels', lambda server: {'qq'})
     monkeypatch.setattr('runtime.reply.proactive_runtime.enabled', lambda: False)
@@ -190,7 +190,7 @@ def test_the_letter_tick_stops_before_any_paid_step_when_qq_is_preferred(monkeyp
     assert getattr(server, '_jev_contact_channel', None) is None
 
 
-def test_a_publication_is_rechecked_against_the_preference_but_a_gift_answer_is_not(monkeypatch, tmp_path):
+def test_a_publication_is_rechecked_against_the_preference(monkeypatch, tmp_path):
     world = owner_world(qq=many(qq_message, 6), letters=many(letter, 1))
     server, observed = letter_server(monkeypatch, tmp_path, world, qq_ready=True)
     monkeypatch.setattr(server, '_active_undelivered_letter', lambda **kwargs: None)
@@ -200,8 +200,6 @@ def test_a_publication_is_rechecked_against_the_preference_but_a_gift_answer_is_
     monkeypatch.setattr(contact_activity, 'cross_channel_reason', lambda *a, **k: None)
     intent = {'id': 'x' * 32, 'kind': 'life_share', 'source_id': 'reply:a:1'}
     assert server._proactive_opportunity_current(intent) is False and 'deferred' in observed
-    gift = {'id': 'y' * 32, 'kind': 'gift', 'gift_id': 'gift:1', 'brief': '谢谢', 'photo': False, 'source_id': 'gift:first'}
-    assert server._proactive_opportunity_current(gift) is True
 
 
 def test_the_chat_backend_publishes_whether_qq_can_start_contact_and_withdraws_it(tmp_path, monkeypatch):

@@ -131,11 +131,9 @@ def test_a_lost_voice_upload_is_never_sent_as_the_text_of_her_own_contact():
     asyncio.run(scenario())
 
 
-def test_a_gift_answer_is_a_reply_not_initiative():
+def test_only_contact_she_starts_is_unprompted_never_a_reply():
     from runtime.reply.proactive_runtime import unprompted
     assert unprompted({'origin': 'proactive'}) is True
-    assert unprompted({'origin': 'proactive', 'gift_id': 'gift:1', 'gift_photo': True}) is False
-    assert unprompted({'origin': 'proactive', 'proactive_kind': 'gift'}) is False
     assert unprompted({}) is False and unprompted({'origin': 'user', 'channel': 'qq'}) is False
 
 
@@ -162,12 +160,11 @@ def photo_row(**values):
             'image_reply_settings': {'enabled': True}, 'reply_text': '早', 'content': '', **values}
 
 
-def test_no_photo_step_runs_for_her_own_contact_but_replies_and_gift_photos_keep_theirs():
+def test_no_photo_step_runs_for_her_own_contact_but_replies_keep_theirs():
     from runtime.image_reply import secondary_photo_allowed
     assert secondary_photo_allowed(photo_row(origin='proactive')) is False
     assert secondary_photo_allowed(photo_row(origin='proactive', proactive_decision=None)) is False
     assert secondary_photo_allowed(photo_row()) is True
-    assert secondary_photo_allowed(photo_row(origin='proactive', gift_id='gift:1', gift_photo=True)) is True
 
     async def scenario(row):
         started = []
@@ -220,8 +217,8 @@ async def main():
     assert letter['origin'] == 'proactive' and letter['letter_status'] == 'COMPLETED'
     assert letter['reply_mode'] == 'text' and letter['media_status'] == 'NOT_REQUESTED'
     assert letter['reply_video_enabled'] is False and letter['reply_text'] == '慢慢来就好。'
-    assert not any(key in letter for key in ('reply_audio_url', 'media_deliveries', 'image_status', 'gift_photo',
-                                             'gift_id', 'reply_sticker_id', 'prepared_image', 'image_reply_settings'))
+    assert not any(key in letter for key in ('reply_audio_url', 'media_deliveries', 'image_status',
+                                             'reply_sticker_id', 'prepared_image', 'image_reply_settings'))
     wire = '\n'.join(m['content'] for m in calls[-1][0])
     assert '按平常文字信写' in wire and '简短语音' not in wire
     assert scheduled == []
@@ -231,15 +228,5 @@ async def main():
         if completed.get('letter_status') == 'COMPLETED':
             image_reply.schedule(server, completed)
     assert not server.media_tasks and 'image_status' not in letter
-    # A gift answer is a reply to the owner's top-up: its photo is still scheduled.
-    gift = {'id': 'g' * 32, 'kind': 'gift', 'gift_id': 'gift:synthetic', 'brief': '对方刚刚添了一份心意。',
-            'photo': True, 'source_id': 'reply:source:1'}
-    turn = await server._prepare_proactive_turn(gift, now=NOW)
-    await server._publish_proactive(gift, {'decision': 'send', 'format': 'text', 'title': '收到啦'}, turn=turn)
-    answered = server.store.letters[-1]
-    assert answered['gift_id'] == 'gift:synthetic' and answered['letter_status'] == 'COMPLETED'
-    assert answered['letter_id'] in scheduled
-    for task in tuple(server.media_tasks):
-        task.cancel()
 asyncio.run(main())
 ''')
