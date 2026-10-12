@@ -120,10 +120,14 @@ const fetch = async (endpoint, options = {}) => {
                    install_locations: [] });
   }
   if (path === "/toy/companion/status") {
+    if (config.memoryStarting > 0) {
+      config.memoryStarting -= 1;
+      return reply({ status: "READY", capabilities: { memory: { state: "preparing" } } });
+    }
     return reply({ status: "READY", capabilities: { memory: { state: "available" } } });
   }
   if (path === "/toy/setup/complete") {
-    if (config.completeFails) return reply({ error_code: "LLM_SETUP_MEMORY_PREPARING" }, false);
+    if (config.completeFails) return reply({ error_code: "SETUP_STATE_UNAVAILABLE" }, false);
     config.completed = true;
     return reply({ status: "READY", setup_completed: true });
   }
@@ -197,7 +201,7 @@ def run_scenario(config: dict, scenario: str):
 
 def config(*, key: bool, completed: bool = False, memory: str = "missing", **extra) -> dict:
     return {"key": key, "completed": completed, "memory": memory, "completeFails": False,
-            "statusFailures": 0, **extra}
+            "statusFailures": 0, "memoryStarting": 0, **extra}
 
 
 @pytest.mark.parametrize("completed", [False, True])
@@ -330,6 +334,18 @@ def test_claim_then_close_finishes_setup_silently_when_the_pack_is_ready():
   config.key = true;                     // the key was claimed on the account page
   await closeDialog();
   await poll();
+  return { dialog: dialog() !== null, complete: completeCalls().length, hash: window.location.hash };
+''')
+    assert out == {"dialog": False, "complete": 1, "hash": "#/collection"}
+
+
+def test_memory_service_still_starting_waits_without_the_wizard():
+    # Fresh install: the pack is installed but the memory service is still starting.
+    # The poll retries quietly and finishes once the service is available.
+    out = run_scenario(config(key=True, completed=False, memory="ready", memoryStarting=2), r'''
+  assert.equal(dialog(), null);
+  assert.equal(completeCalls().length, 0);
+  await poll(); await poll(); await poll();
   return { dialog: dialog() !== null, complete: completeCalls().length, hash: window.location.hash };
 ''')
     assert out == {"dialog": False, "complete": 1, "hash": "#/collection"}

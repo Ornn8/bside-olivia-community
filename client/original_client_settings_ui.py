@@ -5276,7 +5276,10 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
             await finishInitialSetup(false);
             return;
           } catch (_error) {
-            // Open the wizard below so the user can see what is missing.
+            // Right after a fresh install the memory service may still be
+            // starting: the poll tries again shortly instead of showing the wizard.
+            if (_error && _error.code === "LLM_SETUP_MEMORY_PREPARING") return;
+            // Otherwise open the wizard below so the user can see what is missing.
           }
         }
         if (!document.querySelector(`[${DIALOG_ATTR}]`)) openDialog(true, "llm", memoryReady);
