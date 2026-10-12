@@ -9,6 +9,7 @@ from .initiative_profile import _BASE, _TIERS, _with_caution, profile_from_rows,
 
 BEIJING = timezone(timedelta(hours=8))
 WEEK = 7 * 86400
+CHANNEL_WINDOW = 14 * 86400
 
 
 def stamp(value):
@@ -138,3 +139,32 @@ def effective_profile(server, now=None):
         cache.signature = None
         server._contact_engagement_store = store
     return adapt_profile(relationship, *cache.activity(letters, chats, now))
+
+
+def channel_counts(server, now=None):
+    """The owner's own messages per channel over the last two weeks."""
+    now = time.time() if now is None else now
+    store = server.store
+    cache = getattr(server, '_channel_engagement', None)
+    if cache is None or getattr(server, '_channel_engagement_store', None) is not store:
+        cache = server._channel_engagement = Engagement(CHANNEL_WINDOW)
+        server._channel_engagement_store = store
+    counts = {'letter': 0, 'qq': 0}
+    for medium, _, _ in cache._read_events(getattr(store, 'letters', []), getattr(store, 'personal_chats', []), now):
+        counts[medium] += 1
+    return counts
+
+
+def initiating_channel(server, qq_ready, now=None):
+    """The one channel that may start contact: where the owner writes most.
+
+    A tie or no messages at all goes to QQ. When that channel cannot start contact
+    (QQ not connected, letters switched off) the other one takes over.
+    """
+    available = {'qq'} if qq_ready else set()
+    settings = getattr(server, '_proactive_settings', None)
+    if callable(settings) and settings().get('enabled'):
+        available.add('letter')
+    counts = channel_counts(server, now)
+    return next((name for name in sorted(counts, key=lambda name: (-counts[name], name != 'qq'))
+                 if name in available), None)

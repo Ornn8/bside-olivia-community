@@ -98,7 +98,7 @@ asyncio.run(main())
 ''')
 
 
-@pytest.mark.parametrize('phase', ['body', 'media'])
+@pytest.mark.parametrize('phase', ['body', 'draft'])
 @pytest.mark.parametrize('change', ['completed', 'expired', 'unread', 'quota', 'other_pending', 'unchanged'])
 def test_real_opportunity_and_publication_rules_are_rechecked_after_each_wait(tmp_path, phase, change):
     run_isolated(tmp_path, SETUP + '\nphase, change = ' + repr((phase, change)) + r'''
@@ -129,7 +129,7 @@ def change_opportunity():
         # Even a different row carrying the draft id is not the draft object.
         other_id = (next(row['letter_id'] for row in server.store.letters
                     if row.get('proactive_candidate_id') == intent['id'])
-                    if phase == 'media' else 'other-pending')
+                    if phase == 'draft' else 'other-pending')
         server.store.letters.append({'letter_id':other_id, 'content':'另一个待答输入',
             'letter_status':'PENDING', 'created_at':clock[0]})
 original_complete = complete
@@ -138,25 +138,30 @@ async def during_body(messages, **kwargs):
         change_opportunity()
     return await original_complete(messages, **kwargs)
 server.letters_adapter.gateway.complete_scoped = during_body
-async def during_media(*a, **k):
-    draft = next(row for row in server.store.letters if row.get('proactive_candidate_id') == intent['id'])
-    assert draft['letter_status'] == 'PROCESSING' and 'expression_context' not in draft
-    change_opportunity()
-    draft['media_status'] = 'FAILED'  # Existing text fallback must recheck too.
-server._render_media_job = during_media
+saved_draft = []
+original_persist = server._persist_store_state
+def persist_with_draft():
+    original_persist()
+    draft = next((row for row in server.store.letters if row.get('proactive_candidate_id') == intent['id']), None)
+    if phase == 'draft' and draft is not None and not saved_draft:
+        # The last moment before publication: the hidden draft has just been saved.
+        saved_draft.append(draft)
+        assert draft['letter_status'] == 'PROCESSING' and 'expression_context' not in draft
+        change_opportunity()
+server._persist_store_state = persist_with_draft
 async def main():
     turn = await server._prepare_proactive_turn(intent, now=NOW)
     original_common = turn['common_blocks']
     await server._proactive_complete(intent, planning=True, turn=turn)
-    await server._publish_proactive(intent, {'format':'voice' if phase == 'media' else 'text',
-                                          'title':'问候'}, turn=turn)
+    await server._publish_proactive(intent, {'format':'text', 'title':'问候'}, turn=turn)
     own = [row for row in server.store.letters if row.get('proactive_candidate_id') == intent['id']]
+    assert bool(saved_draft) is (phase == 'draft')
     if change == 'unchanged':
         assert len(own) == 1 and own[0]['letter_status'] == 'COMPLETED'
         assert checked_expression_context(own[0])
     else:
         assert not any(row['letter_status'] == 'COMPLETED' or 'expression_context' in row for row in own)
-        if phase == 'media':
+        if phase == 'draft':
             assert len(own) == 1 and own[0]['letter_status'] == 'CANCELED'
         else:
             assert own == []
@@ -273,23 +278,24 @@ asyncio.run(main())
 def test_cancellation_after_body_before_publication_does_not_persist_an_adopted_view(tmp_path):
     run_isolated(tmp_path, SETUP + r'''
 write_json(server._state_root() / 'proactive/settings.json', {'enabled':True, 'allow_voice':True})
-async def render(*a, **k):
+original_persist = server._persist_store_state
+interrupted = []
+def persist_then_cancel():
+    original_persist()
     draft = server.store.letters[-1]
-    assert draft['letter_status'] == 'PROCESSING' and 'expression_context' not in draft
-    server._current_life_rhythm = lambda: {}
-    response = await server.route('POST', '/toy/letter/send', {'content':'生成语音时的新来信'}, {}, defer_reply=True)
-    assert response['code'] == 0, response
-    assert len(server.store.letters) == 3  # New input takes priority over her draft.
-    raise asyncio.CancelledError()
-server._render_media_job = render
+    if draft.get('origin') == 'proactive' and draft['letter_status'] == 'PROCESSING' and not interrupted:
+        interrupted.append(draft)
+        assert 'expression_context' not in draft
+        raise asyncio.CancelledError()
+server._persist_store_state = persist_then_cancel
 async def main():
     turn = await server._prepare_proactive_turn(intent, now=NOW)
     try:
-        await server._publish_proactive(intent, {'format':'voice','title':'问候'}, turn=turn)
+        await server._publish_proactive(intent, {'format':'text','title':'问候'}, turn=turn)
     except asyncio.CancelledError:
         pass
     row = server.store.letters[-1]
-    assert row['origin'] == 'proactive' and row['letter_status'] == 'FAILED'
+    assert interrupted and row['origin'] == 'proactive' and row['letter_status'] == 'FAILED'
     assert 'expression_context' not in row
     saved = json.loads((server._state_root() / 'state.json').read_text(encoding='utf-8'))['letters'][-1]
     assert saved['letter_status'] == 'FAILED' and 'expression_context' not in saved
@@ -299,8 +305,8 @@ asyncio.run(main())
 
 
 @pytest.mark.parametrize('phase,change', [
-    ('planning','new_im'), ('body','new_im'), ('media','new_im'),
-    ('media','earlier_revision'), ('media','background'),
+    ('planning','new_im'), ('body','new_im'), ('draft','new_im'),
+    ('draft','earlier_revision'), ('draft','background'),
 ])
 def test_im_input_changes_cancel_frozen_turn_but_background_updates_do_not(tmp_path, phase, change):
     run_isolated(tmp_path, SETUP + '\nphase, change = ' + repr((phase, change)) + r'''
@@ -330,18 +336,35 @@ async def during_gateway(messages, **kwargs):
         await change_input()
     return await original_complete(messages, **kwargs)
 server.letters_adapter.gateway.complete_scoped = during_gateway
-async def render(*a, **k):
-    if phase == 'media':
-        await change_input()
-    server.store.letters[-1]['media_status'] = 'FAILED'  # Existing text fallback.
-server._render_media_job = render
+original_persist = server._persist_store_state
+changed = []
+def persist_with_draft():
+    original_persist()
+    draft = next((row for row in server.store.letters if row.get('origin') == 'proactive'), None)
+    if phase == 'draft' and draft is not None and not changed:
+        # The last moment before publication, with no await left to ingest through.
+        changed.append(draft)
+        if change == 'new_im':
+            server.store.personal_chats.append({'letter_id':'new', 'content':'我刚醒了', 'channel':'qq',
+                'source_messages':{'new':'我刚醒了'}, 'delivery_status':'RECEIVED', 'letter_status':'PROCESSING',
+                'created_at':NOW.timestamp()})
+        else:
+            first = server.store.personal_chats[0]
+            if change == 'earlier_revision':
+                first['input_revision'] = first.get('input_revision', 0) + 1
+            else:
+                first.update(delivery_status='DELIVERED', reply_text='后台完成的回复',
+                             reply_revision=1, media_status='COMPLETED', expression_context={'background':True})
+                server.store.personal_chats.reverse()  # Storage order is not new input.
+server._persist_store_state = persist_with_draft
 async def main():
     await service.ingest(PersonalMessage('qq','bot','owner','old-first','先前的一句'))
     await service.ingest(PersonalMessage('qq','bot','owner','old-last','先前的第二句'))
     turn = await server._prepare_proactive_turn(intent, now=NOW)
     await server._proactive_complete(intent, planning=True, turn=turn)
-    await server._publish_proactive(intent, {'format':'voice','title':'问候'}, turn=turn)
+    await server._publish_proactive(intent, {'format':'text','title':'问候'}, turn=turn)
     published = [row for row in server.store.letters if row.get('origin') == 'proactive']
+    assert bool(changed) is (phase == 'draft')
     if change == 'background':
         assert len(published) == 1 and published[0]['letter_status'] == 'COMPLETED'
         assert checked_expression_context(published[0])

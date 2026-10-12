@@ -71,6 +71,9 @@ def secondary_photo_allowed(row):
     """
     if row.get('degraded_stages'):
         return False  # Auxiliary recovery grants only a reviewed text response.
+    from runtime.reply.proactive_runtime import unprompted
+    if unprompted(row):
+        return False  # Contact she starts on her own carries no picture.
     record = row.get('companion_decision')
     if not record or is_companion_image(row):
         return True

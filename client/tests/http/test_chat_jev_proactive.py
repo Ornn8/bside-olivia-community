@@ -12,7 +12,7 @@ from runtime.personal_chat.events import PersonalMessage
 from runtime.personal_chat.service import PersonalChatService
 
 
-def environment(monkeypatch, tmp_path, *, action='send', medium='text', body=None, writer_hook=None):
+def environment(monkeypatch, tmp_path, *, action='send', medium='audio_speech', body=None, writer_hook=None, legacy=False):
     from llm_gateway import GatewayRequestScope, GatewayResponse
     from runtime.personal_chat import backend
     from runtime.reply import companion_duties, companion_proactive
@@ -63,8 +63,9 @@ def environment(monkeypatch, tmp_path, *, action='send', medium='text', body=Non
     monkeypatch.setattr(companion_proactive, 'configured_proactive', lambda: port)
     async def complete_scoped(messages, *, scope, **kwargs):
         assert scope is GatewayRequestScope.PERSONAL_CHAT_JSON
-        assert rows[0]['proactive_decision']['decision']['action'] == 'send'
-        assert any(item and item[0].get('proactive_decision') for item in saves)
+        if not legacy:
+            assert rows[0]['proactive_decision']['decision']['action'] == 'send'
+            assert any(item and item[0].get('proactive_decision') for item in saves)
         writes.append(deepcopy(messages))
         if writer_hook: writer_hook(snapshot)
         return GatewayResponse(text=body if body is not None else envelope(text='读到一句很喜欢的话，想跟你说说',
@@ -88,6 +89,8 @@ def environment(monkeypatch, tmp_path, *, action='send', medium='text', body=Non
         audio.append(text)
         return {'duration_seconds':2}
     monkeypatch.setattr(backend, 'prepare_chat_audio', render)
+    if legacy:
+        monkeypatch.delenv('OLIVIA_JEV_DECISION_URL')  # No cloud contact decision: the writer alone chooses.
     async def generate(event, row): return await backend.generate(server, event, row)
     async def commit(row): committed.append(row['letter_id'])
     async def photo(row, send): photos.append(row['letter_id'])
@@ -110,9 +113,8 @@ def run_contact(env):
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize('medium', ['text', 'audio_speech'])
-def test_real_pipeline_freezes_contact_before_writer_and_obeys_medium(monkeypatch, tmp_path, medium):
-    env = environment(monkeypatch, tmp_path, medium=medium)
+def test_real_pipeline_freezes_contact_before_writer_and_sends_voice(monkeypatch, tmp_path):
+    env = environment(monkeypatch, tmp_path)
     run_contact(env)
     assert len(env.calls) == len(env.writes) == len(env.sent) == 1
     assert env.user_port.turns == []  # Proactive never becomes a fabricated received user turn.
@@ -125,8 +127,9 @@ def test_real_pipeline_freezes_contact_before_writer_and_obeys_medium(monkeypatc
     assert '<proactive_decision>' in str(env.writes[0])
     assert 'connection' in str(env.writes[0])
     assert not env.photos and not env.rows[0].get('letter_invitation')
-    assert env.sent[0][0] == ('audio' if medium == 'audio_speech' else 'text')
-    assert env.audio == (['读到一句很喜欢的话，想跟你说说'] if medium == 'audio_speech' else [])
+    assert env.calls[0]['available_media'] == ['audio_speech']
+    assert env.sent[0][0] == 'audio'
+    assert env.audio == ['读到一句很喜欢的话，想跟你说说']
     assert env.rows[0]['delivery_status'] == 'DELIVERED'
 
 

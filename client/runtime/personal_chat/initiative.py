@@ -49,9 +49,12 @@ def _usual_user_gap(rows):
 
 
 class Initiative:
-    def __init__(self, rows, clock=time.time, interval=None, *, profile_provider=None, state_path=None, active_provider=None):
+    def __init__(self, rows, clock=time.time, interval=None, *, profile_provider=None, state_path=None, active_provider=None,
+                 channel_gate=None):
         self.rows, self.clock = rows, clock
         self.profile_provider = profile_provider
+        # Whether this channel is the one the owner talks on most (None: no preference).
+        self.channel_gate = channel_gate
         self.active_provider = active_provider or (lambda: False)
         # Tests and explicit callers may pin a deterministic interval. Normal
         # runtime derives cadence from the persisted relationship profile.
@@ -228,7 +231,9 @@ class Initiative:
             unanswered += 1
             last_proactive_at = max(last_proactive_at, float(row.get('created_at', 0)))
         if scheduled:
-            return 'ready'
+            return 'ready'  # A contact the owner asked for keeps its time and channel.
+        if self.channel_gate is not None and not self.channel_gate():
+            return 'deferred'
         # An unanswered message first increases "do not disturb" pressure. The
         # pressure decays with time and does not permanently lock initiative;
         # closer relationships recover sooner, shallow ones remain conservative.

@@ -26,7 +26,7 @@ def digest(value):
 
 
 def packet():
-    return dict(channel='qq', as_of='2026-09-27T12:00:00+00:00',
+    return dict(channel='letter', as_of='2026-09-27T12:00:00+00:00',
         relationship=dict(tier='familiar', caution='normal'),
         world=dict(source_id='day:photo', note='在窗边拍照。'), rhythm=dict(phase='awake'),
         activity=dict(activity_kind='creative'), emotion=dict(reaction='pleased'),
@@ -155,7 +155,8 @@ def test_unknown_contact_age_stays_null_not_zero(sidecar):
     assert json.loads(sidecar['calls'][0][2])['contact']['seconds_since_last_contact'] is None
 
 
-@pytest.mark.parametrize('channel,media', [('qq', []), ('wechat', []), ('letter', ['audio_speech'])])
+@pytest.mark.parametrize('channel,media', [('qq', []), ('wechat', []), ('letter', ['audio_speech']),
+                                           ('qq', ['text']), ('wechat', ['text'])])
 def test_no_legal_medium_defers_locally(sidecar, channel, media):
     value = packet()
     value.update(channel=channel, available_media=media)
@@ -228,7 +229,7 @@ def test_no_id_spontaneous_connection_is_reserved_for_close_relationships(sideca
 
 
 @pytest.mark.parametrize('channel,media,valid', [('qq', ['audio_speech'], True), ('wechat', ['audio_speech'], True),
-    ('letter', ['text', 'audio_speech'], False), ('qq', ['text'], False)])
+    ('letter', ['text', 'audio_speech'], False)])
 def test_audio_requires_channel_permission_and_advertised_availability(sidecar, channel, media, valid):
     value = packet()
     value.update(channel=channel, available_media=media)
@@ -236,6 +237,16 @@ def test_audio_requires_channel_permission_and_advertised_availability(sidecar, 
     sidecar['response'] = lambda p: envelope(p, selected)
     result = evaluate(sidecar, value)
     assert (result.error_code is None) is valid
+
+
+@pytest.mark.parametrize('channel', ['qq', 'wechat'])
+def test_chat_contact_is_voice_only_even_when_text_is_offered(sidecar, channel):
+    value = packet()
+    value.update(channel=channel, available_media=['text', 'audio_speech'])
+    sidecar['response'] = lambda p: envelope(p, {**send(), 'medium': 'text'})
+    assert evaluate(sidecar, value).error_code == 'JEV_RESPONSE_INVALID'
+    sidecar['response'] = lambda p: envelope(p, {**send(), 'medium': 'audio_speech'})
+    assert evaluate(sidecar, value).decision['medium'] == 'audio_speech'
 
 
 @pytest.mark.parametrize('mutate', [

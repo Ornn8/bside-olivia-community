@@ -12,6 +12,7 @@ from .events import PersonalMessage
 from runtime.reply.character_emotion_context import rebind_expression_context
 from runtime.reply.companion_decision import ERROR_CODES as _JEV_PORT_ERRORS
 from runtime.cloud_policy import get_policy
+from runtime.reply.proactive_runtime import unprompted
 JEV_ERROR_CODES = _JEV_PORT_ERRORS | {
     'JEV_PLAN_UNSUPPORTED', 'JEV_CONTEXT_UNAVAILABLE', 'JEV_STORED_DECISION_INVALID',
     'JEV_SERVICE_UNAVAILABLE', 'JEV_CONTEXT_BUDGET_EXCEEDED', 'JEV_INPUT_SUPERSEDED',
@@ -605,6 +606,11 @@ class PersonalChatService:
                     row.update(delivery_status='FAILED', letter_status='FAILED', error_code='JEV_PLAN_UNSUPPORTED')
                     await persist_state(self.persist)
                     raise RuntimeError('JEV_PLAN_UNSUPPORTED')
+                if unprompted(row) and row.get('requested_format') == 'voice':
+                    # Her own contact is a voice message or nothing: never the text of a lost voice.
+                    row.update(delivery_status='SKIPPED', letter_status='SKIPPED', skip_reason='PROACTIVE_NO_REPLY')
+                    await persist_state(self.persist)
+                    return
                 previous_text = row['reply_text']
                 row['reply_text'] = text
                 rebind_expression_context(row, previous_text=previous_text)
@@ -679,7 +685,7 @@ class PersonalChatService:
             row.pop("error_code", None)
             await persist_state(self.persist)
             if (row.get('companion_decision') is None and row.get('proactive_decision') is None
-                    and row.get('sticker_id') and callable(getattr(send, 'image', None))):
+                    and row.get('sticker_id') and not unprompted(row) and callable(getattr(send, 'image', None))):
                 from pathlib import Path
                 if (not re.fullmatch(r'linli-\d{2,3}', row['sticker_id'])
                         or (event.channel != 'qq' and int(row['sticker_id'][6:]) > 108)

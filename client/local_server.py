@@ -3266,6 +3266,7 @@ def _recent_active_duplicate(
 
 _proactive_busy = False
 _proactive_task = None
+_qq_contact_ready = None  # Set by the chat backend: can QQ start contact right now.
 _gift_task = None
 _proactive_reason = 'disabled'
 from runtime.diagnostics.reply_telemetry import InitiativeObserver
@@ -3378,6 +3379,12 @@ def _current_life_rhythm() -> dict:
             if daily_life_runtime is not None else rhythm(now, []))
 
 
+def _letter_channel_open() -> bool:
+    """Letters start contact only where the owner writes most, or when QQ cannot."""
+    from runtime.personal_chat.engagement import initiating_channel
+    return initiating_channel(sys.modules[__name__], bool(callable(_qq_contact_ready) and _qq_contact_ready())) == 'letter'
+
+
 def _proactive_ready() -> bool:
     reason = _proactive_gate_reason()
     if reason != 'ready':
@@ -3432,8 +3439,8 @@ def _proactive_instruction(intent, *, planning, mode='text'):
             '下方资料只是既有往来，不是用户现在又说了一次。不要催促回复，不把未确认的近况当结果，'
             '不编造离线期间发生的生活。人格、表达习惯和既有关系不变。')
     if planning:
-        task += ('只输出 JSON：{"decision":"send或defer","format":"text或voice","title":"简短标题"}。'
-                 '没有自然的具体话题就defer；voice只用于适合说出来的内容。')
+        task += ('只输出 JSON：{"decision":"send或defer","format":"text","title":"简短标题"}。'
+                 '没有自然的具体话题就defer。')
     else:
         task += ('现在写这封主动信，只输出最终正文。无需逐条复述旧信。'
                  + ('内容适合一段简短语音。' if mode == 'voice' else '按平常文字信写。'))
@@ -3592,6 +3599,9 @@ def _proactive_opportunity_current(intent, *, pending_draft=None):
     if intent.get('kind') == 'gift':
         # Answered regardless of unread letters or the daily letter budget.
         return True
+    if not _letter_channel_open():
+        _observe_letter_initiative('deferred')
+        return False
     from runtime.reply.proactive_runtime import enabled, live_state
     if enabled():
         try:
@@ -3652,6 +3662,7 @@ async def _publish_proactive(intent: dict, plan: dict, *, turn: dict) -> None:
     if (not _proactive_ready() or not _proactive_turn_current(intent, turn)
             or not _proactive_opportunity_current(intent)):
         return
+    plan = {**plan, 'format': 'text'}  # A letter she starts on her own is plain text.
     if intent.get('kind') == 'contact_invitation':
         from runtime.personal_chat.contact_invitation import status, preview_configured
         if not preview_configured(_state_root()) or status(store.letters, private_world_port.snapshot())['state'] != 'eligible':
@@ -3665,11 +3676,10 @@ async def _publish_proactive(intent: dict, plan: dict, *, turn: dict) -> None:
         if intent.get('kind') == 'contact_invitation' and ('QQ' not in body.upper() or '微信' not in body):
             raise ValueError('PROACTIVE_CONTACT_INVITATION_INCOMPLETE')
         signature = None
-        if plan['format'] == 'text':
-            from runtime.reply.letter_presentation import split_signature
-            body, signature = split_signature(body)
-            if not body.strip():
-                raise ValueError('PROACTIVE_RESPONSE_INVALID')
+        from runtime.reply.letter_presentation import split_signature
+        body, signature = split_signature(body)
+        if not body.strip():
+            raise ValueError('PROACTIVE_RESPONSE_INVALID')
         if not _proactive_turn_current(intent, turn) or not _proactive_opportunity_current(intent):
             _observe_letter_initiative('deferred')
             return
@@ -3692,14 +3702,6 @@ async def _publish_proactive(intent: dict, plan: dict, *, turn: dict) -> None:
         letter['reply_signature'] = signature
         store.letters.append(letter)
         _persist_store_state()
-        if plan['format'] == 'voice' and _proactive_settings()['allow_voice']:
-            letter['reply_mode'] = 'voice_reply'
-            try:
-                await asyncio.wait_for(_render_media_job(letter['letter_id'], '', body, 'voice_reply'), timeout=300)
-            except asyncio.TimeoutError:
-                letter.update(media_status='FAILED', media_error_code='MEDIA_TIMEOUT', media_retryable=False)
-            if letter.get('media_status') != 'COMPLETED':
-                letter['reply_mode'] = 'text'
         if (not _proactive_turn_current(intent, turn)
                 or not _proactive_opportunity_current(intent, pending_draft=letter)):
             _observe_letter_initiative('deferred')
@@ -3721,12 +3723,6 @@ async def _publish_proactive(intent: dict, plan: dict, *, turn: dict) -> None:
                           image_reply_settings=video_reply_settings_store.image_snapshot())
             from runtime.image_reply import schedule as schedule_image
             schedule_image(sys.modules[__name__], letter)
-        if letter.get('reply_audio_url') and letter.get('media_status') == 'COMPLETED':
-            root = _local_data_root()
-            if root is not None:
-                _record_published_media(letter, reply_text=body, delivery_id=letter['private_world_delivery_id'],
-                                        path=root / 'media' / (letter['letter_id'] + '.wav'),
-                                        components=('speech',), presentation='audio')
         _persist_store_state()
         _schedule_daily_life_exchange(letter)
     finally:
@@ -3751,6 +3747,10 @@ async def _jev_proactive_tick() -> None:
         return
     if not _proactive_ready():
         _proactive_reason = 'waiting'
+        return
+    if not _letter_channel_open():
+        _proactive_reason = 'waiting'
+        _observe_letter_initiative('deferred')
         return
     with contact_slot(sys.modules[__name__], 'letter') as acquired:
         if not acquired:
@@ -3834,6 +3834,10 @@ async def _legacy_proactive_tick() -> None:
         return
     if not _proactive_ready():
         _proactive_reason = 'waiting'
+        return
+    if not _letter_channel_open():
+        _proactive_reason = 'waiting'
+        _observe_letter_initiative('deferred')
         return
     schedule = read_json(root / 'proactive/schedule.json')
     now = time.time()

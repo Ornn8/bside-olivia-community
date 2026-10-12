@@ -62,7 +62,7 @@ def test_speech_failure_delivers_the_written_reply_once_without_regenerating(
     (RuntimeError('synthetic media wallet rejection'), 'PERSONAL_CHAT_TTS_UNAVAILABLE', 'VOICE_RENDER_FAILED'),
     (TimeoutError(), 'PERSONAL_CHAT_TTS_TIMEOUT', 'VOICE_RENDER_TIMEOUT'),
 ])
-def test_proactive_audio_contact_falls_back_to_one_text_message(monkeypatch, tmp_path, failure, fallback, basis):
+def test_proactive_audio_contact_is_not_sent_as_text_when_the_voice_fails(monkeypatch, tmp_path, failure, fallback, basis):
     env = environment(monkeypatch, tmp_path, medium='audio_speech')
     attempts = []
     async def unavailable(server, text, path, **kwargs):
@@ -70,15 +70,15 @@ def test_proactive_audio_contact_falls_back_to_one_text_message(monkeypatch, tmp
         raise failure
     monkeypatch.setattr(backend, 'prepare_chat_audio', unavailable)
     run_contact(env)
-    run_contact(env)  # The same contact is never sent twice.
+    run_contact(env)  # The same contact is never regenerated.
     assert len(env.calls) == len(env.writes) == 1 and len(attempts) == 1
-    assert env.sent == [('text', '读到一句很喜欢的话，想跟你说说')]
+    assert env.sent == []  # Her own contact is a voice message or nothing, never its text.
     row = env.rows[0]
-    assert row['delivery_status'] == 'DELIVERED' and row['delivered_format'] == 'text'
+    assert row['delivery_status'] == 'SKIPPED' and row['skip_reason'] == 'PROACTIVE_NO_REPLY'
     assert row['proactive_decision']['decision']['medium'] == 'audio_speech'
     assert row['voice_fallback'] == fallback and row['delivery_basis'] == basis
     assert row.get('error_code') is None and row['generation_attempts'] == 1
-    assert not env.photos and not env.audio
+    assert not env.photos and not env.audio and not env.committed
 
 
 def test_proactive_tick_with_failed_speech_spends_its_opportunity_and_releases_the_slot(monkeypatch, tmp_path):
@@ -96,7 +96,7 @@ def test_proactive_tick_with_failed_speech_spends_its_opportunity_and_releases_t
     initiative.received(PersonalMessage('qq', 'bot', 'owner', 'prior', '此前收到的原话'), env.sender)
     initiative.due = now[0]
     asyncio.run(backend._proactive_contact(env.server, runtime, initiative))
-    assert [kind for kind, _ in env.sent] == ['text'] and env.rows[0]['delivery_status'] == 'DELIVERED'
+    assert env.sent == [] and env.rows[0]['delivery_status'] == 'SKIPPED'
     assert env.server._jev_contact_channel is None
     assert initiative.due == now[0] + 3600  # Counted as an attempt, not left due to fire again.
 
