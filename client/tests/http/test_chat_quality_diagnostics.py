@@ -130,6 +130,15 @@ def test_stage_and_voice_diagnostics_are_numeric_bounded_and_idempotent():
     assert project_chat_task(result) == result
 
 
+def test_reply_length_choice_and_timing_are_finite_diagnostics():
+    result = project_chat_task({'channel': 'qq', 'reply_length': 'long',
+                                'stage_timing_seconds': {'reply_length': .4, 'total': 1.2}})
+    assert result['reply_length'] == 'long'
+    assert result['stage_timing_seconds'] == {'reply_length': .4, 'total': 1.2}
+    assert project_chat_task(result) == result
+    assert project_chat_task({'channel': 'qq', 'reply_length': 'private text'}) == {'channel': 'qq'}
+
+
 @pytest.mark.parametrize('invalid', [True, float('inf'), float('-inf'), float('nan'), -1, 'sk-secret', 86401])
 def test_malformed_duration_never_enters_bundle(invalid):
     projected = project_chat_task({'channel': 'qq', 'stage_timing_seconds': {'writer': invalid},

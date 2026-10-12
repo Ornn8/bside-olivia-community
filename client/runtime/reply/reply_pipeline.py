@@ -160,6 +160,7 @@ class PipelineResult:
     failure_context: dict[str, object] = field(default_factory=dict)
     decision_dropped_media: str | None = None
     degraded_stages: dict[str, str] = field(default_factory=dict)
+    reply_length: str | None = None
 
 
 @dataclass(frozen=True)
@@ -187,11 +188,13 @@ class ReplyPipeline:
         current_turn_interpreter: CurrentTurnInterpreterPort | None = None,
         companion_decision_port: object | None = None,
         silence_authorization_port: object | None = None,
+        reply_length_port: object | None = None,
         recovery_root=None,
     ) -> None:
         self.orchestrator = orchestrator
         self.companion_decision_port = companion_decision_port
         self.silence_authorization_port = silence_authorization_port
+        self.reply_length_port = reply_length_port
         self.discover_runtime_ports = discover_runtime_ports
         self.current_turn_interpreter = current_turn_interpreter or (
             _runtime_current_turn_interpreter(orchestrator)
@@ -230,6 +233,12 @@ class ReplyPipeline:
                 or not callable(metadata.get('turn_is_current'))):
             return None
         return source, revision, metadata.get('recovery_namespace', '')
+
+    def _reply_length_questions(self):
+        if self.reply_length_port is not None or not self.discover_runtime_ports:
+            return self.reply_length_port
+        from .jev_questions import configured_questions
+        return configured_questions()
 
     def _forget_recovery(self, key, *, preserve_writer=False):
         entry = self._stage_recoveries.pop(key, None)
@@ -271,6 +280,7 @@ class ReplyPipeline:
         key = self._recovery_key(metadata)
         timings = {}
         degraded = {}
+        side = dict(tasks=[], reply_length=None)
         started = time.perf_counter()
         async def measure(name, work):
             begin = time.perf_counter()
@@ -283,7 +293,7 @@ class ReplyPipeline:
             finally:
                 timings[name] = round(timings.get(name, 0) + time.perf_counter() - begin, 4)
         try:
-            result = await self._run(request, context, measure, degraded, metadata)
+            result = await self._run(request, context, measure, degraded, metadata, side)
         except asyncio.CancelledError:
             self._forget_recovery(key, preserve_writer=True)
             raise
@@ -291,6 +301,11 @@ class ReplyPipeline:
             self._forget_recovery(key)
             raise
         finally:
+            # An unused optional judgment must not outlive the reply.
+            for task in side['tasks']:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*side['tasks'], return_exceptions=True)
             timings['total'] = round(time.perf_counter() - started, 4)
             record = metadata.get('record_stage_timing')
             if callable(record):
@@ -306,9 +321,10 @@ class ReplyPipeline:
         # stage may reuse its successful prefix within the existing two attempts.
         if result.error_code not in recoverable or metadata.get('generation_attempts', 1) >= 2:
             self._forget_recovery(key, preserve_writer=result.error_code in recoverable)
-        return replace(result, stage_timing_seconds=timings, degraded_stages=degraded)
+        return replace(result, stage_timing_seconds=timings, degraded_stages=degraded,
+                       reply_length=side['reply_length'])
 
-    async def _run(self, request: object, context: ReplyContext, measure, degraded, receipt_metadata) -> PipelineResult:
+    async def _run(self, request: object, context: ReplyContext, measure, degraded, receipt_metadata, side) -> PipelineResult:
         if not isinstance(context, ReplyContext):
             raise TypeError("ReplyContext is required")
         sticker_choices = allowed_stickers(context.private_behavior)
@@ -400,6 +416,20 @@ class ReplyPipeline:
             # few seconds it takes overlap world selection instead of adding to it.
             from runtime.memory import remote_embedding
             remote_embedding.prefetch(generation_request.content)
+        # QQ is instant chat. One short question per reply decides short or long;
+        # it starts with the other judgments and is awaited only when the writer
+        # notes are assembled. A proactive turn or one without user text is short.
+        length = length_task = None
+        length_port = (self._reply_length_questions() if context.mode is ReplyMode.FUTURE_IM
+                       and (chat_metadata or {}).get('structured') and chat_metadata.get('channel') == 'qq' else None)
+        if length_port is not None:
+            if chat_metadata.get('proactive') or not (isinstance(user_text, str) and user_text.strip()):
+                length = 'short'
+            else:
+                from . import reply_length
+                length_task = asyncio.create_task(measure('reply_length', reply_length.judge(
+                    length_port, chat_metadata.get('recent_messages') or (), user_text)))
+                side['tasks'].append(length_task)
         try:
             async def select_world():
                 if isinstance(generation_request, ReplyRequest) and generation_request.messages is None:
@@ -612,9 +642,20 @@ class ReplyPipeline:
                     piano_note = '没有唯一匹配的已上传 MIDI。自然地问对方指的是哪一首，或请对方上传 MIDI；不编造曲目，不承诺已经录好。'
         from runtime.piano_collection import environment_context
         collection_note = environment_context() if context.mode is ReplyMode.TEXT_LETTER else ''
-        final_notes = tuple(note for note in (decision_note, generation_note, speech_note, piano_note, collection_note) if note)
+        length_note = ''
+        if length_port is not None and (speech_request or piano_note):
+            # Long audio and piano clips keep their own length rules; the answer is not needed.
+            if length_task is not None:
+                length_task.cancel()
+        elif length_port is not None:
+            from . import reply_length
+            length = length if length_task is None else await length_task
+            side['reply_length'] = length
+            length_note = reply_length.note(length)
+        final_notes = tuple(note for note in (decision_note, generation_note, speech_note, piano_note, length_note,
+                                              collection_note) if note)
         # Content-only legacy requests keep their adapter-owned assembly path.
-        if decision_note and isinstance(prepared, ReplyRequest) and prepared.messages is None:
+        if (decision_note or length_note) and isinstance(prepared, ReplyRequest) and prepared.messages is None:
             prepared = replace(prepared, messages=prepared.normalized_messages())
         # Optional expression and scene offers cannot consume the final contract's room.
         context_budget = original_budget - sum(map(len, final_notes))

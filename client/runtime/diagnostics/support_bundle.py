@@ -293,6 +293,8 @@ def project_reply_quality(value: Mapping[str, object]) -> dict[str, object]:
             if stage in {'world', 'decision'} and isinstance(code, str) and code in _TEXT_RECOVERY_CODES}
     if value.get('quality_status') in ('not_checked', 'accepted', 'accepted_degraded', 'accepted_with_warnings', 'blocked'):
         result['quality_status'] = value['quality_status']
+    if value.get('reply_length') in ('short', 'long'):
+        result['reply_length'] = value['reply_length']
     from runtime.personal_chat.decision import NEUTRAL_METADATA, _CONTROL_REASONS
     if value.get('decision_dropped_media') == 'UNREQUESTED_SPEECH':
         result['decision_dropped_media'] = 'UNREQUESTED_SPEECH'
@@ -347,7 +349,7 @@ def project_reply_quality(value: Mapping[str, object]) -> dict[str, object]:
     if isinstance(timing, Mapping):
         safe = {name: round(float(timing[name]), 4)
                 for name in ('world', 'emotion', 'interpretation', 'history', 'decision', 'writer',
-                             'silence_authorization', 'quality', 'total')
+                             'silence_authorization', 'reply_length', 'quality', 'total')
                 if type(timing.get(name)) in (int, float) and 0 <= timing[name] <= 86400}
         if safe:
             result['stage_timing_seconds'] = safe
