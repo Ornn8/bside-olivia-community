@@ -7,6 +7,7 @@ from aiohttp import ClientSession, ClientTimeout, ClientError, ClientSSLError, C
 from original_client_setup_api import LLMSetupError, _authorize, _body, _headers, SESSION_HEADER
 from runtime.remote_generation import gpu_tls_context
 from runtime.official_endpoints import API_BASE, canonical_api_base
+from runtime.reply.jev_billing import flush_settlements_async
 
 RELAY_BASE = API_BASE
 RELAY_MODEL = 'claude-sonnet-5-5'
@@ -186,8 +187,10 @@ def mount_relay_api(app, setup):
         if not key:
             raise LLMSetupError('RELAY_NOT_CONFIGURED', status=400)
         if data == {'action':'balance'}:
+            await flush_settlements_async()  # Judgments settle in the background; include them.
             result = await relay_request(RELAY_BASE, key, 'GET', '/quota')
         elif data == {'action':'statement'}:
+            await flush_settlements_async()
             result = await relay_request(RELAY_BASE, key, 'GET', '/billing/statement')
         elif data == {'action':'order_status'}:
             result = await relay_request(RELAY_BASE, key, 'GET', '/payments/orders/latest')

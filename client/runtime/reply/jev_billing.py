@@ -97,15 +97,20 @@ def cloud_request_headers(body_digest):
             **MINIMUM_HEADER}
 
 
-def _post_settlement(key, signed):
+def _settlement_opener():
+    from .jev_http import shared_opener
+    return shared_opener()
+
+
+def _post_settlement(key, signed, *, version=None):
     from original_client_relay_api import RELAY_BASE
-    from runtime.remote_generation import gpu_tls_context
-    from .companion_decision import _NoRedirect
     body = json.dumps(signed, ensure_ascii=False, separators=(',', ':'), allow_nan=False).encode()
-    request = urllib.request.Request(RELAY_BASE + '/jev/settle', data=body, method='POST',
-        headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json', **MINIMUM_HEADER})
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect(),
-                                        urllib.request.HTTPSHandler(context=gpu_tls_context()))
+    headers = {'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json', **MINIMUM_HEADER}
+    if version:
+        # A receipt settled after a restart keeps the billing version it was judged under.
+        headers['X-Olivia-JEV-Price'] = version
+    request = urllib.request.Request(RELAY_BASE + '/jev/settle', data=body, method='POST', headers=headers)
+    opener = _settlement_opener()
     # A wallet commit can succeed while its acknowledgement is lost. Replay
     # the identical signed operation; the relay never debits it twice.
     for attempt in range(3):
@@ -125,24 +130,37 @@ def _post_settlement(key, signed):
             time.sleep(.25 * (attempt + 1))
 
 
-def settle_receipt_sync(billing, expected_body_digest):
-    turn = CURRENT.get()
-    if turn is None:
-        return None
+def _receipt_shape(billing):
+    """The signed receipt when it has the form this client can settle, else None."""
     receipt = billing.get('receipt') if isinstance(billing, dict) else None
     if (not isinstance(receipt, dict) or receipt.get('v') != 1
-            or receipt.get('turn_id') != turn.turn_id
-            or receipt.get('account_key_digest') != billing_headers()['X-Olivia-Account-Digest']
-            or receipt.get('input_digest') != expected_body_digest
             or receipt.get('price_version') != PRICE_VERSION
             or type(receipt.get('input_tokens')) is not int or not 0 <= receipt['input_tokens'] <= 1_000_000
             or not isinstance(receipt.get('operation_id'), str)
             or not isinstance(billing.get('signature'), str)):
+        return None
+    return receipt
+
+
+def _verified_receipt(billing, expected_body_digest, turn):
+    receipt = _receipt_shape(billing)
+    if (receipt is None or receipt.get('turn_id') != turn.turn_id
+            or receipt.get('account_key_digest') != hashlib.sha256(turn.key.encode()).hexdigest()
+            or receipt.get('input_digest') != expected_body_digest):
         raise ValueError('JEV_BILLING_RECEIPT_INVALID')
+    return receipt
+
+
+def _settle_receipt_now(key, billing, turn_id, version=CURRENT_PRICE_VERSION):
+    """Post one verified receipt and check the relay's answer against it."""
+    receipt = billing['receipt']
     # Only the relay has the signing secret. A matching client-side shape does
     # not establish trust; its authenticated verification and transaction do.
     try:
-        result = _post_settlement(turn.key, billing)
+        if version == CURRENT_PRICE_VERSION:
+            result = _post_settlement(key, billing)
+        else:
+            result = _post_settlement(key, billing, version=version)
     except urllib.error.HTTPError as exc:
         status = exc.code
         exc.close()
@@ -162,7 +180,7 @@ def settle_receipt_sync(billing, expected_body_digest):
     # that is neither is a real mismatch, reported as such (not "unavailable").
     allowed = {amount} | ({MINIMUM_CHARGE_UNITS} if 0 < amount < MINIMUM_CHARGE_UNITS else set())
     if (not isinstance(result, dict) or result.get('status') != 'settled'
-            or result.get('turn_id') != turn.turn_id
+            or result.get('turn_id') != turn_id
             or result.get('operation_id') != receipt['operation_id']
             or rate is None
             or type(result.get('input_tokens')) is not int or result['input_tokens'] != receipt['input_tokens']
@@ -171,6 +189,87 @@ def settle_receipt_sync(billing, expected_body_digest):
             or type(result.get('debited_units')) is not int
             or result['debited_units'] != (0 if result['replayed'] else result['charged_units'])):
         raise ValueError('JEV_BILLING_RESPONSE_INVALID')
+    return result
+
+
+_outbox = None
+
+
+def _key_for_account(digest):
+    try:
+        key = _account_key() if callable(_account_key) else None
+    except Exception:
+        return None
+    if (isinstance(key, str) and key.startswith('olivia-')
+            and hashlib.sha256(key.encode()).hexdigest() == digest):
+        return key
+    return None
+
+
+def _stored_receipt_valid(billing, turn_id, account):
+    receipt = _receipt_shape(billing)
+    return (receipt is not None and receipt.get('turn_id') == turn_id
+            and receipt.get('account_key_digest') == account)
+
+
+def configure_settlement_outbox(root, **options):
+    """Settle receipts in the background from now on, resuming any left in ``root``."""
+    global _outbox
+    from .jev_settlement_outbox import SettlementOutbox
+    shutdown_settlement_outbox()
+    outbox = SettlementOutbox(root, _settle_receipt_now, _key_for_account, _stored_receipt_valid, **options)
+    _outbox = outbox
+    outbox.recover()
+    return outbox
+
+
+def shutdown_settlement_outbox(timeout=0.0):
+    """Stop background settlement; queued receipts stay stored for the next start."""
+    global _outbox
+    outbox, _outbox = _outbox, None
+    if outbox is not None:
+        if timeout:
+            outbox.flush(timeout)
+        outbox.close(0.5 if timeout else 0.0)
+
+
+def flush_settlements(timeout=3.0):
+    """Wait for receipts that are due now, so balance and statement reads include them."""
+    outbox = _outbox
+    return True if outbox is None else outbox.flush(timeout)
+
+
+async def flush_settlements_async(timeout=3.0):
+    return await asyncio.to_thread(flush_settlements, timeout)
+
+
+def settle_receipt_sync(billing, expected_body_digest):
+    """Verify a signed receipt, then settle it without holding the reply.
+
+    With a settlement outbox the verified receipt is stored and posted by a
+    background worker, and this returns None. Without one (no state directory,
+    it cannot be written, or the account has receipts the relay refuses or keeps
+    failing) the receipt is settled in line.
+    """
+    turn = CURRENT.get()
+    if turn is None:
+        return None
+    receipt = _verified_receipt(billing, expected_body_digest, turn)
+    outbox = _outbox
+    account = receipt['account_key_digest']
+    # While earlier receipts are refused or keep failing, settle in line: the
+    # relay's refusal or outage then fails the reply, as it always did.
+    if outbox is not None and not outbox.congested(account):
+        try:
+            outbox.submit(turn_id=turn.turn_id, account=account, version=CURRENT_PRICE_VERSION,
+                          signed=billing, key=turn.key)
+        except OSError:
+            pass
+        else:
+            return None
+    result = _settle_receipt_now(turn.key, billing, turn.turn_id)
+    if outbox is not None:
+        outbox.expedite(account)
     return result
 
 

@@ -21,6 +21,16 @@ def present_user(request, monkeypatch):
         monkeypatch.setattr(daily_life, "_user_idle", lambda exchanges, now: False)
 
 
+@pytest.fixture(autouse=True)
+def isolated_jev_transport():
+    # Background settlement and pooled relay connections are process-wide; a test
+    # that starts them must not leave them running for the next one.
+    yield
+    from runtime.reply import jev_billing, jev_http
+    jev_billing.shutdown_settlement_outbox()
+    jev_http.close_idle_connections()
+
+
 def pytest_configure(config) -> None:
     """Create the parent of pytest's configured basetemp before fixtures run.
 

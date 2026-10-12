@@ -434,11 +434,10 @@ class JevDecisionPort:
         self._token = token
         self.profile = profile
         self.timeout_seconds = timeout_seconds
-        handlers = [urllib.request.ProxyHandler({}), _NoRedirect()]
-        if self.endpoint.startswith('https://'):
-            from runtime.remote_generation import gpu_tls_context
-            handlers.append(urllib.request.HTTPSHandler(context=gpu_tls_context()))
-        self._opener = urllib.request.build_opener(*handlers)
+        # Direct (no proxy, no redirects) keep-alive connections shared by every port,
+        # verified with the same TLS context as before.
+        from .jev_http import shared_opener
+        self._opener = shared_opener()
 
     def request_headers(self, body_digest):
         headers = {'Content-Type': 'application/json', 'X-Olivia-Piano': '1', 'X-Olivia-Usage-Id': body_digest,
