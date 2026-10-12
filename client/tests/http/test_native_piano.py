@@ -189,3 +189,34 @@ def test_cancel_racing_completion_downloads_and_remembers(adapter, monkeypatch):
         assert server.store.midi_jobs[0]['piano_completed_at']
         assert (native.directory(server) / (job['jobId'] + '.mp3')).is_file()
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('limit', [150, 240, 480])
+def test_native_full_original_download_and_projection(adapter, monkeypatch, limit):
+    async def scenario():
+        server, api = adapter
+        api.capabilities = {'piano': dict(CAPS['piano'], original_max_seconds=limit, original_full_length=True)}
+        meta = dict(META, seconds=156, section='完整一曲', composer=None, key=None)
+        job = dict(job_id='a'*32, task_id='full', piano_account=native.account(server),
+                   state=2, status='running', input={'source':'original'})
+        server.store.midi_jobs.append(job)
+        original = api.request
+        async def request(action, data):
+            if action=='status': return dict(task_id='full', status='succeeded', piano_meta=meta)
+            return await original(action,data)
+        async def download(task_id, path, *, validate):
+            path.write_bytes(b'ID3synthetic')
+            validate(path)
+        monkeypatch.setattr(api,'request',request)
+        monkeypatch.setattr(api,'download_task',download)
+        monkeypatch.setattr('runtime.media.music_reply._media_duration_seconds',lambda *a,**k:156)
+        result=await native.route(server,'/toy/midi/getGenerateResult',{},dict(jobId=job['job_id']))
+        assert job['piano_original_max_seconds'] == limit
+        if limit < 156:
+            assert result['code'] == 400 and 'piano_completed_at' not in job
+            return
+        assert result['data']['state']==3
+        assert '一整首' in result['data']['description']
+        assert result['data']['info']['audioUrl'].endswith('.mp3')
+        assert job['piano_completed_at']
+    asyncio.run(scenario())

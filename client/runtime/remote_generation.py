@@ -230,7 +230,8 @@ class RemoteGeneration:
             piano_meta = result.get('piano_meta')
             if piano_meta is not None:
                 from runtime.piano import validate_meta
-                piano_meta = validate_meta(piano_meta)
+                # Status reads have no input; enforce the source bound at the owning task.
+                piano_meta = validate_meta(piano_meta, source=None)
             return {'task_id': result['task_id'], 'status': result['status'], 'outputs': cleaned,
                     **({'piano_meta': piano_meta} if piano_meta is not None else {}),
                     'stage': result.get('stage', ''), **({'media_plan':plan} if plan is not None else {}),
@@ -392,6 +393,10 @@ class RemoteGeneration:
         if receipt and task['status'] in ('failed', 'cancelled') and kind not in ('daily_video', 'piano') and not data.get('speech_mode'):
             receipt.unlink(missing_ok=True)
         if task['status'] == 'succeeded':
+            if kind == 'piano':
+                from runtime.piano import validate_meta
+                task['piano_meta'] = validate_meta(task.get('piano_meta'), source=data['source'],
+                    original_max_seconds=piano['original_max_seconds'])
             progress('download', task)
         result = await self._download(task, output, validate=validate)
         if (caps.get('result_acknowledgement') is True and kind not in ('cover_video', 'original_video', 'daily_video', 'piano')

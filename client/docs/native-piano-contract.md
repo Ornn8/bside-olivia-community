@@ -42,3 +42,5 @@ human listening acceptance. Those remain joint integration checks when the
 server enables the capability.
 
 For 2.3.0 the panel requires valid server price ranges and renders them without a client price table. Its segment selector sends section; omitted section defaults to 开头. Uploads also enter the account-scoped collection with title, SHA-256, first upload time and source. The panel displays that collection and filters jobs/audio by account. See [piano-client-contract.md](piano-client-contract.md).
+
+Original task results retain their complete-song metadata and use the capability duration bound (default 480 seconds; decoded audio allows five seconds of tolerance). MIDI bounds remain 120/125 seconds. The existing audio element and MP3 download routes accept these results. Synthetic OneBot tests cover an 8 MiB local MP3 path with success, rejection and uncertain acknowledgements; actual QQ transfer and listening still require developer acceptance.

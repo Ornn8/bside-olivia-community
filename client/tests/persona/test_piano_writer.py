@@ -42,4 +42,4 @@ def test_actual_writer_gets_only_executable_piano_instruction(timing, enabled, e
     notes = '\n'.join(message['content'] for message in engine.requests[0].messages)
     assert ('<piano_task>' in notes) is expected
     if expected:
-        assert '不声称已经录好' in notes and '夜曲' in notes and '30' in notes
+        assert '不声称已经录好' in notes and '夜曲' in notes and '一整首' in notes

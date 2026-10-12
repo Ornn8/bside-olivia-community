@@ -37,7 +37,7 @@ def test_midi_and_request():
 
 def test_writer_knows_plan_but_not_completion():
     note = piano.writer_instruction({'source': 'original', 'title': '夜曲', 'seconds': 30}, CAPS)
-    assert '夜曲' in note and '30' in note
+    assert '夜曲' in note and '30' not in note and '一整首' in note
     assert '不声称已经录好' in note and '一两句' in note
     assert '以完成结果为准' in note
 
@@ -64,3 +64,44 @@ def test_native_and_qq_records_are_visible_only_after_completion():
     assert list(piano.memory_rows(row)) == []
     row['piano_delivery_status'] = 'DELIVERED'
     assert '《自作曲》的中段' in list(piano.memory_rows(row))[0]['reply_text']
+
+
+@pytest.mark.parametrize('source,seconds,limit,ok', [
+    ('original',156,480,True), ('original',480,480,True), ('original',481,480,False),
+    ('original',241,240,False), ('midi',120,480,True), ('midi',121,480,False),
+    ('original',float('nan'),480,False), ('original',float('inf'),480,False)])
+def test_source_specific_result_limit(source, seconds, limit, ok):
+    meta = dict(title='雨夜', composer=None, key=None, tempo_bpm=72, seconds=seconds, section='完整一曲')
+    if ok:
+        assert piano.validate_meta(meta, source=source, original_max_seconds=limit) == meta
+    else:
+        with pytest.raises(ValueError, match='PIANO_META_INVALID'):
+            piano.validate_meta(meta, source=source, original_max_seconds=limit)
+
+
+@pytest.mark.parametrize('source,seconds,limit,ok', [
+    ('original',485,480,True), ('original',485.1,480,False),
+    ('original',245,240,True), ('original',246,240,False),
+    ('midi',125,480,True), ('midi',126,480,False)])
+def test_source_specific_download_limit(monkeypatch, source, seconds, limit, ok):
+    from runtime.personal_chat.piano import validate_audio
+    monkeypatch.setattr('runtime.media.music_reply._media_duration_seconds', lambda *a, **k: seconds)
+    if ok:
+        validate_audio(None, source=source, original_max_seconds=limit)
+    else:
+        with pytest.raises(ValueError, match='PIANO_AUDIO_INVALID'):
+            validate_audio(None, source=source, original_max_seconds=limit)
+
+
+def test_full_length_capability_and_memory():
+    from types import SimpleNamespace
+    caps = piano.capability({'piano': dict(CAPS, original_full_length=True, original_max_seconds=240)})
+    assert caps['original_full_length'] is True and caps['original_max_seconds'] == 240
+    assert piano.capability({'piano': CAPS})['original_max_seconds'] == 480
+    assert piano.capability({'piano': dict(CAPS, original_max_seconds=True)}) is None
+    meta = dict(title='雨夜', composer=None, key=None, tempo_bpm=72, seconds=156, section='完整一曲')
+    row = dict(job_id='test', input={'source':'original'}, piano_original_max_seconds=240)
+    server = SimpleNamespace(store=SimpleNamespace(midi_jobs=[row]), _persist_store_state=lambda:None)
+    asyncio.run(piano.remember(server, 'test', meta))
+    text = list(piano.memory_rows(row))[0]['reply_text']
+    assert '一整首我自己写的《雨夜》' in text and '156' in text and '开头' not in text

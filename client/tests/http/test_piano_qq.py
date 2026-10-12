@@ -50,11 +50,14 @@ def test_current_turn_midi_intake(tmp_path, monkeypatch, enabled, name, data, ex
         if expected == 'error': assert '重发' in row['piano_file_notice']
 
 
+@pytest.mark.parametrize('seconds', [30, 156, 480])
 @pytest.mark.parametrize('failure', [None, TimeoutError, 'rejected'])
-def test_mp3_delivery_ack_memory_and_no_uncertain_replay(tmp_path, monkeypatch, failure):
+def test_mp3_delivery_ack_memory_and_no_uncertain_replay(tmp_path, monkeypatch, failure, seconds):
     from runtime.personal_chat.qq import QQFileRejected
     from runtime.personal_chat.backend import persist_chat
     calls = []; sent = []; notices = []
+    meta = dict(META, seconds=seconds, section='完整一曲' if seconds > 120 else '开头')
+    monkeypatch.setattr('runtime.media.music_reply._media_duration_seconds', lambda *a, **k: seconds)
     row = dict(letter_id='turn', channel='qq', piano_input={'source': 'original', 'title': '夜曲', 'mood': '平静', 'seconds': 30})
     async def caps(env): return CAPS
     async def persist(server): pass
@@ -63,7 +66,8 @@ def test_mp3_delivery_ack_memory_and_no_uncertain_replay(tmp_path, monkeypatch, 
         async def generate(self, kind, data, path, **kwargs):
             calls.append((kind, data)); path.write_bytes(b'mp3')
             assert kwargs['receipt_path'].name == 'request.json'
-            return dict(task_id='same-task', piano_meta=META)
+            kwargs['validate'](path)
+            return dict(task_id='same-task', piano_meta=meta)
     async def ack(api, task_id, output): calls.append('ack')
     monkeypatch.setattr(piano, 'capabilities', caps)
     monkeypatch.setattr('runtime.remote_generation.RemoteGeneration', API)
@@ -89,7 +93,7 @@ def test_mp3_delivery_ack_memory_and_no_uncertain_replay(tmp_path, monkeypatch, 
             await qq.deliver(server, row, send)
             await qq.deliver(server, row, send)
             assert len(sent) == 1 and sent[0].endswith('.mp3')
-            assert '《夜曲》的开头' in notices[0]
+            assert ('一整首我自己写的《夜曲》' if seconds > 120 else '《夜曲》的开头') in notices[0]
             assert list(piano.memory_rows(row))[0]['reply_text'] == notices[0]
             assert calls[-1] == 'ack'
     asyncio.run(scenario())

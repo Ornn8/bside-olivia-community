@@ -78,7 +78,8 @@ def projection(server, job):
              'filename': job.get('filename', ''), 'createdAt': job.get('created_at', 0)}
     if job.get('piano_meta'):
         value['piano_meta'] = job['piano_meta']
-        value['description'] = piano.completion_text(job['piano_meta'])
+        value['description'] = piano.completion_text(job['piano_meta'], source=job.get('input', {}).get('source', 'midi'),
+                                                     original_max_seconds=job.get('piano_original_max_seconds', 480))
     if job['state'] == 3:
         url = f"http://127.0.0.1:{server.PORT}/toy/midi/audio/{job['job_id']}.mp3"
         # The shipped video.js preview hardcodes video/mp4. Our native-card
@@ -101,11 +102,16 @@ async def refresh(server, job):
         result = await remote.request('status', {'task_id': job['task_id']})
         status = result['status']
         if status == 'succeeded':
-            meta = piano.validate_meta(result.get('piano_meta'))
+            if job.get('input', {}).get('source') == 'original' and 'piano_original_max_seconds' not in job:
+                job['piano_original_max_seconds'] = (await enabled(server)).get('original_max_seconds', 480)
+            options = dict(source=job.get('input', {}).get('source', 'midi'),
+                           original_max_seconds=job.get('piano_original_max_seconds', 480))
+            meta = piano.validate_meta(result.get('piano_meta'), **options)
             output = directory(server) / (job['job_id'] + '.mp3')
             if not output.is_file():
                 from runtime.personal_chat.piano import validate_audio
-                await remote.download_task(job['task_id'], output, validate=validate_audio)
+                from functools import partial
+                await remote.download_task(job['task_id'], output, validate=partial(validate_audio, **options))
             job['piano_meta'] = meta
             await piano.remember(server, job['job_id'], meta, channel='client')
             job['remembered'] = True

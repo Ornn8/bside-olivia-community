@@ -49,10 +49,10 @@ async def receive_midi(server, event, row, identifier, reference, name):
     return True
 
 
-def validate_audio(path):
+def validate_audio(path, *, source='midi', original_max_seconds=480):
     from runtime.media.music_reply import _media_duration_seconds
     seconds = _media_duration_seconds(path, required_streams=('0:a:0',))
-    if not seconds or not 0 < seconds <= 125:
+    if not seconds or not 0 < seconds <= (original_max_seconds + 5 if source == 'original' else 125):
         raise ValueError('PIANO_AUDIO_INVALID')
 
 
@@ -77,10 +77,14 @@ async def deliver(server, row, send):
     directory.mkdir(parents=True, exist_ok=True)
     output = directory / 'recording.mp3'
     api = RemoteGeneration(os.environ.get('OLIVIA_GPU_API_URL', ''), os.environ.get('OLIVIA_GPU_API_KEY', ''))
+    row['piano_original_max_seconds'] = caps.get('original_max_seconds', 480)
     row['piano_status'] = 'GENERATING'
     await persist_chat(server)
-    task = await api.generate('piano', payload, output, receipt_path=directory / 'request.json', validate=validate_audio)
-    meta = piano.validate_meta(task.get('piano_meta'))
+    from functools import partial
+    options = dict(source=payload['source'], original_max_seconds=row['piano_original_max_seconds'])
+    task = await api.generate('piano', payload, output, receipt_path=directory / 'request.json',
+                              validate=partial(validate_audio, **options))
+    meta = piano.validate_meta(task.get('piano_meta'), **options)
     row.update(piano_task_id=task['task_id'], piano_meta=meta, piano_status='READY',
                piano_file=str(output), piano_delivery_status='SENDING')
     await persist_chat(server)
@@ -107,7 +111,9 @@ async def finish_delivery(server, row, send):
         row['piano_notice_status'] = 'SENDING'
         await persist_chat(server)
         try:
-            receipt = await send(piano.completion_text(row['piano_meta']))
+            receipt = await send(piano.completion_text(row['piano_meta'],
+                source=row.get('piano_input', {}).get('source', 'midi'),
+                original_max_seconds=row.get('piano_original_max_seconds', 480)))
             if not receipt:
                 raise ValueError('QQ_SEND_UNCONFIRMED')
             row['piano_notice_status'] = 'DELIVERED'

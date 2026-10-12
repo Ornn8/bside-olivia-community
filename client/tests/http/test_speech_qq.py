@@ -12,8 +12,9 @@ from tests.http.test_personal_chat_qq import login,event,TOKEN
 @pytest.mark.parametrize('ack,expected',[(dict(status='ok',retcode=0,data={}),None),
     (dict(status='ok',retcode=0,data=None),None),(dict(status='failed',retcode=1,data=None),QQFileRejected),
     (None,TimeoutError)])
-def test_bound_file_action_ack_and_timeout(tmp_path,ack,expected):
-    path=tmp_path/'睡前故事.mp3';path.write_bytes(b'synthetic')
+@pytest.mark.parametrize('file_size', [9, 8 * 1024 * 1024])
+def test_bound_file_action_ack_and_timeout(tmp_path,ack,expected,file_size):
+    path=tmp_path/'睡前故事.mp3';path.write_bytes(b'x' * file_size)
     async def scenario():
         stop=asyncio.Event();sent=[]
         async def handler(message,send):
