@@ -11,7 +11,7 @@ import re
 import sqlite3
 import time
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from weakref import WeakValueDictionary
 
@@ -235,6 +235,7 @@ class DiaryStore:
                 CREATE TABLE IF NOT EXISTS diary_deleted (day TEXT PRIMARY KEY);
                 CREATE TABLE IF NOT EXISTS diary_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS diary_work (day TEXT PRIMARY KEY, stage TEXT NOT NULL, payload TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS diary_backfill (day TEXT PRIMARY KEY);
             ''')
             columns = {row[1] for row in db.execute('PRAGMA table_info(diary_entries)')}
             if 'style' not in columns:
@@ -482,6 +483,7 @@ class DiaryStore:
                         json.dumps(entry['facts'], ensure_ascii=False), model, int(short), style, local_photo(photo)))
             db.execute('DELETE FROM diary_attempts WHERE day=?', (day,))
             db.execute('DELETE FROM diary_work WHERE day=?', (day,))
+            db.execute('DELETE FROM diary_backfill WHERE day=?', (day,))
         return True
 
     def may_attempt(self, day):
@@ -491,6 +493,24 @@ class DiaryStore:
                 return False
             row = db.execute('SELECT attempts,last_at FROM diary_attempts WHERE day=?', (day,)).fetchone()
         return row is None or row['attempts'] < MAX_ATTEMPTS and time.time() - row['last_at'] >= RETRY_AFTER
+
+    def prepare_backfill(self, today):
+        """Once: last week's days lost to the diary-output faults are written again, at no charge."""
+        with self._db() as db:
+            if db.execute("SELECT 1 FROM diary_settings WHERE key='backfill_20261013'").fetchone():
+                return
+            first = (date.fromisoformat(today) - timedelta(days=CATCH_UP_DAYS)).isoformat()
+            days = [row[0] for row in db.execute(
+                "SELECT day FROM diary_attempts WHERE length(day)=10 AND day>=? AND day<? AND attempts>0 "
+                "AND coalesce(reason,'')<>'EMPTY_DAY' AND day NOT IN (SELECT day FROM diary_entries) "
+                "AND day NOT IN (SELECT day FROM diary_deleted)", (first, today))]
+            db.executemany('INSERT OR IGNORE INTO diary_backfill VALUES (?)', [(day,) for day in days])
+            db.executemany('DELETE FROM diary_attempts WHERE day=?', [(day,) for day in days])
+            db.execute("INSERT OR IGNORE INTO diary_settings VALUES ('backfill_20261013','1')")
+
+    def backfill(self, day):
+        with self._db() as db:
+            return db.execute('SELECT 1 FROM diary_backfill WHERE day=?', (day,)).fetchone() is not None
 
     def deferred(self, day, reason):
         """Nothing reached the writer (offline, service down): wait without using an attempt."""
@@ -731,7 +751,8 @@ async def _write(store, gateway, day, rows, *, persona, life=None, now=None, tim
         now = now or datetime.now(timezone.utc)
         stage, work = store.work(day)
         memoir = len(day) == 7
-        prefix = 'diary-memoir' if memoir else 'diary'
+        # A rewritten lost day carries its own label: the service does not charge it.
+        prefix = 'diary-memoir' if memoir else 'diary-backfill' if store.backfill(day) else 'diary'
         if work is None:
             messages = month_messages(rows, day) if memoir else day_messages(rows, day)
             sent, photos = _optional(lambda: sent_material(rows, day, videos), ([], []))
@@ -811,6 +832,7 @@ async def _complete(gateway, request_id, system, packet, response_format, timeou
 def due_days(store, now):
     """Yesterday after 03:00 local time, plus missed days of the last week."""
     local = now.astimezone(SHANGHAI)
+    _optional(lambda: store.prepare_backfill(local.date().isoformat()), None)
     latest = local.date() - timedelta(days=1 if local.hour >= WRITE_AFTER_HOUR else 2)
     days = [(latest - timedelta(days=offset)).isoformat() for offset in range(CATCH_UP_DAYS)]
     return [day for day in reversed(days) if store.may_attempt(day)]

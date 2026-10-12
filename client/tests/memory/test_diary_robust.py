@@ -59,3 +59,33 @@ def test_unreached_writer_waits_without_using_an_attempt(tmp_path):
     store.failed('2026-10-07', 'ProviderProtocolError')
     with store._db() as db:
         assert db.execute('SELECT attempts FROM diary_attempts').fetchone()[0] == 1
+
+
+class Recorder(Writer):
+    def __init__(self, *values):
+        super().__init__(*values)
+        self.ids = []
+
+    async def complete_structured_scoped(self, messages, **kwargs):
+        self.ids.append(kwargs['request_id'])
+        return await super().complete_structured_scoped(messages, **kwargs)
+
+
+def test_last_weeks_lost_days_are_rewritten_once_with_the_backfill_label(tmp_path):
+    store = DiaryStore(tmp_path / 'diary.db')
+    with store._db() as db:
+        db.executemany('INSERT INTO diary_attempts VALUES (?,?,?,?)', [
+            ('2026-10-07', 3, 0, 'ProviderProtocolError'), ('2026-10-06', 3, 0, 'EMPTY_DAY'),
+            ('2026-09-20', 3, 0, 'ProviderProtocolError'), ('2026-10-05', 1, 0, 'ProviderUnavailable')])
+    store.save('2026-10-05', {**ENTRY, 'facts': []}, now=NOW, model='m', short=False, style='prose', photo=None)
+    store.prepare_backfill('2026-10-08')
+    assert [store.backfill(day) for day in ('2026-10-07', '2026-10-06', '2026-09-20', '2026-10-05')] == [True, False, False, False]
+    assert store.may_attempt('2026-10-07')
+    with store._db() as db:
+        db.execute("INSERT INTO diary_attempts VALUES ('2026-10-04',3,0,'ProviderProtocolError')")
+    store.prepare_backfill('2026-10-08')  # once only
+    assert not store.backfill('2026-10-04')
+    writer = Recorder({**ENTRY, 'body': '今天的具体画面。' * 35}, {'title': '改好了', 'mood': '暖', 'body': '改过的画面。' * 45})
+    assert asyncio.run(write_day(store, writer, '2026-10-07', ROWS, persona='p', now=NOW)) == 'written'
+    assert [i.split(':')[0] for i in writer.ids] == ['diary-backfill', 'diary-backfill-revise']
+    assert not store.backfill('2026-10-07')
