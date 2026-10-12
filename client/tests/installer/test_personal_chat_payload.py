@@ -30,7 +30,7 @@ def _source(tmp_path):
         target.write_text("{}\n" if target.suffix == ".json" else "# fixture\n", encoding="utf-8")
     actual = Path(__file__).parents[2] / "runtime" / "personal_chat"
     target = source / "runtime" / "personal_chat"
-    target.mkdir(parents=True)
+    target.mkdir(parents=True, exist_ok=True)
     modules = sorted(actual.glob("*.py"))
     assert {"backend.py", "service.py", "events.py", "probe.py", "qq.py", "wechat.py"} <= {p.name for p in modules}
     for module in modules:
