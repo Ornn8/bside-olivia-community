@@ -2328,7 +2328,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     window.setTimeout(refreshVisibleBalance,15000);
   };
 
-  const renderLlmSetupPanel = async (panel, initialMode) => {
+  // `offerClaim` is false inside the account page itself, which already holds the
+  // claim button; everywhere else a missing key gets a shortcut to that page.
+  const renderLlmSetupPanel = async (panel, initialMode, {offerClaim = true} = {}) => {
     panel.replaceChildren(
       text("h3", "连接回信服务", "text-text-title text-title-m"),
       text("p", "Olivia 只使用 Olivia 账户 Key。Key 仅加密保存在这台电脑上，不会显示在页面或日志中。", "text-text-secondary text-body-m font-regular")
@@ -2343,9 +2345,12 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const key = setupInput("导入已有的 Olivia Key（已获取 Key 时留空）", "password");
     key.input.maxLength = 128;
     key.input.value = "";
+    const claimKey = !setup.llm.key_configured && offerClaim;
     const state = text("p", setup.llm.key_configured
       ? "已找到保存的 Key，无需重新填写。"
-      : "还没有 Key？请先在「Olivia 账户」获取，或在上方粘贴已有的 Key。", "text-text-secondary text-body-m font-regular");
+      : claimKey
+        ? "已有 Key 请粘贴在上方，没有的话点「去领取 Key」。"
+        : "还没有 Key？请先在「Olivia 账户」获取，或在上方粘贴已有的 Key。", "text-text-secondary text-body-m font-regular");
     state.setAttribute("aria-live", "polite");
     let setupBusy = false;
     const errors = {RELAY_NOT_CONFIGURED:"请先在「Olivia 账户」获取 Key，或粘贴已有的 Key。",
@@ -2389,6 +2394,12 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     });
     removeKey.hidden = !setup.llm.key_configured || initialMode;
     const controls = actions();
+    if (claimKey) {
+      // Opens the account page, where the key is claimed.
+      const claim = button("去领取 Key", () => openDialog(false, "relay"));
+      claim.setAttribute("data-olivia-claim-key", "");
+      controls.append(claim);
+    }
     controls.append(connect, removeKey);
     panel.append(key.wrapper, controls, state);
   };
@@ -3106,7 +3117,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     window.location.hash = "#/collection";
   };
 
-  const openDialog = (initialMode = false, initialPanel = "llm") => {
+  // `memoryReady` (initial wizard only): the bundled memory pack is already
+  // installed, so the wizard starts on the connection tab instead of the import.
+  const openDialog = (initialMode = false, initialPanel = "llm", memoryReady = false) => {
     document.querySelector(`[${DIALOG_ATTR}]`)?.remove();
 
     const backdrop = document.createElement("div");
@@ -3254,7 +3267,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         connection.append(connectionTitle, connectionBody);
         viewport.append(account, connection);
         content.append(viewport);
-        void renderLlmSetupPanel(connectionBody, false);
+        void renderLlmSetupPanel(connectionBody, false, {offerClaim: false});
         mountRelayAccount(account);
       }
       dialog.append(header, content);
@@ -3407,7 +3420,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       }
     });
     document.body.append(backdrop);
-    showPanel(initialMode ? "capability" : definitions.some(item => item.id === initialPanel) ? initialPanel : definitions[0].id);
+    showPanel(initialMode ? (memoryReady ? "llm" : "capability") : definitions.some(item => item.id === initialPanel) ? initialPanel : definitions[0].id);
     close.focus();
     loadDialogData(status, panelNodes, initialMode);
   };
@@ -5219,6 +5232,17 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
 
   let setupCheckPending = false;
   let setupPoll = null;
+  // Set by the first successful setup-status answer of this page load, so the
+  // account page is offered at most once per session: closing it, or deleting a
+  // key later, never brings it back.
+  let accountFirstHandled = false;
+  const bundledMemoryReady = async () => {
+    try {
+      return (await requestCapability(MEM0_CAPABILITY_PATH)).state === "ready";
+    } catch (_error) {
+      return false;
+    }
+  };
   const maybeOpenInitialSetup = async () => {
     if (
       setupCheckPending
@@ -5229,11 +5253,33 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     setupCheckPending = true;
     try {
       const payload = await requestSetup(SETUP_STATUS_PATH);
+      if (!accountFirstHandled) {
+        accountFirstHandled = true;
+        // A user without a key starts on the account page, where the key is
+        // claimed, before the initial-setup wizard (and even after it was
+        // completed or skipped). The poll resumes once that dialog is closed.
+        if (payload.llm?.key_configured === false && !document.querySelector(`[${DIALOG_ATTR}]`)) {
+          openDialog(false, "relay");
+          return;
+        }
+      }
       if (payload.setup_completed && setupPoll !== null) {
         window.clearInterval(setupPoll);
         setupPoll = null;
       } else if (payload.show_initial_setup) {
-        openDialog(true);
+        // The memory pack ships with the installer. With a key and a ready pack
+        // there is nothing left to ask, so finish the setup quietly; any
+        // failure falls back to the wizard.
+        const memoryReady = await bundledMemoryReady();
+        if (memoryReady && payload.llm?.key_configured === true) {
+          try {
+            await finishInitialSetup(false);
+            return;
+          } catch (_error) {
+            // Open the wizard below so the user can see what is missing.
+          }
+        }
+        if (!document.querySelector(`[${DIALOG_ATTR}]`)) openDialog(true, "llm", memoryReady);
       }
     } catch (_error) {
       // The local service may still be starting; the bounded poll retries later.
