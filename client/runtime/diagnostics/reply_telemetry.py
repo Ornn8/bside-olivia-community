@@ -39,7 +39,7 @@ INITIATIVE_TIERS = frozenset({'reserved', 'familiar', 'trusted', 'close', 'commi
 STATUSES = frozenset({'started', 'ok', 'failed', 'unknown', 'skipped'})
 CHANNELS = frozenset({'client', 'qq', 'wechat', 'letter', 'proactive'})
 MODELS = frozenset({'claude-sonnet-5-5', 'claude-opus-5-5', 'claude-opus-4-6',
-    'claude-fable-5-1', 'claude-haiku-5-5', 'gemini-3.8-flash', 'qwen3.7-flash',
+    'claude-fable-5-1', 'claude-haiku-5-5', 'gemini-3.8-flash', 'gemini-4-argon', 'qwen3.7-flash',
     'qwen3.8-max', 'gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-luna', 'unknown'})
 ERRORS = frozenset({'none', 'timeout', 'balance', 'validation', 'provider', 'media', 'send', 'other'})
 CURRENT = ContextVar('reply_telemetry', default=None)
