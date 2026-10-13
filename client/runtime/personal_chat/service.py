@@ -12,6 +12,7 @@ from .events import PersonalMessage
 from runtime.reply.character_emotion_context import rebind_expression_context
 from runtime.reply.companion_decision import ERROR_CODES as _JEV_PORT_ERRORS
 from runtime.cloud_policy import get_policy
+from runtime import proactive_config
 from runtime.reply.proactive_runtime import unprompted
 JEV_ERROR_CODES = _JEV_PORT_ERRORS | {
     'JEV_PLAN_UNSUPPORTED', 'JEV_CONTEXT_UNAVAILABLE', 'JEV_STORED_DECISION_INVALID',
@@ -337,22 +338,23 @@ class PersonalChatService:
                              for key, text in remaining.items()])
             return await self._handle_one(fresh, send.for_exchange(fresh) if callable(getattr(send, 'for_exchange', None)) else send)
 
-    async def proactive(self, event, send, eligible=lambda: True, followup=None):
+    async def proactive(self, event, send, eligible=lambda: True, followup=None, contact=None):
+        """contact: the fields of a cloud contact this exchange carries out (see runtime.cloud_contact)."""
         revision = self.user_revision
         async with self.batch_lock:
             if not eligible() or revision != self.user_revision:
                 return
             await self._handle_one(event, send, proactive=True, followup=followup,
-                                   proactive_revision=revision, proactive_eligible=eligible)
+                                   proactive_revision=revision, proactive_eligible=eligible, contact=contact)
 
     async def _handle_one(self, event, send, proactive=False, followup=None, proactive_revision=None,
-                          proactive_eligible=None):
+                          proactive_eligible=None, contact=None):
         key = getattr(event, 'exchange_id', None)
         if not proactive:
             self.active_user_turns.add(key)
         try:
             return await self._handle_one_impl(event, send, proactive, followup, proactive_revision,
-                                               proactive_eligible)
+                                               proactive_eligible, contact)
         finally:
             self._stop_typing(event)
             if not proactive:
@@ -367,7 +369,7 @@ class PersonalChatService:
                 logging.getLogger(__name__).debug('ONEBOT_TYPING_STOP_UNAVAILABLE')
 
     async def _handle_one_impl(self, event, send, proactive=False, followup=None, proactive_revision=None,
-                               proactive_eligible=None):
+                               proactive_eligible=None, contact=None):
         if not isinstance(event, PersonalMessage) or self.bindings.get(event.channel) != (event.account_id, event.owner_id):
             raise ValueError("PERSONAL_CHAT_OWNER_MISMATCH")
         if (not event.text.strip() and not proactive) or len(event.text) > 10000:
@@ -425,6 +427,8 @@ class PersonalChatService:
                     row.update(origin='proactive', source_messages={})
                     if followup:
                         row.update(followup_source_id=followup['letter_id'], followup_quote=followup['followup_quote'])
+                    if contact:
+                        row.update(contact)
                 self.rows.append(row)
                 await persist_state(self.persist)
             if not proactive and _sent_time(row):
@@ -611,7 +615,8 @@ class PersonalChatService:
                     row.update(delivery_status='FAILED', letter_status='FAILED', error_code='JEV_PLAN_UNSUPPORTED')
                     await persist_state(self.persist)
                     raise RuntimeError('JEV_PLAN_UNSUPPORTED')
-                if unprompted(row) and row.get('requested_format') == 'voice':
+                if (unprompted(row) and row.get('requested_format') == 'voice'
+                        and 'text' not in proactive_config.media('qq')):
                     # Her own contact is a voice message or nothing: never the text of a lost voice.
                     row.update(delivery_status='SKIPPED', letter_status='SKIPPED', skip_reason='PROACTIVE_NO_REPLY')
                     await persist_state(self.persist)

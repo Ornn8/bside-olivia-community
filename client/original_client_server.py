@@ -692,6 +692,10 @@ def _diagnostic_source(
         version = running_component_version().get("version")
         if isinstance(version, str) and re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:\.[0-9]+)?(?:[-+][0-9A-Za-z.-]+)?", version):
             summary["running_version"] = version
+        from runtime import proactive_config
+        config = proactive_config.status()
+        summary["proactive_config_version"] = config["version"]
+        summary["proactive_config_source"] = config["source"]
         if video_capability_installer is not None:
             # status() may start runtime preparation. Export only a nonblocking
             # copy of existing state; never install or probe models here.

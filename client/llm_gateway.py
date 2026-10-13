@@ -23,6 +23,7 @@ import aiohttp
 from jsonschema import Draft202012Validator, ValidationError
 
 from runtime.diagnostics.usage_metrics import record_usage, purpose_for
+from runtime.contact_context import current as current_contact, headers as contact_headers
 from runtime.tls import client_tls_context
 from runtime.reply.model_capabilities import model_capabilities
 from runtime.reply.model_request_policy import reasoning_request_parameters
@@ -55,6 +56,8 @@ def _wire_request_id(request_id: str, label: str | None) -> str:
     sent unchanged; random ids get the call's scope in front. Only the header
     changes; the request id used internally and returned stays the same.
     """
+    if current_contact():
+        return f"contact-{request_id}"  # A cloud contact is labelled as one whatever the call was.
     word = _PURPOSE_WORD.match(request_id)
     if word and re.search('[g-z]', word.group(0)):
         return request_id
@@ -883,6 +886,7 @@ class OpenAICompatibleAdapter(Gateway):
             headers["Idempotency-Key"] = (request_id if re.fullmatch(r'[A-Za-z0-9_.:-]{1,100}', request_id)
                                           else 'consumer:' + hashlib.sha256(request_id.encode()).hexdigest())
         headers["X-Request-ID"] = _wire_request_id(request_id, label)
+        headers.update(contact_headers())
         return headers
 
     def _uses_max_reasoning(self, scope: GatewayRequestScope | None) -> bool:

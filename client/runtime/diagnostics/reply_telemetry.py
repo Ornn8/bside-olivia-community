@@ -30,7 +30,7 @@ DAILY_VIDEO_RESULTS = frozenset({'queued', 'source_unavailable', 'scene_unavaila
     'consent_required', 'capability_unavailable', 'photo_fallback', 'other'})
 
 STAGES = frozenset({'app', 'binding', 'recharge_page', 'received', 'generation',
-                    'validation', 'media', 'send', 'reply', 'initiative'})
+                    'validation', 'media', 'send', 'reply', 'initiative', 'contact'})
 INITIATIVE_REASONS = frozenset({'not_due', 'quiet_hours', 'attempt_limit', 'user_turn_open',
     'unanswered_wait', 'paused', 'wait_user', 'no_target', 'sending_uncertain', 'ready',
     'disabled', 'memory_not_ready', 'in_flight', 'unread', 'daily_limit', 'no_opportunity', 'deferred'})
@@ -170,7 +170,7 @@ class Collector:
         return hmac.new(self.salt.encode(), str(source).encode(), hashlib.sha256).hexdigest()
 
     def _event(self, stage, status, *, source='', channel='client', attempt=0, duration_ms=None,
-               error=None, model=None, transport=None, initiative=None, daily_video_result=None):
+               error=None, model=None, transport=None, initiative=None, daily_video_result=None, purpose=None):
         valid = status in TRANSPORT_STATUSES if stage == 'transport' else stage in STAGES and status in STATUSES
         if stage == 'transport' and channel != 'qq':
             return None
@@ -185,6 +185,10 @@ class Collector:
                 return None
             if 'medium' in initiative and initiative['medium'] not in ('qq', 'letter'):
                 return None
+        if stage == 'contact':
+            # A cloud contact is counted by its label alone: never its wording.
+            if self.schema != 3 or not isinstance(purpose, str) or not re.fullmatch(r'[a-z_]{1,32}', purpose):
+                return None
         if model is None:
             try: model = self.model()
             except Exception: model = 'unknown'
@@ -195,6 +199,8 @@ class Collector:
         if stage == 'media' and daily_video_result is not None:
             extra['daily_video_result'] = (daily_video_result if isinstance(daily_video_result, str)
                 and daily_video_result in DAILY_VIDEO_RESULTS else 'other')
+        if stage == 'contact':
+            extra['purpose'] = purpose
         if stage == 'initiative':
             extra['initiative'] = {key: initiative[key] for key in ('tier', 'due_in_seconds', 'reason', 'catch_up')}
             if 'medium' in initiative:
@@ -318,7 +324,7 @@ class Collector:
             self._prune(db)
             if schema != 3:
                 # A capability downgrade must not leak a new stage into an old schema.
-                db.execute("DELETE FROM queue WHERE json_extract(payload, '$.stage') = 'initiative'")
+                db.execute("DELETE FROM queue WHERE json_extract(payload, '$.stage') IN ('initiative', 'contact')")
             events = [dict(json.loads(row[1]), seq=row[0]) for row in
                     db.execute('SELECT seq,payload FROM queue ORDER BY seq LIMIT 100')] if self.enabled else []
             for event in events:
