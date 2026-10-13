@@ -65,6 +65,13 @@ async def photo_notice(row, send, persist, kind, text):
     await delivery_notice(row, send, persist, 'image_' + kind + '_notice', text)
 
 
+def photo_failure_text(row):
+    """A refused balance needs a top-up, not a "try again later" hint."""
+    if row.get('image_error_code') == 'GPU_INSUFFICIENT_BALANCE':
+        return '照片这次没生成成功，没能发给你。Olivia 可用余额不足，请充值后重试。'
+    return '照片这次没生成成功，没能发给你。稍后再试一下。'
+
+
 async def delivery_notice(row, send, persist, key, text):
     """At most one attempt per notice, including uncertain platform delivery."""
     if row.get(key):
@@ -708,7 +715,7 @@ class PersonalChatService:
             # Only a photo the user asked for gets a failure notice; a casual
             # picture that did not come out is simply not sent.
             if event.channel == 'qq' and row.get('image_status') == 'FAILED' and is_companion_image(row):
-                await photo_notice(row, send, self.persist, 'failure', '照片这次没生成成功，没能发给你。稍后再试一下。')
+                await photo_notice(row, send, self.persist, 'failure', photo_failure_text(row))
             self._schedule_commit(row)
             await asyncio.sleep(0)
 
@@ -765,8 +772,7 @@ class PersonalChatService:
                                error_code='PERSONAL_CHAT_IMAGE_UNAVAILABLE')
                     await persist_state(self.persist)
                 if primary_image and row.get('image_status') in {'FAILED', 'SKIPPED'}:
-                    await photo_notice(row, send, self.persist, 'failure',
-                        '照片这次没生成成功，没能发给你。稍后再试一下。')
+                    await photo_notice(row, send, self.persist, 'failure', photo_failure_text(row))
             except asyncio.CancelledError:
                 raise
             except Exception:

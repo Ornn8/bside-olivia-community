@@ -2735,6 +2735,7 @@ def test_contract_and_fixture_artifacts_are_versioned_and_sanitized() -> None:
                 "retryable": True,
             },
             "MEDIA_PROVIDER_UNAVAILABLE": {"status": "UNAVAILABLE", "retryable": True},
+            "GPU_INSUFFICIENT_BALANCE": {"status": "FAILED", "retryable": True},
             "TTS_CONTENT_GATE_UNAVAILABLE": {
                 "status": "UNAVAILABLE",
                 "retryable": True,

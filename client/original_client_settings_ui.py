@@ -2328,7 +2328,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     window.setTimeout(refreshVisibleBalance,15000);
   };
 
-  const renderLlmSetupPanel = async (panel, initialMode) => {
+  // `offerClaim` is false inside the account page itself, which already holds the
+  // claim button; everywhere else a missing key gets a shortcut to that page.
+  const renderLlmSetupPanel = async (panel, initialMode, {offerClaim = true} = {}) => {
     panel.replaceChildren(
       text("h3", "连接回信服务", "text-text-title text-title-m"),
       text("p", "Olivia 只使用 Olivia 账户 Key。Key 仅加密保存在这台电脑上，不会显示在页面或日志中。", "text-text-secondary text-body-m font-regular")
@@ -2343,9 +2345,12 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const key = setupInput("导入已有的 Olivia Key（已获取 Key 时留空）", "password");
     key.input.maxLength = 128;
     key.input.value = "";
+    const claimKey = !setup.llm.key_configured && offerClaim;
     const state = text("p", setup.llm.key_configured
       ? "已找到保存的 Key，无需重新填写。"
-      : "还没有 Key？请先在「Olivia 账户」获取，或在上方粘贴已有的 Key。", "text-text-secondary text-body-m font-regular");
+      : claimKey
+        ? "已有 Key 请粘贴在上方，没有的话点「去领取 Key」。"
+        : "还没有 Key？请先在「Olivia 账户」获取，或在上方粘贴已有的 Key。", "text-text-secondary text-body-m font-regular");
     state.setAttribute("aria-live", "polite");
     let setupBusy = false;
     const errors = {RELAY_NOT_CONFIGURED:"请先在「Olivia 账户」获取 Key，或粘贴已有的 Key。",
@@ -2389,6 +2394,12 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     });
     removeKey.hidden = !setup.llm.key_configured || initialMode;
     const controls = actions();
+    if (claimKey) {
+      // Opens the account page, where the key is claimed.
+      const claim = button("去领取 Key", () => openDialog(false, "relay"));
+      claim.setAttribute("data-olivia-claim-key", "");
+      controls.append(claim);
+    }
     controls.append(connect, removeKey);
     panel.append(key.wrapper, controls, state);
   };
@@ -3106,7 +3117,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     window.location.hash = "#/collection";
   };
 
-  const openDialog = (initialMode = false, initialPanel = "llm") => {
+  // `memoryReady` (initial wizard only): the bundled memory pack is already
+  // installed, so the wizard starts on the connection tab instead of the import.
+  const openDialog = (initialMode = false, initialPanel = "llm", memoryReady = false) => {
     document.querySelector(`[${DIALOG_ATTR}]`)?.remove();
 
     const backdrop = document.createElement("div");
@@ -3254,7 +3267,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         connection.append(connectionTitle, connectionBody);
         viewport.append(account, connection);
         content.append(viewport);
-        void renderLlmSetupPanel(connectionBody, false);
+        void renderLlmSetupPanel(connectionBody, false, {offerClaim: false});
         mountRelayAccount(account);
       }
       dialog.append(header, content);
@@ -3407,7 +3420,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       }
     });
     document.body.append(backdrop);
-    showPanel(initialMode ? "capability" : definitions.some(item => item.id === initialPanel) ? initialPanel : definitions[0].id);
+    showPanel(initialMode ? (memoryReady ? "llm" : "capability") : definitions.some(item => item.id === initialPanel) ? initialPanel : definitions[0].id);
     close.focus();
     loadDialogData(status, panelNodes, initialMode);
   };
@@ -5219,6 +5232,17 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
 
   let setupCheckPending = false;
   let setupPoll = null;
+  // Set by the first successful setup-status answer of this page load, so the
+  // account page is offered at most once per session: closing it, or deleting a
+  // key later, never brings it back.
+  let accountFirstHandled = false;
+  const bundledMemoryReady = async () => {
+    try {
+      return (await requestCapability(MEM0_CAPABILITY_PATH)).state === "ready";
+    } catch (_error) {
+      return false;
+    }
+  };
   const maybeOpenInitialSetup = async () => {
     if (
       setupCheckPending
@@ -5229,11 +5253,36 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     setupCheckPending = true;
     try {
       const payload = await requestSetup(SETUP_STATUS_PATH);
+      if (!accountFirstHandled) {
+        accountFirstHandled = true;
+        // A user without a key starts on the account page, where the key is
+        // claimed, before the initial-setup wizard (and even after it was
+        // completed or skipped). The poll resumes once that dialog is closed.
+        if (payload.llm?.key_configured === false && !document.querySelector(`[${DIALOG_ATTR}]`)) {
+          openDialog(false, "relay");
+          return;
+        }
+      }
       if (payload.setup_completed && setupPoll !== null) {
         window.clearInterval(setupPoll);
         setupPoll = null;
       } else if (payload.show_initial_setup) {
-        openDialog(true);
+        // The memory pack ships with the installer. With a key and a ready pack
+        // there is nothing left to ask, so finish the setup quietly; any
+        // failure falls back to the wizard.
+        const memoryReady = await bundledMemoryReady();
+        if (memoryReady && payload.llm?.key_configured === true) {
+          try {
+            await finishInitialSetup(false);
+            return;
+          } catch (_error) {
+            // Right after a fresh install the memory service may still be
+            // starting: the poll tries again shortly instead of showing the wizard.
+            if (_error && _error.code === "LLM_SETUP_MEMORY_PREPARING") return;
+            // Otherwise open the wizard below so the user can see what is missing.
+          }
+        }
+        if (!document.querySelector(`[${DIALOG_ATTR}]`)) openDialog(true, "llm", memoryReady);
       }
     } catch (_error) {
       // The local service may still be starting; the bounded poll retries later.
@@ -5555,7 +5604,7 @@ BOOTSTRAP_JAVASCRIPT = r'''
         const labels={loading:'正在准备翻唱…',transcribing:'正在识别原曲歌词…',loading_model:'正在加载翻唱模型…',generating:'林离正在翻唱…',decoding:'正在保存歌曲音频…',completed:'歌曲已完成，正在准备回信…'};
         const errors={COVER_LYRICS_REQUIRED:'未能识别歌词，请补充原曲歌词后重新寄信。',COVER_RUNTIME_UNAVAILABLE:'翻唱组件尚未准备完整，请检查本地组件。',COVER_GENERATION_TIMEOUT:'这次翻唱等待超时，可以手动重试。',COVER_SOURCE_REQUIRED:'这封信缺少原曲音频，请重新选择后寄信。'};
         const cloudErrors={GPU_TLS_FAILED:'云端证书校验失败，请更新补丁并检查电脑时间。',GPU_CONNECTION_TIMEOUT:'云端连接超时，本次生成已停止等待。',GPU_CONNECT_FAILED:'无法连接云端，本次生成未完成。',GPU_CONNECTION_FAILED:'云端连接中断，本次生成未完成。',GPU_AUTH_FAILED:'云端 Key 验证失败，请检查 Olivia 账户。',GPU_QUEUE_FULL:'云端队列已满，本次任务未进入队列。',GPU_TASK_TIMEOUT:'云端任务等待超时，已停止等待。',GPU_TASK_FAILED:'云端生成失败。',GPU_DOWNLOAD_FAILED:'生成结果下载失败。',GPU_SHARED_SCENE_MISSING:'视频素材与云端不匹配，请联系管理员。',MEDIA_JOB_INTERRUPTED:'上次生成已中断，未自动重复提交。'};
-        cloudErrors.GPU_INSUFFICIENT_BALANCE='Olivia 可用余额不足，本次媒体任务未入队。请充值后重试。';
+        cloudErrors.GPU_INSUFFICIENT_BALANCE='Olivia 可用余额不足，请充值后重试。';
         cloudErrors.GPU_BILLING_CONSENT_REQUIRED='请更新收费版客户端，确认费用上限后再生成。';
         cloudErrors.GPU_RECOVERY_REQUIRED='上次视频订单需要恢复核对，未重新提交或重复扣费，请导出诊断包。';
         if(['FAILED','UNAVAILABLE'].includes(data.status)) {

@@ -122,6 +122,9 @@ LETTER_DETAIL_MEDIA_ERROR_CODES: dict[str, dict[str, Any]] = {
         "retryable": True,
     },
     "MEDIA_PROVIDER_UNAVAILABLE": {"status": "UNAVAILABLE", "retryable": True},
+    # The media service refused the job because the account balance is not
+    # positive; the user can retry the same letter after topping up.
+    "GPU_INSUFFICIENT_BALANCE": {"status": "FAILED", "retryable": True},
     "TTS_CONTENT_GATE_UNAVAILABLE": {
         "status": "UNAVAILABLE",
         "retryable": True,

@@ -60,6 +60,7 @@ def validate(routes):
 
 
 def save(routes):
+    global _cache
     routes = validate(routes)
     if _path is None:
         raise OSError('MODEL_ROUTES_UNAVAILABLE')
@@ -72,7 +73,20 @@ def save(routes):
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
+    # Two saves can share one file timestamp on Windows; never serve the older cache.
+    _cache = (None, {})
     return routes
+
+
+def save_if_absent(routes):
+    """First-run defaults: write only when no routes file exists (a damaged file counts as existing)."""
+    routes = validate(routes)
+    if _path is None:
+        raise OSError('MODEL_ROUTES_UNAVAILABLE')
+    if _path.exists():
+        return False
+    save(routes)
+    return True
 
 
 @contextmanager

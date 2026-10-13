@@ -123,3 +123,107 @@ def test_mix_receives_only_converted_voice_and_accompaniment(tmp_path, monkeypat
     command = commands[0]
     assert [command[index + 1] for index, value in enumerate(command) if value == "-i"] == [str(piano), str(converted)]
     assert "duration=first" in command[command.index("-filter_complex") + 1]
+
+
+def _mix_filter(vc, tmp_path, monkeypatch, loudness, *, reference=True):
+    """Run mix_song_voice against a fake ffmpeg and return (filter_complex, measured paths)."""
+    source, converted, piano, output = [
+        tmp_path / name for name in ("vocals.wav", "converted.wav", "piano.wav", "mixed.wav")]
+    ffmpeg = tmp_path / "ffmpeg.exe"
+    ffmpeg.write_bytes(b"fixture")
+    commands, measured = [], []
+
+    def measure(path, ffmpeg_path):
+        measured.append((path, ffmpeg_path))
+        return loudness[path]
+
+    monkeypatch.setattr(vc, "_loudness", measure)
+    monkeypatch.setattr(vc, "_duration", lambda *_: 60.0)
+    monkeypatch.setattr(vc, "_run", lambda command, *_a, **_kw: commands.append(command))
+    vc.mix_song_voice(converted, piano, output, ffmpeg_path=ffmpeg, reference=source if reference else None)
+    command = commands[0]
+    assert [command[index + 1] for index, value in enumerate(command) if value == "-i"] == [str(piano), str(converted)]
+    return command[command.index("-filter_complex") + 1], measured, (source, converted, ffmpeg)
+
+
+@pytest.mark.parametrize(("source_lufs", "converted_lufs", "expected"), [
+    (-14.0, -18.0, "4.00"),      # converted vocal is quieter: raised to the source level
+    (-20.0, -16.5, "-3.50"),     # converted vocal is louder: lowered to the source level
+    (-18.0, -18.0, "0.00"),
+    (-14.0, -40.0, "12.00"),     # clamped
+    (-40.0, -14.0, "-12.00"),    # clamped
+])
+def test_mix_levels_converted_vocal_to_source_vocal_within_12_db(
+        tmp_path, monkeypatch, source_lufs, converted_lufs, expected):
+    from runtime.media import voice_conversion as vc
+    source, converted = tmp_path / "vocals.wav", tmp_path / "converted.wav"
+    filters, measured, (_, _, ffmpeg) = _mix_filter(
+        vc, tmp_path, monkeypatch, {source: source_lufs, converted: converted_lufs})
+    # Gain applies to the converted vocal (input 1) only; the backing (input 0) is untouched.
+    assert ("[1:a]aresample=44100:first_pts=0,aformat=channel_layouts=stereo,"
+            f"volume={expected}dB,apad[b];") in filters
+    assert filters.count("volume=") == 1
+    assert measured == [(source, ffmpeg), (converted, ffmpeg)]
+
+
+@pytest.mark.parametrize(("case", "loudness", "with_reference"), [
+    ("no reference", {}, False),
+    ("silent source stem", {"source": None, "converted": -16.0}, True),
+    ("silent converted stem", {"source": -16.0, "converted": None}, True),
+])
+def test_mix_without_measurable_reference_keeps_one_to_one_balance(
+        tmp_path, monkeypatch, case, loudness, with_reference):
+    from runtime.media import voice_conversion as vc
+    source, converted = tmp_path / "vocals.wav", tmp_path / "converted.wav"
+    levels = {source: loudness.get("source"), converted: loudness.get("converted")}
+    filters, measured, _ = _mix_filter(vc, tmp_path, monkeypatch, levels, reference=with_reference)
+    assert "volume=0.00dB" in filters, case
+    assert "weights='1 1'" in filters
+    if not with_reference:
+        assert measured == []
+
+
+def _fake_ebur128(returncode, stderr):
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(returncode=returncode, stderr=stderr, stdout=b"")
+
+    return SimpleNamespace(run=run, CREATE_NO_WINDOW=0), calls
+
+
+_EBUR128_SUMMARY = (b"[Parsed_ebur128_0 @ 000001] Summary:\n\n  Integrated loudness:\n"
+                    b"    I:         %s LUFS\n    Threshold: -33.5 LUFS\n\n  Loudness range:\n"
+                    b"    LRA:         5.2 LU\n")
+
+
+def test_loudness_reads_the_last_integrated_value_from_ffmpeg_stderr(tmp_path, monkeypatch):
+    from runtime.media import voice_conversion as vc
+    stderr = (b"[Parsed_ebur128_0 @ 000001] t: 0.1 M: -30.0 S: -inf I: -70.0 LUFS LRA: 0.0 LU\n"
+              + _EBUR128_SUMMARY % b"-18.3")
+    fake, calls = _fake_ebur128(0, stderr)
+    monkeypatch.setattr(vc, "subprocess", fake)
+    stem, ffmpeg = tmp_path / "stem.wav", tmp_path / "ffmpeg.exe"
+    assert vc._loudness(stem, ffmpeg) == pytest.approx(-18.3)
+    command, kwargs = calls[0]
+    assert command[0] == str(ffmpeg) and command[command.index("-i") + 1] == str(stem)
+    assert "ebur128=framelog=quiet" in command
+    assert kwargs["capture_output"] is True and kwargs["check"] is False
+
+
+@pytest.mark.parametrize(("returncode", "stderr", "expected"), [
+    (0, _EBUR128_SUMMARY % b"-59.9", -59.9),
+    (0, _EBUR128_SUMMARY % b"-60.0", None),     # at or below -60 LUFS counts as silent
+    (0, _EBUR128_SUMMARY % b"-70.0", None),
+    (0, _EBUR128_SUMMARY % b"-inf", None),
+    (0, b"no loudness summary here", None),
+    (1, _EBUR128_SUMMARY % b"-18.3", None),      # ffmpeg failed: ignore whatever it printed
+])
+def test_loudness_is_none_when_silent_unparsable_or_ffmpeg_fails(
+        tmp_path, monkeypatch, returncode, stderr, expected):
+    from runtime.media import voice_conversion as vc
+    fake, _ = _fake_ebur128(returncode, stderr)
+    monkeypatch.setattr(vc, "subprocess", fake)
+    result = vc._loudness(tmp_path / "stem.wav", tmp_path / "ffmpeg.exe")
+    assert result == (pytest.approx(expected) if expected is not None else None)
