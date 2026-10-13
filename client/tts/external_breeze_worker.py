@@ -18,6 +18,18 @@ from typing import Any
 _PACKAGE_NAME = "olivia_breeze_tts2_runtime"
 
 
+def _speakable(text: str) -> str:
+    """Dashes and paragraph breaks become a comma pause.
+
+    The model sometimes ended a reply at "——" or at a blank line and dropped everything after it
+    (QQ voices 2026-10-13: 3 of 255 cut short, each exactly at a dash or a paragraph break).
+    """
+    text = re.sub(r'\s*[—―－]+\s*', '，', text.strip())
+    text = re.sub(r'\s*\n+\s*', '，', text)
+    text = re.sub(r'([，。！？!?；;、…~～：:])，', r'\1', text)
+    return re.sub(r'，{2,}', '，', text).strip('，')
+
+
 def _audio_text_chunks(text: str) -> list[str]:
     """Split long speech only at full stops; the model owns pauses within sentences."""
     chunks = []
@@ -71,7 +83,7 @@ def _generate_complete_audio(generate, bundle, *, text, audio_only_unbounded=Fal
             selected = [match.group(2) for match in directions if first <= int(match.group(1)) <= last]
             if selected:
                 options['instruction'] = ''.join(f'第{i}句：{direction}' for i, direction in enumerate(selected, 1))
-        results.append(generate(bundle, text=chunk.strip(), **options))
+        results.append(generate(bundle, text=_speakable(chunk) or chunk.strip(), **options))
         offset += len(chunk)
     if len(results) == 1:
         return results[0]

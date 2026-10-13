@@ -19,13 +19,39 @@ def test_day_boundaries(days14, days21, expected):
     assert state == before
 
 
-@pytest.mark.parametrize('name', ['familiarity', 'trust', 'comfort', 'closeness'])
-def test_each_level_boundary(name):
+@pytest.mark.parametrize('name', ['familiarity', 'comfort'])
+def test_each_everyday_level_boundary(name):
     state = snapshot()
     setattr(state, name, 'medium')
     assert effective_relationship_stage(state, {14: 5, 21: 8}) == 'friend'
     setattr(state, name, 'low')
     assert effective_relationship_stage(state, {14: 5, 21: 8}) == 'familiar'
+
+
+@pytest.mark.parametrize('name', ['trust', 'closeness'])
+def test_each_deep_level_boundary(name):
+    state = snapshot()
+    setattr(state, name, 'medium')
+    assert effective_relationship_stage(state, {14: 5, 21: 8}) == 'trusted_friend'
+    setattr(state, name, 'low')
+    assert effective_relationship_stage(state, {14: 5, 21: 8}) == 'friend'
+    setattr(state, name, 0)
+    assert effective_relationship_stage(state, {14: 5, 21: 8}) == 'familiar'
+
+
+def test_month_of_daily_letters_is_a_friend_not_unknown():
+    # Real shape after ~30 active days: everyday levels high, rare evidence low, no tension.
+    state = SimpleNamespace(relationship_stage='unknown', familiarity=100, trust=13,
+                            comfort=74, closeness=8, tension=0)
+    assert effective_relationship_stage(state, {14: 14, 21: 21}) == 'friend'
+    assert effective_relationship_stage(state, {14: 2, 21: 2}) == 'familiar'
+
+
+@pytest.mark.parametrize('familiarity,expected', [(0, 'unknown'), (10, 'acquaintance'), (40, 'familiar')])
+def test_unconfirmed_stage_reflects_familiarity(familiarity, expected):
+    state = SimpleNamespace(relationship_stage='unknown', familiarity=familiarity, trust=0,
+                            comfort=0, closeness=0, tension=0)
+    assert effective_relationship_stage(state, {14: 0, 21: 0}) == expected
 
 
 @pytest.mark.parametrize('stage', ['unknown', 'acquaintance', 'familiar', 'close', 'committed'])
@@ -34,7 +60,7 @@ def test_romantic_stages_are_only_preserved(stage):
     assert result == (stage if stage in ('close', 'committed') else 'trusted_friend')
 
 
-@pytest.mark.parametrize('tension,expected', [('low','trusted_friend'), ('medium','friend'), ('high','familiar')])
+@pytest.mark.parametrize('tension,expected', [(0,'trusted_friend'), ('low','trusted_friend'), ('medium','friend'), ('high','familiar')])
 def test_tension(tension, expected):
     assert effective_relationship_stage(snapshot(tension=tension), {14: 5, 21: 8}) == expected
 
