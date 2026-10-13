@@ -40,7 +40,7 @@ def model_capabilities(base_url: str, model: str, options: Mapping | None = None
         # These models support tools, but reject forced tool_choice. The reply
         # adapter still validates that the returned tool matches its contract.
         defaults = ModelCapabilities(tool_choice=False, stream_usage=True)
-    elif name in {'claude-opus-4-6', 'gemini-3.8-flash', 'gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-luna'}:
+    elif name in {'claude-opus-4-6', 'gemini-3.8-flash', 'gemini-4-argon', 'gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-luna'}:
         defaults = ModelCapabilities(stream_usage=True)
     else:
         defaults = ModelCapabilities()

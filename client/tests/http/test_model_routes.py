@@ -41,8 +41,9 @@ def test_damaged_file_follows_the_main_model(routes):
     assert model_routes.load() == {'qq': None, 'letter': None, 'diary': None}
 
 
-def test_request_body_names_the_routed_model_and_threads_inherit_it(routes):
-    model_routes.save({'qq': 'claude-haiku-5-5', 'letter': None, 'diary': None})
+@pytest.mark.parametrize('model', ['claude-haiku-5-5', 'gemini-4-argon'])
+def test_request_body_names_the_routed_model_and_threads_inherit_it(routes, model):
+    model_routes.save({'qq': model, 'letter': None, 'diary': None})
     adapter = OpenAICompatibleAdapter(GatewayConfig(provider='openai_compatible', base_url=RELAY_BASE,
                                                     model='claude-sonnet-5-5', feature_enabled=True))
     messages = [{'role': 'user', 'content': '在吗'}]
@@ -54,7 +55,7 @@ def test_request_body_names_the_routed_model_and_threads_inherit_it(routes):
             threaded = await asyncio.to_thread(lambda: adapter._body(messages, stream=False)['model'])
             task = await asyncio.create_task(asyncio.sleep(0, adapter.config.model))
         return inline, threaded, task
-    assert asyncio.run(scenario()) == ('claude-haiku-5-5',) * 3
+    assert asyncio.run(scenario()) == (model,) * 3
     assert adapter.config.model == 'claude-sonnet-5-5'
 
 
