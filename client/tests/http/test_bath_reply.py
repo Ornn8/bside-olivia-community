@@ -1,29 +1,64 @@
 import ast
 import asyncio
 import json
-from datetime import datetime
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from runtime.private_world.life_rhythm import rhythm
+from runtime.private_world.life_rhythm import bath_window, rhythm
 from original_client_letter_contract import serialize_letter_summary
 from patch_companion_settings import _repair_native_letter_audio
 
 
 @pytest.mark.parametrize('stamp,phase', [
-    ('2026-09-10T23:29:59+08:00', 'quiet'),
-    ('2026-09-10T23:30:00+08:00', 'bathing'),
-    ('2026-09-10T23:59:59+08:00', 'bathing'),
+    ('2026-09-10T23:30:00+08:00', 'quiet'),
+    ('2026-09-10T23:59:59+08:00', 'quiet'),
     ('2026-09-11T00:00:00+08:00', 'sleep'),
     ('2026-09-11T08:29:59+08:00', 'sleep'),
     ('2026-09-11T08:30:00+08:00', 'breakfast'),
     ('2026-09-12T08:30:00+08:00', 'breakfast'),
 ])
-def test_bath_and_sleep_boundaries(stamp, phase):
+def test_sleep_boundaries(stamp, phase):
     value = rhythm(datetime.fromisoformat(stamp), [])
     assert value['phase'] == phase
-    assert bool(value['bath_end_at']) == (phase == 'bathing')
+    assert value['bath_end_at'] is None
+
+
+@pytest.mark.parametrize('seed', ['', 'install-a', 'install-b'])
+def test_bath_window_boundaries(seed):
+    begin, end = bath_window(date(2026, 9, 10), seed)
+    second = timedelta(seconds=1)
+    assert rhythm(begin - second, [], bath_seed=seed)['phase'] != 'bathing'
+    for stamp in (begin, end - second):
+        value = rhythm(stamp, [], bath_seed=seed)
+        assert value['phase'] == 'bathing' and value['availability'] == 'rest'
+        assert value['bath_end_at'] == end.timestamp()
+    assert rhythm(end, [], bath_seed=seed)['phase'] != 'bathing'
+
+
+def test_bath_is_an_evening_of_15_to_30_minutes_and_differs_by_install():
+    days = [date(2026, 9, 1) + timedelta(days=n) for n in range(60)]
+    for seed in ('', 'install-a'):
+        for day in days:
+            begin, end = bath_window(day, seed)
+            assert begin.date() == day
+            assert time(20) <= begin.timetz().replace(tzinfo=None) <= time(22, 30)
+            assert timedelta(minutes=15) <= end - begin <= timedelta(minutes=30)
+    assert len({bath_window(day, '')[0].time() for day in days}) > 10
+    assert len({end - begin for begin, end in (bath_window(day, '') for day in days)}) > 5
+    same = sum(bath_window(day, 'install-a')[0] == bath_window(day, 'install-b')[0] for day in days)
+    assert same < 10
+
+
+def test_install_keeps_its_bath_seed(tmp_path):
+    from runtime.private_world.daily_life import DailyLifeStore
+    store = DailyLifeStore(tmp_path / 'life.sqlite3')
+    again = DailyLifeStore(tmp_path / 'life.sqlite3')
+    other = DailyLifeStore(tmp_path / 'other.sqlite3')
+    assert store.bath_seed == again.bath_seed != other.bath_seed
+    begin, _ = store.bath_window(date(2026, 9, 10))
+    assert store.snapshot(begin)['rhythm']['phase'] == 'bathing'
 
 
 def test_recovered_bath_letter_waits_then_replies_once_without_memory_timeout():

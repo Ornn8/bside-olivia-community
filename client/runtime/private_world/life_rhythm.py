@@ -3,7 +3,8 @@
 Shanghai civil time; no offline backfill, random sickness or absence penalties.
 Only bounded recent exchange timestamps are needed, never letter contents.
 """
-from datetime import datetime, timedelta, timezone
+import hashlib
+from datetime import datetime, time, timedelta, timezone
 
 LOCAL = timezone(timedelta(hours=8))
 SETTLE = timedelta(minutes=30)
@@ -22,6 +23,22 @@ RHYTHM_FACT_AUTHORITY = (
 
 def _shift(day, shifts):
     return next((shifts[key] for key in sorted(shifts, reverse=True) if key <= day.isoformat()), 0)
+
+
+# Her evening bath: a different start each day (20:00-22:30) and 15-30 minutes long.
+# Each install draws its own times, so baths do not line up across users.
+BATH_EARLIEST = timedelta(hours=20)
+BATH_START_STEPS = 31  # 5-minute steps up to 22:30
+BATH_MINUTES = (15, 30)
+
+
+def bath_window(day, seed=''):
+    """Tonight's planned bath; a simulated plan, not a recorded bath."""
+    digest = hashlib.sha256(f'{seed}:{day.isoformat()}'.encode('utf-8')).digest()
+    begin = (datetime.combine(day, time(), tzinfo=LOCAL) + BATH_EARLIEST
+             + timedelta(minutes=5 * (int.from_bytes(digest[:2], 'big') % BATH_START_STEPS)))
+    low, high = BATH_MINUTES
+    return begin, begin + timedelta(minutes=low + digest[2] % (high - low + 1))
 
 
 def _rest_window(day, shifts):
@@ -85,7 +102,7 @@ def _rest(load):
     return 'depleted' if load >= 120 else 'tired' if load >= FATIGUE_LOAD_MINUTES else 'rested'
 
 
-def rhythm(now: datetime, exchanges: list[tuple[datetime, datetime]], shifts: dict | None = None) -> dict:
+def rhythm(now: datetime, exchanges: list[tuple[datetime, datetime]], shifts: dict | None = None, *, bath_seed: str = '') -> dict:
     local = now.astimezone(LOCAL)
     shifts = shifts or {}
     wake_hour = 8.5
@@ -96,7 +113,8 @@ def rhythm(now: datetime, exchanges: list[tuple[datetime, datetime]], shifts: di
     windows = [_rest_window(local.date() + timedelta(days=i), shifts) for i in (-2, -1, 0, 1)]
     begin, finish = next((start, end) for start, end in windows if end > local)
     sleeping = begin <= local < finish
-    bathing = begin - timedelta(minutes=30) <= local < begin
+    bath_begin, bath_end = bath_window(local.date(), bath_seed)
+    bathing = bath_begin <= local < bath_end
     phase = ('bathing' if bathing else 'sleep' if sleeping else
              'quiet' if hour < 5 else
              'breakfast' if hour < wake_hour + 1 else
@@ -130,7 +148,7 @@ def rhythm(now: datetime, exchanges: list[tuple[datetime, datetime]], shifts: di
                 'meaning': '夜间通信历史负荷，不是当前精力测量；不证明已睡着或当前仍需一直休息。'},
             'phase_basis': 'schedule_and_correspondence', 'wake_cause': 'unknown',
             'planned_rest_window': {'kind': 'current_plan', 'start': begin.isoformat(), 'end': finish.isoformat()},
-            'bath_end_at': begin.timestamp() if bathing else None,
+            'bath_end_at': bath_end.timestamp() if bathing else None,
             'wellbeing': wellbeing,
             'sleep_shift_minutes': shift,
             'activity': labels[phase],
