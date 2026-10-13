@@ -91,6 +91,34 @@ def test_submit_preserves_kind_specific_charge_consent(kind, cap):
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize('kind', ['cover', 'cover_video'])
+@pytest.mark.parametrize('sings', [True, False])
+def test_yue2_cover_options_only_reach_a_service_that_prices_them(kind, sings):
+    """Her own performance needs a service that knows it; an older one gets the voice-swap request."""
+    options = {'audio_cover_strength': .6, 'cover_noise_strength': .25, 'engine': 'yue2', 'arrangement': '古风，二胡'}
+    seen = {}
+    async def scenario():
+        async def prices(request):
+            multipliers = {'cover': '13', **({'cover_yue2': '6', 'cover_yue2_video': '4'} if sings else {})}
+            return web.json_response({'billing_enabled': True, 'pricing': {'mode': 'money', 'currency': 'CNY',
+                'version': 'test-v1', 'base_micros_per_hour': 3600000, 'utilization': '1', 'multipliers': multipliers}})
+        async def submit(request):
+            seen.update(cap=request.headers['X-Olivia-Max-Charge-Cents'], body=await request.json())
+            return web.json_response({'task_id': 'synthetic', 'status': 'queued'})
+        app = web.Application(); app.router.add_get('/v1/billing/prices', prices); app.router.add_post('/v1/tasks', submit)
+        async with TestServer(app) as server:
+            await RemoteGeneration(str(server.make_url('/')), 'synthetic').request(
+                'submit', {'request_id': 'test-request', 'kind': kind, 'input': {'cover_options': options}})
+    asyncio.run(scenario())
+    sent = seen['body']['input']['cover_options']
+    if sings:
+        assert sent == options
+        assert seen['cap'] == ('300' if kind == 'cover' else '500')
+    else:
+        assert sent == {'audio_cover_strength': .6, 'cover_noise_strength': .25}
+        assert seen['cap'] == ('100' if kind == 'cover' else '500')
+
+
 @pytest.mark.parametrize('failure', [502, 503, 504, 404, 401, 'persistent'])
 def test_status_transient_failure_does_not_resubmit(tmp_path, monkeypatch, failure):
     async def scenario():

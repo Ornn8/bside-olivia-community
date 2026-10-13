@@ -3624,6 +3624,12 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     ['play','pause','ended','loadedmetadata','timeupdate'].forEach(name=>audio.addEventListener(name,playback));
     player.append(play,wave,time);const waveCleanup=window.__oliviaLetterWave?.(wave,seek,audio,'');
     const lyrics=document.createElement('textarea');lyrics.maxLength=30000;lyrics.setAttribute('aria-label','翻唱歌词');lyrics.placeholder='选择原曲后自动识别，也可手动填写歌词。';
+    // She sings the song over a new arrangement; the user may describe that arrangement in their own words.
+    const arrangementLabel=document.createElement('label');arrangementLabel.className='olivia-cover-arrangement';arrangementLabel.style.cssText='display:grid;gap:6px;margin:12px 0';
+    const arrangement=document.createElement('input');arrangement.type='text';arrangement.maxLength=200;arrangement.setAttribute('aria-label','编曲风格');
+    arrangement.placeholder='可不填。例如：古风，二胡和竹笛；或：钢琴抒情，弦乐铺底';
+    arrangement.style.cssText='width:100%;padding:8px;border:1px solid #8886;border-radius:8px;background:transparent;color:inherit';
+    arrangementLabel.append(text('span','编曲风格（可选）'),arrangement);
     const transcribe=async()=>{
       if(state.busy||!state.material)return;
       state.busy=true;update();status.textContent='正在本地识别歌词，可以切回普通信件继续写信。';
@@ -3660,6 +3666,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       if(!state.material)throw Error('请先选择原曲。');
       if(!lyrics.value.trim()&&!state.lyricsOnServer){lyrics.focus();throw Error('请填写或识别歌词后再寄出。')}
       const cover_options={};for(const [name,field] of Object.entries(coverFields)){if(!field.reportValidity())throw Error('翻唱参数请填写 0 到 1 之间的数值。');cover_options[name]=Number(field.value);}
+      cover_options.engine='yue2';const style=arrangement.value.trim();if(style)cover_options.arrangement=style;
       return {...state.material,cover_lyrics:lyrics.value,cover_output:state.output,cover_options};
     };
     file.onchange=async()=>{
@@ -3679,7 +3686,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       }catch{status.textContent='上传失败，请检查音频文件后重新选择。之前的草稿和原曲仍保留。'}
       finally{state.busy=false;file.value='';update()}
     };
-    cover.append(status,sourceRow,player,labelRow,lyrics,coverParameters,options,text('p','翻唱完成后会出现在信箱中，也可收藏到曲库。'));
+    cover.append(status,sourceRow,player,labelRow,lyrics,arrangementLabel,coverParameters,options,text('p','翻唱完成后会出现在信箱中，也可收藏到曲库。'));
     const originalOutput=document.createElement('div');originalOutput.className='olivia-cover-options';
     originalOutput.append(text('span','回信形式'));
     for(const [value,label] of [['audio','音频回信'],['video','视频回信']]){const item=button(label,()=>{state.originalOutput=value;for(const node of originalOutput.querySelectorAll('button'))node.setAttribute('aria-pressed',String(node===item))});item.setAttribute('aria-pressed',String(value==='audio'));originalOutput.append(item)}
