@@ -7,7 +7,8 @@ played through an AudioWorklet queue that is dropped at once when the server say
 
 JAVASCRIPT = r'''
 (() => {
-  if (typeof document === 'undefined' || window.__oliviaCallUi) return;
+  if (typeof document === 'undefined' || !document.head || typeof document.querySelector !== 'function'
+      || typeof window === 'undefined' || window.__oliviaCallUi) return;
   window.__oliviaCallUi = true;
   const css = document.createElement('style');
   css.textContent = `
