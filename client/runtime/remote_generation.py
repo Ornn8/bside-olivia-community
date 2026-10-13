@@ -58,9 +58,16 @@ class RemoteGeneration:
                     raise CloudError('GPU_REQUEST_INVALID', 400) from None
             if not isinstance(data['request_id'], str) or not re.fullmatch(r'[A-Za-z0-9_-]{8,80}', data['request_id']):
                 raise CloudError('GPU_REQUEST_INVALID', 400)
+            options = data['input'].get('cover_options')
+            yue2 = data['kind'] in ('cover', 'cover_video') and isinstance(options, dict) and options.get('engine') == 'yue2'
+            if yue2 and not await self._sings_covers():
+                # A service that predates YuE2 covers rejects the new options; it makes the voice-swap cover.
+                from runtime.media.cover_options import without_engine
+                data = {**data, 'input': {**data['input'], 'cover_options': without_engine(options)}}
+                yue2 = False
             payload = data
             headers['Idempotency-Key'] = data['request_id']
-            headers['X-Olivia-Max-Charge-Cents'] = str(121 if data['kind'] == 'image' else 500 if data['kind'] in ('video', 'lipsync', 'cover_video', 'original_video', 'daily_video') else 300 if data['kind'] == 'original' else 100)
+            headers['X-Olivia-Max-Charge-Cents'] = str(121 if data['kind'] == 'image' else 500 if data['kind'] in ('video', 'lipsync', 'cover_video', 'original_video', 'daily_video') else 300 if data['kind'] == 'original' or yue2 and data['kind'] == 'cover' else 100)
             if data['kind'] == 'piano':
                 from runtime.piano import capability
                 caps = capability(await self.request('capabilities', {}))
@@ -241,6 +248,15 @@ class RemoteGeneration:
             raise connection_error(exc) from None
         except (ValueError, TypeError, KeyError, AttributeError, UnicodeError):
             raise CloudError('GPU_RESPONSE_INVALID', 502) from None
+
+    async def _sings_covers(self):
+        """True when the service prices YuE2 covers, i.e. it accepts cover_options.engine."""
+        try:
+            prices = await self.request('billing_prices', {})
+        except CloudError:
+            return False
+        tariff = prices.get('pricing') if isinstance(prices, dict) else None
+        return isinstance(tariff, dict) and 'cover_yue2' in (tariff.get('multipliers') or {})
 
     async def wardrobe_image(self, look_id):
         from runtime.wardrobe import valid_look_id

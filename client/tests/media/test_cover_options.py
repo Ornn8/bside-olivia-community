@@ -2,7 +2,8 @@ import pytest
 from runtime.media.cover_options import validate
 
 
-@pytest.mark.parametrize('bad', [None, [], {'unexpected': .5}, {'audio_cover_strength': True}, {'cover_noise_strength': float('nan')}, {'cover_noise_strength': 1.01}, {'audio_cover_strength': -.1}])
+@pytest.mark.parametrize('bad', [None, [], {'unexpected': .5}, {'audio_cover_strength': True}, {'cover_noise_strength': float('nan')}, {'cover_noise_strength': 1.01}, {'audio_cover_strength': -.1},
+                                 {'engine': 'ace'}, {'arrangement': '古风'}, {'engine': 'yue2', 'arrangement': 7}, {'engine': 'yue2', 'arrangement': '长' * 201}])
 def test_reject_invalid_options(bad):
     with pytest.raises(ValueError):validate(bad)
 
@@ -18,3 +19,11 @@ def test_cover_options_reach_remote_request(tmp_path, monkeypatch):
     generate_cover(source,tmp_path/'out.wav',environment={},cover_options=options)
     assert seen['cover_options']==options
     assert validate({})=={'audio_cover_strength':.6,'cover_noise_strength':.25}
+
+
+def test_yue2_engine_and_user_arrangement_are_kept():
+    from runtime.media.cover_options import without_engine
+    options = validate({'engine': 'yue2', 'arrangement': '古风，二胡和竹笛'})
+    assert options == {'audio_cover_strength': .6, 'cover_noise_strength': .25, 'engine': 'yue2', 'arrangement': '古风，二胡和竹笛'}
+    assert validate({'engine': 'yue2'})['engine'] == 'yue2'
+    assert without_engine(options) == {'audio_cover_strength': .6, 'cover_noise_strength': .25}
