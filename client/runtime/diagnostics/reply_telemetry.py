@@ -33,7 +33,8 @@ STAGES = frozenset({'app', 'binding', 'recharge_page', 'received', 'generation',
                     'validation', 'media', 'send', 'reply', 'initiative'})
 INITIATIVE_REASONS = frozenset({'not_due', 'quiet_hours', 'attempt_limit', 'user_turn_open',
     'unanswered_wait', 'paused', 'wait_user', 'no_target', 'sending_uncertain', 'ready',
-    'disabled', 'memory_not_ready', 'in_flight', 'unread', 'daily_limit', 'no_opportunity', 'deferred'})
+    'disabled', 'memory_not_ready', 'in_flight', 'unread', 'daily_limit', 'no_opportunity', 'deferred',
+    'busy', 'bathing', 'class'})
 INITIATIVE_TIERS = frozenset({'reserved', 'familiar', 'trusted', 'close', 'committed'})
 STATUSES = frozenset({'started', 'ok', 'failed', 'unknown', 'skipped'})
 CHANNELS = frozenset({'client', 'qq', 'wechat', 'letter', 'proactive'})

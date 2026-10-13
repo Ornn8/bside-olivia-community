@@ -4,7 +4,9 @@ import math
 
 IM_PENDING_SECONDS = 30 * 60
 LETTER_PENDING_SECONDS = 2 * 3600
-FAILED_TURN_SECONDS = 6 * 3600
+# A failed reply quiets her own initiative only briefly. While replies keep failing, every new
+# user turn would otherwise extend a long quiet period, and initiative would never come back.
+FAILED_TURN_INITIATIVE_SECONDS = 30 * 60
 PENDING_IM = frozenset({'RECEIVED', 'GENERATING', 'GENERATED', 'MEDIA_PENDING', 'SENDING', 'DELIVERY_UNCONFIRMED'})
 
 
@@ -31,7 +33,7 @@ def blocks_initiative(row, now, *, im=False):
     im = im or row.get('channel') in {'qq', 'wechat'} or row.get('reply_mode') == 'future_im'
     if im:
         if row.get('delivery_status') == 'FAILED' and row.get('origin') != 'proactive':
-            return recent(row, now, FAILED_TURN_SECONDS)
+            return recent(row, now, FAILED_TURN_INITIATIVE_SECONDS)
         return row.get('delivery_status') in PENDING_IM and recent(row, now, IM_PENDING_SECONDS)
     return row.get('letter_status') in {'PENDING', 'PROCESSING'} and recent(row, now, LETTER_PENDING_SECONDS)
 
