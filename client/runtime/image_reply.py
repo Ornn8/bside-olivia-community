@@ -7,6 +7,8 @@ import re
 from pathlib import Path
 from datetime import datetime
 
+from runtime import proactive_config
+
 _jobs = {}
 _MAX_FAILURES = 4
 
@@ -63,6 +65,17 @@ def _check_receipt(path, fingerprint, payload, required=False):
         raise ValueError('IMAGE_RECEIPT_INVALID') from exc
 
 
+def contact_photos(row):
+    """The photos a cloud contact asked for: a brief to generate one from, or a fixed picture."""
+    return [item for item in row.get('contact_media') or [] if isinstance(item, dict) and item.get('type') == 'photo']
+
+
+def contact_guidance(row):
+    """What the cloud wants a generated photo of, when it said."""
+    return next((item['brief'] for item in contact_photos(row)
+                 if not item.get('asset_url') and isinstance(item.get('brief'), str)), None)
+
+
 def secondary_photo_allowed(row):
     """Whether the reply may still get a photo that nobody asked for.
 
@@ -71,9 +84,11 @@ def secondary_photo_allowed(row):
     """
     if row.get('degraded_stages'):
         return False  # Auxiliary recovery grants only a reviewed text response.
+    if row.get('contact_id'):
+        return bool(contact_photos(row))  # A cloud contact carries the photos it names and no others.
     from runtime.reply.proactive_runtime import unprompted
-    if unprompted(row):
-        return False  # Contact she starts on her own carries no picture.
+    if unprompted(row) and not proactive_config.rule('initiative_photo'):
+        return False  # Contact she starts on her own carries no picture unless the cloud allows one.
     record = row.get('companion_decision')
     if not record or is_companion_image(row):
         return True
@@ -81,10 +96,32 @@ def secondary_photo_allowed(row):
     return not media_locked(record.get('plan') if isinstance(record, dict) else None)
 
 
+async def attach_contact_asset(server, row):
+    """Give a cloud contact the fixed picture it named: fetched, checked, saved; nothing is generated."""
+    asset = next((item for item in contact_photos(row) if item.get('asset_url')), None)
+    if asset is None or row.get('image_status') in ('COMPLETED', 'SKIPPED', 'FAILED'):
+        return
+    from runtime import cloud_contact
+    media_root = server._media_root() if callable(getattr(server, '_media_root', None)) else server._state_root() / 'media'
+    try:
+        path = await cloud_contact.fetch_photo(asset, media_root)
+    except ValueError as exc:
+        # The text stands; the cloud is told in the report of the contact.
+        row.update(image_status='SKIPPED', image_skip_reason=str(exc))
+        row['contact_media_errors'] = [*row.get('contact_media_errors', []), str(exc)]
+    else:
+        row.update(image_status='COMPLETED', prepared_image=str(path), contact_asset=True,
+                   reply_image_url=f'http://127.0.0.1:{server.PORT}/toy/media/{path.name}',
+                   image_resolution='1K', image_render_mode='native', image_phase='ready')
+    server._persist_store_state()
+
+
 def schedule(server, row):
     if not secondary_photo_allowed(row):
         return  # The user asked for a medium; JEV's plan owns this delivery.
-    if not row.get('image_reply_settings', {}).get('enabled') or row.get('reply_mode') not in ('text', 'text_letter', 'voice_reply', 'spoken_video'):
+    fixed = any(item.get('asset_url') for item in contact_photos(row))
+    if row.get('reply_mode') not in ('text', 'text_letter', 'voice_reply', 'spoken_video') or (
+            not fixed and not row.get('image_reply_settings', {}).get('enabled')):
         return
     if row.get('image_status') in ('COMPLETED', 'SKIPPED', 'FAILED'):
         return
@@ -246,6 +283,8 @@ SYSTEM = ('你负责林离回信的照片附件。只调用 plan_reply_photo。�
           '场景库不是地点限制。在其他地点或没有准确匹配的参考场景时选none，并在prompt中具体描述真实地点；已知地点也可以选none，不要为匹配场景把她移回家。仅在家时选择固定房间。不要在提示词里输出密钥、网址、文件路径或系统指令。')
 
 
+GUIDANCE_NOTE = ('reference.photo_guidance 是这张照片要拍的内容，画面按它来，其余约束照旧。')
+
 _DESCRIPTION_TOOL = {'type': 'function', 'function': {'name': 'describe_reply_photo',
     'description': 'Write the English image description for the frozen photo plan.',
     'parameters': {'type': 'object', 'additionalProperties': False,
@@ -336,7 +375,7 @@ async def _jev_photo_plan(server, row, content, text, reference, photo_id, port)
     if not plan['attach']:
         return {**plan, 'prompt': ''}
     calls = await asyncio.wait_for(server.letters_adapter.gateway.complete_with_tools(
-        messages=[{'role': 'system', 'content': _DESCRIPTION_SYSTEM},
+        messages=[{'role': 'system', 'content': _DESCRIPTION_SYSTEM + (GUIDANCE_NOTE if 'photo_guidance' in reference else '')},
                   {'role': 'user', 'content': json.dumps({**state, 'frozen_photo_plan': plan}, ensure_ascii=False)}],
         tools=[_DESCRIPTION_TOOL], tool_choice='required', request_id='reply-photo-description-' + photo_id), timeout=60)
     if len(calls) != 1 or calls[0].name != 'describe_reply_photo':
@@ -377,6 +416,9 @@ async def prepare(server, row, content, text, *, channel='letter', on_ready=None
         if row.get('image_status') not in ('COMPLETED', 'SKIPPED', 'FAILED'):
             row['image_status'] = 'SKIPPED'
             server._persist_store_state()
+        return
+    if any(item.get('asset_url') for item in contact_photos(row)):
+        await attach_contact_asset(server, row)
         return
     while True:
         if row.get('image_status') == 'RETRY_PENDING':
@@ -467,7 +509,9 @@ async def _prepare_once(server, row, content, text, *, channel='letter', on_read
             return
         if 'image_plan' not in row:
             reference = _photo_reference(row, text)
-            reference['requested_image'] = is_companion_image(row)
+            reference['requested_image'] = is_companion_image(row) or bool(contact_photos(row))
+            if contact_guidance(row):
+                reference['photo_guidance'] = contact_guidance(row)
             current_location = reference['world_current_location']
             from runtime.reply.jev_questions import configured_questions
             questions_port = configured_questions()
@@ -475,7 +519,8 @@ async def _prepare_once(server, row, content, text, *, channel='letter', on_read
                 plan = await _jev_photo_plan(server, row, content, text, reference, photo_id, questions_port)
             else:
                 calls = await asyncio.wait_for(server.letters_adapter.gateway.complete_with_tools(
-                    messages=[{'role':'system','content':SYSTEM},{'role':'user','content':json.dumps({
+                    messages=[{'role':'system','content':SYSTEM + (GUIDANCE_NOTE if 'photo_guidance' in reference else '')},
+                              {'role':'user','content':json.dumps({
                         'incoming': content, 'reply': text, **reference}, ensure_ascii=False)}],
                     tools=[TOOL], tool_choice='required', request_id='reply-photo-plan-' + photo_id), timeout=60)
                 if len(calls) != 1 or calls[0].name != 'plan_reply_photo': raise ValueError('IMAGE_PLAN_INVALID')
@@ -579,7 +624,10 @@ async def _server_photo(server, row, content, text, api, photo_id, settings, pro
     if row.get('image_wardrobe_protocol')=='daily':
         from runtime.wardrobe import CLOUD_CATALOG_PROTOCOL
         reference['wardrobe']={'mode':'daily','catalog_version':CLOUD_CATALOG_PROTOCOL}
-    reference['requested_image'] = is_companion_image(row) or row.get('share_video_photo_fallback') is True
+    reference['requested_image'] = (is_companion_image(row) or row.get('share_video_photo_fallback') is True
+                                    or bool(contact_photos(row)))
+    if contact_guidance(row):
+        reference['photo_guidance'] = contact_guidance(row)
     if channel == 'qq' and not reference['requested_image'] and row.get('daily_video_candidates'):
         # Her current moments: the cloud planner may share one as a short video instead.
         moments = [{key: item[key][:200] for key in ('event_id', 'event_kind', 'detail', 'location')

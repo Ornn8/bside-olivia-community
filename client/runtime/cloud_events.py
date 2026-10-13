@@ -1,8 +1,11 @@
-"""Cloud-reported visits: only the local time of each one is kept, for her diary.
+"""What the cloud tells the client, polled from one events service.
 
-The cloud tells the client when the owner came by. Nothing is sent in answer and
-nothing but the moment is stored: no amount, no wording, no reason. The diary
-writer is given a day's visits as times only.
+Visits: only the local time of each one is kept, for her diary. Nothing is sent in
+answer and nothing but the moment is stored: no amount, no wording, no reason. The
+diary writer is given a day's visits as times only.
+
+Contacts: requests for her to reach out, kept in the same file and carried out by
+runtime.cloud_contact. Kinds this client does not know are ignored.
 """
 import os
 import re
@@ -45,12 +48,14 @@ def _known(state):
 
 
 def record(root, events, now):
-    """Merge fetched events; the file keeps ids and moments only."""
-    known = _known(read_json(_path(root)))
+    """Merge fetched events; the visits part keeps ids and moments only."""
+    state = read_json(_path(root))
+    known = _known(state)
     for item in events:
         known.setdefault(item['id'], item['at'])
     known = {key: value for key, value in known.items() if value > now - KEEP_SECONDS}
-    write_json(_path(root), {'visits': known})
+    write_json(_path(root), {'visits': known, **({'contacts': state['contacts']}
+                                               if isinstance(state.get('contacts'), dict) else {})})
     return known
 
 
@@ -68,17 +73,29 @@ def visits(root, period):
     return [moment.strftime('%m-%d %H:%M') for moment in moments if moment.strftime('%Y-%m') == period]
 
 
-async def poll(root):
-    """One check; silent when the Olivia account is not configured or the cloud is unreachable."""
+async def request(method, path, payload=None):
+    """One call to the cloud with the Olivia account; None when no such account is set up."""
     key = os.environ.get('OLIVIA_GPU_API_KEY', '')
-    if root is None or not key.startswith('olivia-'):
-        return
+    if not key.startswith('olivia-'):
+        return None
     from original_client_relay_api import RELAY_BASE, relay_request
     from runtime.official_endpoints import canonical_api_origin
     if canonical_api_origin(os.environ.get('OLIVIA_GPU_API_URL', '').rstrip('/')) + '/v1' != RELAY_BASE:
+        return None
+    return await relay_request(RELAY_BASE, key, method, path, payload)
+
+
+async def poll(root):
+    """One check; silent when the Olivia account is not configured or the cloud is unreachable."""
+    if root is None:
         return
     try:
-        payload = await relay_request(RELAY_BASE, key, 'GET', '/events')
+        payload = await request('GET', '/events')
     except Exception:
         return
-    record(root, validate(payload), time.time())
+    if payload is None:
+        return
+    now = time.time()
+    record(root, validate(payload), now)
+    from runtime import cloud_contact
+    cloud_contact.record(root, cloud_contact.parse(payload), now)

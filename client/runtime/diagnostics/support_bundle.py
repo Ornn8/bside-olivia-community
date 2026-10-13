@@ -124,11 +124,15 @@ def _project_summary(value: object) -> dict[str, object]:
         "os_name",
         "os_release",
         "architecture",
+        "proactive_config_version",
+        "proactive_config_source",
     ):
         if name not in source:
             continue
         item = source[name]
         if not isinstance(item, str) or not _TOKEN_RE.fullmatch(item):
+            raise _invalid()
+        if name == "proactive_config_source" and item not in {"cloud", "cache", "defaults"}:
             raise _invalid()
         if name == "running_version" and not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:\.[0-9]+)?(?:[-+][0-9A-Za-z.-]+)?", item):
             raise _invalid()

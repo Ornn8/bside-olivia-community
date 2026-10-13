@@ -9,6 +9,7 @@ import math
 import sqlite3
 from pathlib import Path
 from contextlib import closing
+from runtime import proactive_config
 from runtime.private_world.life_rhythm import LOCAL
 from runtime.personal_chat.initiative_profile import profile_from_rows, unanswered_wait
 from .contact_activity import blocks_initiative
@@ -205,6 +206,10 @@ class Initiative:
         # for (a wake-up call, a reminder) is kept at the agreed time.
         if not scheduled and (local.hour < 8 or (local.hour == 8 and local.minute < 30)):
             return 'quiet_hours'
+        # On top of that, whatever quiet hours and limits the cloud has set.
+        configured = None if scheduled else proactive_config.initiative_blocked(self.rows, now)
+        if configured:
+            return configured
         # Reserve budget for attempts too, including SKIP/failure/uncertain sends.
         # The hard ceiling remains bounded, while shallow relationships spend
         # much less of it than close ones.

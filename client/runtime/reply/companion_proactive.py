@@ -34,9 +34,11 @@ def _validate_input(value):
 
 
 def _media(value):
-    # A letter is written text; contact on a chat channel is a voice message only.
-    kept = 'text' if value['channel'] == 'letter' else 'audio_speech'
-    return [medium for medium in value['available_media'] if medium == kept]
+    # By default a letter is written text and contact on a chat channel is a voice
+    # message only; the cloud may set the media each channel starts with.
+    from runtime import proactive_config
+    kept = proactive_config.media('letter' if value['channel'] == 'letter' else 'qq')
+    return [medium for medium in value['available_media'] if medium in kept]
 
 
 def _local_defer(value):

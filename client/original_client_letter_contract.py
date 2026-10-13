@@ -94,6 +94,11 @@ def _published(letter: Mapping[str, object], *, now: float | None) -> bool:
     return float(deadline) <= _now_value(now)
 
 
+def _fixed_photo(letter: Mapping[str, object]) -> bool:
+    return any(isinstance(item, Mapping) and item.get('type') == 'photo' and item.get('asset_url')
+               for item in letter.get('contact_media') or ())
+
+
 def _photo_pending(letter: Mapping[str, object]) -> bool:
     # An optional attachment must not hide already-completed text or speech.
     # Keep a requested image's internal scene draft private until its own delivery is ready.
@@ -371,7 +376,9 @@ def serialize_letter_detail(
     sticker_id = letter.get("reply_sticker_id")
     if published:
         image_settings = letter.get('image_reply_settings')
-        image_enabled = isinstance(image_settings, Mapping) and image_settings.get('enabled') is True
+        # A fixed picture a cloud contact carries shows like a generated one, switch or no switch.
+        image_enabled = (isinstance(image_settings, Mapping) and image_settings.get('enabled') is True
+                         or _fixed_photo(letter))
         # A ready letter may be read before its scheduled photo worker gets its first tick.
         # Keep the existing attachment poller alive until that worker chooses a terminal state.
         photo_scheduled = image_enabled and letter.get('reply_mode') in ('text', 'text_letter', 'voice_reply', 'spoken_video')
