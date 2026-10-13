@@ -13,19 +13,35 @@ def level(snapshot, name):
     return value if isinstance(value, str) and value in {'unknown', 'low', 'medium', 'high'} else 'unknown'
 
 
+# Every meaningful exchange raises familiarity and comfort; trust and closeness
+# move only on rarer support/repair/shared-experience evidence (reducer.py), so a
+# month of daily contact typically leaves them "low". Requiring them at
+# "medium" kept long-term users at "unknown" forever.
+_EVERYDAY = ('familiarity', 'comfort')
+_DEEP = ('trust', 'closeness')
+
+
 def effective_relationship_stage(snapshot, history):
     stage = _value(snapshot, 'relationship_stage')
     if stage not in {'unknown', 'acquaintance', 'familiar'}:
         return stage
-    levels = [level(snapshot, name) for name in ('familiarity', 'trust', 'comfort', 'closeness')]
+    everyday = [level(snapshot, name) for name in _EVERYDAY]
+    deep = [level(snapshot, name) for name in _DEEP]
     tension = level(snapshot, 'tension')
+    # A score of 0 maps to "unknown": no tension at all is calm, not missing data.
+    calm = tension in {'unknown', 'low'}
     def days(window):
         value = history.get(window, 0)
         return value if type(value) is int and 0 <= value <= window else 0
-    if all(value == 'high' for value in levels) and tension == 'low' and days(21) >= 8:
+    if (all(value == 'high' for value in everyday) and all(value in {'medium', 'high'} for value in deep)
+            and calm and days(21) >= 8):
         return 'trusted_friend'
-    if all(value in {'medium', 'high'} for value in levels) and tension != 'high' and days(14) >= 5:
+    if (all(value in {'medium', 'high'} for value in everyday) and all(value != 'unknown' for value in deep)
+            and tension != 'high' and days(14) >= 5):
         return 'friend'
+    if stage == 'unknown':
+        # Display/tone only: an unconfirmed stage still reflects how well they know each other.
+        return {'high': 'familiar', 'medium': 'familiar', 'low': 'acquaintance'}.get(everyday[0], stage)
     return stage
 
 
