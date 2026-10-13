@@ -97,3 +97,64 @@ def test_retry_after_is_bounded_and_private_trace_is_dropped(monkeypatch):
     _record_provider_failure(exc, SimpleNamespace(headers={'X-Request-ID': 'private-not-a-uuid'}))
     assert 'provider_request_id' not in failure_snapshot()[-1]
     assert 'private-not-a-uuid' not in str(failure_snapshot()[-1])
+
+
+def _stalled_then(frames_by_call):
+    """A relay whose n-th call answers with frames_by_call[n] (a stalled call ends in usage_unavailable)."""
+    calls = []
+    async def handler(request):
+        frames = frames_by_call[min(len(calls), len(frames_by_call) - 1)]
+        calls.append(1)
+        text = ''.join('data: ' + json.dumps(frame) + '\n\n' for frame in frames)
+        return web.Response(text=text + 'data: [DONE]\n\n', content_type='text/event-stream',
+                            headers={'X-Request-ID': str(uuid.uuid4())})
+    return calls, handler
+
+
+STALLED = [{'choices': [{'index': 0, 'delta': {'content': 'half a rep'}, 'finish_reason': None}]},
+           {'error': {'code': 'usage_unavailable'}}]
+ANSWER = [{'choices': [{'index': 0, 'delta': {'content': 'whole reply'}, 'finish_reason': 'stop'}]}]
+
+
+@pytest.mark.parametrize('stalled', [STALLED, [{'error': {'code': 'upstream_unavailable_usage_pending'}}]])
+def test_qq_reply_is_asked_once_more_when_the_supplier_stalls(monkeypatch, stalled):
+    monkeypatch.setenv('B03_TEST_KEY', 'synthetic')
+    async def exercise():
+        calls, handler = _stalled_then([stalled, ANSWER])
+        app = web.Application()
+        app.router.add_post('/v1/chat/completions', handler)
+        async with TestClient(TestServer(app)) as client:
+            adapter = OpenAICompatibleAdapter(make_config(str(client.make_url('/v1')), max_retries=0))
+            deltas = [x async for x in adapter.stream(ROOT_MESSAGES, request_id='personal-chat:' + uuid.uuid4().hex)]
+        assert ''.join(d.text for d in deltas) == 'whole reply'
+        assert len(calls) == 2
+    asyncio.run(exercise())
+
+
+def test_qq_reply_is_asked_only_once_more(monkeypatch):
+    monkeypatch.setenv('B03_TEST_KEY', 'synthetic')
+    async def exercise():
+        calls, handler = _stalled_then([STALLED, STALLED, ANSWER])
+        app = web.Application()
+        app.router.add_post('/v1/chat/completions', handler)
+        async with TestClient(TestServer(app)) as client:
+            adapter = OpenAICompatibleAdapter(make_config(str(client.make_url('/v1')), max_retries=2))
+            with pytest.raises(GatewayError) as caught:
+                _ = [x async for x in adapter.stream(ROOT_MESSAGES, request_id='personal-chat:' + uuid.uuid4().hex)]
+        assert caught.value.code == 'PROVIDER_USAGE_PENDING'
+        assert len(calls) == 2
+    asyncio.run(exercise())
+
+
+def test_other_purposes_still_stop_at_a_stall(monkeypatch):
+    monkeypatch.setenv('B03_TEST_KEY', 'synthetic')
+    async def exercise():
+        calls, handler = _stalled_then([STALLED, ANSWER])
+        app = web.Application()
+        app.router.add_post('/v1/chat/completions', handler)
+        async with TestClient(TestServer(app)) as client:
+            adapter = OpenAICompatibleAdapter(make_config(str(client.make_url('/v1')), max_retries=2))
+            with pytest.raises(GatewayError):
+                _ = [x async for x in adapter.stream(ROOT_MESSAGES, request_id='letter-reply:' + uuid.uuid4().hex)]
+        assert len(calls) == 1
+    asyncio.run(exercise())

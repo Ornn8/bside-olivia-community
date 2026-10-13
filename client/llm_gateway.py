@@ -1373,6 +1373,27 @@ class OpenAICompatibleAdapter(Gateway):
         request = request_id or uuid.uuid4().hex
         from runtime.reply.web_search import prepare_search
         messages = await prepare_search(self, messages, scope.value if scope is not None else None, request)
+        try:
+            async for delta in self._stream_prepared(messages, request=request, scope=scope):
+                yield delta
+        except GatewayError as exc:
+            if exc.code != 'PROVIDER_USAGE_PENDING' or not request.startswith('personal-chat:'):
+                raise
+            # The supplier stopped half way through its answer (or never answered and the
+            # second supplier could not either). That call is not charged and nothing has
+            # been yielded yet (a reply is buffered until it is complete), so a QQ reply is
+            # asked for once more instead of telling the user to wait; the relay gives the
+            # new call its own id.
+            async for delta in self._stream_prepared(messages, request=request, scope=scope):
+                yield delta
+
+    async def _stream_prepared(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        *,
+        request: str,
+        scope: GatewayRequestScope | None,
+    ) -> AsyncIterator[GatewayDelta]:
         max_reasoning = self._uses_max_reasoning(scope)
         body = self._body(
             messages,
