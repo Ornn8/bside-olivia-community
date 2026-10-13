@@ -617,9 +617,14 @@ def _repair_native_navigation(root: Path) -> str:
 
 
 def _client_command(client: Path, local: Path) -> list[str]:
-    """Match the first-party launcher's only client argument."""
+    """The first-party launcher's profile argument, plus microphone access for voice calls.
 
-    return [str(client), f'--user-data-dir={local / "cef"}']
+    CEF denies getUserMedia unless the host grants it; these switches grant it to the
+    client's own local pages (echo cancellation still applies).
+    """
+
+    return [str(client), f'--user-data-dir={local / "cef"}', '--enable-media-stream',
+            '--use-fake-ui-for-media-stream']
 
 
 def _repair_local_login(root: Path) -> str:

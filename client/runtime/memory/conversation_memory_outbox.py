@@ -445,11 +445,16 @@ class CanonicalMemoryOutbox:
         jobs = payload.get('midi_jobs', [])
         if not isinstance(jobs, list):
             raise ConversationMemoryOutboxError('MEMORY_OUTBOX_STATE_INVALID')
+        from runtime.call.store import memory_rows as call_memory_rows
+        calls = payload.get('calls', [])
+        if not isinstance(calls, list):
+            raise ConversationMemoryOutboxError('MEMORY_OUTBOX_STATE_INVALID')
+        call_rows = tuple(item for row in calls if isinstance(row, Mapping) for item in call_memory_rows(row))
         piano_rows = tuple(item for row in (*chats, *jobs) if isinstance(row, Mapping)
                            for item in piano_memory_rows(row))
         return (*tuple(row for row in letters if isinstance(row, Mapping)),
                 *tuple(row for row in chats if isinstance(row, Mapping)
-                       and row.get("delivery_status") == "DELIVERED"), *image_rows, *media_rows, *video_rows, *piano_rows)
+                       and row.get("delivery_status") == "DELIVERED"), *image_rows, *media_rows, *video_rows, *piano_rows, *call_rows)
 
     def _terminal_sources(self) -> set[str]:
         try:

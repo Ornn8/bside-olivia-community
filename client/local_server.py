@@ -1203,6 +1203,7 @@ class Store:
         self.personal_chat_cursors = {}  # transport metadata, never native UI settings
         self.legacy_letters = []  # read-only imported view; never used by send/reply
         self.midi_jobs = []    # {job_id, state, filename, created_at}
+        self.calls = []        # finished and missed voice calls (runtime.call.store)
         self.settings = {}
         self.request_keys = {}
         self.letter_maintenance = {}  # reversible mailbox display/time overrides
@@ -1303,7 +1304,7 @@ def _read_store_state(path: Path) -> dict:
     if not isinstance(loaded, dict) or "letters" not in loaded:
         raise ValueError("store state must be an object")
     normalized: dict[str, object] = {}
-    for name in ("letters", "legacy_letters", "midi_jobs", "personal_chats"):
+    for name in ("letters", "legacy_letters", "midi_jobs", "personal_chats", "calls"):
         value = loaded.get(name, [])
         if not isinstance(value, list) or not all(
             isinstance(item, dict) for item in value
@@ -1417,7 +1418,7 @@ def _load_store_state() -> None:
             return
     _store_state_error_code = None
     needs_persist = False
-    for name in ("letters", "legacy_letters", "midi_jobs", "personal_chats"):
+    for name in ("letters", "legacy_letters", "midi_jobs", "personal_chats", "calls"):
         value = loaded.get(name)
         if isinstance(value, list) and all(isinstance(item, dict) for item in value):
             setattr(store, name, value)
@@ -1474,6 +1475,7 @@ def _submit_store_state():
         "personal_chat_cursors": store.personal_chat_cursors,
         "legacy_letters": store.legacy_letters,
         "midi_jobs": store.midi_jobs,
+        "calls": getattr(store, "calls", []),
         "settings": store.settings,
         "request_keys": store.request_keys,
         "letter_maintenance": getattr(store, "letter_maintenance", {}),
@@ -2234,6 +2236,9 @@ async def handler(request: web.Request):
         _safe_log('cors_preflight', method=method, path=path, origin_allowed=True)
         return web.Response(status=204, headers=CORS_HEADERS(request))
 
+    if canonical_path.startswith('/toy/call/'):
+        from runtime.call.http import call_http
+        return await call_http(sys.modules[__name__], request)
     if canonical_path.startswith('/toy/midi/upload/'):
         from runtime.native_piano import upload_http
         return await upload_http(sys.modules[__name__], request)
