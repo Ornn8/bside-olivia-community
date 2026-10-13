@@ -22,6 +22,12 @@ RELAY_MODELS = frozenset({RELAY_MODEL, 'gemini-3.8-flash', 'gemini-4-argon', 'qw
     'gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-luna', 'claude-haiku-5-5'})
 
 
+# Answers that depend on what this client can carry out say so in the request.
+EVENTS_HEADER = {'X-Olivia-Events': 'contact.v1'}
+EVENTS_PATHS = frozenset({'/events', '/proactive/config'})
+EVENTS_MAX_BYTES = 1 << 20  # Wording and fixed texts, even written out as escapes.
+
+
 async def relay_request(base, key, method, path, payload=None):
     base = canonical_api_base(base)
     if base.rstrip('/') != RELAY_BASE or not key.startswith('olivia-'):
@@ -32,12 +38,15 @@ async def relay_request(base, key, method, path, payload=None):
                                        headers={'Authorization':'Bearer '+key,
                                                 'X-Olivia-Chat-Price': 'account-20261017',
                                                 'X-Olivia-JEV-Price': 'jev-input-cny-20261017-v6',
-                                                **ui_language.headers()}, allow_redirects=False,
+                                                **ui_language.headers(),
+                                                **(EVENTS_HEADER if path in EVENTS_PATHS else {})},
+                                       allow_redirects=False,
                                        ssl=gpu_tls_context()) as response:
                 raw = bytearray()
+                limit = EVENTS_MAX_BYTES if path in EVENTS_PATHS else 65536
                 async for chunk in response.content.iter_chunked(8192):
                     raw.extend(chunk)
-                    if len(raw) > 65536:
+                    if len(raw) > limit:
                         raise ValueError('oversize')
                 import json
                 data = json.loads(raw)
