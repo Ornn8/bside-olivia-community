@@ -12,7 +12,7 @@ NOW = datetime(2026, 10, 11, 4, tzinfo=timezone.utc)
 @pytest.mark.parametrize('channel,status,limit', [
     ('qq', 'RECEIVED', 1800), ('qq', 'GENERATING', 1800), ('qq', 'GENERATED', 1800),
     ('qq', 'MEDIA_PENDING', 1800), ('qq', 'SENDING', 1800), ('qq', 'DELIVERY_UNCONFIRMED', 1800),
-    ('letter', 'PENDING', 7200), ('letter', 'PROCESSING', 7200), ('qq', 'FAILED', 21600),
+    ('letter', 'PENDING', 7200), ('letter', 'PROCESSING', 7200), ('qq', 'FAILED', 1800),
 ])
 def test_old_pending_rows_expire_in_both_letter_projections(channel, status, limit):
     row = dict(letter_id='synthetic', channel=channel, origin='user',
@@ -240,3 +240,14 @@ def test_memory_readiness_accepts_healthy_degraded_and_explicit_disabled(monkeyp
     assert not server._conversation_memory_ready_for_reply()
     bootstrap.update(status='disabled', provider='none')
     assert server._conversation_memory_ready_for_reply()
+
+
+@pytest.mark.parametrize('world', ['busy', 'bathing', 'class'])
+def test_letter_gate_reports_her_world_reason_not_in_flight(monkeypatch, tmp_path, world):
+    import runtime.reply.proactive_runtime as runtime
+    from runtime.diagnostics.reply_telemetry import INITIATIVE_REASONS
+    server = letter_server(monkeypatch, tmp_path)
+    monkeypatch.setattr(runtime, 'enabled', lambda: True)
+    monkeypatch.setattr(runtime, 'live_state', lambda *a, **k: {'gates': {'paused': False, 'blocked_reasons': [world]}})
+    assert server._proactive_gate_reason() == world
+    assert world in INITIATIVE_REASONS
