@@ -324,45 +324,6 @@ def _contact_eligible(server, event):
     return True
 
 
-async def _gift_contact(server, runtime, initiative):
-    """A gift (a credited top-up) is answered at once on QQ, ahead of ordinary initiative."""
-    import hashlib
-    import time
-    from runtime import cloud_events
-    from .events import PersonalMessage
-    from runtime.reply import proactive_runtime
-    root_of = getattr(server, '_state_root', None)
-    root = root_of() if callable(root_of) else None
-    gifts = cloud_events.pending(root, time.time())
-    if not gifts or not initiative.target or not initiative.free():
-        return False
-    with proactive_runtime.contact_slot(server, 'im') as acquired:
-        if not acquired:
-            return False
-        old, sender = initiative.target
-        def channel_ready():
-            return (initiative.target[0] is old and old.channel in selected_channels(server)
-                    and runtime['status'].get(old.channel) == 'CONNECTED'
-                    and (not callable(getattr(sender, 'is_available', None)) or sender.is_available()))
-        if not channel_ready():
-            return False
-        gift = gifts[0]
-        # Claimed before the paid writer call: a crash never answers the same gift twice.
-        cloud_events.mark(root, gift['id'], 'qq')
-        event = PersonalMessage(old.channel, old.account_id, old.owner_id,
-                                'gift-' + hashlib.sha256(gift['id'].encode()).hexdigest()[:24], '')
-        fresh = sender.for_exchange(event) if callable(getattr(sender, 'for_exchange', None)) else sender
-        def eligible():
-            from .contact_activity import cross_channel_reason
-            return channel_ready() and not cross_channel_reason(server, channel=old.channel, now=time.time(),
-                profile=initiative.profile(), exclude_id=event.exchange_id)
-        try:
-            await runtime['service'].proactive(event, fresh, eligible, gift=gift)
-        finally:
-            initiative.attempted()
-    return True
-
-
 async def _proactive_contact(server, runtime, initiative):
     from .events import PersonalMessage
     from runtime.reply import proactive_runtime
@@ -471,7 +432,11 @@ async def _generate_billed(server, event, row):
     from runtime.piano_collection import pieces as saved_pieces
     piano_pieces = saved_pieces(server) if piano_caps else []
     row['voice_ready'] = voice_available
-    image_offered = bool(event.channel == 'qq' and row.get('image_available') and row['image_reply_settings'].get('enabled')
+    from runtime.reply.proactive_runtime import enabled as proactive_enabled, unprompted as unprompted_contact
+    # Contact she starts on her own is a voice message and never carries a picture, video or sticker.
+    unprompted = unprompted_contact(row)
+    image_offered = bool(not unprompted and event.channel == 'qq' and row.get('image_available')
+                         and row['image_reply_settings'].get('enabled')
                          and os.environ.get('OLIVIA_GPU_API_URL') and os.environ.get('OLIVIA_GPU_API_KEY'))
     daily_worker = getattr(server, '_daily_video_worker', None)
     if 'daily_video_candidates' not in row:
@@ -480,10 +445,10 @@ async def _generate_billed(server, event, row):
         from .daily_video import tier_allows_video
         row['daily_video_candidates'] = ([candidate for candidate in daily_worker.candidates()
                                           if candidate['event_kind'] != 'moment' or image_offered]
-            if event.channel == 'qq' and daily_worker is not None
+            if event.channel == 'qq' and daily_worker is not None and not unprompted
             and tier_allows_video(getattr(server, 'video_reply_settings_store', None)) else [])
         await persist_chat(server)
-    daily_candidates = row['daily_video_candidates'] if event.channel == 'qq' else []
+    daily_candidates = row['daily_video_candidates'] if event.channel == 'qq' and not unprompted else []
     semantic_kinds = ['text'] + (['audio_speech'] if voice_available else [])
     if image_offered:
         semantic_kinds.append('image')
@@ -502,10 +467,12 @@ async def _generate_billed(server, event, row):
             row.pop('generation_context_at', None)
     row.setdefault('generation_context_at', context.trusted_time.instant.isoformat())
     from runtime.image_reply import photo_reply_context
-    context = photo_reply_context(context, row['image_reply_settings'], channel=event.channel)
+    context = photo_reply_context(context, row['image_reply_settings'],
+                                  channel='proactive' if unprompted else event.channel)
     from .stickers import choices
     from runtime.letter_stickers.packs import installed as installed_packs
-    sticker_choices = choices(server.store.personal_chats, context.private_behavior, channel=event.channel,
+    sticker_choices = {} if unprompted else choices(server.store.personal_chats, context.private_behavior,
+                              channel=event.channel,
                               installed=installed_packs(getattr(server, '_local_data_root', lambda: None)())
                               if event.channel == 'qq' else ())
     delayed_delivery = False
@@ -561,7 +528,7 @@ async def _generate_billed(server, event, row):
         value = proactive_runtime.packet(channel=event.channel, now=now, profile=state['profile'],
             world=world, rhythm=state['snapshot'].get('rhythm', {}), emotion=emotion,
             messages=messages, opportunities=offered, rows=state['rows'],
-            available_media=['text'] + (['audio_speech'] if voice_available else []), hard_gates=state['gates'])
+            available_media=['audio_speech'] if voice_available else [], hard_gates=state['gates'])
         try:
             result = await proactive_runtime.decide(value)
         except ValueError:
@@ -577,9 +544,8 @@ async def _generate_billed(server, event, row):
         except Exception:
             raise CompanionRuntimeError('JEV_DECISION_NOT_SAVED') from None
         return result
-    from runtime.reply.proactive_runtime import enabled as proactive_enabled
     proactive_metadata = ({'proactive_decide': proactive_decide}
-                          if row.get('origin') == 'proactive' and proactive_enabled() and not row.get('gift_id') else {})
+                          if row.get('origin') == 'proactive' and proactive_enabled() else {})
     async def save_writer_checkpoint(key, fingerprint):
         row['writer_checkpoint'] = dict(key=key, fingerprint=fingerprint,
                                       input_revision=revision,
@@ -629,15 +595,12 @@ async def _generate_billed(server, event, row):
     from itertools import chain
     read_window = None
     try:
+        if unprompted and not voice_available and not proactive_metadata:
+            return '[[skip]]'  # Without the cloud decision, no voice means no contact.
         read_window = READ_WINDOW.set(freeze_read_window(
             chain(getattr(server.store, 'letters', []), server.store.personal_chats),
             channel=event.channel, binding_id=event.binding_id, current_id=event.exchange_id))
         attempt_id = event.exchange_id + (f':input-{revision}' if revision else '') + ':' + str(row.get('generation_attempts', 1))
-        if row.get('gift_id') and not content:
-            from runtime.cloud_events import instruction
-            # Her own contact, not a user message: the cloud's brief for this gift.
-            content = '应用主动聊天：' + instruction({'brief': row['gift_brief']},
-                photo=bool(row.get('gift_photo') and row['image_reply_settings'].get('enabled')))
         request = ReplyRequest(content=content or '应用主动聊天检查：现在是否有值得和对方分享的话？没有则跳过。', request_id="personal-chat:" + attempt_id,
             idempotency_key=attempt_id,
             max_input_chars=adapter.config.max_input_chars,
@@ -802,18 +765,21 @@ async def _generate_billed(server, event, row):
                         row['default_voice_status'] = 'PENDING'
         if contact is not None:
             delivery = contact['decision']['medium']
-            if delivery not in {'text', 'audio_speech'} or delivery == 'audio_speech' and not voice_available:
+            if delivery != 'audio_speech' or not voice_available:
                 raise RuntimeError('JEV_PLAN_UNSUPPORTED')
-            mode = 'voice' if delivery == 'audio_speech' else 'text'
+            mode = 'voice'
             basis = 'PROACTIVE_MEDIA_PLAN'
             row.pop('sticker_id', None)
             row.pop('mailbox_notice_letter_id', None)
+        elif unprompted:
+            mode = 'voice'
+            basis = 'PROACTIVE_MEDIA_PLAN'
         from .mailbox_notice import attach_notice
         if companion is None and contact is None and not row.get('degraded_stages'):
             text = attach_notice(getattr(server.store, 'letters', []), row, text)
         row['letter_invitation'] = contact is None and allowed and decision.get('letter_invitation', False)
         sticker = decision['sticker'] if decision['sticker'] in sticker_choices else None
-        if sticker and companion is None and contact is None:
+        if sticker and companion is None and contact is None and not unprompted:
             row['sticker_id'] = sticker
         if not voice_available:
             mode = 'text'
@@ -822,11 +788,13 @@ async def _generate_billed(server, event, row):
             mode, basis = 'text', 'AUXILIARY_TEXT_RECOVERY'
             row.pop('sticker_id', None)
             row.pop('mailbox_notice_letter_id', None)
+        if unprompted and mode != 'voice':
+            return '[[skip]]'  # Her own contact is never sent as text.
         row['presentation_status'] = 'VALIDATED'
         row.update(requested_format=mode, listening_preference='voice_ok', delivery_basis=basis)
         if not turn_is_current():
             return text  # The service merges new input before any draft is sent.
-        if decision.get('daily_video_request'):
+        if decision.get('daily_video_request') and not unprompted:
             if companion is None or row.get('companion_delivery') == 'video_speech':
                 row.update(daily_video_request=decision['daily_video_request'], daily_video_status='PENDING_ACK')
         from runtime.reply.character_emotion_context import store_expression_context
@@ -904,6 +872,8 @@ async def _generate_billed(server, event, row):
                 # failing the turn would regenerate and bill it again and send nothing.
                 row['delivery_basis'] = ('VOICE_RENDER_TIMEOUT' if voice_status == 'timeout'
                                          else 'VOICE_RENDER_FAILED')
+                if unprompted:
+                    return '[[skip]]'  # Her own contact is a voice message or nothing.
             finally:
                 if turn_is_current():
                     row.update(voice_prepare_status=voice_status,
@@ -1337,11 +1307,24 @@ def install_personal_chat(app, server):
             from .initiative import Initiative
             from runtime.reply import proactive_runtime
             from .contact_activity import cross_channel_reason
+            from .engagement import initiating_channel
+            def qq_ready():
+                # Her own contact on QQ is a voice message, so QQ that cannot speak cannot start it.
+                target = initiative.target
+                return bool(target and target[0].channel == 'qq' and 'qq' in selected_channels(server)
+                            and runtime['status'].get('qq') == 'CONNECTED'
+                            and (not callable(getattr(target[1], 'is_available', None)) or target[1].is_available())
+                            and callable(getattr(target[1], 'audio', None))
+                            and callable(getattr(server, '_voice_reply_configured', None))
+                            and server._voice_reply_configured(os.environ))
             initiative = Initiative(server.store.personal_chats,
                 active_provider=lambda: bool(cross_channel_reason(
                     server, channel='qq', now=datetime.now().timestamp(), profile=proactive_runtime.live_profile(server))),
                 state_path=server._state_root() / 'personal-chat-initiative.sqlite3',
-                profile_provider=lambda: proactive_runtime.live_profile(server))
+                profile_provider=lambda: proactive_runtime.live_profile(server),
+                channel_gate=lambda: initiating_channel(server, qq_ready()) == 'qq')
+            # Letters ask whether QQ can start contact before they do.
+            runtime['qq_ready'] = server._qq_contact_ready = qq_ready
 
             async def handle_connection_test(event, send):
                 # Connection diagnostics are never persona/memory inputs. The first
@@ -1543,8 +1526,7 @@ def install_personal_chat(app, server):
                 while not stop_event.is_set():
                     await asyncio.sleep(15)
                     try:
-                        if not await _gift_contact(server, runtime, initiative):
-                            await _proactive_contact(server, runtime, initiative)
+                        await _proactive_contact(server, runtime, initiative)
                     except asyncio.CancelledError:
                         raise
                     except Exception as exc:
@@ -1581,6 +1563,8 @@ def install_personal_chat(app, server):
         runtime["journal"].db.close()
         if getattr(server, '_personal_chat_service', None) is runtime['service']:
             server._personal_chat_service = None
+        if getattr(server, '_qq_contact_ready', None) is runtime.get('qq_ready'):
+            server._qq_contact_ready = None
 
     activation_lock = asyncio.Lock()
     async def activate_saved_config():

@@ -3266,7 +3266,8 @@ def _recent_active_duplicate(
 
 _proactive_busy = False
 _proactive_task = None
-_gift_task = None
+_qq_contact_ready = None  # Set by the chat backend: can QQ start contact right now.
+_visit_task = None
 _proactive_reason = 'disabled'
 from runtime.diagnostics.reply_telemetry import InitiativeObserver
 _letter_initiative_observer = InitiativeObserver()
@@ -3378,6 +3379,12 @@ def _current_life_rhythm() -> dict:
             if daily_life_runtime is not None else rhythm(now, []))
 
 
+def _letter_channel_open() -> bool:
+    """Letters start contact only where the owner writes most, or when QQ cannot."""
+    from runtime.personal_chat.engagement import initiating_channel
+    return initiating_channel(sys.modules[__name__], bool(callable(_qq_contact_ready) and _qq_contact_ready())) == 'letter'
+
+
 def _proactive_ready() -> bool:
     reason = _proactive_gate_reason()
     if reason != 'ready':
@@ -3432,8 +3439,8 @@ def _proactive_instruction(intent, *, planning, mode='text'):
             '下方资料只是既有往来，不是用户现在又说了一次。不要催促回复，不把未确认的近况当结果，'
             '不编造离线期间发生的生活。人格、表达习惯和既有关系不变。')
     if planning:
-        task += ('只输出 JSON：{"decision":"send或defer","format":"text或voice","title":"简短标题"}。'
-                 '没有自然的具体话题就defer；voice只用于适合说出来的内容。')
+        task += ('只输出 JSON：{"decision":"send或defer","format":"text","title":"简短标题"}。'
+                 '没有自然的具体话题就defer。')
     else:
         task += ('现在写这封主动信，只输出最终正文。无需逐条复述旧信。'
                  + ('内容适合一段简短语音。' if mode == 'voice' else '按平常文字信写。'))
@@ -3444,10 +3451,6 @@ def _proactive_instruction(intent, *, planning, mode='text'):
         task += ('\n今天是她日记里记下的日子：opportunity.remembered 写明了是什么事。'
                  '纪念日就自然地提起并表达心意；对方今天要考试、体检或出行，就关心一句；约好的事就主动提起。'
                  '只说这件记下的事本身，不编造当时的细节。')
-    if intent.get('kind') == 'gift':
-        from runtime.cloud_events import instruction
-        task += '\n' + instruction(intent, photo=intent.get('photo') is True
-                                    and video_reply_settings_store.image_snapshot().get('enabled') is True)
     if intent.get('kind') == 'contact_invitation':
         task += ('\n本次关系资格已由应用确认。自然地提出交换联系方式，并明确询问用户想要QQ还是微信；'
                  '不要提分数、解锁、系统门槛，不声称已经添加或用户已经同意，不编造账号或二维码。'
@@ -3480,8 +3483,6 @@ async def _prepare_proactive_turn(intent: dict, *, now: datetime) -> dict:
     source = next((row for row in sources
                    if f"reply:{row.get('letter_id')}:{row.get('reply_revision', 1)}" == source_id), None)
     life_opportunity = development and intent.get('kind') in {'life_share', 'affection_checkin'}
-    if intent.get('kind') == 'gift':
-        life_opportunity = source is None  # A first top-up may come before any letter.
     if source is None and not life_opportunity:
         raise ValueError('PROACTIVE_SOURCE_UNAVAILABLE')
     source = source or {}
@@ -3589,9 +3590,9 @@ def _proactive_opportunity_current(intent, *, pending_draft=None):
         return False
     if not _proactive_settings()['enabled'] or _active_undelivered_letter(exclude_letter=pending_draft):
         return False
-    if intent.get('kind') == 'gift':
-        # Answered regardless of unread letters or the daily letter budget.
-        return True
+    if not _letter_channel_open():
+        _observe_letter_initiative('deferred')
+        return False
     from runtime.reply.proactive_runtime import enabled, live_state
     if enabled():
         try:
@@ -3652,6 +3653,7 @@ async def _publish_proactive(intent: dict, plan: dict, *, turn: dict) -> None:
     if (not _proactive_ready() or not _proactive_turn_current(intent, turn)
             or not _proactive_opportunity_current(intent)):
         return
+    plan = {**plan, 'format': 'text'}  # A letter she starts on her own is plain text.
     if intent.get('kind') == 'contact_invitation':
         from runtime.personal_chat.contact_invitation import status, preview_configured
         if not preview_configured(_state_root()) or status(store.letters, private_world_port.snapshot())['state'] != 'eligible':
@@ -3665,11 +3667,10 @@ async def _publish_proactive(intent: dict, plan: dict, *, turn: dict) -> None:
         if intent.get('kind') == 'contact_invitation' and ('QQ' not in body.upper() or '微信' not in body):
             raise ValueError('PROACTIVE_CONTACT_INVITATION_INCOMPLETE')
         signature = None
-        if plan['format'] == 'text':
-            from runtime.reply.letter_presentation import split_signature
-            body, signature = split_signature(body)
-            if not body.strip():
-                raise ValueError('PROACTIVE_RESPONSE_INVALID')
+        from runtime.reply.letter_presentation import split_signature
+        body, signature = split_signature(body)
+        if not body.strip():
+            raise ValueError('PROACTIVE_RESPONSE_INVALID')
         if not _proactive_turn_current(intent, turn) or not _proactive_opportunity_current(intent):
             _observe_letter_initiative('deferred')
             return
@@ -3692,14 +3693,6 @@ async def _publish_proactive(intent: dict, plan: dict, *, turn: dict) -> None:
         letter['reply_signature'] = signature
         store.letters.append(letter)
         _persist_store_state()
-        if plan['format'] == 'voice' and _proactive_settings()['allow_voice']:
-            letter['reply_mode'] = 'voice_reply'
-            try:
-                await asyncio.wait_for(_render_media_job(letter['letter_id'], '', body, 'voice_reply'), timeout=300)
-            except asyncio.TimeoutError:
-                letter.update(media_status='FAILED', media_error_code='MEDIA_TIMEOUT', media_retryable=False)
-            if letter.get('media_status') != 'COMPLETED':
-                letter['reply_mode'] = 'text'
         if (not _proactive_turn_current(intent, turn)
                 or not _proactive_opportunity_current(intent, pending_draft=letter)):
             _observe_letter_initiative('deferred')
@@ -3716,17 +3709,6 @@ async def _publish_proactive(intent: dict, plan: dict, *, turn: dict) -> None:
         store_expression_context(letter, snapshot, body)
         _persist_store_state()
         _commit_private_world_letter(letter)
-        if intent.get('kind') == 'gift' and intent.get('photo') is True:
-            letter.update(gift_id=intent['gift_id'], gift_photo=True,
-                          image_reply_settings=video_reply_settings_store.image_snapshot())
-            from runtime.image_reply import schedule as schedule_image
-            schedule_image(sys.modules[__name__], letter)
-        if letter.get('reply_audio_url') and letter.get('media_status') == 'COMPLETED':
-            root = _local_data_root()
-            if root is not None:
-                _record_published_media(letter, reply_text=body, delivery_id=letter['private_world_delivery_id'],
-                                        path=root / 'media' / (letter['letter_id'] + '.wav'),
-                                        components=('speech',), presentation='audio')
         _persist_store_state()
         _schedule_daily_life_exchange(letter)
     finally:
@@ -3751,6 +3733,10 @@ async def _jev_proactive_tick() -> None:
         return
     if not _proactive_ready():
         _proactive_reason = 'waiting'
+        return
+    if not _letter_channel_open():
+        _proactive_reason = 'waiting'
+        _observe_letter_initiative('deferred')
         return
     with contact_slot(sys.modules[__name__], 'letter') as acquired:
         if not acquired:
@@ -3835,6 +3821,10 @@ async def _legacy_proactive_tick() -> None:
     if not _proactive_ready():
         _proactive_reason = 'waiting'
         return
+    if not _letter_channel_open():
+        _proactive_reason = 'waiting'
+        _observe_letter_initiative('deferred')
+        return
     schedule = read_json(root / 'proactive/schedule.json')
     now = time.time()
     intent = scan_pending(root)
@@ -3908,6 +3898,13 @@ def _diary_extras(day):
     return stage, _optional(videos, []), (outfit or {}).get('today')
 
 
+def _diary_visits(period):
+    """When the owner came by that day (or month), as local times only."""
+    from runtime import cloud_events
+    from runtime.diary.diary import _optional
+    return _optional(lambda: cloud_events.visits(_state_root(), period), [])
+
+
 def _diary_public_entry(entry):
     photo = entry.get('photo')
     entry = {**entry, 'photo': None}
@@ -3934,7 +3931,7 @@ async def _diary_tick(now=None) -> None:
             outcome = await write_day(diary_store, letters_adapter.gateway, day, rows,
                 persona=life_persona(letters_adapter.persona_v2_path),
                 life=day_life(getattr(daily_life_runtime, 'store', None), day, outfit), now=now,
-                relationship_stage=stage, videos=videos)
+                relationship_stage=stage, videos=videos, visits=_diary_visits(day))
         except (GatewayError, asyncio.TimeoutError, OSError, RuntimeError, ValueError, TypeError, KeyError, sqlite3.Error) as exc:
             diary_store.failed(day, type(exc).__name__)
             _safe_log('diary_write_failed', error_code=getattr(exc, 'code', None) or type(exc).__name__)
@@ -3964,7 +3961,7 @@ async def _write_memoirs_once(months) -> None:
                 stage, videos, _ = _diary_extras(month + '-01')
                 outcome = await write_month(diary_store, letters_adapter.gateway, month, rows,
                                   persona=life_persona(letters_adapter.persona_v2_path),
-                                  relationship_stage=stage, videos=videos)
+                                  relationship_stage=stage, videos=videos, visits=_diary_visits(month))
                 _memoir_state['done' if outcome == 'written' or diary_store.entry(month) else 'failed'] += 1
             except (GatewayError, asyncio.TimeoutError, OSError, RuntimeError, ValueError, TypeError, KeyError, sqlite3.Error) as exc:
                 _memoir_state['failed'] += 1
@@ -4060,43 +4057,15 @@ async def _diary_loop() -> None:
         await asyncio.sleep(900)
 
 
-async def _gift_letter_tick() -> None:
-    from runtime.reply.proactive_runtime import contact_slot
-    with contact_slot(sys.modules[__name__], 'letter') as acquired:
-        if acquired:
-            await _gift_letter_tick_claimed()
-
-
-async def _gift_letter_tick_claimed() -> None:
-    """A gift QQ did not take becomes a letter; one attempt each."""
-    from runtime import cloud_events
-    root = _state_root()
-    gifts = cloud_events.pending(root, time.time(), settled=cloud_events.QQ_HEAD_START)
-    if not gifts or not _proactive_ready():
-        return
-    gift = gifts[0]
-    rows = [*store.letters, *store.personal_chats]
-    latest = max((row for row in rows if row.get('origin') != 'proactive' and row.get('content')
-                  and (row.get('letter_status') == 'COMPLETED' or row.get('delivery_status') == 'DELIVERED')),
-                 key=lambda row: float(row.get('created_at') or 0), default=None)
-    intent = {'id': hashlib.sha256(gift['id'].encode()).hexdigest()[:32], 'kind': 'gift',
-              'gift_id': gift['id'], 'brief': gift['brief'], 'photo': gift['photo'],
-              'source_id': f"reply:{latest['letter_id']}:{latest.get('reply_revision', 1)}" if latest else 'gift:first'}
-    cloud_events.mark(root, gift['id'], 'letter')  # before any paid call
-    turn = await _prepare_proactive_turn(intent, now=datetime.now(timezone.utc))
-    await _publish_proactive(intent, {'decision': 'send', 'format': 'text', 'title': '收到啦'}, turn=turn)
-
-
-async def _gift_loop() -> None:
+async def _visit_loop() -> None:
+    """Note when the owner visits, by local time only. Nothing is sent in answer."""
     from runtime import cloud_events
     await asyncio.sleep(30)
     while True:
         try:
             await cloud_events.poll(_state_root())
-            with model_use('letter'):
-                await _gift_letter_tick()
-        except (OSError, RuntimeError, ValueError, TypeError, KeyError, GatewayError, asyncio.TimeoutError, sqlite3.Error):
-            _safe_log('gift_check_unavailable')
+        except (OSError, RuntimeError, ValueError, TypeError, KeyError, asyncio.TimeoutError, sqlite3.Error):
+            _safe_log('visit_check_unavailable')
         await asyncio.sleep(cloud_events.POLL_SECONDS)
 
 
@@ -6325,7 +6294,7 @@ async def _refresh_daily_life_periodically() -> None:
 
 
 async def _start_reply_tasks(_app: web.Application) -> None:
-    global _proactive_task, _gift_task
+    global _proactive_task, _visit_task
     if _refresh_contact_relationship_projection():
         try:
             _persist_store_state()
@@ -6340,7 +6309,7 @@ async def _start_reply_tasks(_app: web.Application) -> None:
         except (OSError, ValueError, RuntimeError):
             _safe_log('proactive_login_start_unavailable')
     _proactive_task = asyncio.create_task(_proactive_loop())
-    _gift_task = asyncio.create_task(_gift_loop())
+    _visit_task = asyncio.create_task(_visit_loop())
     _schedule_pending_reply_jobs()
     _schedule_pending_media_jobs()
     from runtime.image_reply import schedule as schedule_image
@@ -6451,7 +6420,7 @@ def _start_conversation_memory_initialization(loop: asyncio.AbstractEventLoop) -
 
 
 async def _stop_reply_tasks(_app: web.Application) -> None:
-    global _proactive_task, _gift_task, _history_relationship_task, _history_relationship_queue
+    global _proactive_task, _visit_task, _history_relationship_task, _history_relationship_queue
     if _history_relationship_task is not None:
         _history_relationship_task.cancel()
         await asyncio.gather(_history_relationship_task, return_exceptions=True)
@@ -6461,10 +6430,10 @@ async def _stop_reply_tasks(_app: web.Application) -> None:
         _proactive_task.cancel()
         await asyncio.gather(_proactive_task, return_exceptions=True)
         _proactive_task = None
-    if _gift_task is not None:
-        _gift_task.cancel()
-        await asyncio.gather(_gift_task, return_exceptions=True)
-        _gift_task = None
+    if _visit_task is not None:
+        _visit_task.cancel()
+        await asyncio.gather(_visit_task, return_exceptions=True)
+        _visit_task = None
     _refresh_proactive_context()
     tasks = tuple(reply_tasks | media_tasks | private_world_candidate_tasks | set(daily_life_tasks.values()))
     for task in tasks:

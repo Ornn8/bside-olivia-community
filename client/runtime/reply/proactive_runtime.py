@@ -21,6 +21,11 @@ def live_profile(server, now=None):
     return effective_profile(server, now)
 
 
+def unprompted(row):
+    """Contact she starts on her own, as opposed to a reply."""
+    return row.get('origin') == 'proactive'
+
+
 @contextmanager
 def contact_slot(server, channel):
     # Both schedulers run on the same app event loop. Claim before any await.

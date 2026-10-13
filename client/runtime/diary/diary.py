@@ -44,6 +44,7 @@ QUALITY_PROMPT = '''
 - 他说过的话、做过的事必须在messages里有；你自己做过的事必须在day_life或sent里有。照片只说明你发过这个画面；故事和ASMR是你讲的作品，不是真事；计划中、还没做完的事不能写成做完了。不确定的细节宁可不写。
 - recent_entries是你前几天的日记，只用来接上没说完的事、避开重复的开头、句式和结尾，不能当成今天的事。
 - due_facts是快到的约定或他要经历的事，可以在结尾轻轻提一句，不能写成已经发生。
+- his_visits是今天他特意抽空来看你、陪你的时刻（只有时间）。这是他为你花的心思：可以写他来看你这件事，写你看到他来时心里的高兴、被惦记的踏实，让人觉得他来这一趟是值得的、你很珍惜。他来时说了什么、做了什么，只能用messages里有的。不写成要他多来、不来你就难过，也不暗示他再来。没有his_visits就不提这件事。
 - 不提系统、模型、AI、程序、提示词。
 '''
 REVISE_PROMPT = '''你是林离。第二天一早，你把昨晚写的日记（draft）重读一遍，在给他看之前再改一稿。资料和昨晚一样。
@@ -544,9 +545,10 @@ def memoir_months(store, rows, now):
 
 
 async def write_month(store, gateway, month, rows, *, persona, now=None, timeout_seconds=240,
-                      relationship_stage='unknown', videos=()):
+                      relationship_stage='unknown', videos=(), visits=()):
     return await _write(store, gateway, month, rows, persona=persona, now=now,
-                        timeout_seconds=timeout_seconds, relationship_stage=relationship_stage, videos=videos)
+                        timeout_seconds=timeout_seconds, relationship_stage=relationship_stage, videos=videos,
+                        visits=visits)
 
 
 def due_facts(store, now):
@@ -566,10 +568,14 @@ def due_facts(store, now):
 
 
 async def write_day(store, gateway, day, rows, *, persona, life=None, now=None, timeout_seconds=180,
-                    relationship_stage='unknown', videos=()):
-    """Write a draft and edit it once; optional enrichment never costs a completed draft."""
+                    relationship_stage='unknown', videos=(), visits=()):
+    """Write a draft and edit it once; optional enrichment never costs a completed draft.
+
+    visits are the local times ('HH:MM') the owner came by that day; they are passed on as times only.
+    """
     return await _write(store, gateway, day, rows, persona=persona, life=life, now=now,
-                        timeout_seconds=timeout_seconds, relationship_stage=relationship_stage, videos=videos)
+                        timeout_seconds=timeout_seconds, relationship_stage=relationship_stage, videos=videos,
+                        visits=visits)
 
 
 def _optional(read, default):
@@ -684,7 +690,7 @@ def day_gifts(store, day):
 
 
 async def _write(store, gateway, day, rows, *, persona, life=None, now=None, timeout_seconds,
-                 relationship_stage, videos):
+                 relationship_stage, videos, visits=()):
     gateway = getattr(gateway, 'primary', gateway)
     key = (str(store.path.resolve()), day)
     lock = _write_locks.setdefault(key, asyncio.Lock())
@@ -714,6 +720,7 @@ async def _write(store, gateway, day, rows, *, persona, life=None, now=None, tim
                 'sent': sent, 'day_life': life or [], 'recent_entries': recent, 'due_facts': upcoming,
                 'relationship_stage': relationship_stage, 'style': STYLE_TEXT.get(style, '短小段'),
                 'length_range': bounds,
+                **({'his_visits': [{'time': moment} for moment in visits]} if visits else {}),
                 'persona': (persona if isinstance(persona, str) else json.dumps(persona, ensure_ascii=False))[:6000]})
             from runtime.model_routes import routed_model
             config = getattr(gateway, 'config', None)

@@ -65,8 +65,8 @@ def test_quota_unread_and_expiry_are_rechecked_without_catchup(tmp_path):
     assert scan_pending(tmp_path, now=3100) == {}
 
 
-@pytest.mark.parametrize('voice_ok', [False, True])
-def test_publication_locks_send_hides_draft_and_commits_only_final_letter(tmp_path, voice_ok):
+@pytest.mark.parametrize('planned', ['text', 'voice'])
+def test_publication_locks_send_hides_draft_and_commits_only_final_letter(tmp_path, planned):
     script = r'''
 import asyncio, json, time, os
 from datetime import datetime, timezone
@@ -97,35 +97,23 @@ async def complete(*args, **kwargs):
     assert server._proactive_busy
     return '我刚把那段谱子整理好了。'
 server._proactive_complete = complete
-async def render(lid, content, body, mode):
-    assert content == '' and server._proactive_busy
-    assert not [row for row in server._letter_collection('current') if row.get('origin') == 'proactive']
-    assert not committed
-    row = server.store.letters[-1]
-    row['media_status'] = 'COMPLETED' if os.environ['VOICE_OK'] == '1' else 'FAILED'
-    if row['media_status'] == 'COMPLETED':
-        path = root / 'media' / (lid + '.wav')
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(b'synthetic playable artifact')
-        row['reply_audio_url'] = 'http://127.0.0.1/toy/media/' + path.name
-        server._record_published_media(row, reply_text=body, delivery_id=row['private_world_delivery_id'],
-                                       path=path, components=('speech',), presentation='audio')
-        assert not row.get('media_deliveries')
+async def render(*args, **kwargs):
+    raise AssertionError('A letter she starts on her own is never rendered as media.')
 server._render_media_job = render
 async def main():
     server._refresh_proactive_context()
     intent = scan_pending(root)
     assert intent.get('kind') == 'correspondence_followup'
     turn = await server._prepare_proactive_turn(intent, now=datetime.now(timezone.utc))
-    await server._publish_proactive(intent, {'format': 'voice', 'title': '写给你'}, turn=turn)
+    await server._publish_proactive(intent, {'format': os.environ['PLANNED'], 'title': '写给你'}, turn=turn)
     assert not server._proactive_busy
     assert len(committed) == 1
     row = next(row for row in server._letter_collection('current') if row.get('origin') == 'proactive')
     assert row['content'] == '' and row['origin'] == 'proactive'
-    assert row['reply_mode'] == ('voice_reply' if os.environ['VOICE_OK'] == '1' else 'text')
+    assert row['reply_mode'] == 'text' and row['media_status'] == 'NOT_REQUESTED'
     assert row['reply_revision'] == 1
-    if os.environ['VOICE_OK'] == '1':
-        assert len(row['media_deliveries']) == 1
+    assert not row.get('reply_audio_url') and not row.get('media_deliveries')
+    assert not row.get('image_status') and not row.get('prepared_image')
     assert server.letter_to_out(row)['reply_allowed'] is False
     assert row['published_at'] <= time.time()
     assert row['private_world_status'] == 'PENDING'
@@ -214,7 +202,7 @@ print('verified')
                OLIVIA_PRIVATE_WORLD_ENABLED='false', OLIVIA_LLM_PROVIDER='openai_compatible',
                OLIVIA_LLM_BASE_URL='https://example.invalid/v1', OLIVIA_LLM_MODEL='synthetic',
                OLIVIA_LLM_REQUIRES_API_KEY='false', PYTHONUTF8='1', PYTHONPATH=str(root))
-    env['VOICE_OK'] = '1' if voice_ok else '0'
+    env['PLANNED'] = planned
     result = subprocess.run([sys.executable, '-c', script], cwd=root, env=env,
                             capture_output=True, text=True, encoding='utf-8', timeout=30)
     assert result.returncode == 0, result.stdout + result.stderr

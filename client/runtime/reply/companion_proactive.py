@@ -34,7 +34,9 @@ def _validate_input(value):
 
 
 def _media(value):
-    return [medium for medium in value['available_media'] if value['channel'] != 'letter' or medium == 'text']
+    # A letter is written text; contact on a chat channel is a voice message only.
+    kept = 'text' if value['channel'] == 'letter' else 'audio_speech'
+    return [medium for medium in value['available_media'] if medium == kept]
 
 
 def _local_defer(value):

@@ -12,6 +12,7 @@ from .events import PersonalMessage
 from runtime.reply.character_emotion_context import rebind_expression_context
 from runtime.reply.companion_decision import ERROR_CODES as _JEV_PORT_ERRORS
 from runtime.cloud_policy import get_policy
+from runtime.reply.proactive_runtime import unprompted
 JEV_ERROR_CODES = _JEV_PORT_ERRORS | {
     'JEV_PLAN_UNSUPPORTED', 'JEV_CONTEXT_UNAVAILABLE', 'JEV_STORED_DECISION_INVALID',
     'JEV_SERVICE_UNAVAILABLE', 'JEV_CONTEXT_BUDGET_EXCEEDED', 'JEV_INPUT_SUPERSEDED',
@@ -336,22 +337,22 @@ class PersonalChatService:
                              for key, text in remaining.items()])
             return await self._handle_one(fresh, send.for_exchange(fresh) if callable(getattr(send, 'for_exchange', None)) else send)
 
-    async def proactive(self, event, send, eligible=lambda: True, followup=None, gift=None):
+    async def proactive(self, event, send, eligible=lambda: True, followup=None):
         revision = self.user_revision
         async with self.batch_lock:
             if not eligible() or revision != self.user_revision:
                 return
-            await self._handle_one(event, send, proactive=True, followup=followup, gift=gift,
+            await self._handle_one(event, send, proactive=True, followup=followup,
                                    proactive_revision=revision, proactive_eligible=eligible)
 
     async def _handle_one(self, event, send, proactive=False, followup=None, proactive_revision=None,
-                          proactive_eligible=None, gift=None):
+                          proactive_eligible=None):
         key = getattr(event, 'exchange_id', None)
         if not proactive:
             self.active_user_turns.add(key)
         try:
             return await self._handle_one_impl(event, send, proactive, followup, proactive_revision,
-                                               proactive_eligible, gift)
+                                               proactive_eligible)
         finally:
             self._stop_typing(event)
             if not proactive:
@@ -366,7 +367,7 @@ class PersonalChatService:
                 logging.getLogger(__name__).debug('ONEBOT_TYPING_STOP_UNAVAILABLE')
 
     async def _handle_one_impl(self, event, send, proactive=False, followup=None, proactive_revision=None,
-                               proactive_eligible=None, gift=None):
+                               proactive_eligible=None):
         if not isinstance(event, PersonalMessage) or self.bindings.get(event.channel) != (event.account_id, event.owner_id):
             raise ValueError("PERSONAL_CHAT_OWNER_MISMATCH")
         if (not event.text.strip() and not proactive) or len(event.text) > 10000:
@@ -424,8 +425,6 @@ class PersonalChatService:
                     row.update(origin='proactive', source_messages={})
                     if followup:
                         row.update(followup_source_id=followup['letter_id'], followup_quote=followup['followup_quote'])
-                    if gift:
-                        row.update(gift_id=gift['id'], gift_brief=gift['brief'], gift_photo=gift['photo'])
                 self.rows.append(row)
                 await persist_state(self.persist)
             if not proactive and _sent_time(row):
@@ -612,6 +611,11 @@ class PersonalChatService:
                     row.update(delivery_status='FAILED', letter_status='FAILED', error_code='JEV_PLAN_UNSUPPORTED')
                     await persist_state(self.persist)
                     raise RuntimeError('JEV_PLAN_UNSUPPORTED')
+                if unprompted(row) and row.get('requested_format') == 'voice':
+                    # Her own contact is a voice message or nothing: never the text of a lost voice.
+                    row.update(delivery_status='SKIPPED', letter_status='SKIPPED', skip_reason='PROACTIVE_NO_REPLY')
+                    await persist_state(self.persist)
+                    return
                 previous_text = row['reply_text']
                 row['reply_text'] = text
                 rebind_expression_context(row, previous_text=previous_text)
@@ -686,7 +690,7 @@ class PersonalChatService:
             row.pop("error_code", None)
             await persist_state(self.persist)
             if (row.get('companion_decision') is None and row.get('proactive_decision') is None
-                    and row.get('sticker_id') and callable(getattr(send, 'image', None))):
+                    and row.get('sticker_id') and not unprompted(row) and callable(getattr(send, 'image', None))):
                 from pathlib import Path
                 if (not re.fullmatch(r'linli-\d{2,3}', row['sticker_id'])
                         or (event.channel != 'qq' and int(row['sticker_id'][6:]) > 108)
