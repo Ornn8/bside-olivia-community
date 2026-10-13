@@ -72,6 +72,7 @@ from original_client_update_api import (
 )
 from original_client_letter_contract import (
     OriginalClientContractError,
+    is_unread_reply,
     serialize_letter_detail,
     serialize_letter_list,
     serialize_letter_summary,
@@ -289,8 +290,7 @@ def _adapt_mailbox_payload(
 
     if path == "/toy/letter/unread_count" and payload.get("code") == 0:
         letters = _visible_mailbox_letters(tuple(letter_collection(scope)))
-        from original_client_letter_contract import _photo_pending
-        unread = sum(1 for letter in letters if not letter.get("is_read", 1) and not _photo_pending(letter))
+        unread = sum(1 for letter in letters if is_unread_reply(letter))
         payload["data"] = serialize_unread_count(
             unread,
             scope=scope,

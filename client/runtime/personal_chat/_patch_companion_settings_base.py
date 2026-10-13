@@ -430,6 +430,7 @@ def _repair_native_silent_reply(source: str) -> str:
 
 
 def _repair_mailbox_write_access(root: Path) -> str:
+    from runtime.personal_chat._patch_desktop_mail import patch_desktop_mail
     from runtime.personal_chat._patch_music_playback import patch_music_playback
 
     main = root / Path(*MAIN_JS_0627.split("/"))
@@ -504,6 +505,9 @@ def _repair_mailbox_write_access(root: Path) -> str:
             ),
             1,
         )
+    source = patch_desktop_mail(source)
+    if "function oliviaLocalDesktopMail" in source and "function oliviaLocalMailboxRequest" not in source:
+        source = _LOCAL_MAILBOX_REQUEST_HELPER + source
     source = source.replace(
         'He(()=>{p.value||d.fetchMailList(!0)})',
         'He(()=>{d.fetchMailList(!0),d.startPolling()})',

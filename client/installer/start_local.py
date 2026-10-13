@@ -35,21 +35,8 @@ from patch_feapp import repair_web_player_event_ids
 from patch_webplayer import WebPlayerPatchError, patch_webplayer
 from installer.native_window_layout import LayoutStatus, guard_native_window_layout
 from installer.patch_local_login import LocalLoginPatchError, apply as apply_local_login
-from installer.patch_native_navigation import (
-    COMPATIBILITY_MANIFEST_NAME,
-    NativeNavigationPatchError,
-    patch_native_navigation,
-)
-try:
-    from patch_native_user_settings import (
-        NativeUserSettingsPatchError,
-        patch_native_user_settings,
-    )
-except ModuleNotFoundError:  # Package import used by tests and development tools.
-    from installer.patch_native_user_settings import (
-        NativeUserSettingsPatchError,
-        patch_native_user_settings,
-    )
+from installer.patch_native_mail import patch_native_mail
+from installer.patch_native_navigation import NativeNavigationPatchError
 from video_capability_install import (
     VideoCapabilityError,
     load_video_runtime_environment,
@@ -623,20 +610,9 @@ def _repair_client_frontend(root: Path, port: int) -> str:
 
 
 def _repair_native_navigation(root: Path) -> str:
-    """Apply an installed private compatibility manifest to the managed copy."""
-
-    manifest = root / "local_backend" / "installer" / COMPATIBILITY_MANIFEST_NAME
-    if not manifest.is_file():
-        return "NOT_CONFIGURED"
+    """Restore supported native desktop entries without replacing the frontend."""
     client_root = _client_executable(root).parent
-    managed = (
-        client_root / "resources" / "feapp.dat",
-        client_root / "plugins" / "Studio" / "NutStudioUI.dll",
-        client_root / "plugins" / "Container" / "NutContainerPlugin.dll",
-    )
-    if all(path.with_name(path.name + ".native-nav.orig").is_file() for path in managed):
-        return "ALREADY_PATCHED"
-    result = patch_native_navigation(client_root, work_root=root)
+    result = patch_native_mail(client_root, work_root=root)
     return str(result["status"])
 
 
@@ -775,34 +751,6 @@ def _append_launcher_event(data_root: Path, event: str, **fields: object) -> Non
             handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
     except (OSError, TypeError, ValueError):
         pass
-
-
-def _prepare_native_user_settings(roaming: Path, data_root: Path) -> str:
-    """Best-effort enable the native mailbox without logging its local path."""
-
-    settings_path = (
-        roaming
-        / ("mi" + "HoYo")
-        / ("Olivia" + "-steam")
-        / "store"
-        / "usersettings.dat"
-    )
-    try:
-        result = patch_native_user_settings(settings_path)
-    except NativeUserSettingsPatchError as exc:
-        _append_launcher_event(
-            data_root,
-            "native_settings",
-            status="failed",
-            error_code=exc.code,
-        )
-        return "failed"
-    _append_launcher_event(
-        data_root,
-        "native_settings",
-        status=result.status,
-    )
-    return result.status
 
 
 def _seed_native_user_settings(source_roaming: Path, target_roaming: Path) -> None:
@@ -1239,7 +1187,8 @@ def _launch(args: argparse.Namespace, root: Path, backend: Path, entrypoint: Pat
             client_environment.get("APPDATA") or str(roaming)
         ).expanduser()
         _seed_native_user_settings(source_settings_roaming, roaming)
-        _prepare_native_user_settings(roaming, data_root)
+        # Widget preferences are migrated through the native bridge after login.
+        # Rewriting the store here would override a user's saved off switch.
         client_environment.setdefault("OLIVIA_STARTUP_VIDEO", str(backend / "installer" / "assets" / "startup.mp4"))
         _append_launcher_event(data_root, "client_start", attempt=1,
                                preparation_seconds=round(time.monotonic() - preparation_started, 3))
@@ -1265,7 +1214,6 @@ def _launch(args: argparse.Namespace, root: Path, backend: Path, entrypoint: Pat
                 attempt=2,
                 reason="known_fresh_profile_exit" if fresh_profile else "known_client_exit",
             )
-            _prepare_native_user_settings(roaming, data_root)
             _append_launcher_event(data_root, "client_start", attempt=2)
             exit_code = _run_client_with_native_layout(
                 client,

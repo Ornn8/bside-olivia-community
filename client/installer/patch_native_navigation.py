@@ -468,12 +468,11 @@ def _result(
     }
 
 
-def patch_native_navigation(
+def _managed_roots(
     client_version_root: str | os.PathLike[str],
     *,
     work_root: str | os.PathLike[str] | None = None,
-) -> dict[str, object]:
-    """Patch native widget visibility without changing the startup route."""
+) -> tuple[Path, Path]:
 
     if work_root is None:
         raise NativeNavigationPatchError("NATIVE_NAV_UNMANAGED_ROOT")
@@ -485,16 +484,25 @@ def patch_native_navigation(
         or root.name != CLIENT_VERSION
     ):
         raise NativeNavigationPatchError("NATIVE_NAV_UNMANAGED_ROOT")
-    specs = _load_compatibility_manifest(work)
-    feapp = root.joinpath(*str(specs["feapp"]["relative_path"]).split("/"))
-    studio = root.joinpath(*str(specs["studio_ui"]["relative_path"]).split("/"))
-    container = root.joinpath(
-        *str(specs["container_plugin"]["relative_path"]).split("/")
-    )
-    paths = (
-        ("feapp", feapp),
-        ("studio_ui", studio),
-        ("container_plugin", container),
+    return root, work
+
+
+def patch_native_navigation(
+    client_version_root: str | os.PathLike[str],
+    *,
+    work_root: str | os.PathLike[str] | None = None,
+) -> dict[str, object]:
+    """Patch native widget visibility without changing the startup route."""
+    root, work = _managed_roots(client_version_root, work_root=work_root)
+    return _patch_registered_files(root, work, _load_compatibility_manifest(work))
+
+
+def _patch_registered_files(
+    root: Path, work: Path, specs: dict[str, dict[str, object]],
+) -> dict[str, object]:
+    paths = tuple(
+        (name, root.joinpath(*str(spec["relative_path"]).split("/")))
+        for name, spec in specs.items()
     )
     backups = {
         path: path.with_name(path.name + ".native-nav.orig")
@@ -504,8 +512,7 @@ def patch_native_navigation(
         root,
         root / "resources",
         root / "plugins",
-        studio.parent,
-        container.parent,
+        *(path.parent for _, path in paths),
         *(path for _, path in paths),
         *backups.values(),
     )
@@ -565,17 +572,10 @@ def patch_native_navigation(
     if has_all_backups and any(state is None for state in live_states.values()):
         raise NativeNavigationPatchError("NATIVE_NAV_LIVE_TAMPERED")
     patched = {
-        feapp: _patched_feapp(originals[feapp], specs["feapp"]),
-        studio: _patched_binary(
-            originals[studio],
-            specs["studio_ui"]["binary_replacements"],
-            "NutStudioUI.dll offline call",
-        ),
-        container: _patched_binary(
-            originals[container],
-            specs["container_plugin"]["binary_replacements"],
-            "NutContainerPlugin.dll lite-bar call",
-        ),
+        path: (_patched_feapp(originals[path], specs[name]) if name == "feapp" else
+               _patched_binary(originals[path], specs[name]["binary_replacements"],
+                               path.name + " native call"))
+        for name, path in paths
     }
     if not _matches_registered_state(
         {name: patched[path] for name, path in paths}, specs, "patched"

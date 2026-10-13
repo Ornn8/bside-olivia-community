@@ -5172,8 +5172,8 @@ async def route(
                 "allowed_scopes": ["current", "legacy"],
             })
         letters = _letter_collection(scope)
-        from original_client_letter_contract import _photo_pending
-        unread = sum(1 for letter in letters if not letter.get("is_read") and not _photo_pending(letter))
+        from original_client_letter_contract import is_unread_reply
+        unread = sum(1 for letter in letters if is_unread_reply(letter))
         return ok({
             "unread_count": unread,
             "scope": scope,

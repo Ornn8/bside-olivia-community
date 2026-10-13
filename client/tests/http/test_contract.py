@@ -11,10 +11,11 @@ from pathlib import Path
 
 import pytest
 
-
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+from llm_gateway import Gateway, GatewayError, GatewayResponse, ProviderTimeout, ProviderUnavailable
 
 
 def _assert_memory_outbox_runtime_schema(payload: dict[str, object]) -> None:
@@ -37,6 +38,26 @@ def reset_local_store():
     local_server.store.legacy_letters.clear()
     local_server.store.midi_jobs.clear()
     local_server.store.request_keys.clear()
+
+
+def _mock_reply_gateway(monkeypatch, reply):
+    import local_server
+
+    class SyntheticGateway(Gateway):
+        calls = 0
+
+        async def complete(self, messages, *, request_id=None):
+            # Optional selectors remain unavailable, as in an unconfigured test install.
+            if not str(request_id).startswith("letter-reply:"):
+                raise ProviderUnavailable()
+            self.calls += 1
+            content = next(message["content"] for message in reversed(messages) if message["role"] == "user")
+            text = await asyncio.to_thread(reply, content, request_id=request_id)
+            return GatewayResponse(text=text, request_id=request_id, provider="mock", model="mock")
+
+    gateway = SyntheticGateway()
+    monkeypatch.setattr(local_server.letters_adapter, "gateway", gateway)
+    return gateway
 
 
 def _post_current_letter(local_server, content: str) -> tuple[int, dict]:
@@ -1065,11 +1086,7 @@ def test_letter_gateway_preserves_durable_request_id_to_provider(
 def test_normal_send_list_and_detail_preserve_legacy_fields(monkeypatch: pytest.MonkeyPatch) -> None:
     import local_server
 
-    monkeypatch.setattr(
-        local_server.letters_adapter,
-        "reply",
-        lambda *_args, **_kwargs: "synthetic reply",
-    )
+    gateway = _mock_reply_gateway(monkeypatch, lambda *_args, **_kwargs: "synthetic reply")
     sent = asyncio.run(
         local_server.route(
             "POST",
@@ -1085,6 +1102,7 @@ def test_normal_send_list_and_detail_preserve_legacy_fields(monkeypatch: pytest.
     )
 
     assert sent["code"] == 0
+    assert gateway.calls == 1
     assert sent["data"]["letterId"] == letter_id
     assert listed["data"]["list"][0]["letter_id"] == letter_id
     assert detail["data"]["content"] == "synthetic input"
@@ -1100,11 +1118,7 @@ def test_send_accepts_only_the_110_second_video_music_duration(
 ) -> None:
     import local_server
 
-    monkeypatch.setattr(
-        local_server.letters_adapter,
-        "reply",
-        lambda *_args, **_kwargs: "synthetic reply",
-    )
+    _mock_reply_gateway(monkeypatch, lambda *_args, **_kwargs: "synthetic reply")
 
     rejected = asyncio.run(
         local_server.route(
@@ -1161,7 +1175,7 @@ def test_http_send_acknowledges_before_slow_reply_finishes(
         allow_reply.wait(timeout=2.0)
         return "synthetic delayed reply"
 
-    monkeypatch.setattr(local_server.letters_adapter, "reply", slow_reply)
+    _mock_reply_gateway(monkeypatch, slow_reply)
 
     async def exercise() -> tuple[dict, dict, dict]:
         app = web.Application()
@@ -1220,7 +1234,7 @@ def test_http_rejects_a_new_letter_until_the_current_reply_is_delivered(
         allow_reply.wait(timeout=2.0)
         return "synthetic delayed reply"
 
-    monkeypatch.setattr(local_server.letters_adapter, "reply", slow_reply)
+    _mock_reply_gateway(monkeypatch, slow_reply)
     monkeypatch.setenv("OLIVIA_REPLY_DELAY_ENABLED", "1")
     monkeypatch.setenv("OLIVIA_REPLY_DELAY_MINUTES_MIN", "5")
     monkeypatch.setenv("OLIVIA_REPLY_DELAY_MINUTES_MAX", "5")
@@ -1358,7 +1372,7 @@ def test_persisted_pending_reply_resumes_when_http_runtime_starts(
         generated_contents.append(content)
         return "synthetic recovered reply"
 
-    monkeypatch.setattr(local_server.letters_adapter, "reply", recovered_reply)
+    _mock_reply_gateway(monkeypatch, recovered_reply)
     pending = {
         "letter_id": "letter-restart-pending",
         "content": "synthetic persisted input",
@@ -1752,10 +1766,10 @@ def test_failed_idempotent_request_can_retry_with_same_key(
 
     def reply(*_args, **_kwargs):
         if not allow_success:
-            raise local_server.LLMError("LLM_TIMEOUT")
+            raise ProviderTimeout()
         return "synthetic recovered reply"
 
-    monkeypatch.setattr(local_server.letters_adapter, "reply", reply)
+    _mock_reply_gateway(monkeypatch, reply)
     body = {
         "content": "synthetic idempotent retry",
         "material": {"stamp_id": "stamp-a"},
@@ -2229,7 +2243,7 @@ def test_llm_failure_can_be_retried_through_the_resend_route(
         pytest.fail("LLM failure must not grant memory retries")
     monkeypatch.setattr(local_server, "retry_exhausted_conversation_memory", unexpected_memory_retry)
     outcomes: list[str | Exception] = [
-        local_server.LLMError("LLM_TIMEOUT"),
+        ProviderTimeout(),
         "synthetic successful resend",
     ]
 
@@ -2239,7 +2253,7 @@ def test_llm_failure_can_be_retried_through_the_resend_route(
             raise outcome
         return outcome
 
-    monkeypatch.setattr(local_server.letters_adapter, "reply", reply)
+    _mock_reply_gateway(monkeypatch, reply)
     failed = asyncio.run(
         local_server.route(
             "POST", "/toy/letter/send", {"content": "synthetic retry input"}, {}
@@ -2280,7 +2294,7 @@ def test_user_can_manually_resend_a_provider_rejected_letter(
 
     monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(tmp_path))
     outcomes: list[str | Exception] = [
-        local_server.LLMError("LLM_PROVIDER_REJECTED"),
+        GatewayError("LLM_PROVIDER_REJECTED", retryable=False),
         "synthetic successful manual resend",
     ]
 
@@ -2290,7 +2304,7 @@ def test_user_can_manually_resend_a_provider_rejected_letter(
             raise outcome
         return outcome
 
-    monkeypatch.setattr(local_server.letters_adapter, "reply", reply)
+    _mock_reply_gateway(monkeypatch, reply)
     failed = asyncio.run(
         local_server.route(
             "POST", "/toy/letter/send", {"content": "synthetic manual retry"}, {}
@@ -2367,7 +2381,7 @@ def test_successful_retry_replaces_recent_failed_copy_in_current_mailbox(
 
     monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(tmp_path))
     outcomes: list[str | Exception] = [
-        local_server.LLMError("LLM_TIMEOUT"),
+        ProviderTimeout(),
         "synthetic successful retry",
     ]
 
@@ -2377,7 +2391,7 @@ def test_successful_retry_replaces_recent_failed_copy_in_current_mailbox(
             raise outcome
         return outcome
 
-    monkeypatch.setattr(local_server.letters_adapter, "reply", reply)
+    _mock_reply_gateway(monkeypatch, reply)
     failed = asyncio.run(
         local_server.route(
             "POST",
@@ -2804,11 +2818,7 @@ def test_request_and_reply_values_never_enter_runtime_logs(
 
     import local_server
 
-    monkeypatch.setattr(
-        local_server.letters_adapter,
-        "reply",
-        lambda *_args, **_kwargs: "synthetic reply secret",
-    )
+    _mock_reply_gateway(monkeypatch, lambda *_args, **_kwargs: "synthetic reply secret")
     capsys.readouterr()
 
     async def exercise():

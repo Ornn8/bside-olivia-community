@@ -94,6 +94,14 @@ def _published(letter: Mapping[str, object], *, now: float | None) -> bool:
     return float(deadline) <= _now_value(now)
 
 
+def is_unread_reply(letter: Mapping[str, object], *, now: float | None = None) -> bool:
+    """Notify only for replies that the same mailbox can already display."""
+    return (
+        not letter.get("is_read", letter.get("isRead", 1))
+        and _published(letter, now=now)
+    )
+
+
 def _photo_pending(letter: Mapping[str, object]) -> bool:
     # An optional attachment must not hide already-completed text or speech.
     # Keep a requested image's internal scene draft private until its own delivery is ready.
@@ -469,6 +477,7 @@ __all__ = [
     "OriginalClientContractError",
     "OriginalClientLetterStatus",
     "OriginalClientReplyType",
+    "is_unread_reply",
     "serialize_letter_detail",
     "serialize_letter_list",
     "serialize_letter_summary",
