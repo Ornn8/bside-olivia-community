@@ -395,6 +395,8 @@ class DailyLifeStore:
             initialize_episodes(db)
             from .project_timing import initialize as initialize_project_timing
             initialize_project_timing(db)
+            from .day_schedule import initialize as initialize_schedule
+            initialize_schedule(db)
 
     @contextmanager
     def _db(self):
@@ -494,7 +496,7 @@ class DailyLifeStore:
             shift = previous + max(-15, min(15, target - previous))
             db.execute('INSERT INTO life_routine_days VALUES (?,?)', (day.isoformat(), shift))
 
-    def publish_day(self, source_id: str, current: dict, projects: list, *, occurred_at: datetime, meals: list | None = None, weather: dict | None = None, activity_kind: str | None = None, development: list | None = None, development_basis: dict | None = None, episode: dict | None = None, project_timing: list | None = None) -> bool:
+    def publish_day(self, source_id: str, current: dict, projects: list, *, occurred_at: datetime, meals: list | None = None, weather: dict | None = None, activity_kind: str | None = None, development: list | None = None, development_basis: dict | None = None, episode: dict | None = None, project_timing: list | None = None, valid_until: datetime | None = None) -> bool:
         _identifier(source_id)
         stamp = _time(occurred_at)
         if activity_kind is not None and activity_kind not in _ACTIVITY_KINDS:
@@ -584,6 +586,9 @@ class DailyLifeStore:
             if activity_kind is not None:
                 current["activity_kind"] = activity_kind
             current['meals'] = checked_meals
+            if valid_until is not None:
+                # A block of the day's schedule holds until its own end, not for a fixed cadence.
+                current['valid_until'] = _time(valid_until)
             if weather:
                 current['weather'] = weather
             db.execute("INSERT INTO life_moments VALUES (?,?,?,?)", (source_id, stamp, "daily", _json(current)))
@@ -601,6 +606,22 @@ class DailyLifeStore:
             record_world(db, occurred_at, development, development_basis)
             self._set_current(db, current)
         return True
+
+    def record_world_development(self, development: list, basis: dict, *, now: datetime) -> None:
+        """The batch appraisal of earlier published activities, bound to the sources it was asked about."""
+        from .character_development import record_world
+        _time(now)
+        with self._db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            record_world(db, now, development, basis)
+
+    def record_project_timing(self, timings: list, *, now: datetime) -> None:
+        """Time-scope readings of her own projects, checked against the projects as they stand."""
+        from .project_timing import validate
+        with self._db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            for timing in validate(timings, {'projects': self._projects_at(db, now)}):
+                db.execute('INSERT OR IGNORE INTO life_project_timing VALUES (?,?)', (timing['version'], _json(timing)))
 
     @staticmethod
     def _set_current(db, current):
@@ -1530,14 +1551,19 @@ class DailyLifeStore:
                 'last_observed_at': latest_activity.get('last_recorded_at', latest_activity['occurred_at']),
                 'record_count': latest_activity.get('record_count', 1),
                 'meaning': '这些时刻已记录休息，不证明之间持续睡眠；本次恢复仍由新过程判断。'}
+        if current and current.get('valid_until'):
+            # A scheduled block lasts until its own end; the cadence rules below are for moments without one.
+            lapsed = now >= datetime.fromisoformat(current['valid_until'])
+        else:
+            lapsed = bool(current) and (class_changed or meal_boundary or meal_finished or now - datetime.fromisoformat(current["occurred_at"]) >= _activity_refresh_delay(
+                current, repeats=_same_activity_repeats(db, current, now),
+                idle=_user_idle(exchanges, now)))
         return {
             "schema_version": "olivia.daily-life.v1", "status": "READY",
             "current": current,
             "world": world,
             "rhythm": body,
-            "stale": (body.get('authored_sleep') or {}).get('status') == 'due' or current is None or class_changed or meal_boundary or meal_finished or now - datetime.fromisoformat(current["occurred_at"]) >= _activity_refresh_delay(
-                current, repeats=_same_activity_repeats(db, current, now),
-                idle=_user_idle(exchanges, now)),
+            "stale": (body.get('authored_sleep') or {}).get('status') == 'due' or current is None or lapsed,
             "projects": [p for p in projects if p["kind"] == "linli"][:6],
             "shared": [p for p in projects if p["kind"] == "shared"][:6],
             "moments": self._moments(rows),

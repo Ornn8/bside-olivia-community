@@ -363,3 +363,17 @@ async def create(port, source_id, now, kind, context, *, meal=None):
         actor='character',activity_kind=kind,trigger=dict(kind=answers['trigger'],detail=triggers[answers['trigger']]),
         **paths[answers['path']],interpretation=dict(subjective=True,**interpretations[answers['interpretation']]),
         effects=selected_effects)
+
+
+class _PlainCourse:
+    """Answers for a routine act whose course nothing needs to choose."""
+
+    async def ask(self, state, questions, *, purpose):
+        paths = state['paths']
+        path = next((key for key, value in paths.items() if value['result']['status'] == 'completed'), next(iter(paths)))
+        return {'trigger': next(iter(questions['trigger']['criteria'])), 'experience': f'{path}:ordinary:none'}
+
+
+async def plain_episode(source_id, now, kind, context):
+    """The record the store requires for a bath or a shopping trip, without asking a model."""
+    return await create(_PlainCourse(), source_id, now, kind, context)
