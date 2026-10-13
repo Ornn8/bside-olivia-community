@@ -3417,7 +3417,8 @@ def _proactive_gate_reason():
             if reasons:
                 return {'pending_reply': 'in_flight', 'user_waiting': 'wait_user',
                         'cooldown': 'not_due', 'unanswered_limit': 'unanswered_wait',
-                        'sleeping': 'quiet_hours', 'quiet_hours': 'quiet_hours'}.get(reasons[0], 'in_flight')
+                        'sleeping': 'quiet_hours', 'quiet_hours': 'quiet_hours',
+                        'busy': 'busy', 'bathing': 'bathing', 'class': 'class'}.get(reasons[0], 'in_flight')
         elif _current_life_rhythm().get('availability') != 'open':
             return 'quiet_hours'
     except (OSError, RuntimeError, ValueError, TypeError, KeyError, sqlite3.Error):

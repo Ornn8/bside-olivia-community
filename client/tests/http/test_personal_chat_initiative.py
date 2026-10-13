@@ -201,11 +201,21 @@ def test_reconnected_channel_restores_initiative_after_one_interval():
     assert policy.target == (first, 'sender')  # a live target is never replaced by a reconnect
 
 
-def test_failed_turn_quiets_initiative_for_hours_not_until_the_user_writes():
+def test_failed_turn_quiets_initiative_briefly_not_for_hours():
     now = datetime(2026, 9, 19, 12, tzinfo=LOCAL).timestamp()
     rows = [dict(letter_id='asked', delivery_status='FAILED', generation_attempts=2, created_at=now - 60)]
     policy = Initiative(rows, clock=lambda: now, interval=lambda: 0)
     policy.received(PersonalMessage('qq', 'bot', 'owner', 'asked', 'hi'), None)
     assert not policy.ready()  # she does not change the subject right after a failed request
-    rows[0]['created_at'] = now - 7 * 3600
-    assert policy.ready()      # hours later the failure no longer silences her
+    rows[0]['created_at'] = now - 31 * 60
+    assert policy.ready()      # half an hour later the failure no longer silences her
+
+
+def test_replies_that_keep_failing_do_not_freeze_initiative():
+    now = datetime(2026, 9, 19, 12, tzinfo=LOCAL).timestamp()
+    # Every user message of the afternoon failed; the last one 31 minutes ago.
+    rows = [dict(letter_id=f'asked-{n}', delivery_status='FAILED', generation_attempts=2,
+                 created_at=now - 31 * 60 - n * 600) for n in range(12)][::-1]
+    policy = Initiative(rows, clock=lambda: now, interval=lambda: 0)
+    policy.received(PersonalMessage('qq', 'bot', 'owner', 'asked-0', 'hi'), None)
+    assert policy.ready()
