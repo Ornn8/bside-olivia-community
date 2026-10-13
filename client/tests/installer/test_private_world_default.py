@@ -33,6 +33,9 @@ def test_start_local_configures_private_world_under_install_data(
     monkeypatch.setattr(start_local, "_client_executable", lambda _root: client)
     monkeypatch.setattr(start_local, "_repair_local_login", lambda _root: "ALREADY_APPLIED")
     monkeypatch.setattr(
+        start_local, "_repair_native_navigation", lambda _root: "ALREADY_PATCHED"
+    )
+    monkeypatch.setattr(
         start_local,
         "_repair_client_frontend",
         lambda _root, _port: "ALREADY_PATCHED",

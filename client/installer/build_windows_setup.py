@@ -177,6 +177,7 @@ RELEASE_INSTALLER_FILES = {
     "installer/pip_runtime.py",
     "installer/activate_private_video.py",
     "installer/patch_native_navigation.py",
+    "installer/patch_native_mail.py",
     "installer/patch_native_splash.py",
     "installer/mem0-capability-manifest.json",
     "installer/mem0-runtime-artifacts.json",

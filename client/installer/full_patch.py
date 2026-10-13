@@ -147,6 +147,7 @@ PAYLOAD_REQUIRED_ROOT_FILES = {
     "video_capability_install.py",
 }
 PAYLOAD_REQUIRED_RELATIVE_FILES = {
+    "runtime/personal_chat/_patch_desktop_mail.py",
     "runtime/piano.py",
     "runtime/piano_collection.py",
     "runtime/native_piano.py",
@@ -193,6 +194,7 @@ PAYLOAD_REQUIRED_RELATIVE_FILES = {
     "control_center/runtime.py",
     "installer/version_launcher.py",
     "installer/patch_native_user_settings.py",
+    "installer/patch_native_mail.py",
     "installer/patch_native_splash.py",
     "installer/start_hidden.vbs.txt",
     "installer/startup_animation.ps1",

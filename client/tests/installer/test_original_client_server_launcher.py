@@ -28,6 +28,8 @@ LOCAL_LOGIN_LEGACY = LOCAL_LOGIN_ORIGINAL.replace(bytes.fromhex("0f 84 e8 01 00 
 
 @pytest.fixture(autouse=True)
 def synthetic_local_login_profile(monkeypatch):
+    # Native DLL behavior has its own exact-hash and transactional tests.
+    monkeypatch.setattr(start_local, "patch_native_mail", lambda *a, **kw: {"status": "ALREADY_PATCHED"}, raising=False)
     monkeypatch.setattr(patch_local_login, "_SIZE_BYTES", len(LOCAL_LOGIN_ORIGINAL))
     monkeypatch.setattr(patch_local_login, "_OFFSET", LOCAL_LOGIN_ORIGINAL.index(bytes.fromhex("74 5b")))
     monkeypatch.setattr(patch_local_login, "_ORIGINAL_SHA256", hashlib.sha256(LOCAL_LOGIN_ORIGINAL).hexdigest())
@@ -151,22 +153,24 @@ def test_launcher_rejects_missing_frontend_archive(tmp_path: Path) -> None:
     assert error.value.code == "COMPANION_ARCHIVE_NOT_FOUND"
 
 
-def test_launcher_applies_installed_native_navigation_manifest(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("legacy_manifest", [False, True])
+def test_launcher_repairs_native_mail_without_private_frontend_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, legacy_manifest: bool,
 ) -> None:
     root = _installation(tmp_path, client_version="0.0.9.627")
     manifest = (
         root
         / "local_backend"
         / "installer"
-        / start_local.COMPATIBILITY_MANIFEST_NAME
+        / "native-navigation-compatibility.json"
     )
-    manifest.write_text("{}", encoding="utf-8")
+    if legacy_manifest:
+        manifest.write_text("{}", encoding="utf-8")
     calls: list[tuple[Path, Path]] = []
 
     monkeypatch.setattr(
         start_local,
-        "patch_native_navigation",
+        "patch_native_mail",
         lambda client, *, work_root: calls.append((client, work_root))
         or {"status": "PATCHED"},
     )
@@ -175,12 +179,22 @@ def test_launcher_applies_installed_native_navigation_manifest(
     assert calls == [(root / "app" / "0.0.9.627", root)]
 
 
-def test_launcher_skips_native_navigation_without_private_manifest(
-    tmp_path: Path,
+def test_launcher_revalidates_native_mail_even_when_old_backups_exist(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = _installation(tmp_path, client_version="0.0.9.627")
+    client = root / "app/0.0.9.627"
+    for relative in ("resources/feapp.dat", "plugins/Studio/NutStudioUI.dll", "plugins/Container/NutContainerPlugin.dll"):
+        backup = client / (relative + ".native-nav.orig")
+        backup.parent.mkdir(parents=True, exist_ok=True)
+        backup.write_bytes(b"untrusted-backup")
 
-    assert start_local._repair_native_navigation(root) == "NOT_CONFIGURED"
+    def reject(*_args, **_kwargs):
+        raise start_local.NativeNavigationPatchError("NATIVE_NAV_BACKUP_TAMPERED")
+
+    monkeypatch.setattr(start_local, "patch_native_mail", reject)
+    with pytest.raises(start_local.NativeNavigationPatchError, match="BACKUP_TAMPERED"):
+        start_local._repair_native_navigation(root)
 
 
 def test_launcher_loads_user_managed_llm_config_without_exposing_key(tmp_path: Path) -> None:
@@ -908,19 +922,24 @@ def test_fresh_profile_retries_known_first_exit_once(
     assert str(root.resolve()) not in launcher_log
 
 
-def test_launcher_patches_the_isolated_settings_before_each_client_attempt(
+@pytest.mark.parametrize("native_tail", [b"", b"\x01native-appended-record"])
+def test_launcher_preserves_native_widget_preferences_on_each_client_attempt(
     tmp_path: Path,
     monkeypatch,
+    native_tail: bytes,
 ) -> None:
-    calls: list[Path] = []
+    import struct
+    from installer.patch_native_user_settings import FALSE_WIDGET_PAIR
+
     host_roaming = tmp_path / "host-roaming"
     monkeypatch.setenv("APPDATA", str(host_roaming))
-
-    def patch(settings_path: Path):
-        calls.append(settings_path)
-        return SimpleNamespace(status="missing")
-
-    monkeypatch.setattr(start_local, "patch_native_user_settings", patch)
+    relative = Path("miHoYo") / "Olivia-steam" / "store" / "usersettings.dat"
+    source = host_roaming / relative
+    source.parent.mkdir(parents=True)
+    # Native settings are a persistent store, not a fixed widget-pair blob.
+    original = struct.pack("<I", len(FALSE_WIDGET_PAIR)) + FALSE_WIDGET_PAIR
+    original += native_tail + b"\x00" * (4096 - len(original) - len(native_tail))
+    source.write_bytes(original)
 
     root, result, _runs, _events, launcher_log = _run_launcher_with_client_results(
         tmp_path,
@@ -928,41 +947,13 @@ def test_launcher_patches_the_isolated_settings_before_each_client_attempt(
         (0x0E000003, 0),
     )
 
-    expected = (
-        root
-        / "profile"
-        / "Roaming"
-        / "miHoYo"
-        / "Olivia-steam"
-        / "store"
-        / "usersettings.dat"
-    )
+    expected = root / "profile" / "Roaming" / relative
     assert result == 0
-    assert calls == [expected, expected]
-    assert launcher_log.count('"event": "native_settings"') == 2
+    assert expected.read_bytes() == original
+    assert source.read_bytes() == original
+    assert not expected.with_name("usersettings.dat.native-nav.orig").exists()
+    assert '"event": "native_settings"' not in launcher_log
     assert str(expected) not in launcher_log
-
-
-def test_native_settings_failure_is_path_free_and_does_not_block_client(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    def fail(_settings_path: Path):
-        raise start_local.NativeUserSettingsPatchError("USER_SETTINGS_UNSAFE_PATH")
-
-    monkeypatch.setattr(start_local, "patch_native_user_settings", fail)
-
-    root, result, runs, _events, launcher_log = _run_launcher_with_client_results(
-        tmp_path,
-        monkeypatch,
-        (0,),
-        existing_profile=True,
-    )
-
-    assert result == 0
-    assert len(runs) == 1
-    assert '"error_code": "USER_SETTINGS_UNSAFE_PATH"' in launcher_log
-    assert str(root.resolve()) not in launcher_log
 
 
 @pytest.mark.parametrize("existing_profile", [False, True])

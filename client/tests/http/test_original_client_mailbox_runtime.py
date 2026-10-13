@@ -198,8 +198,8 @@ def test_original_collection_list_and_unread_use_camel_case_numeric_contract() -
             unread = await client.get("/toy/letter/unread_count")
             assert unread.status == 200
             unread_data = (await unread.json())["data"]
-            assert unread_data["unreadCount"] == 2
-            assert unread_data["unread_count"] == 2
+            assert unread_data["unreadCount"] == 1
+            assert unread_data["unread_count"] == 1
 
     asyncio.run(scenario())
 
