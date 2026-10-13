@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from llm_gateway import Gateway, GatewayError, GatewayResponse, ProviderTimeout, ProviderUnavailable
+from llm_gateway import Gateway, GatewayResponse, ProviderRejected, ProviderTimeout, ProviderUnavailable
 
 
 def _assert_memory_outbox_runtime_schema(payload: dict[str, object]) -> None:
@@ -2294,7 +2294,7 @@ def test_user_can_manually_resend_a_provider_rejected_letter(
 
     monkeypatch.setenv("OLIVIA_LOCAL_DATA_ROOT", str(tmp_path))
     outcomes: list[str | Exception] = [
-        GatewayError("LLM_PROVIDER_REJECTED", retryable=False),
+        ProviderRejected(400),
         "synthetic successful manual resend",
     ]
 
