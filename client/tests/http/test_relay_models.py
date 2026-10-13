@@ -24,6 +24,8 @@ def test_select_model_keeps_encrypted_key_and_runtime_choice_across_reconnect(
         if baseline_input is not None:
             rows.append({'id': 'claude-sonnet-5-5', 'display_name': 'Claude Sonnet 5.5',
                 'input_multiplier': baseline_input, 'output_multiplier': baseline_output})
+            rows.append({'id': 'gemini-4-argon', 'display_name': 'Gemini 4 Argon',
+                'input_multiplier': baseline_input, 'output_multiplier': baseline_output})
         rows.extend({'id': model, 'display_name': model, 'description': '事情有点绕也没关系，我陪你慢慢想。',
                      'input_multiplier': '4', 'output_multiplier': '8'}
                     for model in ('claude-fable-5-1', 'gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-luna', 'claude-haiku-5-5'))
@@ -51,6 +53,7 @@ def test_select_model_keeps_encrypted_key_and_runtime_choice_across_reconnect(
             rows = {row['id']: row for row in catalog['models']}
             assert 'actual_model' not in rows['qwen3.7-flash']
             assert rows['gpt-6.1-sol']['description'] == '事情有点绕也没关系，我陪你慢慢想。'
+            assert (rows['gemini-4-argon']['input_multiplier'], rows['gemini-4-argon']['output_multiplier']) == ('1.00000', '1.00000')
             for model, expected in [('qwen3.7-flash', expected_default),
                     ('claude-opus-5-5', expected_opus), ('claude-sonnet-5-5', ('1.00000', '1.00000'))]:
                 assert (rows[model]['input_multiplier'], rows[model]['output_multiplier']) == expected
@@ -66,7 +69,7 @@ def test_select_model_keeps_encrypted_key_and_runtime_choice_across_reconnect(
             assert response.status == 200
             assert (await response.json())['selected_model'] == 'claude-opus-5-5'
             assert service._config().model == 'claude-opus-5-5'
-            for model in ('claude-fable-5-1', 'gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-luna', 'claude-haiku-5-5'):
+            for model in ('claude-fable-5-1', 'gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-luna', 'claude-haiku-5-5', 'gemini-4-argon'):
                 response = await client.post('/toy/relay/action', headers=headers,
                                             json={'action': 'select_model', 'model': model})
                 assert response.status == 200
