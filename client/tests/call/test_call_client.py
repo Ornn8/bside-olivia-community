@@ -180,3 +180,12 @@ def test_call_page_script_is_in_the_injected_bootstrap():
     assert BOOTSTRAP_JAVASCRIPT.startswith(JAVASCRIPT)
     assert "getUserMedia({audio: {echoCancellation: true" in JAVASCRIPT
     assert '/toy/call/start' in JAVASCRIPT and 'OLIVIA_GPU_API_KEY' not in JAVASCRIPT
+
+
+def test_page_scripts_invalidate_the_frontend_repair_receipt():
+    # call.2 changed only runtime/call_ui.py and clients kept the call.1 page (2026-10-14).
+    from pathlib import Path
+    from installer.start_local import _frontend_patcher_files
+    source = Path(__file__).resolve().parents[2]
+    names = {path.relative_to(source).as_posix() for path in _frontend_patcher_files(source)}
+    assert {'runtime/call_ui.py', 'runtime/native_piano_ui.py', 'original_client_settings_ui.py'} <= names
