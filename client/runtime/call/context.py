@@ -167,12 +167,19 @@ def world(server, now: datetime) -> tuple[dict, dict]:
     rhythm = snapshot.get('rhythm') or {}
     life = snapshot.get('world') or {}
     facts = {'now': local_now_text(now)}
-    if current.get('activity'):
-        facts['activity'] = current['activity']
-    if current.get('location'):
-        facts['location'] = current['location']
+    if snapshot.get('stale') and current:
+        # An old observation, not what she is doing now (her day has moved on since).
+        at = _local(current.get('occurred_at'))
+        what = '，'.join(t for t in (current.get('activity'), current.get('location'), current.get('note')) if t)
+        if what:
+            facts['last'] = (f'{at:%H:%M} ' if at else '') + what
+    else:
+        if current.get('activity'):
+            facts['activity'] = current['activity']
+        if current.get('location'):
+            facts['location'] = current['location']
     note = rhythm.get('activity') or ''
-    if current.get('note'):
+    if current.get('note') and not snapshot.get('stale'):
         note = (current['note'] + ('；' + note if note else ''))
     if note:
         facts['note'] = note
@@ -195,6 +202,15 @@ def world(server, now: datetime) -> tuple[dict, dict]:
             plans.append(f"{project.get('title', '')}：{project['next_activity']}")
     facts['plans'] = plans[:6]
     return {k: v for k, v in facts.items() if v}, {'rhythm': rhythm, 'current': current, 'schedule': schedule}
+
+
+def concerns(server, now: datetime) -> list[str]:
+    """What is on her mind from recent chats (her emotion state's open concerns), as QQ replies see it."""
+    emotion = getattr(server.daily_life_runtime, 'emotion', None)
+    if emotion is None:
+        return []
+    view = emotion.view(now, read_only=True)
+    return [c['summary'] for c in view.get('concerns') or [] if isinstance(c, dict) and c.get('summary')][:3]
 
 
 def recent_calls(server, now: datetime) -> list[dict]:
@@ -234,6 +250,7 @@ def build(server, backend=None, now: datetime | None = None) -> tuple[dict, str]
         'memories': _optional(lambda: memories(backend), []) if backend is not None else [],
         'recent': _optional(lambda: recent_chat(server), []),
         'calls': _optional(lambda: recent_calls(server, now), []),
+        'concerns': _optional(lambda: concerns(server, now), []),
         'world': facts,
     }
     return {k: v for k, v in context.items() if v}, pickup(state)

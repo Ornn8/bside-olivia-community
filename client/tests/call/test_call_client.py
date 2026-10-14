@@ -264,3 +264,67 @@ def test_the_chosen_model_goes_with_the_ticket_and_config_lists_the_models(monke
     assert status == 200 and sent[-1]['model'] == 'plus' and value['data']['cents_per_minute'] == 80
     status, value = answer(asyncio.run(call_http.call_http(Server(), Request('/toy/call/start', 'POST', {'model': '../x'}))))
     assert status == 400
+
+
+def _life_server(snapshot, concerns=()):
+    emotion = SimpleNamespace(view=lambda now, read_only=False: {'concerns': [{'summary': c} for c in concerns]})
+    return SimpleNamespace(daily_life_runtime=SimpleNamespace(store=SimpleNamespace(snapshot=lambda now: snapshot),
+                                                              emotion=emotion))
+
+
+def test_an_old_observation_is_not_presented_as_what_she_does_now():
+    now = datetime(2026, 10, 14, 10, 0, tzinfo=timezone.utc)  # 18:00 Beijing
+    snapshot = {'stale': True, 'rhythm': {}, 'world': {}, 'projects': [],
+                'current': {'activity': '练琴', 'location': '家里音乐房', 'note': '顺了一些。',
+                            'occurred_at': '2026-10-14T04:20:50+00:00'}}
+    facts, _ = call_context.world(_life_server(snapshot), now)
+    assert 'activity' not in facts and 'location' not in facts
+    assert facts['last'] == '12:20 练琴，家里音乐房，顺了一些。'
+
+
+def test_what_is_on_her_mind_goes_with_the_call():
+    server = _life_server({}, concerns=['对方说最近加班很累', '对方明天面试'])
+    assert call_context.concerns(server, NOW) == ['对方说最近加班很累', '对方明天面试']
+
+
+def test_a_report_the_page_never_got_is_fetched_from_the_cloud(monkeypatch):
+    monkeypatch.setenv('OLIVIA_GPU_API_URL', 'https://api.example.cn')
+    monkeypatch.setenv('OLIVIA_GPU_API_KEY', 'secret')
+    asked = []
+
+    async def cloud(method, path, *, timeout, headers=None, body=None):
+        asked.append((path, headers))
+        if path.endswith('pending0001'):
+            return 404, None
+        return 200, {'type': 'end', 'call_id': 'abcdef123456', 'seconds': 61, 'charge_cents': 41,
+                     'transcript': [{'role': 'her', 'text': '喂？'}], 'notes': {'summary': '打了个招呼。'}}
+    monkeypatch.setattr(call_http, '_cloud_json', cloud)
+    server = Server()
+    status, value = answer(asyncio.run(call_http.call_http(server, Request('/toy/call/recover', 'POST', {'call_id': 'abcdef123456'}))))
+    assert status == 200 and value['data'] == {'saved': True}
+    assert asked[0] == ('/v1/call/report?call_id=abcdef123456', {'Authorization': 'Bearer secret'})
+    assert server.store.calls[0]['call_id'] == 'abcdef123456' and server.store.calls[0]['notes']['summary'] == '打了个招呼。'
+    status, value = answer(asyncio.run(call_http.call_http(server, Request('/toy/call/recover', 'POST', {'call_id': 'pending0001'}))))
+    assert status == 503 and value['data']['error_code'] == 'CALL_REPORT_PENDING'
+
+
+def test_no_proactive_contact_during_a_call_or_right_after_it():
+    server = Server()
+    now = NOW.timestamp()
+    assert call_store.quiet_reason(server, now, 600) is None
+    call_store.mark_active(server, NOW)
+    assert call_store.quiet_reason(server, now + 60, 600) == 'in_call'          # the page is in a call
+    call_store.mark_ended(server)
+    finished(server)                                                          # ended at NOW
+    assert call_store.quiet_reason(server, now + 300, 600) == 'in_call'       # just hung up
+    assert call_store.quiet_reason(server, now + 900, 600) is None
+
+
+def test_finished_calls_reach_her_diary_as_exchanges():
+    from runtime.diary.diary import day_messages
+    server = Server()
+    finished(server)
+    rows = call_store.diary_rows(server)
+    messages = day_messages(rows, (NOW - timedelta(minutes=2)).astimezone(timezone(timedelta(hours=8))).date().isoformat())
+    assert len(messages) == 1 and messages[0]['channel'] == 'call'
+    assert messages[0]['user'].endswith('我今天加班好累') and '辛苦啦' in messages[0]['linli']

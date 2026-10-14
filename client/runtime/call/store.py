@@ -161,6 +161,49 @@ def _memory_rows_v1(row):
                    created_at=when.timestamp(), private_world_occurred_at=when.isoformat())
 
 
+ACTIVE_SECONDS = 7 * 60   # the call page re-reads her world every 5 minutes while a call runs
+
+
+def mark_active(server, now=None):
+    """The call page is in a call (it asked for a ticket or re-read her world)."""
+    server._call_seen_at = (now or _now()).timestamp()
+
+
+def mark_ended(server):
+    server._call_seen_at = 0
+
+
+def quiet_reason(server, now_ts, window):
+    """'in_call' while a call runs or within `window` seconds after one ended: no proactive QQ then."""
+    if now_ts - getattr(server, '_call_seen_at', 0) < ACTIVE_SECONDS:
+        return 'in_call'
+    for row in reversed(_calls(server)):
+        if row.get('missed'):
+            continue
+        try:
+            ended = datetime.fromisoformat(row['ended_at']).timestamp()
+        except (KeyError, TypeError, ValueError):
+            continue
+        if 0 <= now_ts - ended < window:
+            return 'in_call'
+        break
+    return None
+
+
+def diary_rows(server):
+    """Finished calls as diary exchanges: what the user said, what she said, when."""
+    rows = []
+    for row in _calls(server):
+        if row.get('missed') or not row.get('transcript'):
+            continue
+        user = '\n'.join(r['text'] for r in row['transcript'] if r['role'] == 'user')
+        her = '\n'.join(r['text'] for r in row['transcript'] if r['role'] == 'her')
+        minutes = max(1, round((row.get('seconds') or 0) / 60))
+        rows.append({'channel': 'call', 'delivery_status': 'DELIVERED', 'life_received_at': row.get('started_at'),
+                     'content': f'（语音电话，约{minutes}分钟）\n' + user[:2000], 'reply_text': her[:2000]})
+    return rows
+
+
 def recent_context(server, now=None) -> str:
     """A short note appended to QQ observation context; empty when nothing recent happened."""
     from runtime.call.context import local_now_text

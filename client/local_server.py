@@ -3930,7 +3930,8 @@ async def _diary_tick(now=None) -> None:
     if diary_store is None or not diary_store.enabled():
         return
     now = now or datetime.now(timezone.utc)
-    rows = [*store.letters, *store.personal_chats]
+    from runtime.call.store import diary_rows as call_diary_rows
+    rows = [*store.letters, *store.personal_chats, *call_diary_rows(sys.modules[__name__])]
     for day in due_days(diary_store, now)[:2]:
         try:
             stage, videos, outfit = _diary_extras(day)
@@ -3961,7 +3962,8 @@ async def _write_memoirs_once(months) -> None:
     from runtime.private_world.daily_life_runtime import life_persona
     _memoir_state.update(running=True, done=0, failed=0, total=len(months))
     try:
-        rows = [*store.letters, *store.personal_chats]
+        from runtime.call.store import diary_rows as call_diary_rows
+        rows = [*store.letters, *store.personal_chats, *call_diary_rows(sys.modules[__name__])]
         for month in months:
             try:
                 stage, videos, _ = _diary_extras(month + '-01')

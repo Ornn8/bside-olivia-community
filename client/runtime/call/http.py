@@ -4,6 +4,7 @@
     POST /toy/call/start    (X-Olivia-Companion-Action: confirmed) → missed, or a one-time cloud ticket
     GET  /toy/call/world    her world now, for the page to forward when it changes during a call
     POST /toy/call/end      the call's end report → kept, remembered, visible to QQ replies
+    POST /toy/call/recover  {call_id}: fetch the end report from the cloud when the page never got it
 """
 from __future__ import annotations
 
@@ -86,6 +87,8 @@ async def start(server, request):
     if pickup == 'missed':
         await asyncio.to_thread(record_missed, server, 'bathing')
         return {'pickup': 'missed'}
+    from runtime.call.store import mark_active
+    mark_active(server)
     headers = {'Authorization': 'Bearer ' + key, 'X-Olivia-Max-Charge-Cents': str(MAX_CHARGE_CENTS)}
     try:
         status, value = await _cloud_json('POST', '/v1/call/ticket', timeout=TICKET_TIMEOUT, headers=headers,
@@ -100,6 +103,26 @@ async def start(server, request):
             'cents_per_minute': value.get('cents_per_minute')}
 
 
+async def recover(server, body):
+    """The end report kept by the cloud for a call whose page lost its socket (or was closed)."""
+    from runtime.call.store import record_call
+    call_id = body.get('call_id') if isinstance(body, dict) else None
+    if not isinstance(call_id, str) or not 8 <= len(call_id) <= 64 or not call_id.isalnum():
+        raise ValueError('CALL_REQUEST_INVALID')
+    base, key = _cloud()
+    if base is None:
+        raise web.HTTPServiceUnavailable(reason='CALL_ACCOUNT_REQUIRED')
+    try:
+        status, value = await _cloud_json('GET', '/v1/call/report?call_id=' + call_id, timeout=CONFIG_TIMEOUT,
+                                          headers={'Authorization': 'Bearer ' + key})
+    except (ClientError, asyncio.TimeoutError, ValueError):
+        raise web.HTTPServiceUnavailable(reason='CALL_NETWORK')
+    if status != 200 or not isinstance(value, dict) or value.get('call_id') != call_id:
+        raise web.HTTPServiceUnavailable(reason='CALL_REPORT_PENDING')
+    await asyncio.to_thread(record_call, server, value)
+    return {'saved': True}
+
+
 async def call_http(server, request):
     headers = server.CORS_HEADERS(request)
     path, method = request.path.rstrip('/'), request.method
@@ -112,6 +135,8 @@ async def call_http(server, request):
             return reply(await config(server))
         if path == '/toy/call/world' and method == 'GET':
             from runtime.call.context import world
+            from runtime.call.store import mark_active
+            mark_active(server)
             facts, _ = await asyncio.to_thread(world, server, datetime.now(timezone.utc))
             return reply({'world': facts})
         if path == '/toy/call/start' and method == 'POST':
@@ -122,9 +147,14 @@ async def call_http(server, request):
             body = json.loads(await request.text() or '{}')
             if not isinstance(body, dict):
                 return reply('CALL_END_INVALID', 400)
-            from runtime.call.store import record_call
+            from runtime.call.store import mark_ended, record_call
             await asyncio.to_thread(record_call, server, body)
+            mark_ended(server)
             return reply({'saved': True})
+        if path == '/toy/call/recover' and method == 'POST':
+            if request.headers.get('X-Olivia-Companion-Action') != 'confirmed':
+                return reply('COMPANION_CONFIRMATION_REQUIRED', 403)
+            return reply(await recover(server, json.loads(await request.text() or '{}')))
         return reply('NOT_FOUND', 404)
     except web.HTTPException as exc:
         return reply(exc.reason, exc.status)

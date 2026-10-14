@@ -208,12 +208,16 @@ JAVASCRIPT = r'''
       this.pickup = started.pickup;
       ws.onopen = () => ws.send(JSON.stringify({type: 'start', v: 1, ticket: started.ticket}));
       ws.onmessage = e => typeof e.data === 'string' ? this.message(JSON.parse(e.data)) : this.audio(e.data);
-      ws.onclose = () => { if (!this.ended) this.finish(this.startedAt ? '通话已结束' : '没能接通，请稍后再试', null); };
+      ws.onclose = () => {
+        if (!this.ended) this.finish(this.startedAt ? '通话已结束' : '没能接通，请稍后再试', null);
+        if (!this.kept) this.recover();
+      };
     }
 
     message(m) {
       const ui = this.ui;
       if (m.type === 'ready') {
+        this.callId = m.call_id || null;
         this.ringing?.(); this.ringing = null; this.startedAt = Date.now(); ui.card.dataset.state = 'talking';
         ui.mute.hidden = false; this.clock = setInterval(() => this.tick(), 500); this.tick();
         this.capture(); this.worldTimer = setInterval(() => this.world(), 300000);
@@ -297,7 +301,7 @@ JAVASCRIPT = r'''
       clearInterval(this.clock); clearInterval(this.worldTimer);
       this.ringing?.(); this.stream?.getTracks().forEach(t => t.stop());
       this.player?.port.postMessage({clear: true});
-      if (awaitReport) this.reportTimer = setTimeout(() => { try { this.ws?.close(); } catch (_) {} }, 30000);
+      if (awaitReport) this.reportTimer = setTimeout(() => { try { this.ws?.close(); } catch (_) {} this.recover(); }, 30000);
       else { try { this.ws?.close(); } catch (_) {} }
       setTimeout(() => this.context?.close().catch(() => {}), 300);
       const ui = this.ui; ui.card.dataset.state = 'ended'; ui.mute.hidden = true;
@@ -308,7 +312,18 @@ JAVASCRIPT = r'''
       ui.done();
     }
 
+    // The socket is gone without the end report: the cloud keeps it for a day; fetch it so the call
+    // is still remembered (a few tries while the server finishes its notes).
+    async recover(tries = 0) {
+      if (this.kept || this.recovering || !this.callId) return;
+      this.recovering = true;
+      try { await local('/toy/call/recover', {call_id: this.callId}); this.kept = true; }
+      catch (_) { if (tries < 5) setTimeout(() => this.recover(tries + 1), [5000, 15000, 30000, 60000, 120000][tries]); }
+      finally { this.recovering = false; }
+    }
+
     keep(report) {
+      this.kept = true;
       clearTimeout(this.reportTimer);
       if (typeof report.charge_cents === 'number') this.ui.price.textContent = '本次通话 ' + yuan(report.charge_cents);
       if (report.transcript?.length && report.call_id) {
