@@ -377,6 +377,17 @@ def decision_instruction(decision, *, delivery):
     elif delivery == 'letter_image':
         note += ('本轮信件会附带一张图片。写自然的文字回信，回应用户当前来信；'
                  '图片由后续流程制作，不要把绘图提示词当作回信，不声称图片已经生成或发送。')
+    elif delivery in {'qq_image', 'qq_image_voice'}:
+        note += ('本轮会附带一张照片，由后续流程按这次的对话制作，这张照片一定会发出。正文是你此刻对用户说的话：'
+                 '自然地回应用户，可以顺口带一句这张照片（比如刚拍的、给你看看），但不描述绘图细节、不写提示词，'
+                 '不声称照片已经拍好或已经发送，不推辞、不说拍不了或下次再拍。')
+        if delivery == 'qq_image_voice':
+            from runtime.personal_chat.presentation import VOICE_PROSE
+            note += ('QQ本轮默认语音，delivery=voice，text_reason=null，正文就是要说出口的话。只有你自己当前确实不能开口，'
+                     '或必须原样复制的代码、链接、公式才用text，并填写对应text_reason。')
+            note += VOICE_PROSE
+        else:
+            note += '结构化回复的 delivery 使用 text。'
     elif delivery == 'image':
         note += ('本轮交付是一张图片，结构化回复的 delivery 使用 text，仅作为照片规划的内部描述。'
                  '该正文不会作为聊天文字发出；描述符合当前请求的画面，不声称照片已生成或已发送。'

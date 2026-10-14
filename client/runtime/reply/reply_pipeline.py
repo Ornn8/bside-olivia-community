@@ -151,6 +151,8 @@ class PipelineResult:
     companion_decision: dict | None = field(default=None, repr=False)
     companion_timing: str | None = None
     companion_delivery: str | None = None
+    # A QQ photo turn whose reply is a spoken line, with the photo sent after it (2.3.9).
+    photo_with_words: bool = False
     silence_authorized: bool = False
     proactive_decision: dict | None = field(default=None, repr=False)
     decision_rejection_reason: str | None = None
@@ -372,6 +374,7 @@ class ReplyPipeline:
                          and (chat_metadata or {}).get('structured')
                          and not (chat_metadata or {}).get('proactive'))
         companion_decision = companion_timing = companion_delivery = None
+        photo_with_words = False
         decision_note = ''
         proactive_decision = None
         silence_authorized = False
@@ -555,9 +558,15 @@ class ReplyPipeline:
                     # a pending media requirement or a new media permission.
                     companion_timing, companion_delivery = 'now', 'text'
                     reconsidered_silence = True
+                # A photo alone on QQ felt curt (owner 2026-10-14: 只发一张图不说话干巴巴的): she says a line,
+                # and the photo she was asked for follows it.
+                photo_with_words = bool(not degraded and context.mode is ReplyMode.FUTURE_IM and companion_delivery == 'image'
+                                        and (chat_metadata or {}).get('structured')
+                                        and (chat_metadata or {}).get('channel') == 'qq')
                 decision_note = decision_instruction(decision,
                     delivery=('letter_image' if context.mode is ReplyMode.TEXT_LETTER
                               and companion_delivery == 'image' else
+                              ('qq_image_voice' if 'audio_speech' in kinds else 'qq_image') if photo_with_words else
                               # Apply the QQ speech default without changing requested media.
                               'voice_default' if (not degraded and context.mode is ReplyMode.FUTURE_IM and companion_delivery == 'text'
                                                   and (chat_metadata or {}).get('structured')
@@ -966,6 +975,7 @@ class ReplyPipeline:
             companion_decision=companion_decision,
             companion_timing=companion_timing,
             companion_delivery=companion_delivery,
+            photo_with_words=photo_with_words,
             silence_authorized=silence_authorized,
             proactive_decision=proactive_decision,
             decision_dropped_media=decision.get('dropped_media') if envelope is not None else None,
