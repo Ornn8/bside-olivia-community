@@ -3,7 +3,10 @@
 Microphone: 16 kHz PCM16 in 40 ms frames (the end of speech is noticed sooner), with the webview's
 echo cancellation, noise suppression and gain control. Her voice: 24 kHz PCM16 frames prefixed by a 4-byte turn number,
 played through an AudioWorklet queue that is dropped at once when the server says "stop".
+"用手机打" pairs a phone with a QR code: the phone page (bside-moon.cn/call/) dials, this computer builds
+the call (runtime/call/desk.py).
 """
+from runtime.call.qr import JAVASCRIPT as QR_JAVASCRIPT
 
 JAVASCRIPT = r'''
 (() => {
@@ -46,7 +49,19 @@ JAVASCRIPT = r'''
   .olivia-call-actions button[data-kind="dial"]{background:#ddd6c9;border-color:#ddd6c9;color:#18191c}
   .olivia-call-actions button[data-kind="hangup"]{background:#c0473d;border-color:#c0473d;color:#fff}
   .olivia-call-actions button[aria-pressed="true"]{background:#ddd6c9;border-color:#ddd6c9;color:#18191c}
-  .olivia-call-actions button:disabled{opacity:.5;cursor:default}`;
+  .olivia-call-actions button:disabled{opacity:.5;cursor:default}
+  .olivia-call-phone-link{margin:16px 0 0;padding:4px 6px;border:0;background:none;color:#a9a294;font:inherit;font-size:13px;
+    text-decoration:underline;text-underline-offset:3px;cursor:pointer}
+  .olivia-call-phone-link:hover{color:#ddd6c9}
+  .olivia-call-phone-link:focus-visible{outline:2px solid #f3eee4;outline-offset:2px}
+  .olivia-call-phone{display:grid;gap:12px;justify-items:center}
+  .olivia-call-phone p{margin:0;color:#b9bbc0;font-size:13px}
+  .olivia-call-qr{width:200px;height:200px;padding:12px;border-radius:12px;background:#fff;display:flex;align-items:center;justify-content:center}
+  .olivia-call-qr svg{width:100%;height:100%;display:block}
+  .olivia-call-phones{width:100%;display:grid;gap:6px;margin:4px 0 0;padding:0;list-style:none;text-align:left}
+  .olivia-call-phones li{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 12px;border-radius:10px;
+    background:#202125;color:#e3e1dc;font-size:13px}
+  .olivia-call-phones button{border:0;background:none;color:#a9a294;font:inherit;font-size:12px;cursor:pointer;text-decoration:underline}`;
   document.head.append(css);
 
   const WORKLETS = `
@@ -77,6 +92,7 @@ JAVASCRIPT = r'''
       return true}}
   registerProcessor('olivia-mic',Mic);registerProcessor('olivia-player',Player);`;
 
+/*QR*/
   const PHONE = 'M6.6 10.8a15.1 15.1 0 0 0 6.6 6.6l2.2-2.2a1 1 0 0 1 1-.25 11.4 11.4 0 0 0 3.6.57 1 1 0 0 1 1 1V20a1 1 0 0 1-1 1A17 17 0 0 1 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1c0 1.25.2 2.45.57 3.6a1 1 0 0 1-.25 1z';
   const icon = () => { const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.setAttribute('viewBox', '0 0 24 24');
     svg.setAttribute('aria-hidden', 'true'); const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
@@ -167,18 +183,82 @@ JAVASCRIPT = r'''
     const dial = node('button', null, '拨打', actions); dial.type = 'button'; dial.dataset.kind = 'dial';
     const mute = node('button', null, '静音', actions); mute.type = 'button'; mute.hidden = true; mute.setAttribute('aria-pressed', 'false');
     const hang = node('button', null, '取消', actions); hang.type = 'button'; hang.dataset.kind = 'cancel';
+    const toPhone = node('button', 'olivia-call-phone-link', '用手机打', card); toPhone.type = 'button';
+    toPhone.hidden = !config?.phone;
+    toPhone.onclick = () => phonePanel(card);
     let call = null;
     hang.onclick = () => call ? call.hangup() : close();
     mute.onclick = () => { const on = mute.getAttribute('aria-pressed') !== 'true'; mute.setAttribute('aria-pressed', String(on)); call?.mute(on); };
     dial.onclick = async () => {
-      dial.hidden = true; choices.hidden = true; hang.textContent = '挂断'; hang.dataset.kind = 'hangup'; card.dataset.state = 'ringing'; status.textContent = '正在呼叫…';
+      dial.hidden = true; choices.hidden = true; toPhone.hidden = true; hang.textContent = '挂断'; hang.dataset.kind = 'hangup'; card.dataset.state = 'ringing'; status.textContent = '正在呼叫…';
       call = new Call({status, caption, orb, card, mute, hang, price, model: model?.id, done: () => { call = null; }});
       await call.start();
     };
     dial.focus();
   }
 
-  function close() { overlay?.remove(); overlay = null; }
+  function close() { clearInterval(phoneTimer); overlay?.remove(); overlay = null; }
+
+  // 用手机打: a one-time QR link pairs the phone; afterwards the phone page calls her while this
+  // computer builds each call. The list shows the paired phones and lets the user unpair them.
+  let phoneTimer = null;
+  function qrSvg(text) {
+    const grid = qrMatrix(text), n = grid.length + 8;
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', `0 0 ${n} ${n}`); svg.setAttribute('shape-rendering', 'crispEdges');
+    svg.setAttribute('role', 'img'); svg.setAttribute('aria-label', '配对二维码');
+    let d = '';
+    grid.forEach((row, y) => row.forEach((dark, x) => { if (dark) d += `M${x + 4} ${y + 4}h1v1h-1z`; }));
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', d); path.setAttribute('fill', '#111'); svg.append(path);
+    return svg;
+  }
+  function phonePanel(card) {
+    const shown = [...card.children];
+    shown.forEach(el => { el.dataset.wasHidden = el.hidden ? '1' : ''; el.hidden = true; });
+    const panel = node('div', 'olivia-call-phone', null, card);
+    node('p', 'olivia-call-title', '用手机打', panel);
+    const intro = node('p', null, '用手机相机扫这个二维码，打开的页面就能给她打电话。电脑上的 Olivia 需要开着，她的记忆和今天的生活都从这里读取。', panel);
+    const box = node('div', 'olivia-call-qr', null, panel);
+    const hint = node('p', null, '正在生成二维码…', panel); hint.setAttribute('role', 'status');
+    const list = node('ul', 'olivia-call-phones', null, panel);
+    const back = node('button', null, '返回', node('div', 'olivia-call-actions', null, panel)); back.type = 'button';
+    let known = null;
+    const draw = phones => {
+      list.replaceChildren();
+      for (const phone of phones) {
+        const li = node('li', null, null, list);
+        const when = phone.created ? new Date(phone.created * 1000).toLocaleDateString('zh-CN', {month: 'long', day: 'numeric'}) : '';
+        node('span', null, `${phone.label || '手机'}${when ? '（' + when + '配对）' : ''}`, li);
+        const off = node('button', null, '解除配对', li); off.type = 'button';
+        off.onclick = async () => {
+          off.disabled = true;
+          try { await local('/toy/call/phone/unpair', {id: phone.id}); await refresh(); } catch (_) { off.disabled = false; }
+        };
+      }
+    };
+    const refresh = async () => {
+      if (!overlay || !panel.isConnected) return clearInterval(phoneTimer);
+      let value;
+      try { value = await local('/toy/call/phones'); } catch (_) { return; }
+      const phones = value.phones || [];
+      if (known !== null && phones.length > known) { hint.textContent = '配对成功，现在可以在手机上给她打电话了。'; box.hidden = true; intro.hidden = true; }
+      known = phones.length; draw(phones);
+    };
+    const pair = async () => {
+      try {
+        const value = await local('/toy/call/phone/pair', {});
+        box.replaceChildren(qrSvg(value.url));
+        hint.textContent = '二维码 10 分钟内有效，只能用一次。以后从手机桌面图标直接打（扫码后按页面提示添加到主屏幕）。';
+      } catch (e) { hint.textContent = MESSAGES[e.message] || '暂时没能生成二维码，请稍后再试。'; box.hidden = true; }
+    };
+    back.onclick = () => {
+      clearInterval(phoneTimer); panel.remove();
+      shown.forEach(el => { el.hidden = el.dataset.wasHidden === '1'; delete el.dataset.wasHidden; });
+    };
+    pair(); refresh(); clearInterval(phoneTimer); phoneTimer = setInterval(refresh, 3000);
+    back.focus();
+  }
 
   class Call {
     constructor(ui) {
@@ -380,4 +460,4 @@ JAVASCRIPT = r'''
   }
   boot();
 })();
-'''
+'''.replace('/*QR*/', QR_JAVASCRIPT)

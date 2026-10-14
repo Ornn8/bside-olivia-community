@@ -5,6 +5,9 @@
     GET  /toy/call/world    her world now, for the page to forward when it changes during a call
     POST /toy/call/end      the call's end report → kept, remembered, visible to QQ replies
     POST /toy/call/recover  {call_id}: fetch the end report from the cloud when the page never got it
+    POST /toy/call/phone/pair     (confirmed) → a one-time link for the phone call page (QR code)
+    GET  /toy/call/phones         the paired phones; opens the phone line (runtime/call/desk.py) once one is
+    POST /toy/call/phone/unpair   (confirmed) {id}: unpair one phone ("all": every phone)
 """
 from __future__ import annotations
 
@@ -58,7 +61,7 @@ async def config(server):
     models = [{key: m.get(key) for key in ('id', 'cents_per_minute', 'base_cents_per_minute', 'busy_cents_per_minute')}
               for m in value.get('models') or [] if isinstance(m, dict) and isinstance(m.get('id'), str)
               and type(m.get('cents_per_minute')) is int]
-    return {'available': bool(value.get('available')) and type(price) is int,
+    return {'available': bool(value.get('available')) and type(price) is int, 'phone': value.get('phone') is True,
             'cents_per_minute': price if type(price) is int else None,
             'base_cents_per_minute': value.get('base_cents_per_minute'),
             'busy_cents_per_minute': value.get('busy_cents_per_minute'),
@@ -125,6 +128,56 @@ async def recover(server, body):
     return {'saved': True}
 
 
+async def pair_phone(server):
+    base, key = _cloud()
+    if base is None:
+        raise web.HTTPServiceUnavailable(reason='CALL_ACCOUNT_REQUIRED')
+    try:
+        status, value = await _cloud_json('POST', '/v1/call/pair', timeout=CONFIG_TIMEOUT,
+                                          headers={'Authorization': 'Bearer ' + key})
+    except (ClientError, asyncio.TimeoutError, ValueError):
+        raise web.HTTPServiceUnavailable(reason='CALL_NETWORK')
+    if status != 200 or not isinstance(value, dict) or not str(value.get('url', '')).startswith('https://'):
+        raise web.HTTPServiceUnavailable(reason='CALL_AUTH_FAILED' if status == 401 else 'CALL_UNAVAILABLE')
+    return {'url': value['url'], 'expires_in': value.get('expires_in')}
+
+
+async def phones(server, app):
+    from runtime.call import desk
+    base, key = _cloud()
+    if base is None:
+        return {'phones': [], 'line': False}
+    try:
+        status, value = await _cloud_json('GET', '/v1/call/phones', timeout=CONFIG_TIMEOUT,
+                                          headers={'Authorization': 'Bearer ' + key})
+    except (ClientError, asyncio.TimeoutError, ValueError):
+        raise web.HTTPServiceUnavailable(reason='CALL_NETWORK')
+    if status != 200 or not isinstance(value, dict):
+        raise web.HTTPServiceUnavailable(reason='CALL_UNAVAILABLE')
+    listed = [{k: p.get(k) for k in ('id', 'label', 'created', 'used')} for p in value.get('phones') or []
+              if isinstance(p, dict) and isinstance(p.get('id'), str)]
+    if listed and not desk.running():
+        desk.start(server, app)
+    return {'phones': listed, 'line': bool(listed) and desk.running()}
+
+
+async def unpair_phone(server, body):
+    phone_id = body.get('id') if isinstance(body, dict) else None
+    if not isinstance(phone_id, str) or not (phone_id == 'all' or (len(phone_id) == 12 and phone_id.isalnum())):
+        raise ValueError('CALL_REQUEST_INVALID')
+    base, key = _cloud()
+    if base is None:
+        raise web.HTTPServiceUnavailable(reason='CALL_ACCOUNT_REQUIRED')
+    try:
+        status, _ = await _cloud_json('DELETE', '/v1/call/phones?id=' + phone_id, timeout=CONFIG_TIMEOUT,
+                                      headers={'Authorization': 'Bearer ' + key})
+    except (ClientError, asyncio.TimeoutError, ValueError):
+        raise web.HTTPServiceUnavailable(reason='CALL_NETWORK')
+    if status != 200:
+        raise web.HTTPServiceUnavailable(reason='CALL_UNAVAILABLE')
+    return {'removed': True}
+
+
 def _quiet(read, default):
     try:
         return read()
@@ -175,6 +228,14 @@ async def call_http(server, request):
             text = body.get('text') if isinstance(body, dict) else None
             found = await asyncio.to_thread(lambda: _quiet(lambda: recall(backend, text), []))
             return reply({'memories': found})
+        if path == '/toy/call/phones' and method == 'GET':
+            return reply(await phones(server, request.app))
+        if path in ('/toy/call/phone/pair', '/toy/call/phone/unpair') and method == 'POST':
+            if request.headers.get('X-Olivia-Companion-Action') != 'confirmed':
+                return reply('COMPANION_CONFIRMATION_REQUIRED', 403)
+            if path.endswith('/pair'):
+                return reply(await pair_phone(server))
+            return reply(await unpair_phone(server, json.loads(await request.text() or '{}')))
         if path == '/toy/call/recover' and method == 'POST':
             if request.headers.get('X-Olivia-Companion-Action') != 'confirmed':
                 return reply('COMPANION_CONFIRMATION_REQUIRED', 403)
