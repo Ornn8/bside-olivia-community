@@ -163,3 +163,59 @@ def test_decision_input_leaves_out_oldest_turns_instead_of_failing(monkeypatch):
     assert len(json.dumps({'input': port.turns[0].input}, ensure_ascii=False).encode()) <= JEV_MAX_INPUT_BYTES
     kept = [m['text'][:5] for m in wire[:-1]]
     assert kept and kept[-1].startswith('第11条')  # newest turns stay, oldest go first
+
+
+@pytest.mark.parametrize('photo_ok', [True, False])
+def test_a_qq_photo_turn_says_its_line_then_sends_the_photo(monkeypatch, tmp_path, photo_ok):
+    # 2.3.9 (owner 2026-10-14: 只发一张图不说话干巴巴的): the reply is a spoken line, the photo follows it.
+    async def scenario():
+        rows, sends, commits = [], [], []
+        server = SimpleNamespace(store=SimpleNamespace(personal_chats=rows), _persist_store_state=lambda: None)
+        async def generate(event, row):
+            row.update(companion_decision=image_record(), companion_delivery='image', companion_timing='now',
+                       photo_with_words=True)
+            return '好呀，刚洗完头发，给你拍一张'
+        async def prepare(server, row, send):
+            if photo_ok:
+                row.update(image_status='COMPLETED', prepared_image=str(tmp_path / 'synthetic.png'))
+            else:
+                row.update(image_status='FAILED', image_error_code='GPU_REQUEST_FAILED')
+        async def image_memory(*a): pass
+        monkeypatch.setattr(backend, 'prepare_chat_photo', prepare)
+        monkeypatch.setattr(image_understanding, 'commit_image_memory', image_memory)
+        async def photo(row, send): await backend.deliver_photo(server, row, send)
+        async def commit(row): commits.append(row['reply_text'])
+        class Send:
+            async def __call__(self, text):
+                sends.append(('text', text))
+                return 'text-ack'
+            async def image(self, path):
+                sends.append(('image', path))
+                return 'image-ack'
+        event, send = PersonalMessage('qq', 'b', 'u', '1', '发张照片'), Send()
+        service = PersonalChatService(rows, lambda: None, generate, commit, {'qq': ('b', 'u')}, photo=photo)
+        await service.handle(event, send)
+        if service.photo_tasks:
+            await asyncio.gather(*service.photo_tasks.values())
+        if service.consumer_tasks:
+            await asyncio.gather(*service.consumer_tasks.values())
+        assert sends[0] == ('text', '好呀，刚洗完头发，给你拍一张')
+        assert rows[0]['delivery_status'] == 'DELIVERED'       # the line went out; a lost photo never undoes it
+        if photo_ok:
+            assert [kind for kind, _ in sends] == ['text', 'image']
+        else:
+            assert 'image' not in [kind for kind, _ in sends]
+            assert len(sends) == 2 and sends[1][0] == 'text'   # the photo failure notice
+        assert commits
+    asyncio.run(scenario())
+
+
+def test_the_qq_photo_line_is_written_as_her_own_words():
+    from runtime.reply.companion_runtime import decision_instruction
+    decision = SimpleNamespace(source_ids=(), plan={}, writer_projection=lambda: {'timing': 'now'})
+    voice = decision_instruction(decision, delivery='qq_image_voice')
+    text = decision_instruction(decision, delivery='qq_image')
+    scene = decision_instruction(decision, delivery='image')
+    assert '正文是你此刻对用户说的话' in voice and 'delivery=voice' in voice
+    assert '正文是你此刻对用户说的话' in text and 'delivery 使用 text' in text and 'delivery=voice' not in text
+    assert '仅作为照片规划的内部描述' in scene and '仅作为照片规划的内部描述' not in voice

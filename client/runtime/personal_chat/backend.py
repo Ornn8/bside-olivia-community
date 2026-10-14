@@ -624,11 +624,12 @@ async def _generate_billed(server, event, row):
         if companion is not None:
             await save_companion_decision(companion)
             row.update(companion_timing=getattr(result, 'companion_timing', None),
-                       companion_delivery=getattr(result, 'companion_delivery', None))
+                       companion_delivery=getattr(result, 'companion_delivery', None),
+                       photo_with_words=getattr(result, 'photo_with_words', False) is True)
             row.pop('sticker_id', None)
             row.pop('mailbox_notice_letter_id', None)
         elif result.state is ReplyState.COMPLETED:
-            for key in ('companion_decision', 'companion_timing', 'companion_delivery'):
+            for key in ('companion_decision', 'companion_timing', 'companion_delivery', 'photo_with_words'):
                 row.pop(key, None)
         shadow = getattr(result, 'semantic_shadow_task', None)
         if shadow is not None:
@@ -754,8 +755,10 @@ async def _generate_billed(server, event, row):
             mode = 'voice' if delivery == 'audio_speech' else 'text'
             basis = 'JEV_MEDIA_PLAN'
             from runtime.reply.companion_runtime import media_locked
-            if (delivery == 'text' and event.channel == 'qq' and voice_available
-                    and not media_locked((row.get('companion_decision') or {}).get('plan'))):
+            # The spoken line of a photo turn follows the QQ voice default; the photo stays the requested medium.
+            words = delivery == 'image' and row.get('photo_with_words') is True
+            if ((delivery == 'text' and not media_locked((row.get('companion_decision') or {}).get('plan')) or words)
+                    and event.channel == 'qq' and voice_available):
                 reason = decision['text_reason'] if decision['delivery'] == 'text' else None
                 mode = 'text' if reason else 'voice'
                 basis = reason.upper() if reason else 'QQ_DEFAULT_VOICE'
@@ -947,7 +950,9 @@ async def deliver_photo(server, row, send):
     from runtime.image_reply import prepare
     from runtime.image_understanding import commit_image_memory
     from runtime.image_reply import is_companion_image
-    primary_image = is_companion_image(row)
+    # A photo turn that already said its line (2.3.9) sends its photo like any picture after a reply;
+    # the requested photo is still generated (image_reply marks it requested).
+    primary_image = is_companion_image(row) and row.get('photo_with_words') is not True
     if row.get('delivery_status') != ('MEDIA_PENDING' if primary_image else 'DELIVERED'):
         return
     if row.get('image_delivery_status') in {'SENDING', 'UNKNOWN', 'DELIVERED'}:

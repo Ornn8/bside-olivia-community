@@ -40,7 +40,7 @@ def _clear_draft(row):
                 'letter_until', 'followup_at', 'followup_quote', 'listening_preference', 'requested_format',
                 'presentation_status', 'delivery_basis', 'voice_ready', 'quality_status', 'reviewer_calls', 'rewrite_calls',
                 'mailbox_notice_letter_id', 'decision_rejection_reason', 'semantic_shadow', 'expression_context',
-                'companion_decision', 'companion_timing', 'companion_delivery', 'companion_context_recovery',
+                'companion_decision', 'companion_timing', 'companion_delivery', 'photo_with_words', 'companion_context_recovery',
                 'speech_script', 'speech_intent', 'speech_status', 'speech_delivery_status', 'content_review',
                 'piano_input', 'piano_status', 'piano_delivery_status', 'piano_midi', 'piano_file_notice', 'piano_input_error',
                 'proactive_decision', 'proactive_basis', 'proactive_opportunity', 'generation_failure_notice',
@@ -454,7 +454,7 @@ class PersonalChatService:
                             'letter_invitation', 'initiative_preference', 'pause_until', 'letter_preference',
                             'letter_until', 'followup_at', 'listening_preference', 'requested_format', 'presentation_status',
                             'delivery_basis', 'voice_ready',
-                            'expression_context', 'companion_timing', 'companion_delivery',
+                            'expression_context', 'companion_timing', 'companion_delivery', 'photo_with_words',
                             'voice_prepare_seconds', 'voice_prepare_status', 'voice_prepare_timeout_seconds'):
                     if validated_controls and key in ('initiative_preference', 'pause_until', 'letter_preference',
                                                      'letter_until', 'followup_at', 'listening_preference'):
@@ -557,7 +557,7 @@ class PersonalChatService:
                     updated = await self._refresh_draft(row, event)
                     if updated is not None:
                         return updated
-            if row.get('companion_delivery') == 'image':
+            if row.get('companion_delivery') == 'image' and row.get('photo_with_words') is not True:
                 from runtime.image_reply import is_companion_image
                 if not is_companion_image(row):
                     raise RuntimeError('JEV_PLAN_UNSUPPORTED')
@@ -765,9 +765,11 @@ class PersonalChatService:
                 if callable(self.prepare_photo):
                     await self.prepare_photo(row, send)
                 await self.photo(row, send)
-                if primary_image and row.get('delivery_status') == 'DELIVERED':
-                    self._schedule_commit(row)
-                if primary_image and row.get('image_status') in {'FAILED', 'SKIPPED'}:
+                if primary_image and row.get('photo_with_words') is not True and row.get('delivery_status') == 'DELIVERED':
+                    self._schedule_commit(row)  # a photo turn with words was committed with its line
+                if (primary_image and row.get('image_status') in {'FAILED', 'SKIPPED'}
+                        and row.get('photo_with_words') is not True):
+                    # A photo turn that already said its line stays delivered; the notice below tells the user.
                     row.update(delivery_status='FAILED', letter_status='FAILED',
                                error_code='PERSONAL_CHAT_IMAGE_UNAVAILABLE')
                     await persist_state(self.persist)
