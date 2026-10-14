@@ -7,6 +7,7 @@ played through an AudioWorklet queue that is dropped at once when the server say
 the call (runtime/call/desk.py).
 """
 from runtime.call.qr import JAVASCRIPT as QR_JAVASCRIPT
+from runtime.call_avatar_ui import JAVASCRIPT as AVATAR_JAVASCRIPT
 
 JAVASCRIPT = r'''
 (() => {
@@ -30,6 +31,9 @@ JAVASCRIPT = r'''
     background:radial-gradient(circle at 35% 30%,#efe3cc,#8e7b58 70%,#5e5039);box-shadow:0 0 0 6px rgba(221,214,201,.06);
     transition:transform .12s ease-out}
   .olivia-call-card[data-state="ringing"] .olivia-call-orb{animation:olivia-ring 1.6s ease-in-out infinite}
+  .olivia-call-avatar{display:block;width:100%;aspect-ratio:1;margin:-14px auto 2px}
+  .olivia-call-avatar[hidden]{display:none}
+  .olivia-call-card.has-avatar .olivia-call-orb{display:none}
   @keyframes olivia-ring{0%,100%{transform:scale(1)}50%{transform:scale(1.08)}}
   .olivia-call-title{font-size:20px;font-weight:700;margin:0;color:#f6f4f0}
   .olivia-call-status{min-height:22px;color:#b9bbc0;margin:4px 0 14px;font-variant-numeric:tabular-nums}
@@ -166,11 +170,27 @@ JAVASCRIPT = r'''
     MIC: '没能打开麦克风，请检查麦克风权限和设备。'
   };
 
+  // Her avatar, for accounts that own it, takes the orb's place (files come through this computer's backend).
+  let avatar = null, avatarState = null;
+  async function showAvatar(canvas, card, call) {
+    if (!window.OliviaAvatar) return;
+    try {
+      if (!avatarState?.owned) avatarState = await local('/toy/call/avatar');
+      if (!avatarState.owned || !avatarState.available) return;
+      const made = await window.OliviaAvatar.create(canvas, name => fetch(new URL('/toy/call/avatar/files/' + name, base)));
+      if (!made) return;
+      if (!canvas.isConnected) { made.destroy(); return; }
+      avatar = made; canvas.hidden = false; card.classList.add('has-avatar');
+      call()?.attach(made);
+    } catch (_) {}
+  }
+
   function open() {
     if (overlay) return;
     overlay = node('div', 'olivia-call', null, document.body);
     overlay.setAttribute('role', 'dialog'); overlay.setAttribute('aria-modal', 'true'); overlay.setAttribute('aria-label', '语音通话');
     const card = node('div', 'olivia-call-card', null, overlay); card.dataset.state = 'idle';
+    const face = node('canvas', 'olivia-call-avatar', null, card); face.hidden = true; face.setAttribute('aria-hidden', 'true');
     const orb = node('div', 'olivia-call-orb', null, card);
     node('p', 'olivia-call-title', '语音通话', card);
     const status = node('p', 'olivia-call-status', '', card); status.setAttribute('role', 'status');
@@ -198,17 +218,19 @@ JAVASCRIPT = r'''
     toPhone.hidden = !config?.phone;
     toPhone.onclick = () => phonePanel(card);
     let call = null;
+    showAvatar(face, card, () => call);
     hang.onclick = () => call ? call.hangup() : close();
     mute.onclick = () => { const on = mute.getAttribute('aria-pressed') !== 'true'; mute.setAttribute('aria-pressed', String(on)); call?.mute(on); };
     dial.onclick = async () => {
       dial.hidden = true; choices.hidden = true; toPhone.hidden = true; hang.textContent = '挂断'; hang.dataset.kind = 'hangup'; card.dataset.state = 'ringing'; status.textContent = '正在呼叫…';
       call = new Call({status, caption, orb, card, mute, hang, price, model: model?.id, done: () => { call = null; }});
+      if (avatar) call.attach(avatar);
       await call.start();
     };
     dial.focus();
   }
 
-  function close() { clearInterval(phoneTimer); overlay?.remove(); overlay = null; }
+  function close() { clearInterval(phoneTimer); avatar?.destroy(); avatar = null; overlay?.remove(); overlay = null; }
 
   // 用手机打: a one-time QR link pairs the phone; afterwards the phone page calls her while this
   // computer builds each call. The list shows the paired phones and lets the user unpair them.
@@ -283,6 +305,27 @@ JAVASCRIPT = r'''
     constructor(ui) {
       this.ui = ui; this.transcript = []; this.turn = 0; this.stopped = new Set(); this.ended = false; this.her = '';
       this.herDone = new Set(); this.lastAudioAt = {}; this.drainedAt = {};
+      this.firstAudioAt = {}; this.tones = []; this.avatar = null;
+    }
+
+    // The avatar follows the call: her voice and the microphone through analysers, events and tones.
+    attach(avatar) {
+      this.avatar = avatar;
+      if (this.herMeter) avatar.meter('her', this.herMeter);
+      if (this.micMeter) avatar.meter('user', this.micMeter);
+      if (this.startedAt && !this.ended) { avatar.event('ready'); this.toneTimer = this.toneTimer || setInterval(() => this.toneDue(), 100); }
+    }
+
+    // A tone change takes effect when her voice reaches it (her text runs ahead of her voice).
+    toneDue() {
+      const now = performance.now();
+      this.tones = this.tones.filter(x => {
+        if (this.stopped.has(x.turn)) return false;
+        const start = this.firstAudioAt[x.turn];
+        if (start === undefined) return true;
+        if (now < start + 150 + x.at / 4.5 * 1000) return true;
+        this.avatar?.tone(x.tone); return false;
+      });
     }
 
     async start() {
@@ -296,6 +339,8 @@ JAVASCRIPT = r'''
       this.player = new AudioWorkletNode(this.context, 'olivia-player', {outputChannelCount: [1]});
       this.player.connect(this.context.destination);
       this.player.port.onmessage = e => this.fromPlayer(e.data);
+      this.herMeter = this.context.createAnalyser(); this.herMeter.fftSize = 512; this.player.connect(this.herMeter);
+      this.avatar?.meter('her', this.herMeter);
       this.ringing = this.ring();
       const minimum = new Promise(r => setTimeout(r, 2500));
       let started;
@@ -337,19 +382,23 @@ JAVASCRIPT = r'''
         this.ringing?.(); this.ringing = null; this.startedAt = Date.now(); ui.card.dataset.state = 'talking';
         ui.mute.hidden = false; this.clock = setInterval(() => this.tick(), 500); this.tick();
         this.capture(); this.worldTimer = setInterval(() => this.world(), 300000);
+        if (this.avatar) { this.avatar.event('ready'); this.toneTimer = setInterval(() => this.toneDue(), 100); }
       } else if (m.type === 'user') {
+        this.avatar?.event('user_done');
         this.recall(m.text);
+      } else if (m.type === 'tone') {
+        if (typeof m.tone === 'string' && typeof m.at === 'number' && this.tones.length < 50) this.tones.push(m);
       } else if (m.type === 'her') {
         if (m.turn !== this.turn) { this.turn = m.turn; this.her = ''; }
         if (!this.stopped.has(m.turn)) { this.her += m.delta; ui.caption.textContent = this.her; }
       } else if (m.type === 'stop') {
-        this.stopped.add(m.turn); this.player.port.postMessage({clear: true});
+        this.stopped.add(m.turn); this.player.port.postMessage({clear: true}); this.avatar?.event('stop');
         // The caption keeps only what she said aloud before she was cut off.
         if (typeof m.heard === 'string' && m.turn === this.turn) { this.her = m.heard; ui.caption.textContent = m.heard ? m.heard + '……' : ''; }
       } else if (m.type === 'hush') {
         this.player.port.postMessage({clear: true});   // her filler sound, when the user goes on talking
       } else if (m.type === 'her_done') {
-        this.herDone.add(m.turn);
+        this.herDone.add(m.turn); this.avatar?.event('her_done');
         if ((this.drainedAt[m.turn] || 0) > (this.lastAudioAt[m.turn] || 0)) this.reportPlayed(m.turn);
       } else if (m.type === 'notice' && m.reason === 'limit') {
         ui.status.textContent = '余额快用完了，通话即将结束';
@@ -362,6 +411,7 @@ JAVASCRIPT = r'''
       const view = new DataView(buffer), turn = view.getUint32(0);
       if (this.stopped.has(turn)) return;
       this.lastAudioAt[turn] = performance.now();
+      if (this.firstAudioAt[turn] === undefined) this.firstAudioAt[turn] = this.lastAudioAt[turn];
       const pcm = new Int16Array(buffer, 4), rate = this.context.sampleRate, ratio = 24000 / rate;
       const samples = new Float32Array(Math.floor(pcm.length / ratio));
       for (let i = 0; i < samples.length; i++) {
@@ -399,6 +449,8 @@ JAVASCRIPT = r'''
       this.mic.port.onmessage = e => { if (this.ws?.readyState === 1) this.ws.send(e.data); };
       const sink = this.context.createGain(); sink.gain.value = 0;
       source.connect(this.mic); this.mic.connect(sink); sink.connect(this.context.destination);
+      this.micMeter = this.context.createAnalyser(); this.micMeter.fftSize = 512; source.connect(this.micMeter);
+      this.avatar?.meter('user', this.micMeter);
     }
 
     mute(on) { this.mic?.port.postMessage({muted: on}); }
@@ -428,7 +480,8 @@ JAVASCRIPT = r'''
 
     finish(text, report, awaitReport = false) {
       if (this.ended) return; this.ended = true;
-      clearInterval(this.clock); clearInterval(this.worldTimer);
+      clearInterval(this.clock); clearInterval(this.worldTimer); clearInterval(this.toneTimer);
+      if (this.avatar) { this.avatar.event('end'); this.avatar.meter('her', null); this.avatar.meter('user', null); }
       this.ringing?.(); this.stream?.getTracks().forEach(t => t.stop());
       this.player?.port.postMessage({clear: true});
       if (awaitReport) this.reportTimer = setTimeout(() => { try { this.ws?.close(); } catch (_) {} this.recover(); }, 30000);
@@ -480,3 +533,5 @@ JAVASCRIPT = r'''
   boot();
 })();
 '''.replace('/*QR*/', QR_JAVASCRIPT)
+# The avatar engine defines window.OliviaAvatar before the call page script uses it.
+JAVASCRIPT = AVATAR_JAVASCRIPT + JAVASCRIPT

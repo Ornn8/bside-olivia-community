@@ -8,6 +8,8 @@
     POST /toy/call/phone/pair     (confirmed) → a one-time link for the phone call page (QR code)
     GET  /toy/call/phones         the paired phones; opens the phone line (runtime/call/desk.py) once one is
     POST /toy/call/phone/unpair   (confirmed) {id}: unpair one phone ("all": every phone)
+    GET  /toy/call/avatar         whether this account owns her call avatar (runtime/call_avatar_ui.py)
+    GET  /toy/call/avatar/files/<name>   the avatar's rig, atlas and effects, fetched with the key
 """
 from __future__ import annotations
 
@@ -15,6 +17,7 @@ import asyncio
 from datetime import datetime, timezone
 import json
 import os
+import re
 from urllib.parse import urlsplit
 
 from aiohttp import ClientError, ClientSession, ClientTimeout, TCPConnector, web
@@ -29,6 +32,12 @@ MAX_CHARGE_CENTS = 6000
 CONFIG_TIMEOUT = ClientTimeout(total=12)
 PAIR_TIMEOUT = ClientTimeout(total=15)
 TICKET_TIMEOUT = ClientTimeout(total=12)
+AVATAR_TIMEOUT = ClientTimeout(total=60)
+AVATAR_FILE = re.compile(r'rig\.json|atlas\.(?:webp|png)|fx_[a-z_]{1,20}\.png')
+AVATAR_TYPES = {'json': 'application/json', 'webp': 'image/webp', 'png': 'image/png'}
+AVATAR_MAX_BYTES = 16 * 1024 * 1024
+# The avatar files of the current version, kept in memory: each call page opening reads them again.
+_avatar = {'version': None, 'files': {}}
 
 
 def _cloud():
@@ -185,6 +194,50 @@ async def unpair_phone(server, body):
     return {'removed': True}
 
 
+async def avatar_state(server):
+    base, key = _cloud()
+    if base is None:
+        return {'available': False, 'owned': False}
+    try:
+        status, value = await _cloud_json('GET', '/v1/call/avatar', timeout=CONFIG_TIMEOUT,
+                                          headers={'Authorization': 'Bearer ' + key})
+    except (ClientError, asyncio.TimeoutError, ValueError):
+        return {'available': False, 'owned': False, 'reason': 'network'}
+    if status != 200 or not isinstance(value, dict):
+        return {'available': False, 'owned': False}
+    state = {name: value.get(name) for name in ('available', 'owned', 'for_sale', 'cents', 'version')}
+    if state['version'] != _avatar['version']:
+        _avatar.update(version=state['version'], files={})
+    return state
+
+
+async def avatar_file(name, headers):
+    if not AVATAR_FILE.fullmatch(name):
+        raise web.HTTPNotFound(reason='CALL_AVATAR_FILE')
+    base, key = _cloud()
+    if base is None:
+        raise web.HTTPServiceUnavailable(reason='CALL_ACCOUNT_REQUIRED')
+    body = _avatar['files'].get(name)
+    if body is None:
+        try:
+            async with ClientSession(timeout=AVATAR_TIMEOUT, trust_env=False,
+                                     connector=TCPConnector(ssl=client_tls_context())) as session:
+                async with session.get(base + '/v1/call/avatar/files/' + name,
+                                       headers={'Authorization': 'Bearer ' + key}) as response:
+                    if response.status == 403:
+                        raise web.HTTPForbidden(reason='CALL_AVATAR_NOT_OWNED')
+                    if response.status != 200:
+                        raise web.HTTPServiceUnavailable(reason='CALL_AVATAR_UNAVAILABLE')
+                    body = await response.content.read(AVATAR_MAX_BYTES + 1)
+        except (ClientError, asyncio.TimeoutError):
+            raise web.HTTPServiceUnavailable(reason='CALL_NETWORK')
+        if len(body) > AVATAR_MAX_BYTES:
+            raise web.HTTPServiceUnavailable(reason='CALL_AVATAR_UNAVAILABLE')
+        _avatar['files'][name] = body
+    return web.Response(body=body, content_type=AVATAR_TYPES[name.rsplit('.', 1)[1]],
+                        headers={**headers, 'Cache-Control': 'no-store'})
+
+
 def _quiet(read, default):
     try:
         return read()
@@ -243,6 +296,10 @@ async def call_http(server, request):
             if path.endswith('/pair'):
                 return reply(await pair_phone(server))
             return reply(await unpair_phone(server, json.loads(await request.text() or '{}')))
+        if path == '/toy/call/avatar' and method == 'GET':
+            return reply(await avatar_state(server))
+        if path.startswith('/toy/call/avatar/files/') and method == 'GET':
+            return await avatar_file(path.rsplit('/', 1)[1], headers)
         if path == '/toy/call/recover' and method == 'POST':
             if request.headers.get('X-Olivia-Companion-Action') != 'confirmed':
                 return reply('COMPANION_CONFIRMATION_REQUIRED', 403)
