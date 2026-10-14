@@ -7,6 +7,7 @@ import pytest
 
 from runtime.personal_chat.daily_video import DailyVideoWorker, capture_caption, select_candidate, validate_input
 from runtime.private_world.life_episode import create
+from runtime.private_world.life_rhythm import LOCAL
 from tests.http.test_daily_video import API, NOW, payload, service, world
 
 
@@ -122,14 +123,17 @@ def test_start_requires_authored_episode_and_cannot_start_twice_or_finish_by_clo
         [dict(version=1, certainty='planned', scene_id='bathroom', target_date='2026-10-06', **source)])
     assert not store.daily_video_event_matches(request, now=NOW + timedelta(days=1))
     assert store.daily_video_can_prepare(request, now=NOW + timedelta(days=1))
-    assert store.snapshot(NOW + timedelta(minutes=21))['stale']
+    begin, end = store.bath_window(NOW.astimezone(LOCAL).date())
+    assert not store.snapshot(NOW + (end - begin) - timedelta(seconds=1))['stale']
+    assert store.snapshot(NOW + (end - begin))['stale']
 
 
 def test_existing_world_refresh_can_author_actual_bath_finish_when_observation_expires(tmp_path, monkeypatch):
     from runtime.private_world.daily_life_runtime import DailyLifeRuntime
     store = world(tmp_path)
     publish_bath(store, 'bath_started', 'bath:runtime-start', NOW)
-    due, calls = NOW + timedelta(minutes=20), []
+    begin, end = store.bath_window(NOW.astimezone(LOCAL).date())
+    due, calls = NOW + (end - begin), []  # Reconsidered after tonight's planned 15-30 minutes.
     monkeypatch.setattr('runtime.reply.jev_questions.configured_questions', lambda: EpisodePort())
     async def no_other_duty(*args, **kwargs):
         return None
@@ -154,8 +158,8 @@ def test_evening_world_reconsideration_can_start_a_real_bath_instead_of_only_clo
     from datetime import datetime, timezone
     from runtime.private_world.daily_life_runtime import DailyLifeRuntime
     store = world(tmp_path)
-    earlier = datetime(2026, 10, 6, 14, tzinfo=timezone.utc)  # 22:00 Beijing.
-    now = earlier + timedelta(minutes=90)  # Existing schedule offers bathing at 23:30.
+    now = store.bath_window(datetime(2026, 10, 6, tzinfo=LOCAL).date())[0].astimezone(timezone.utc)  # Tonight's planned bath.
+    earlier = now - timedelta(minutes=90)
     store.publish_day('evening:rest', dict(location='住处', activity='休息', note='安静休息。'),
         [], occurred_at=earlier, activity_kind='rest')
     assert store.snapshot(now)['rhythm']['phase'] == 'bathing'

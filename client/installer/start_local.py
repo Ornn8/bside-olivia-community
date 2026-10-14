@@ -532,18 +532,30 @@ def _load_fixed_video_assets_environment(
     return values
 
 
-def _frontend_patcher_digest() -> str:
-    """Invalidate the repair receipt when UI patch code or bundled assets change."""
+def _frontend_patcher_files(source: Path) -> list[Path]:
+    """Every file whose content ends up in the patched frontend, so a change re-runs the repair.
 
-    source = Path(__file__).resolve().parents[1]
+    The injected page script also pulls in runtime/*_ui.py (the call page, the piano page): an
+    update that changes only one of those must not keep the previous page.
+    """
+
     files = [source / name for name in (
         "installer/start_local.py", "patch_feapp.py", "patch_webplayer.py",
         "patch_companion_settings.py", "original_client_settings_ui.py",
         "installer/patch_letter_stickers.py",
     )]
     files.extend((source / "runtime/personal_chat").glob("*.py"))
+    files.extend((source / "runtime").glob("*_ui.py"))
     files.extend(path for path in (source / "runtime/letter_stickers").iterdir()
                  if path.suffix in {".json", ".js"})
+    return files
+
+
+def _frontend_patcher_digest() -> str:
+    """Invalidate the repair receipt when UI patch code or bundled assets change."""
+
+    source = Path(__file__).resolve().parents[1]
+    files = _frontend_patcher_files(source)
     digest = hashlib.sha256()
     for path in sorted(files):
         digest.update(path.relative_to(source).as_posix().encode("utf-8") + b"\0")
@@ -617,9 +629,14 @@ def _repair_native_navigation(root: Path) -> str:
 
 
 def _client_command(client: Path, local: Path) -> list[str]:
-    """Match the first-party launcher's only client argument."""
+    """The first-party launcher's profile argument, plus microphone access for voice calls.
 
-    return [str(client), f'--user-data-dir={local / "cef"}']
+    CEF denies getUserMedia unless the host grants it; these switches grant it to the
+    client's own local pages (echo cancellation still applies).
+    """
+
+    return [str(client), f'--user-data-dir={local / "cef"}', '--enable-media-stream',
+            '--use-fake-ui-for-media-stream']
 
 
 def _repair_local_login(root: Path) -> str:

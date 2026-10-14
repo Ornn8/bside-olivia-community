@@ -58,6 +58,7 @@ PAYLOAD_EXTRA_DIRS = (
     "runtime/diagnostics",
     "runtime/diary",
     "runtime/improve",
+    "runtime/call",
 )
 PAYLOAD_EXTRA_FILES = (
     "runtime/cloud_policy.py",
@@ -70,6 +71,7 @@ PAYLOAD_EXTRA_FILES = (
     "runtime/piano_collection.py",
     "runtime/native_piano.py",
     "runtime/native_piano_ui.py",
+    "runtime/call_ui.py",
     "runtime/personal_chat/piano.py",
     "runtime/pets.py",
     "runtime/model_policy.py",
@@ -148,6 +150,12 @@ PAYLOAD_REQUIRED_ROOT_FILES = {
 }
 PAYLOAD_REQUIRED_RELATIVE_FILES = {
     "runtime/personal_chat/_patch_desktop_mail.py",
+    "runtime/call_ui.py",
+    "runtime/call/__init__.py",
+    "runtime/call/context.py",
+    "runtime/call/http.py",
+    "runtime/call/life.py",
+    "runtime/call/store.py",
     "runtime/piano.py",
     "runtime/piano_collection.py",
     "runtime/native_piano.py",

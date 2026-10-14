@@ -53,6 +53,17 @@ def relationship_history(store, now=None):
     events = Engagement(window=21 * 86400)._read_events(
         getattr(store, 'letters', []), getattr(store, 'personal_chats', []), now)
     today = datetime.fromtimestamp(now, BEIJING).date()
-    dates = {datetime.fromtimestamp(at, BEIJING).date() for at in events.values()}
+    stamps = list(events.values())
+    # A real conversation on the phone counts as a day they talked, like letters and QQ.
+    for call in getattr(store, 'calls', None) or []:
+        if not isinstance(call, dict) or call.get('missed') or (call.get('seconds') or 0) < 30:
+            continue
+        try:
+            at = datetime.fromisoformat(call['started_at']).timestamp()
+        except (KeyError, TypeError, ValueError):
+            continue
+        if now - 21 * 86400 < at <= now:
+            stamps.append(at)
+    dates = {datetime.fromtimestamp(at, BEIJING).date() for at in stamps}
     return {days: sum(today - timedelta(days=days - 1) <= day <= today for day in dates)
             for days in (14, 21)}

@@ -12,6 +12,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import secrets
 import sqlite3
 from runtime.memory.private_world_relationship import validate_exchange_relationship, validate_boundary_changes
 from runtime.reply.media_delivery import validate_delivery, grouped_delivery_evidence, MEDIA_EVIDENCE_MEANING
@@ -19,7 +20,7 @@ from runtime.reply.media_delivery import validate_delivery, grouped_delivery_evi
 # A reply can change several independent promises; autonomous day planning
 # retains its separate three-project limit.
 MAX_EXCHANGE_UPDATES = 12
-from runtime.private_world.life_rhythm import rhythm, LOCAL
+from runtime.private_world.life_rhythm import bath_window, rhythm, LOCAL
 from statistics import median
 from runtime.private_world.student_world import student_schedule, weather_view
 from runtime.private_world.world_decision import KINDS as _ACTIVITY_KINDS
@@ -58,10 +59,12 @@ _UNCHANGED_BACKOFF_CAP = timedelta(hours=4)
 IDLE_AFTER = timedelta(hours=2)
 
 
-def _activity_refresh_delay(current: dict, *, repeats: int = 0, idle: bool = False) -> timedelta:
+def _activity_refresh_delay(current: dict, *, repeats: int = 0, idle: bool = False, bath_seed: str = '') -> timedelta:
     kind = current.get("activity_kind")
     if kind == 'bath_started':
-        return timedelta(minutes=20)  # Reconsider the actual bath; never finish it by clock.
+        # Reconsider the actual bath after tonight's planned 15-30 minutes; never finish it by clock.
+        begin, end = bath_window(datetime.fromisoformat(current["occurred_at"]).astimezone(LOCAL).date(), bath_seed)
+        return end - begin
     if kind is None and current.get("meals"):
         kind = "meal"  # Older published records already carry structured meals.
     # Reconsider an awake activity at a bounded cadence. This only expires
@@ -381,6 +384,8 @@ class DailyLifeStore:
                 CREATE TABLE IF NOT EXISTS life_baths (
                     source_id TEXT PRIMARY KEY, started_at TEXT NOT NULL,
                     completed_source_id TEXT UNIQUE, completed_at TEXT);
+                CREATE TABLE IF NOT EXISTS life_settings (
+                    key TEXT PRIMARY KEY, value TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS character_development_topics (
                     key TEXT PRIMARY KEY, payload TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS character_development_events (
@@ -395,6 +400,12 @@ class DailyLifeStore:
             initialize_episodes(db)
             from .project_timing import initialize as initialize_project_timing
             initialize_project_timing(db)
+            # Drawn once per install; it spreads her evening bath across users.
+            db.execute("INSERT OR IGNORE INTO life_settings VALUES ('bath_seed', ?)", (secrets.token_hex(8),))
+            self.bath_seed = db.execute("SELECT value FROM life_settings WHERE key='bath_seed'").fetchone()[0]
+
+    def bath_window(self, day) -> tuple[datetime, datetime]:
+        return bath_window(day, self.bath_seed)
 
     @contextmanager
     def _db(self):
@@ -454,7 +465,7 @@ class DailyLifeStore:
         """At most 15 minutes per active day, from >=3 distinct evening dates.
 
         This learns availability, not an assertion about the user's bedtime.
-        A new plan starts at the next bedtime window, never during its bath.
+        A new plan starts at the next bedtime window, never in the last half hour before it.
         """
         _time(now)
         affinity = max(0.0, min(1.0, float(affinity)))
@@ -463,8 +474,8 @@ class DailyLifeStore:
             db.execute('BEGIN IMMEDIATE')
             day = local.date()
             active = db.execute('SELECT shift_minutes FROM life_routine_days WHERE day<=? ORDER BY day DESC LIMIT 1', (day.isoformat(),)).fetchone()
-            bath_start = datetime.combine(day, datetime.min.time(), tzinfo=LOCAL) + timedelta(hours=23, minutes=30 + (active[0] if active else 0))
-            if local >= bath_start:
+            settling = datetime.combine(day, datetime.min.time(), tzinfo=LOCAL) + timedelta(hours=23, minutes=30 + (active[0] if active else 0))
+            if local >= settling:
                 day += timedelta(days=1)
             if db.execute('SELECT 1 FROM life_routine_days WHERE day=?', (day.isoformat(),)).fetchone():
                 return
@@ -1508,7 +1519,7 @@ class DailyLifeStore:
         meal_finished = bool(current and current['source_id'].startswith('meal:') and any(
             m['status'] == 'eaten' and m.get('started_at') == current['occurred_at'] for m in world['meals']))
         from .life_rhythm import with_recovery
-        body = rhythm(now, exchanges, shifts)
+        body = rhythm(now, exchanges, shifts, bath_seed=self.bath_seed)
         recovery_episodes = [json.loads(row[0]) for row in db.execute(
             """SELECT payload FROM life_episodes WHERE occurred_at>=? AND occurred_at<=?
                AND (json_type(payload,'$.effects.body_recovery')='object'
@@ -1537,7 +1548,7 @@ class DailyLifeStore:
             "rhythm": body,
             "stale": (body.get('authored_sleep') or {}).get('status') == 'due' or current is None or class_changed or meal_boundary or meal_finished or now - datetime.fromisoformat(current["occurred_at"]) >= _activity_refresh_delay(
                 current, repeats=_same_activity_repeats(db, current, now),
-                idle=_user_idle(exchanges, now)),
+                idle=_user_idle(exchanges, now), bath_seed=self.bath_seed),
             "projects": [p for p in projects if p["kind"] == "linli"][:6],
             "shared": [p for p in projects if p["kind"] == "shared"][:6],
             "moments": self._moments(rows),

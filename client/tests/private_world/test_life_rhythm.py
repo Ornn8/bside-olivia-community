@@ -193,7 +193,7 @@ def test_delayed_bedtime_preserves_sleep_duration_across_midnight():
     shifts = {'2026-09-07': 120}
     midnight = datetime(2026, 9, 7, 16, tzinfo=timezone.utc)
     assert rhythm(midnight, [], shifts)['phase'] == 'quiet'
-    assert rhythm(midnight + timedelta(hours=1, minutes=30), [], shifts)['phase'] == 'bathing'
+    assert rhythm(midnight + timedelta(hours=1, minutes=59), [], shifts)['phase'] == 'quiet'
     assert rhythm(midnight + timedelta(hours=2), [], shifts)['phase'] == 'sleep'
     assert rhythm(midnight + timedelta(hours=8), [], shifts)['phase'] == 'sleep'
     assert rhythm(midnight + timedelta(hours=10, minutes=30), [], shifts)['phase'] == 'breakfast'
