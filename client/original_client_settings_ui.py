@@ -5704,6 +5704,14 @@ BOOTSTRAP_JAVASCRIPT = r'''
 
 from runtime.native_piano_ui import JAVASCRIPT as _PIANO_JAVASCRIPT
 from runtime.call_ui import JAVASCRIPT as _CALL_JAVASCRIPT
-BOOTSTRAP_JAVASCRIPT = _CALL_JAVASCRIPT + _PIANO_JAVASCRIPT + BOOTSTRAP_JAVASCRIPT
+
+
+def _isolated(script: str) -> str:
+    """All page features share one script file: an error in one must not stop the ones after it."""
+
+    return 'try {' + script + '} catch (error) { console.error(error); }\n'
+
+
+BOOTSTRAP_JAVASCRIPT = _isolated(_CALL_JAVASCRIPT) + _isolated(_PIANO_JAVASCRIPT) + BOOTSTRAP_JAVASCRIPT
 
 __all__ = ["BOOTSTRAP_JAVASCRIPT", "SETTINGS_UI_VERSION"]

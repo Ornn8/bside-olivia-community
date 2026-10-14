@@ -272,6 +272,9 @@ JAVASCRIPT = r'''
   }
 
   function boot(tries = 0) {
+    // The page script runs from <head>: <body> does not exist yet (2.3.4+call.1-3 threw here and
+    // took the whole settings page down with it).
+    if (!document.body) { document.addEventListener('DOMContentLoaded', () => boot(tries), {once: true}); return; }
     const marker = document.querySelector('[data-olivia-companion-settings]');
     base = marker && marker.getAttribute('data-api-base');
     if (!base) { if (tries < 60) setTimeout(() => boot(tries + 1), 1000); return; }

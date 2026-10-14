@@ -59,3 +59,46 @@ def test_call_page_script_parses(tmp_path):
     script.write_text(JAVASCRIPT, encoding='utf-8')
     result = subprocess.run(['node', '--check', str(script)], capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stderr
+
+
+PAGE = '''
+const listeners = {};
+const el = tag => ({tag, children: [], attrs: {}, style: {}, dataset: {},
+  append(...c) { this.children.push(...c); }, setAttribute(k, v) { this.attrs[k] = v; },
+  getAttribute(k) { return this.attrs[k]; }, toggleAttribute(k, on) { if (on) this.attrs[k] = ''; else delete this.attrs[k]; }});
+const marker = el('script'); marker.attrs['data-api-base'] = 'http://127.0.0.1:8899/';
+globalThis.window = globalThis;
+globalThis.document = {head: el('head'), body: null, readyState: 'loading', createElement: el,
+  createElementNS: (_, tag) => el(tag), querySelector: s => s === '[data-olivia-companion-settings]' ? marker : null,
+  addEventListener: (name, f) => (listeners[name] = listeners[name] || []).push(f)};
+globalThis.fetch = async () => ({ok: true, json: async () => ({code: 0, data: {available: true}})});
+globalThis.setInterval = () => 0;
+%s
+console.log('AFTER');
+document.body = el('body'); (listeners.DOMContentLoaded || []).forEach(f => f());
+setTimeout(() => {
+  const fab = document.body.children.find(c => c.className === 'olivia-call-fab');
+  console.log(fab && 'data-ready' in fab.attrs ? 'FAB_READY' : 'NO_FAB');
+}, 0);
+'''
+
+
+@pytest.mark.skipif(shutil.which('node') is None, reason='node is not installed')
+def test_page_script_runs_from_head_before_the_body_exists(tmp_path):
+    # The injected script tag sits in <head>; 2.3.4+call.1-3 appended to a null body and the
+    # error stopped the settings page and the piano entry that follow in the same file.
+    from original_client_settings_ui import BOOTSTRAP_JAVASCRIPT, _isolated
+    assert BOOTSTRAP_JAVASCRIPT.startswith(_isolated(JAVASCRIPT))
+    script = tmp_path / 'page.js'
+    script.write_text(PAGE % _isolated(JAVASCRIPT), encoding='utf-8')
+    result = subprocess.run(['node', str(script)], capture_output=True, text=True, timeout=60)
+    assert result.stdout.split() == ['AFTER', 'FAB_READY'], result.stderr
+
+
+@pytest.mark.skipif(shutil.which('node') is None, reason='node is not installed')
+def test_one_failing_page_feature_does_not_stop_the_next(tmp_path):
+    from original_client_settings_ui import _isolated
+    script = tmp_path / 'isolated.js'
+    script.write_text(_isolated('(() => { null.append(1); })();') + "console.log('AFTER');", encoding='utf-8')
+    result = subprocess.run(['node', str(script)], capture_output=True, text=True, timeout=60)
+    assert result.stdout.strip() == 'AFTER', result.stderr

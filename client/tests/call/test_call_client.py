@@ -177,7 +177,7 @@ def test_end_report_is_saved(monkeypatch):
 def test_call_page_script_is_in_the_injected_bootstrap():
     from original_client_settings_ui import BOOTSTRAP_JAVASCRIPT
     from runtime.call_ui import JAVASCRIPT
-    assert BOOTSTRAP_JAVASCRIPT.startswith(JAVASCRIPT)
+    assert JAVASCRIPT in BOOTSTRAP_JAVASCRIPT
     assert "getUserMedia({audio: {echoCancellation: true" in JAVASCRIPT
     assert '/toy/call/start' in JAVASCRIPT and 'OLIVIA_GPU_API_KEY' not in JAVASCRIPT
 
