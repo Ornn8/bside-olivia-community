@@ -154,6 +154,7 @@ PAYLOAD_REQUIRED_RELATIVE_FILES = {
     "runtime/call/__init__.py",
     "runtime/call/context.py",
     "runtime/call/http.py",
+    "runtime/call/life.py",
     "runtime/call/store.py",
     "runtime/piano.py",
     "runtime/piano_collection.py",
