@@ -31,10 +31,10 @@ JAVASCRIPT = r'''
     step(dt) { const a = this.k * this.k * (this.t - this.v) - 2 * this.k * this.vel; this.vel += a * dt; this.v += this.vel * dt; }
   }
 
-  const VS = 'attribute vec2 p;attribute vec2 uv;uniform vec4 fit;varying vec2 v;' +
+  const vertexShader = 'attribute vec2 p;attribute vec2 uv;uniform vec4 fit;varying vec2 v;' +
     'void main(){v=uv;vec2 c=p*fit.xy+fit.zw;gl_Position=vec4(c.x,-c.y,0.,1.);}';
   // cut > 0 only for the eye white: transparent pixels must not stamp the stencil the iris is clipped to.
-  const FS = 'precision mediump float;uniform sampler2D tex;uniform float alpha;uniform float cut;varying vec2 v;' +
+  const fragmentShader = 'precision mediump float;uniform sampler2D tex;uniform float alpha;uniform float cut;varying vec2 v;' +
     'void main(){vec4 c=texture2D(tex,v);if(c.a<cut)discard;gl_FragColor=c*alpha;}';
 
   function texture(gl, image) {
@@ -56,8 +56,8 @@ JAVASCRIPT = r'''
     }
     const url = URL.createObjectURL(blob);
     try {
-      return await new Promise((resolve, reject) => {
-        const img = new Image(); img.onload = () => resolve(img); img.onerror = () => reject(new Error('AVATAR_IMAGE')); img.src = url;
+      return await new Promise((done, fail) => {
+        const img = new Image(); img.onload = () => done(img); img.onerror = () => fail(new Error('AVATAR_IMAGE')); img.src = url;
       });
     } finally { setTimeout(() => URL.revokeObjectURL(url), 1000); }
   }
@@ -144,7 +144,7 @@ JAVASCRIPT = r'''
     compile() {
       const gl = this.gl, sh = (type, src) => { const x = gl.createShader(type); gl.shaderSource(x, src); gl.compileShader(x); return x; };
       const pr = gl.createProgram();
-      gl.attachShader(pr, sh(gl.VERTEX_SHADER, VS)); gl.attachShader(pr, sh(gl.FRAGMENT_SHADER, FS)); gl.linkProgram(pr);
+      gl.attachShader(pr, sh(gl.VERTEX_SHADER, vertexShader)); gl.attachShader(pr, sh(gl.FRAGMENT_SHADER, fragmentShader)); gl.linkProgram(pr);
       if (!gl.getProgramParameter(pr, gl.LINK_STATUS)) throw new Error('AVATAR_SHADER');
       this.loc = {p: gl.getAttribLocation(pr, 'p'), uv: gl.getAttribLocation(pr, 'uv'), fit: gl.getUniformLocation(pr, 'fit'),
         alpha: gl.getUniformLocation(pr, 'alpha'), tex: gl.getUniformLocation(pr, 'tex'), cut: gl.getUniformLocation(pr, 'cut')};
@@ -364,14 +364,14 @@ JAVASCRIPT = r'''
 
     draw() {
       const gl = this.gl, c = this.canvas, dpr = Math.min(2, window.devicePixelRatio || 1);
-      const W = Math.round(c.clientWidth * dpr), H = Math.round(c.clientHeight * dpr);
-      if (c.width !== W || c.height !== H) { c.width = W; c.height = H; }
-      gl.viewport(0, 0, W, H);
+      const width = Math.round(c.clientWidth * dpr), height = Math.round(c.clientHeight * dpr);
+      if (c.width !== width || c.height !== height) { c.width = width; c.height = height; }
+      gl.viewport(0, 0, width, height);
       gl.clearColor(0, 0, 0, 0); gl.clearStencil(0); gl.clear(gl.COLOR_BUFFER_BIT | gl.STENCIL_BUFFER_BIT);
       gl.useProgram(this.program); gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
       // Fit the rig canvas into the element, bottom-centred.
-      const [rw, rh] = this.rig.canvas, scale = Math.min(W / rw, H / rh);
-      const fit = [2 * scale / W, 2 * scale / H, -1 + (W - rw * scale) / W, -1 + 2 * (H - rh * scale) / H];
+      const [rw, rh] = this.rig.canvas, scale = Math.min(width / rw, height / rh);
+      const fit = [2 * scale / width, 2 * scale / height, -1 + (width - rw * scale) / width, -1 + 2 * (height - rh * scale) / height];
       gl.uniform4f(this.loc.fit, fit[0], fit[1], fit[2], fit[3]);
       gl.activeTexture(gl.TEXTURE0); gl.uniform1i(this.loc.tex, 0);
       gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.indexBuffer);
