@@ -381,3 +381,39 @@ def test_a_finished_call_enters_her_life_once():
     asyncio.run(life.absorb(server, row))
     assert consumed == [('reply:call-a1b2c3d4e5f6:1', '我今天加班好累', '喂？\n辛苦啦，快歇会儿。', True)]
     assert row['life_status'] == 'COMMITTED' and not life.pending(row)
+
+
+def test_the_avatar_state_comes_from_the_cloud_with_the_key(monkeypatch):
+    monkeypatch.setenv('OLIVIA_GPU_API_URL', 'https://api.example.cn')
+    monkeypatch.setenv('OLIVIA_GPU_API_KEY', 'secret')
+    sent = {}
+
+    async def cloud(method, path, *, timeout, headers=None, body=None):
+        sent.update(path=path, headers=headers)
+        return 200, {'available': True, 'owned': True, 'for_sale': False, 'cents': None, 'version': 'v1', 'extra': 1}
+    monkeypatch.setattr(call_http, '_cloud_json', cloud)
+    status, value = answer(asyncio.run(call_http.call_http(Server(), Request('/toy/call/avatar'))))
+    assert status == 200 and value['data'] == {'available': True, 'owned': True, 'for_sale': False, 'cents': None, 'version': 'v1'}
+    assert sent == {'path': '/v1/call/avatar', 'headers': {'Authorization': 'Bearer secret'}}
+    assert 'secret' not in json.dumps(value)
+    monkeypatch.delenv('OLIVIA_GPU_API_KEY')
+    status, value = answer(asyncio.run(call_http.call_http(Server(), Request('/toy/call/avatar'))))
+    assert value['data'] == {'available': False, 'owned': False}
+
+
+def test_avatar_files_are_named_and_kept_for_the_version(monkeypatch):
+    monkeypatch.setenv('OLIVIA_GPU_API_URL', 'https://api.example.cn')
+    monkeypatch.setenv('OLIVIA_GPU_API_KEY', 'secret')
+    status, value = answer(asyncio.run(call_http.call_http(Server(), Request('/toy/call/avatar/files/..%2Fsecret'))))
+    assert status == 404
+    monkeypatch.setitem(call_http._avatar, 'files', {'rig.json': b'{"version": 1}'})
+    response = asyncio.run(call_http.call_http(Server(), Request('/toy/call/avatar/files/rig.json')))
+    assert response.status == 200 and response.body == b'{"version": 1}' and response.content_type == 'application/json'
+
+
+def test_the_avatar_engine_loads_before_the_call_page():
+    from original_client_settings_ui import BOOTSTRAP_JAVASCRIPT
+    from runtime.call_avatar_ui import JAVASCRIPT as ENGINE
+    from runtime.call_ui import JAVASCRIPT
+    assert JAVASCRIPT.startswith(ENGINE) and 'root.OliviaAvatar = Avatar' in ENGINE
+    assert JAVASCRIPT in BOOTSTRAP_JAVASCRIPT and '/toy/call/avatar/files/' in JAVASCRIPT

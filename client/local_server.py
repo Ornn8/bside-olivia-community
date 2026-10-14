@@ -2239,6 +2239,9 @@ async def handler(request: web.Request):
     if canonical_path.startswith('/toy/call/'):
         from runtime.call.http import call_http
         return await call_http(sys.modules[__name__], request)
+    if canonical_path.startswith('/toy/autoupdate/'):
+        from runtime.auto_update import autoupdate_http
+        return await autoupdate_http(sys.modules[__name__], request)
     if canonical_path.startswith('/toy/midi/upload/'):
         from runtime.native_piano import upload_http
         return await upload_http(sys.modules[__name__], request)
@@ -6470,6 +6473,12 @@ async def _stop_conversation_memory(_app: web.Application) -> None:
     stop_conversation_memory_runtime()
 
 
+async def _start_auto_update(app: web.Application) -> None:
+    # Signed releases are downloaded and installed in the background (runtime/auto_update.py).
+    from runtime.auto_update import start
+    start(sys.modules[__name__], app)
+
+
 async def _start_phone_line(app: web.Application) -> None:
     # Calls from a paired phone are built on this computer (runtime/call/desk.py); without a paired
     # phone the call service closes the line at once and it rests until one is paired.
@@ -6483,6 +6492,7 @@ def install_reply_task_lifecycle(app: web.Application) -> None:
     app.on_startup.append(_start_conversation_memory)
     app.on_startup.append(_start_reply_tasks)
     app.on_startup.append(_start_phone_line)
+    app.on_startup.append(_start_auto_update)
     app.cleanup_ctx.append(_image_catalog_lifecycle)
     from runtime.personal_chat.backend import install_personal_chat
     import sys
