@@ -215,3 +215,50 @@ def test_the_pairing_qr_code_is_well_formed():
         rem = (rem << 1) ^ ((rem >> 9) * 0x537)
     assert ((data << 10) | rem) ^ 0x5412 == first                          # a valid BCH code word
     assert grid[size - 8][8] == 1                                          # the dark module
+
+
+def test_pairing_tries_twice_on_a_slow_network(monkeypatch):
+    from aiohttp import ClientError
+    account(monkeypatch)
+    attempts = []
+
+    async def cloud(method, path, *, timeout, headers=None, body=None):
+        attempts.append(timeout.total)
+        if len(attempts) == 1:
+            raise ClientError('reset')
+        return 200, {'url': 'https://bside-moon.cn/call/#pair=' + 'c' * 24, 'expires_in': 600}
+    monkeypatch.setattr(call_http, '_cloud_json', cloud)
+
+    async def no_wait(seconds):
+        return None
+    monkeypatch.setattr(call_http.asyncio, 'sleep', no_wait)
+    status, value = answer(asyncio.run(call_http.call_http(Server(), Request('/toy/call/phone/pair', 'POST'))))
+    assert status == 200 and attempts == [15, 15]
+
+
+def test_a_network_hiccup_keeps_the_call_button():
+    node = shutil.which('node')
+    if node is None:
+        pytest.skip('Node.js is unavailable')
+    from runtime.call_ui import JAVASCRIPT
+    start = JAVASCRIPT.index('  let configRetry = null;')
+    source = JAVASCRIPT[start:JAVASCRIPT.index('\n  }\n', JAVASCRIPT.index('async function refreshConfig', start)) + 4]
+    script = r'''
+const assert = require('node:assert/strict');
+let config = null, answers = [], timers = [];
+const entry = {ready: false, toggleAttribute(name, on) { this.ready = on; }};
+const local = async () => { const next = answers.shift(); if (next instanceof Error) throw next; return next; };
+const setTimeout = (fn, ms) => { timers.push(ms); return timers.length; };
+const clearTimeout = () => {};
+''' + source + r'''
+(async () => {
+  answers = [{available: true, phone: true}]; await refreshConfig(); assert.equal(entry.ready, true);
+  answers = [{available: false, reason: 'network'}]; await refreshConfig(); assert.equal(entry.ready, true);   // kept
+  assert.deepEqual(timers, [30000]);                                                                          // retried soon
+  answers = [new Error('CALL_UNAVAILABLE')]; await refreshConfig(); assert.equal(entry.ready, true);
+  answers = [{available: false, reason: 'account'}]; await refreshConfig(); assert.equal(entry.ready, false); // a real answer
+  answers = [{available: true}]; await refreshConfig(); assert.equal(entry.ready, true);
+})().catch(e => { console.error(e); process.exit(1); });
+'''
+    result = subprocess.run([node, '-e', script], capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
