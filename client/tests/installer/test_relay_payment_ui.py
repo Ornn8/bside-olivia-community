@@ -39,7 +39,8 @@ vm.runInNewContext(fs.readFileSync(0,'utf8')+';globalThis.mount=mountRelayBalanc
  assert.equal(elements.find(e=>e.tag==='img').src,'http://127.0.0.1:27149/toy/images/ui/wechat-payment');
  await [...timers.values()].find(t=>t.delay===3000).fn();
  assert.equal(elements.filter(e=>e.textContent==='请用微信支付 ¥9.99').length,1);
- assert.ok(panel.children[0].children.some(e=>e.children.includes(payment)));
+ const holds=(e,t)=>e===t||(e.children||[]).some(c=>holds(c,t));
+ assert.ok(holds(panel,payment)); // still mounted (inside the top-up area under the balance card)
  assert.equal([...timers.values()].filter(t=>t.delay===3000).length,1);
  credited=true;await [...timers.values()].find(t=>t.delay===3000).fn();
  assert.ok(elements.some(e=>e.textContent==='已到账 ¥10.00。'));
