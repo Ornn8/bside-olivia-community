@@ -69,9 +69,32 @@ def nicknames(server) -> list[str]:
     return list(projected.authorized_nicknames)
 
 
-def memories(backend) -> list[str]:
-    result = backend.browse_memories(query=None, page=1, limit=MEMORY_COUNT, days=0, sort='new')
-    return [m.text for m in result['memories'] if getattr(m, 'text', '')]
+RELEVANT_MEMORIES = 20
+PHOTO_MEMORY = '已发给用户的生成照片'   # descriptions of photos she sent: long, rarely what a call is about
+
+
+def memories(backend, query: str = '') -> list[str]:
+    """Memories for the call: those closest to what they talked about lately first, then the newest.
+    During the call the page adds more as the user brings topics up (/toy/call/recall)."""
+    picked, seen = [], set()
+
+    def take(items, *, newest):
+        for item in items:
+            text = getattr(item, 'text', '') or ''
+            if text and text not in seen and not (newest and PHOTO_MEMORY in text[:24]):
+                seen.add(text)
+                picked.append(text)
+    if query.strip():
+        take(_optional(lambda: backend.list_memories(query=query.strip()[:2000], limit=RELEVANT_MEMORIES), []), newest=False)
+    take(backend.browse_memories(query=None, page=1, limit=MEMORY_COUNT, days=0, sort='new')['memories'], newest=True)
+    return picked[:MEMORY_COUNT]
+
+
+def recall(backend, text: str, limit: int = 5) -> list[str]:
+    """Memories related to what the user just said in the call."""
+    if not isinstance(text, str) or len(text.strip()) < 4:
+        return []
+    return [m.text for m in backend.list_memories(query=text.strip()[:500], limit=limit) if getattr(m, 'text', '')]
 
 
 def recent_chat(server) -> list[dict]:
@@ -243,13 +266,17 @@ def build(server, backend=None, now: datetime | None = None) -> tuple[dict, str]
     now = now or datetime.now(timezone.utc)
     facts, state = world(server, now)
     names = _optional(lambda: nicknames(server), [])
+    recent = _optional(lambda: recent_chat(server), [])
+    calls = _optional(lambda: recent_calls(server, now), [])
+    # What they talked about lately picks the memories most likely to come up.
+    topics = ' '.join([r['text'] for r in recent if r['role'] == 'user'][-8:] + [c['summary'] for c in calls])
     context = {
         'persona': persona_text(server),
         'user': ('她可以这样称呼对方：' + '、'.join(names)) if names else '',
         'relationship': _optional(lambda: relationship_text(server), ''),
-        'memories': _optional(lambda: memories(backend), []) if backend is not None else [],
-        'recent': _optional(lambda: recent_chat(server), []),
-        'calls': _optional(lambda: recent_calls(server, now), []),
+        'memories': _optional(lambda: memories(backend, topics), []) if backend is not None else [],
+        'recent': recent,
+        'calls': calls,
         'concerns': _optional(lambda: concerns(server, now), []),
         'world': facts,
     }

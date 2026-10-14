@@ -79,7 +79,7 @@ def record_call(server, body, now=None):
         'reason': str(body.get('reason') or '')[:40],
         'charge_cents': charge if type(charge) is int and charge >= 0 else None,
         'transcript': _clean_transcript(body.get('transcript')), 'notes': _clean_notes(body.get('notes')),
-        'memory_format': MEMORY_FORMAT})
+        'memory_format': MEMORY_FORMAT, 'life_status': 'PENDING'})
 
 
 def _label(row):

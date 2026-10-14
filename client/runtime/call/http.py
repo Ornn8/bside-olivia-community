@@ -119,8 +119,17 @@ async def recover(server, body):
         raise web.HTTPServiceUnavailable(reason='CALL_NETWORK')
     if status != 200 or not isinstance(value, dict) or value.get('call_id') != call_id:
         raise web.HTTPServiceUnavailable(reason='CALL_REPORT_PENDING')
-    await asyncio.to_thread(record_call, server, value)
+    row = await asyncio.to_thread(record_call, server, value)
+    from runtime.call.life import absorb_later
+    absorb_later(server, row)
     return {'saved': True}
+
+
+def _quiet(read, default):
+    try:
+        return read()
+    except Exception:
+        return default
 
 
 async def call_http(server, request):
@@ -132,6 +141,8 @@ async def call_http(server, request):
                                  status=status, headers=headers)
     try:
         if path == '/toy/call/config' and method == 'GET':
+            from runtime.call.life import retry_pending
+            retry_pending(server)
             return reply(await config(server))
         if path == '/toy/call/world' and method == 'GET':
             from runtime.call.context import world
@@ -148,9 +159,22 @@ async def call_http(server, request):
             if not isinstance(body, dict):
                 return reply('CALL_END_INVALID', 400)
             from runtime.call.store import mark_ended, record_call
-            await asyncio.to_thread(record_call, server, body)
+            row = await asyncio.to_thread(record_call, server, body)
             mark_ended(server)
+            from runtime.call.life import absorb_later
+            absorb_later(server, row)
             return reply({'saved': True})
+        if path == '/toy/call/recall' and method == 'POST':
+            body = json.loads(await request.text() or '{}')
+            from runtime.call.context import recall
+            try:
+                from original_client_companion_api import _backend
+                backend = _backend(request)
+            except Exception:
+                return reply({'memories': []})
+            text = body.get('text') if isinstance(body, dict) else None
+            found = await asyncio.to_thread(lambda: _quiet(lambda: recall(backend, text), []))
+            return reply({'memories': found})
         if path == '/toy/call/recover' and method == 'POST':
             if request.headers.get('X-Olivia-Companion-Action') != 'confirmed':
                 return reply('COMPANION_CONFIRMATION_REQUIRED', 403)

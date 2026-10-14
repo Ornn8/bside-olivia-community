@@ -63,23 +63,32 @@ def test_call_page_script_parses(tmp_path):
 
 PAGE = '''
 const listeners = {};
-const el = tag => ({tag, children: [], attrs: {}, style: {}, dataset: {},
-  append(...c) { this.children.push(...c); }, setAttribute(k, v) { this.attrs[k] = v; },
-  getAttribute(k) { return this.attrs[k]; }, toggleAttribute(k, on) { if (on) this.attrs[k] = ''; else delete this.attrs[k]; }});
+const el = tag => ({tag, children: [], attrs: {}, style: {}, dataset: {}, parentElement: null,
+  append(...c) { c.forEach(x => { if (x && typeof x === 'object') x.parentElement = this; }); this.children.push(...c); },
+  prepend(...c) { c.forEach(x => { if (x && typeof x === 'object') x.parentElement = this; }); this.children.unshift(...c); },
+  setAttribute(k, v) { this.attrs[k] = v; }, getAttribute(k) { return this.attrs[k]; },
+  toggleAttribute(k, on) { if (on) this.attrs[k] = ''; else delete this.attrs[k]; }});
 const marker = el('script'); marker.attrs['data-api-base'] = 'http://127.0.0.1:8899/';
+const group = el('div');
+let observed = null;
 globalThis.window = globalThis;
+globalThis.MutationObserver = class { constructor(f) { observed = f; } observe() {} };
+globalThis.requestAnimationFrame = f => setTimeout(f, 0);
 globalThis.document = {head: el('head'), body: null, readyState: 'loading', createElement: el,
-  createElementNS: (_, tag) => el(tag), querySelector: s => s === '[data-olivia-companion-settings]' ? marker : null,
+  createElementNS: (_, tag) => el(tag),
+  querySelector: s => s === '[data-olivia-companion-settings]' ? marker : s === '[data-olivia-service-buttons]' ? groupNow : null,
   addEventListener: (name, f) => (listeners[name] = listeners[name] || []).push(f)};
+let groupNow = null;
 globalThis.fetch = async () => ({ok: true, json: async () => ({code: 0, data: {available: true}})});
 globalThis.setInterval = () => 0;
 %s
 console.log('AFTER');
 document.body = el('body'); (listeners.DOMContentLoaded || []).forEach(f => f());
+groupNow = group; observed();      // the header (with the account group) renders later
 setTimeout(() => {
-  const fab = document.body.children.find(c => c.className === 'olivia-call-fab');
-  console.log(fab && 'data-ready' in fab.attrs ? 'FAB_READY' : 'NO_FAB');
-}, 0);
+  const entry = group.children.find(c => c.className === 'olivia-call-entry');
+  console.log(entry && 'data-ready' in entry.attrs && group.children[0] === entry ? 'ENTRY_READY' : 'NO_ENTRY');
+}, 10);
 '''
 
 
@@ -92,7 +101,7 @@ def test_page_script_runs_from_head_before_the_body_exists(tmp_path):
     script = tmp_path / 'page.js'
     script.write_text(PAGE % _isolated(JAVASCRIPT), encoding='utf-8')
     result = subprocess.run(['node', str(script)], capture_output=True, text=True, timeout=60)
-    assert result.stdout.split() == ['AFTER', 'FAB_READY'], result.stderr
+    assert result.stdout.split() == ['AFTER', 'ENTRY_READY'], result.stderr
 
 
 @pytest.mark.skipif(shutil.which('node') is None, reason='node is not installed')

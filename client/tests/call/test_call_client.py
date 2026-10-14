@@ -328,3 +328,56 @@ def test_finished_calls_reach_her_diary_as_exchanges():
     messages = day_messages(rows, (NOW - timedelta(minutes=2)).astimezone(timezone(timedelta(hours=8))).date().isoformat())
     assert len(messages) == 1 and messages[0]['channel'] == 'call'
     assert messages[0]['user'].endswith('我今天加班好累') and '辛苦啦' in messages[0]['linli']
+
+
+class Memories:
+    def __init__(self):
+        self.queries = []
+
+    def list_memories(self, *, query, limit):
+        self.queries.append(query)
+        return [SimpleNamespace(text='对方周五有面试'), SimpleNamespace(text='对方养了一只猫')]
+
+    def browse_memories(self, **options):
+        return {'memories': [SimpleNamespace(text='对方养了一只猫'),
+                             SimpleNamespace(text='林' + '离已发给用户的生成照片，画面：琴房'),
+                             SimpleNamespace(text='对方怕冷')]}
+
+
+def test_call_memories_put_what_they_talked_about_first_then_the_newest():
+    backend = Memories()
+    picked = call_context.memories(backend, '我周五要面试了')
+    assert picked == ['对方周五有面试', '对方养了一只猫', '对方怕冷']   # no photo descriptions among the newest
+    assert backend.queries == ['我周五要面试了']
+    assert call_context.recall(backend, '嗯') == []                    # too short to look anything up
+    assert call_context.recall(backend, '你还记得我那只猫吗') == ['对方周五有面试', '对方养了一只猫']
+
+
+def test_call_days_count_toward_the_relationship_like_chats():
+    from runtime.memory.effective_relationship import relationship_history
+    now = NOW.timestamp()
+    store = SimpleNamespace(letters=[], personal_chats=[], calls=[
+        {'call_id': 'a', 'started_at': (NOW - timedelta(days=1)).isoformat(), 'seconds': 300},
+        {'call_id': 'b', 'started_at': (NOW - timedelta(days=2)).isoformat(), 'seconds': 10},     # too short
+        {'call_id': 'c', 'started_at': (NOW - timedelta(days=3)).isoformat(), 'missed': True},
+        {'call_id': 'd', 'started_at': (NOW - timedelta(days=30)).isoformat(), 'seconds': 300}]) # too old
+    assert relationship_history(store, now) == {14: 1, 21: 1}
+
+
+def test_a_finished_call_enters_her_life_once():
+    from runtime.call import life
+    consumed = []
+
+    class Runtime:
+        store = SimpleNamespace(exchange_relationship=lambda source, user, her: None)
+
+        async def consume_exchange(self, source_id, user, her, *, occurred_at, received_at):
+            consumed.append((source_id, user, her, received_at < occurred_at))
+
+    server = Server()
+    server.daily_life_runtime = Runtime()
+    row = finished(server)
+    assert row['life_status'] == 'PENDING'
+    asyncio.run(life.absorb(server, row))
+    assert consumed == [('reply:call-a1b2c3d4e5f6:1', '我今天加班好累', '喂？\n辛苦啦，快歇会儿。', True)]
+    assert row['life_status'] == 'COMMITTED' and not life.pending(row)

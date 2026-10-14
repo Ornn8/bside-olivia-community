@@ -12,31 +12,40 @@ JAVASCRIPT = r'''
   window.__oliviaCallUi = true;
   const css = document.createElement('style');
   css.textContent = `
-  .olivia-call-fab{position:fixed;right:22px;bottom:22px;z-index:9000;width:52px;height:52px;border-radius:50%;border:0;
-    background:#a48c5c;color:#fff;box-shadow:0 6px 18px #0004;cursor:pointer;display:none;align-items:center;justify-content:center}
-  .olivia-call-fab[data-ready]{display:flex}.olivia-call-fab svg{width:24px;height:24px;fill:currentColor}
-  .olivia-call-fab:focus-visible{outline:3px solid #f3eee4;outline-offset:3px}
-  .olivia-call{position:fixed;inset:0;z-index:9500;background:#0009;display:flex;align-items:center;justify-content:center;
-    font:14px/1.6 "Microsoft YaHei",system-ui,sans-serif}
-  .olivia-call-card{width:min(360px,92vw);padding:28px 24px;border-radius:20px;background:#1f1d1b;color:#eee9df;text-align:center;
-    box-shadow:0 16px 48px #0008}
-  .olivia-call-orb{width:96px;height:96px;margin:6px auto 18px;border-radius:50%;background:radial-gradient(circle at 35% 35%,#d9c39a,#7c6640);
+  .olivia-call-entry{display:none;align-items:center;gap:6px;height:32px;padding:0 14px 0 11px;border:1px solid #8c7a5c;
+    border-radius:999px;background:#2b2621;color:#f3e7d7;font:inherit;font-size:14px;font-weight:600;line-height:20px;
+    white-space:nowrap;cursor:pointer;-webkit-app-region:no-drag;transition:background .15s,border-color .15s}
+  .olivia-call-entry[data-ready]{display:inline-flex}
+  .olivia-call-entry:hover{background:#3a3229;border-color:#b39c72}
+  .olivia-call-entry svg{width:15px;height:15px;fill:#d9c39a}
+  .olivia-call-entry:focus-visible{outline:2px solid #f3eee4;outline-offset:2px}
+  .olivia-call{position:fixed;inset:0;z-index:9500;background:rgba(8,8,10,.62);display:flex;align-items:center;
+    justify-content:center;font-family:inherit;font-size:14px;line-height:1.6}
+  .olivia-call-card{width:min(380px,92vw);padding:28px 24px 24px;border-radius:16px;background:#18191c;border:1px solid #2c2d31;
+    color:#f2f0ec;text-align:center;box-shadow:0 24px 64px rgba(0,0,0,.55)}
+  .olivia-call-orb{width:88px;height:88px;margin:4px auto 16px;border-radius:50%;
+    background:radial-gradient(circle at 35% 30%,#efe3cc,#8e7b58 70%,#5e5039);box-shadow:0 0 0 6px rgba(221,214,201,.06);
     transition:transform .12s ease-out}
   .olivia-call-card[data-state="ringing"] .olivia-call-orb{animation:olivia-ring 1.6s ease-in-out infinite}
   @keyframes olivia-ring{0%,100%{transform:scale(1)}50%{transform:scale(1.08)}}
-  .olivia-call-title{font-size:18px;margin:0}.olivia-call-status{min-height:22px;color:#c9bfae;margin:6px 0 14px;font-variant-numeric:tabular-nums}
-  .olivia-call-price{font-size:12px;color:#a69c8b;margin:0 0 18px}
+  .olivia-call-title{font-size:20px;font-weight:700;margin:0;color:#f6f4f0}
+  .olivia-call-status{min-height:22px;color:#b9bbc0;margin:4px 0 14px;font-variant-numeric:tabular-nums}
+  .olivia-call-price{font-size:12px;color:#8b8d92;margin:0 0 18px}
   .olivia-call-models{display:flex;gap:8px;justify-content:center;margin:0 0 10px}
-  .olivia-call-models button{padding:6px 12px;border-radius:16px;border:1px solid #5a554d;background:#2c2a27;color:#c9bfae;
-    cursor:pointer;font:inherit;font-size:13px}
-  .olivia-call-models button[aria-pressed="true"]{background:#eee9df;color:#1f1d1b;border-color:#eee9df}
+  .olivia-call-models button{padding:6px 14px;border-radius:999px;border:1px solid rgba(255,255,255,.28);background:transparent;
+    color:#e3e1dc;cursor:pointer;font:inherit;font-size:13px;font-weight:600}
+  .olivia-call-models button:hover{background:rgba(255,255,255,.06)}
+  .olivia-call-models button[aria-pressed="true"]{background:#ddd6c9;color:#18191c;border-color:#ddd6c9}
   .olivia-call-models button:focus-visible{outline:2px solid #f3eee4;outline-offset:2px}
-  .olivia-call-caption{min-height:44px;max-height:88px;overflow:hidden;font-size:13px;color:#d8cfbf;margin:0 0 18px}
-  .olivia-call-actions{display:flex;gap:14px;justify-content:center}
-  .olivia-call-actions button{min-width:88px;padding:10px 14px;border-radius:22px;border:1px solid #5a554d;background:#2c2a27;color:#eee9df;cursor:pointer}
-  .olivia-call-actions button[data-kind="dial"]{background:#3f8f5a;border-color:#3f8f5a}
-  .olivia-call-actions button[data-kind="hangup"]{background:#b6463c;border-color:#b6463c}
-  .olivia-call-actions button[aria-pressed="true"]{background:#eee9df;color:#1f1d1b}
+  .olivia-call-caption{min-height:44px;max-height:88px;overflow:hidden;font-size:13px;color:#d6d4cf;margin:0 0 18px}
+  .olivia-call-actions{display:flex;gap:12px;justify-content:center}
+  .olivia-call-actions button{min-width:96px;height:40px;padding:0 18px;border-radius:999px;border:1px solid rgba(255,255,255,.28);
+    background:transparent;color:#f2f0ec;font:inherit;font-weight:600;cursor:pointer}
+  .olivia-call-actions button:hover{background:rgba(255,255,255,.06)}
+  .olivia-call-actions button:focus-visible{outline:2px solid #f3eee4;outline-offset:2px}
+  .olivia-call-actions button[data-kind="dial"]{background:#ddd6c9;border-color:#ddd6c9;color:#18191c}
+  .olivia-call-actions button[data-kind="hangup"]{background:#c0473d;border-color:#c0473d;color:#fff}
+  .olivia-call-actions button[aria-pressed="true"]{background:#ddd6c9;border-color:#ddd6c9;color:#18191c}
   .olivia-call-actions button:disabled{opacity:.5;cursor:default}`;
   document.head.append(css);
 
@@ -84,13 +93,21 @@ JAVASCRIPT = r'''
     return value.data;
   }
 
-  const fab = node('button', 'olivia-call-fab');
-  fab.type = 'button'; fab.append(icon()); fab.setAttribute('aria-label', '给她打电话'); fab.title = '给她打电话';
-  fab.onclick = () => open();
+  // The phone button sits in the header's account group (next to 账户), styled like the header's pills.
+  const entry = node('button', 'olivia-call-entry');
+  entry.type = 'button'; entry.append(icon()); node('span', null, '打电话', entry);
+  entry.setAttribute('aria-label', '给她打电话'); entry.title = '给她打电话';
+  entry.onclick = () => open();
+  let placing = false;
+  function place() {
+    placing = false;
+    const group = document.querySelector('[data-olivia-service-buttons]');
+    if (group && entry.parentElement !== group) group.prepend(entry);
+  }
 
   async function refreshConfig() {
     try { config = await local('/toy/call/config'); } catch (_) { config = null; }
-    fab.toggleAttribute('data-ready', !!config?.available);
+    entry.toggleAttribute('data-ready', !!config?.available);
   }
 
   // The user picks the model of each call; the last choice is remembered on this computer.
@@ -221,6 +238,8 @@ JAVASCRIPT = r'''
         this.ringing?.(); this.ringing = null; this.startedAt = Date.now(); ui.card.dataset.state = 'talking';
         ui.mute.hidden = false; this.clock = setInterval(() => this.tick(), 500); this.tick();
         this.capture(); this.worldTimer = setInterval(() => this.world(), 300000);
+      } else if (m.type === 'user') {
+        this.recall(m.text);
       } else if (m.type === 'her') {
         if (m.turn !== this.turn) { this.turn = m.turn; this.her = ''; }
         if (!this.stopped.has(m.turn)) { this.her += m.delta; ui.caption.textContent = this.her; }
@@ -259,6 +278,18 @@ JAVASCRIPT = r'''
       // The player can run dry between two segments; only the end after the server's last frame counts.
       this.drainedAt[d.drained] = performance.now();
       if (this.herDone.has(d.drained)) this.reportPlayed(d.drained);
+    }
+
+    // What the user just said may touch something she remembers: look it up locally and pass it on.
+    async recall(text) {
+      if (typeof text !== 'string' || text.trim().length < 4) return;
+      this.recalled = this.recalled || new Set();
+      try {
+        const found = (await local('/toy/call/recall', {text})).memories || [];
+        const fresh = found.filter(m => !this.recalled.has(m)).slice(0, 3);
+        fresh.forEach(m => this.recalled.add(m));
+        if (fresh.length && this.ws?.readyState === 1) this.ws.send(JSON.stringify({type: 'recall', memories: fresh}));
+      } catch (_) {}
     }
 
     reportPlayed(turn) { if (this.ws?.readyState === 1) this.ws.send(JSON.stringify({type: 'played', turn})); }
@@ -341,7 +372,10 @@ JAVASCRIPT = r'''
     const marker = document.querySelector('[data-olivia-companion-settings]');
     base = marker && marker.getAttribute('data-api-base');
     if (!base) { if (tries < 60) setTimeout(() => boot(tries + 1), 1000); return; }
-    document.body.append(fab);
+    place();
+    // The header is re-rendered on navigation; put the button back whenever it goes missing.
+    new MutationObserver(() => { if (!placing) { placing = true; requestAnimationFrame(place); } })
+      .observe(document.body, {childList: true, subtree: true});
     refreshConfig(); setInterval(refreshConfig, 300000);
   }
   boot();
