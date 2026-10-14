@@ -15,6 +15,8 @@ import time
 from pathlib import Path, PurePosixPath
 
 STATE_NAME = ".olivia-update-state.json"
+# The first start of an automatically installed update (runtime/auto_update.py): if it fails, go back.
+PROBATION_NAME = ".olivia-update-probation.json"
 STATE_SCHEMA = "olivia.update-state.v1"
 INSTALL_SCHEMA = "olivia.full-patch.install.v2"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
@@ -439,18 +441,21 @@ def _run_action(args: argparse.Namespace) -> int:
         return 0
     except VersionLauncherError as exc:
         if args.action == "start":
+            _start_failed()
             _append_launcher_event(args.install_root, "startup_failed", code=str(exc), timestamp=time.time())
         print(json.dumps({"status": "ERROR", "code": str(exc)}))
         return 2
     except SystemExit as exc:
         exit_code = int(exc.code or 0)
         if args.action == "start" and exit_code:
+            _start_failed()
             _append_launcher_event(args.install_root, "startup_failed", code="START_EXIT_NONZERO",
                                    exit_code=exit_code, timestamp=time.time())
         return exit_code
     except Exception as exc:
         if args.action != "start":
             raise
+        _start_failed()
         _append_launcher_event(args.install_root, "startup_failed", code="START_ACTION_FAILED",
                                timestamp=time.time(), **_startup_exception_fields(exc))
         print(json.dumps({"status": "ERROR", "code": "START_ACTION_FAILED"}))
@@ -515,12 +520,54 @@ def _run_main(
             instance.close()
 
 
+_START_FAILED = False
+
+
+def _start_failed() -> None:
+    global _START_FAILED
+    _START_FAILED = True
+
+
+def _probation_rollback(root: Path) -> bool:
+    """The first start of an automatically installed update failed: back to the previous version once,
+    marking the version so the updater does not install it again."""
+    marker_path, state_path = root / PROBATION_NAME, root / STATE_NAME
+    try:
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        active = state["active_components"]["local_backend"]
+        previous = state["previous_components"]["local_backend"]
+        if (not isinstance(marker, dict) or marker.get("rejected") or not isinstance(active, dict)
+                or marker.get("version") != active.get("version") or not isinstance(previous, dict)):
+            return False
+        rolled = {**state, "active_components": {**state["active_components"], "local_backend": previous},
+                  "previous_components": {**state["previous_components"], "local_backend": active}}
+        temporary = state_path.with_name(state_path.name + ".rollback.tmp")
+        temporary.write_text(json.dumps(rolled, indent=2, sort_keys=True), encoding="utf-8")
+        os.replace(temporary, state_path)
+        marker_path.write_text(json.dumps({**marker, "rejected": True}), encoding="utf-8")
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return False
+    _append_launcher_event(root, "update_rolled_back", version=str(marker.get("version"))[:40], timestamp=time.time())
+    return True
+
+
 def main(argv: list[str] | None = None) -> int:
     return _run_main(_parse_arguments(argv))
 
 
 def _cli(argv: list[str] | None = None) -> int:
-    return _run_main(_parse_arguments(argv), own_windows_tree=True)
+    args = _parse_arguments(argv)
+    code = _run_main(args, own_windows_tree=True)
+    if args.action == "start" and code and _START_FAILED:
+        root = Path(args.install_root).expanduser().resolve()
+        if _probation_rollback(root):
+            try:
+                _create_outside_job(root, [str(_restart_python(root)), str(root / "launcher" / "version_launcher.py"),
+                                           "--install-root", str(root), "start"])
+            except (OSError, subprocess.SubprocessError, RuntimeError):
+                pass
+    return code
 
 
 def _restart_event(root: Path, step: str, **fields: object) -> None:
@@ -532,6 +579,28 @@ def _restart_python(root: Path) -> Path:
     return root.parent / "runtime" / "python-3.12.10-embed-amd64" / "pythonw.exe"
 
 
+def _create_outside_job(root: Path, arguments: list[str]) -> None:
+    # The existing launcher's kill-on-close Job forbids breakaway. WMI creates
+    # the process outside that Job, including when upgrading an older launcher.
+    powershell = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+    result = subprocess.run(
+        [str(powershell), "-NoProfile", "-NonInteractive", "-Command",
+         "[Console]::InputEncoding=[System.Text.Encoding]::UTF8; "
+         "$p=[Console]::In.ReadToEnd() | ConvertFrom-Json; "
+         "$s=New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property "
+         "@{CreateFlags=[uint32]520;ShowWindow=[uint16]0;EnvironmentVariables=[string[]]$p.environment}; "
+         "$r=Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments "
+         "@{CommandLine=[string]$p.command;CurrentDirectory=[string]$p.cwd;ProcessStartupInformation=$s}; "
+         "if ($r.ReturnValue -ne 0) {exit 1}"],
+        input=json.dumps({"command": subprocess.list2cmdline(arguments), "cwd": str(root),
+                          "environment": [f"{key}={value}" for key, value in os.environ.items()]}, ensure_ascii=False),
+        capture_output=True, encoding="utf-8", timeout=15,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    if result.returncode:
+        raise RuntimeError("UPDATE_RESTART_HELPER_UNAVAILABLE")
+
+
 def spawn_update_restart(root: Path) -> None:
     import secrets
 
@@ -540,27 +609,10 @@ def spawn_update_restart(root: Path) -> None:
     try:
         # The existing launcher's kill-on-close Job forbids breakaway. WMI creates
         # the helper outside that Job, including when upgrading an older launcher.
-        powershell = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe"
-        command = subprocess.list2cmdline([
+        _create_outside_job(root, [
             str(_restart_python(root)), str(root / "launcher" / "version_launcher.py"),
             "--install-root", str(root), "update-restart", str(ready), str(os.getpid()),
         ])
-        result = subprocess.run(
-            [str(powershell), "-NoProfile", "-NonInteractive", "-Command",
-             "[Console]::InputEncoding=[System.Text.Encoding]::UTF8; "
-             "$p=[Console]::In.ReadToEnd() | ConvertFrom-Json; "
-             "$s=New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property "
-             "@{CreateFlags=[uint32]520;ShowWindow=[uint16]0;EnvironmentVariables=[string[]]$p.environment}; "
-             "$r=Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments "
-             "@{CommandLine=[string]$p.command;CurrentDirectory=[string]$p.cwd;ProcessStartupInformation=$s}; "
-             "if ($r.ReturnValue -ne 0) {exit 1}"],
-            input=json.dumps({"command": command, "cwd": str(root),
-                              "environment": [f"{key}={value}" for key, value in os.environ.items()]}, ensure_ascii=False),
-            capture_output=True, encoding="utf-8", timeout=15,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        )
-        if result.returncode:
-            raise RuntimeError("UPDATE_RESTART_HELPER_UNAVAILABLE")
     except (OSError, subprocess.SubprocessError, RuntimeError):
         _restart_event(root, "failed", code="UPDATE_RESTART_HELPER_UNAVAILABLE")
         raise
