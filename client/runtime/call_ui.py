@@ -166,16 +166,16 @@ JAVASCRIPT = r'''
     const actions = node('div', 'olivia-call-actions', null, card);
     const dial = node('button', null, '拨打', actions); dial.type = 'button'; dial.dataset.kind = 'dial';
     const mute = node('button', null, '静音', actions); mute.type = 'button'; mute.hidden = true; mute.setAttribute('aria-pressed', 'false');
-    const hang = node('button', null, '取消', actions); hang.type = 'button'; hang.dataset.kind = 'hangup';
+    const hang = node('button', null, '取消', actions); hang.type = 'button'; hang.dataset.kind = 'cancel';
     let call = null;
     hang.onclick = () => call ? call.hangup() : close();
     mute.onclick = () => { const on = mute.getAttribute('aria-pressed') !== 'true'; mute.setAttribute('aria-pressed', String(on)); call?.mute(on); };
     dial.onclick = async () => {
-      dial.hidden = true; choices.hidden = true; hang.textContent = '挂断'; card.dataset.state = 'ringing'; status.textContent = '正在呼叫…';
+      dial.hidden = true; choices.hidden = true; hang.textContent = '挂断'; hang.dataset.kind = 'hangup'; card.dataset.state = 'ringing'; status.textContent = '正在呼叫…';
       call = new Call({status, caption, orb, card, mute, hang, price, model: model?.id, done: () => { call = null; }});
       await call.start();
     };
-    hang.focus();
+    dial.focus();
   }
 
   function close() { overlay?.remove(); overlay = null; }
@@ -338,7 +338,7 @@ JAVASCRIPT = r'''
       const ui = this.ui; ui.card.dataset.state = 'ended'; ui.mute.hidden = true;
       const seconds = report?.seconds ?? (this.startedAt ? Math.round((Date.now() - this.startedAt) / 1000) : 0);
       ui.status.textContent = text + (seconds ? '  ' + Math.floor(seconds / 60) + ' 分 ' + (seconds % 60) + ' 秒' : '');
-      ui.hang.textContent = '关闭'; ui.hang.onclick = close;
+      ui.hang.textContent = '关闭'; ui.hang.dataset.kind = 'cancel'; ui.hang.onclick = close;
       if (report) this.keep(report);
       ui.done();
     }
