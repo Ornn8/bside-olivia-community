@@ -912,25 +912,33 @@ def _repair_native_proactive_collection(source: str) -> str:
     # into `bn`/`p1`, then renders the built-in welcome paper for `__welcome__`.
     # Keep that shape and only add the fields needed to make a proactive row
     # title-only on the left and reply-only on the right.
-    model_prefix = (
-        'return{id:e.letterId,isUnread:e.isRead===0,coverId:e.coverId||"",'
+    # The fields go right after isUnread. On a fresh install the earlier steps of the same pass
+    # have already put replyKind (and later the NO_REPLY unread check) there, so the model is
+    # matched by its head only; an exact `isUnread,coverId` prefix silently skipped every
+    # fresh install (2.4.1).
+    model_head = re.compile(
+        r'return\{id:e\.letterId,isUnread:(?:e\.letterStatus!==bt\.NO_REPLY&&)?e\.isRead===0,'
     )
-    model_replacement = (
-        'return{id:e.letterId,isUnread:e.isRead===0,'
-        'origin:e.origin||"",title:e.title||e.summary||"",'
-        'replyAllowed:e.replyAllowed!==false,coverId:e.coverId||"",'
-    )
-    if source.count(model_prefix) < 2:
+    if len(model_head.findall(source)) < 2:
         return source
+    # A pass that already ran the mailbox-time step shows ??null instead of ??0.
+    paper_timestamp = (
+        '"is-visible":!0,readonly:"",timestamp:((M=(E=x.selectedMail)==null?void 0:E.received)'
+        '==null?void 0:M.timestamp)??{},type:"text"}}'
+    )
     required = (
         ':x.selectedMail&&!o(p)?',
         ':o(p)&&o(l).welcomeMailRead?',
         'h=j({get:()=>i("mailbox_welcome_content"),set:()=>{}})',
-        '"is-visible":!0,readonly:"",timestamp:((M=(E=x.selectedMail)==null?void 0:E.received)==null?void 0:M.timestamp)??0,type:"text"}',
     )
-    if any(source.count(anchor) != 1 for anchor in required):
+    if any(source.count(anchor) != 1 for anchor in required) or sum(
+            source.count(paper_timestamp.format(empty)) for empty in ('0', 'null')) != 1:
         raise CompanionSettingsPatchError('COMPANION_PROACTIVE_ANCHOR_INVALID')
-    source = source.replace(model_prefix, model_replacement)
+    source = model_head.sub(
+        lambda match: match.group(0)
+        + 'origin:e.origin||"",title:e.title||e.summary||"",replyAllowed:e.replyAllowed!==false,',
+        source,
+    )
     source = source.replace(
         'sent:{subject:e.summary,',
         'sent:{subject:e.title||e.summary,',
@@ -969,15 +977,18 @@ def _repair_native_proactive_collection(source: str) -> str:
         ':(o(p)&&o(l).welcomeMailRead||x.selectedMail&&x.selectedMail.origin==="proactive")?',
         1,
     )
-    source = source.replace(
-        'k(ks,{modelValue:o(h),"onUpdate:modelValue":I[1]||(I[1]=A=>be(h)?h.value=A:null),'
-        'class:"w-[516px] aspect-[16/9]","is-visible":!0,readonly:"",'
-        'timestamp:((M=(E=x.selectedMail)==null?void 0:E.received)==null?void 0:M.timestamp)??0,type:"text"},null,8,["modelValue","timestamp"]',
-        'k(ks,{coverId:x.selectedMail?.coverId,audioUrl:x.selectedMail?.received?.audioUrl||"",'
-        'audioStatus:x.selectedMail?.audioStatus||"",songUrl:x.selectedMail?.received?.songUrl||"",'
-        'modelValue:o(h),"onUpdate:modelValue":I[1]||(I[1]=A=>be(h)?h.value=A:null),'
-        'class:"w-[516px] aspect-[16/9]","is-visible":!0,readonly:"",'
-        'timestamp:((M=(E=x.selectedMail)==null?void 0:E.received)==null?void 0:M.timestamp)??0,type:"text"},null,8,["modelValue","timestamp","coverId","audioUrl","audioStatus","songUrl"]',
-        1,
-    )
+    for empty in ('0', 'null'):
+        source = source.replace(
+            'k(ks,{modelValue:o(h),"onUpdate:modelValue":I[1]||(I[1]=A=>be(h)?h.value=A:null),'
+            'class:"w-[516px] aspect-[16/9]","is-visible":!0,readonly:"",'
+            'timestamp:((M=(E=x.selectedMail)==null?void 0:E.received)==null?void 0:M.timestamp)??' + empty
+            + ',type:"text"},null,8,["modelValue","timestamp"]',
+            'k(ks,{coverId:x.selectedMail?.coverId,audioUrl:x.selectedMail?.received?.audioUrl||"",'
+            'audioStatus:x.selectedMail?.audioStatus||"",songUrl:x.selectedMail?.received?.songUrl||"",'
+            'modelValue:o(h),"onUpdate:modelValue":I[1]||(I[1]=A=>be(h)?h.value=A:null),'
+            'class:"w-[516px] aspect-[16/9]","is-visible":!0,readonly:"",'
+            'timestamp:((M=(E=x.selectedMail)==null?void 0:E.received)==null?void 0:M.timestamp)??' + empty
+            + ',type:"text"},null,8,["modelValue","timestamp","coverId","audioUrl","audioStatus","songUrl"]',
+            1,
+        )
     return _NATIVE_PROACTIVE_MARKER + source
