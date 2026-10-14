@@ -546,6 +546,7 @@ def _frontend_patcher_files(source: Path) -> list[Path]:
     )]
     files.extend((source / "runtime/personal_chat").glob("*.py"))
     files.extend((source / "runtime").glob("*_ui.py"))
+    files.append(source / "runtime/call/qr.py")   # pulled into the call page script
     files.extend(path for path in (source / "runtime/letter_stickers").iterdir()
                  if path.suffix in {".json", ".js"})
     return files

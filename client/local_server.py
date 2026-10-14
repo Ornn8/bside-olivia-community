@@ -6470,11 +6470,19 @@ async def _stop_conversation_memory(_app: web.Application) -> None:
     stop_conversation_memory_runtime()
 
 
+async def _start_phone_line(app: web.Application) -> None:
+    # Calls from a paired phone are built on this computer (runtime/call/desk.py); without a paired
+    # phone the call service closes the line at once and it rests until one is paired.
+    from runtime.call.desk import start
+    start(sys.modules[__name__], app)
+
+
 def install_reply_task_lifecycle(app: web.Application) -> None:
     """Resume durable pending replies and stop owned tasks with the HTTP app."""
 
     app.on_startup.append(_start_conversation_memory)
     app.on_startup.append(_start_reply_tasks)
+    app.on_startup.append(_start_phone_line)
     app.cleanup_ctx.append(_image_catalog_lifecycle)
     from runtime.personal_chat.backend import install_personal_chat
     import sys
