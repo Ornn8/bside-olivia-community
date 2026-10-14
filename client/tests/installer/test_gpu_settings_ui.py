@@ -51,8 +51,11 @@ const fetch=async(path,options)=>{
  assert.equal(entry.textContent,'账户 ¥99.85');
  const root=new Element('root');
  drawUnifiedStatement(root,responses.billing_statement);
- assert.ok(root.querySelectorAll('p').some(p=>p.textContent.includes('¥99.85')));
- assert.ok(root.querySelectorAll('span').some(p=>p.textContent==='语音生成 · 已结算'));
+ // The remaining amount lives in the summary card now; the records list only lists records.
+ assert.ok(!root.querySelectorAll('p').some(p=>p.textContent.includes('¥99.85')));
+ assert.ok(root.querySelectorAll('span').some(p=>p.textContent==='语音生成'));
+ assert.ok(root.querySelectorAll('span').some(p=>p.textContent==='已结算'));
+ assert.equal(root.querySelectorAll('button').find(b=>b.textContent==='显示更早的记录').hidden,true);
  assert.ok(root.querySelectorAll('span').some(p=>p.textContent==='−¥0.15'));
  assert.ok(root.querySelectorAll('span').some(p=>p.textContent==='−¥0.00001234'));
  const visible=root.querySelectorAll('p').map(p=>p.textContent).join(' ');
