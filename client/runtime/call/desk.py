@@ -1,6 +1,6 @@
 """The computer's line for calls from a paired phone (the cloud's /v1/call/desk).
 
-Her memory, her day and the chat history live here, so a call from the user's phone is still built
+Her memory, her day and the past chats live here, so a call from the user's phone is still built
 on this computer: while at least one phone is paired, the backend keeps one WebSocket to the call
 service. When the phone dials, the service rings here and this computer answers with the same
 context pack and pickup as a call from the desktop page (or "missed" while she is in the bath).
