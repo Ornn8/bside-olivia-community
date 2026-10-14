@@ -1,7 +1,7 @@
 """The call page: a phone button and a call overlay in the native client.
 
-Microphone: 16 kHz PCM16 in 100 ms frames, with the webview's echo cancellation, noise
-suppression and gain control. Her voice: 24 kHz PCM16 frames prefixed by a 4-byte turn number,
+Microphone: 16 kHz PCM16 in 40 ms frames (the end of speech is noticed sooner), with the webview's
+echo cancellation, noise suppression and gain control. Her voice: 24 kHz PCM16 frames prefixed by a 4-byte turn number,
 played through an AudioWorklet queue that is dropped at once when the server says "stop".
 """
 
@@ -37,7 +37,7 @@ JAVASCRIPT = r'''
 
   const WORKLETS = `
   class Mic extends AudioWorkletProcessor{
-    constructor(){super();this.ratio=sampleRate/16000;this.pos=0;this.acc=0;this.n=0;this.out=new Int16Array(1600);this.fill=0;this.muted=false;
+    constructor(){super();this.ratio=sampleRate/16000;this.pos=0;this.acc=0;this.n=0;this.out=new Int16Array(640);this.fill=0;this.muted=false;
       this.port.onmessage=e=>{this.muted=!!e.data.muted}}
     process(inputs){const input=inputs[0]&&inputs[0][0];if(!input)return true;
       for(let i=0;i<input.length;i++){this.acc+=input[i];this.n++;this.pos+=1;
@@ -194,7 +194,7 @@ JAVASCRIPT = r'''
       } else if (m.type === 'notice' && m.reason === 'limit') {
         ui.status.textContent = '余额快用完了，通话即将结束';
       } else if (m.type === 'end') {
-        this.report = m; this.finish('通话结束', m);
+        if (this.ended) this.keep(m); else this.finish('通话结束', m);
       }
     }
 
@@ -246,28 +246,38 @@ JAVASCRIPT = r'''
 
     hangup() {
       if (this.ws?.readyState === 1) {
-        this.ui.status.textContent = '正在挂断…'; this.ws.send(JSON.stringify({type: 'hangup'}));
-        this.hangTimer = setTimeout(() => this.finish('通话结束', null), 20000);
+        // Hang up at once; the server's report (charge, transcript, notes) follows on the open socket.
+        this.ws.send(JSON.stringify({type: 'hangup'}));
+        this.finish('通话结束', null, true);
       } else this.finish('已取消', null);
     }
 
     fail(code) { this.finish(MESSAGES[code] || '暂时没能打通，请稍后再试', null); }
 
-    finish(text, report) {
+    finish(text, report, awaitReport = false) {
       if (this.ended) return; this.ended = true;
-      clearInterval(this.clock); clearInterval(this.worldTimer); clearTimeout(this.hangTimer);
+      clearInterval(this.clock); clearInterval(this.worldTimer);
       this.ringing?.(); this.stream?.getTracks().forEach(t => t.stop());
-      try { this.ws?.close(); } catch (_) {}
+      this.player?.port.postMessage({clear: true});
+      if (awaitReport) this.reportTimer = setTimeout(() => { try { this.ws?.close(); } catch (_) {} }, 30000);
+      else { try { this.ws?.close(); } catch (_) {} }
       setTimeout(() => this.context?.close().catch(() => {}), 300);
       const ui = this.ui; ui.card.dataset.state = 'ended'; ui.mute.hidden = true;
-      ui.status.textContent = text + (report?.seconds ? '  ' + Math.floor(report.seconds / 60) + ' 分 ' + (report.seconds % 60) + ' 秒' : '');
-      if (report && typeof report.charge_cents === 'number') ui.price.textContent = '本次通话 ' + yuan(report.charge_cents);
+      const seconds = report?.seconds ?? (this.startedAt ? Math.round((Date.now() - this.startedAt) / 1000) : 0);
+      ui.status.textContent = text + (seconds ? '  ' + Math.floor(seconds / 60) + ' 分 ' + (seconds % 60) + ' 秒' : '');
       ui.hang.textContent = '关闭'; ui.hang.onclick = close;
-      if (report?.transcript?.length && report.call_id) {
+      if (report) this.keep(report);
+      ui.done();
+    }
+
+    keep(report) {
+      clearTimeout(this.reportTimer);
+      if (typeof report.charge_cents === 'number') this.ui.price.textContent = '本次通话 ' + yuan(report.charge_cents);
+      if (report.transcript?.length && report.call_id) {
         local('/toy/call/end', {call_id: report.call_id, seconds: report.seconds, charge_cents: report.charge_cents,
           reason: report.reason, pickup: this.pickup, transcript: report.transcript, notes: report.notes}).catch(() => {});
       }
-      ui.done();
+      try { this.ws?.close(); } catch (_) {}
     }
   }
 

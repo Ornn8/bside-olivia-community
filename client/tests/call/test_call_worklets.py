@@ -14,11 +14,11 @@ const mic = new registry['olivia-mic']();
 const input = new Float32Array(128).fill(0.5);
 for (let i = 0; i < 1300; i++) mic.process([[input]]);
 const frames = posted.filter(m => m instanceof ArrayBuffer);
-if (frames.length !== 34 || frames[0].byteLength !== 3200) throw Error('mic frames ' + frames.length);
+if (frames.length !== 86 || frames[0].byteLength !== 1280) throw Error('mic frames ' + frames.length);
 if (new Int16Array(frames[0])[10] !== Math.round(0.5 * 32767) && new Int16Array(frames[0])[10] !== Math.floor(0.5 * 32767)) throw Error('level');
 mic.port.onmessage({data: {muted: true}}); posted.length = 0;
 for (let i = 0; i < 50; i++) mic.process([[input]]);
-if (new Int16Array(posted[0])[1599] !== 0) throw Error('mute');  // the frame's start was captured before muting
+if (new Int16Array(posted[posted.length - 1])[639] !== 0) throw Error('mute');
 posted.length = 0;
 const player = new registry['olivia-player']();
 const out = [[new Float32Array(128)]];

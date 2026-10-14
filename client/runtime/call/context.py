@@ -16,6 +16,8 @@ STAGES = {'unknown': '还在慢慢建立', 'acquaintance': '刚认识不久，�
 MEMORY_COUNT = 40
 RECENT_LINES = 20
 STYLE_SAMPLES = 6
+# A call is spoken chat: the letter and music rules only crowd out how she talks.
+CALL_MODES = (None, 'spoken_video', 'future_im')
 
 log = logging.getLogger(__name__)
 
@@ -36,8 +38,10 @@ def persona_text(server) -> str:
     lines = []
     if snapshot.profile is not None:
         lines.append(f'{snapshot.profile.display_name}。{snapshot.profile.summary}')
-    lines += [d.statement for d in snapshot.declarations if d.inclusion == 'core' and d.statement]
-    samples = [e.assistant_text for e in snapshot.style_exemplars if e.assistant_text][:STYLE_SAMPLES]
+    lines += [d.statement for d in snapshot.declarations
+              if d.inclusion == 'core' and d.statement and d.mode in CALL_MODES]
+    samples = [e.assistant_text for e in snapshot.style_exemplars
+               if e.assistant_text and e.mode == 'spoken_video'][:STYLE_SAMPLES]
     if samples:
         lines.append('她说话的样子（只学语气，不当事实）：' + ' / '.join(samples))
     return '\n'.join(lines)
