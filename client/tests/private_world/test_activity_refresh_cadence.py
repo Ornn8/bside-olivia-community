@@ -68,7 +68,7 @@ def test_bathing_and_sleep_defer_expired_rest_until_waking_without_backfill(tmp_
     runtime = DailyLifeRuntime(store, Gateway, lambda: 'A student.')
 
     async def run():
-        for minutes, phase in [(30, 'bathing'), (60, 'sleep'), (540, 'sleep')]:
+        for minutes, phase in [(30, 'quiet'), (60, 'sleep'), (540, 'sleep')]:
             now = start + timedelta(minutes=minutes)
             assert store.snapshot(now)['rhythm']['phase'] == phase
             assert store.snapshot(now)['stale'] == (minutes >= 60)  # Rest expires after an hour.
