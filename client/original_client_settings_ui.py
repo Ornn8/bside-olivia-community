@@ -3646,18 +3646,6 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const recognize=button('重新识别',()=>void transcribe());
     const labelRow=document.createElement('div');labelRow.className='olivia-cover-row';labelRow.append(text('span','歌词'),recognize);
     const options=document.createElement('div');options.className='olivia-cover-options';
-    const coverParameters=document.createElement('details');coverParameters.append(text('summary','翻唱参数'));
-    const coverFields={};
-    for(const [name,title,value,help] of [
-      ['audio_cover_strength','原曲保留强度',0.6,'控制对原曲的保留程度，推荐 0.6。'],
-      ['cover_noise_strength','翻唱噪声',0.25,'控制生成时加入的噪声强度，推荐 0.25；不是音量或降噪。']]){
-      const row=document.createElement('label');row.style.cssText='display:grid;grid-template-columns:1fr 90px;gap:8px;margin:12px 0';
-      const field=document.createElement('input');field.type='number';field.min='0';field.max='1';field.step='0.01';field.value=String(value);field.required=true;field.name=name;
-      field.style.cssText='width:100%;padding:8px;border:1px solid #8886;border-radius:8px;background:transparent;color:inherit';
-      field.setAttribute('aria-label',title);const note=text('small',help);note.style.gridColumn='1 / -1';
-      row.append(text('span',title),field,note);coverParameters.append(row);coverFields[name]=field;
-    }
-    coverParameters.append(button('恢复推荐参数',()=>{coverFields.audio_cover_strength.value='0.6';coverFields.cover_noise_strength.value='0.25'}));
     for(const [mode,label] of [['audio','音频回信'],['video','视频回信']]){const item=button(label,()=>{state.output=mode;for(const node of options.children)node.setAttribute('aria-pressed',String(node===item))});item.setAttribute('aria-pressed',String(mode==='audio'));options.append(item)}
     const update=()=>{choose.disabled=remove.disabled=lyrics.disabled=state.busy;remove.hidden=!state.material;recognize.hidden=state.lyricsOnServer===true;recognize.disabled=state.busy||!state.material};
     state.materialForSend=()=>{
@@ -3665,8 +3653,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       if(state.busy)throw Error('原曲还在准备中，请稍候再寄出。');
       if(!state.material)throw Error('请先选择原曲。');
       if(!lyrics.value.trim()&&!state.lyricsOnServer){lyrics.focus();throw Error('请填写或识别歌词后再寄出。')}
-      const cover_options={};for(const [name,field] of Object.entries(coverFields)){if(!field.reportValidity())throw Error('翻唱参数请填写 0 到 1 之间的数值。');cover_options[name]=Number(field.value);}
-      cover_options.engine='yue2';const style=arrangement.value.trim();if(style)cover_options.arrangement=style;
+      // She sings it herself (YuE2): only the arrangement words are the user's; the old re-generation knobs are gone.
+      const cover_options={engine:'yue2'};const style=arrangement.value.trim();if(style)cover_options.arrangement=style;
       return {...state.material,cover_lyrics:lyrics.value,cover_output:state.output,cover_options};
     };
     file.onchange=async()=>{
@@ -3686,7 +3674,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       }catch{status.textContent='上传失败，请检查音频文件后重新选择。之前的草稿和原曲仍保留。'}
       finally{state.busy=false;file.value='';update()}
     };
-    cover.append(status,sourceRow,player,labelRow,lyrics,arrangementLabel,coverParameters,options,text('p','翻唱完成后会出现在信箱中，也可收藏到曲库。'));
+    cover.append(status,sourceRow,player,labelRow,lyrics,arrangementLabel,options,text('p','翻唱完成后会出现在信箱中，也可收藏到曲库。'));
     const originalOutput=document.createElement('div');originalOutput.className='olivia-cover-options';
     originalOutput.append(text('span','回信形式'));
     for(const [value,label] of [['audio','音频回信'],['video','视频回信']]){const item=button(label,()=>{state.originalOutput=value;for(const node of originalOutput.querySelectorAll('button'))node.setAttribute('aria-pressed',String(node===item))});item.setAttribute('aria-pressed',String(value==='audio'));originalOutput.append(item)}
