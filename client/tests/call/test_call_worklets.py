@@ -21,14 +21,24 @@ for (let i = 0; i < 50; i++) mic.process([[input]]);
 if (new Int16Array(posted[0])[1599] !== 0) throw Error('mute');  // the frame's start was captured before muting
 posted.length = 0;
 const player = new registry['olivia-player']();
-player.port.onmessage({data: {turn: 1, samples: new Float32Array(200).fill(0.1)}});
-player.port.onmessage({data: {turn: 2, samples: new Float32Array(100).fill(0.2)}});
 const out = [[new Float32Array(128)]];
-player.process([], out); player.process([], out); player.process([], out);
+player.port.onmessage({data: {turn: 1, samples: new Float32Array(200).fill(0.1)}});
+player.process([], out); player.process([], out);   // turn 1 plays out before turn 2 arrives
+player.port.onmessage({data: {turn: 2, samples: new Float32Array(100).fill(0.2)}});
+player.process([], out);
 const drained = posted.filter(m => m.drained !== undefined).map(m => m.drained);
 if (JSON.stringify(drained) !== '[1,2]') throw Error('drained ' + JSON.stringify(drained));
 player.port.onmessage({data: {turn: 3, samples: new Float32Array(500)}}); player.port.onmessage({data: {clear: true}});
 if (player.queue.length) throw Error('clear');
+// A newer answer drops what is left of older ones, and late frames of an older answer are not played.
+player.port.onmessage({data: {turn: 4, samples: new Float32Array(500).fill(0.4)}});
+player.process([], out);
+player.port.onmessage({data: {turn: 5, samples: new Float32Array(300).fill(0.5)}});
+if (player.queue.length !== 1 || player.queue[0].turn !== 5 || player.head !== 0) throw Error('newer turn');
+player.port.onmessage({data: {turn: 4, samples: new Float32Array(300).fill(0.4)}});
+if (player.queue.length !== 1) throw Error('late older frames');
+player.process([], out);
+if (Math.abs(out[0][0] - 0.5) > 1e-6) throw Error('plays the newer turn');
 console.log('WORKLETS_OK');
 '''
 

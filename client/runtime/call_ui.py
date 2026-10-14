@@ -47,7 +47,12 @@ JAVASCRIPT = r'''
       return true}}
   class Player extends AudioWorkletProcessor{
     constructor(){super();this.queue=[];this.head=0;this.turn=0;this.level=0;
-      this.port.onmessage=e=>{const d=e.data;if(d.clear){this.queue=[];this.head=0;return}this.queue.push(d)}}
+      this.port.onmessage=e=>{const d=e.data;if(d.clear){this.queue=[];this.head=0;return}
+        if(d.turn>this.turn){this.turn=d.turn;
+          if(this.queue.length&&this.queue[0].turn<d.turn)this.head=0;
+          this.queue=this.queue.filter(c=>c.turn>=d.turn)}
+        if(d.turn<this.turn)return;
+        this.queue.push(d)}}
     process(_,outputs){const out=outputs[0][0];let sum=0;
       for(let i=0;i<out.length;i++){
         while(this.queue.length&&this.head>=this.queue[0].samples.length){const done=this.queue.shift();this.head=0;
@@ -126,7 +131,10 @@ JAVASCRIPT = r'''
   function close() { overlay?.remove(); overlay = null; }
 
   class Call {
-    constructor(ui) { this.ui = ui; this.transcript = []; this.turn = 0; this.stopped = new Set(); this.ended = false; this.her = ''; }
+    constructor(ui) {
+      this.ui = ui; this.transcript = []; this.turn = 0; this.stopped = new Set(); this.ended = false; this.her = '';
+      this.herDone = new Set(); this.lastAudioAt = {}; this.drainedAt = {};
+    }
 
     async start() {
       const ui = this.ui;
@@ -180,6 +188,9 @@ JAVASCRIPT = r'''
         this.her += m.delta; ui.caption.textContent = this.her;
       } else if (m.type === 'stop') {
         this.stopped.add(m.turn); this.player.port.postMessage({clear: true});
+      } else if (m.type === 'her_done') {
+        this.herDone.add(m.turn);
+        if ((this.drainedAt[m.turn] || 0) > (this.lastAudioAt[m.turn] || 0)) this.reportPlayed(m.turn);
       } else if (m.type === 'notice' && m.reason === 'limit') {
         ui.status.textContent = '余额快用完了，通话即将结束';
       } else if (m.type === 'end') {
@@ -190,6 +201,7 @@ JAVASCRIPT = r'''
     audio(buffer) {
       const view = new DataView(buffer), turn = view.getUint32(0);
       if (this.stopped.has(turn)) return;
+      this.lastAudioAt[turn] = performance.now();
       const pcm = new Int16Array(buffer, 4), rate = this.context.sampleRate, ratio = 24000 / rate;
       const samples = new Float32Array(Math.floor(pcm.length / ratio));
       for (let i = 0; i < samples.length; i++) {
@@ -201,8 +213,13 @@ JAVASCRIPT = r'''
 
     fromPlayer(d) {
       if (d.level !== undefined) { this.ui.orb.style.transform = `scale(${1 + Math.min(0.25, d.level * 3)})`; return; }
-      if (d.drained !== undefined && this.ws?.readyState === 1) this.ws.send(JSON.stringify({type: 'played', turn: d.drained}));
+      if (d.drained === undefined) return;
+      // The player can run dry between two segments; only the end after the server's last frame counts.
+      this.drainedAt[d.drained] = performance.now();
+      if (this.herDone.has(d.drained)) this.reportPlayed(d.drained);
     }
+
+    reportPlayed(turn) { if (this.ws?.readyState === 1) this.ws.send(JSON.stringify({type: 'played', turn})); }
 
     async capture() {
       const source = this.context.createMediaStreamSource(this.stream);
