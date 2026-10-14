@@ -397,6 +397,7 @@ const assert = require('node:assert/strict');
 class Element { constructor(){this.children=[];this.style={};} append(...c){this.children.push(...c);} replaceChildren(...c){this.children=c;} }
 const document={createElement:()=>new Element()};
 const text=(tag,value)=>({textContent:value});
+const button=(label,click)=>({textContent:label,className:'',click});
 ''' + source + r'''
 const render=account=>{const target=new Element();drawUnifiedStatement(target,account);return target.children.map(c=>c.textContent||'').join('\n');};
 const base={remaining_yuan:'1',reserved_yuan:'0',used_yuan:'0',items:[]};
@@ -419,6 +420,7 @@ const assert = require('node:assert/strict');
 class Element { constructor(){this.children=[];this.style={};} append(...c){this.children.push(...c);} replaceChildren(...c){this.children=c;} }
 const document={createElement:()=>new Element()};
 const text=(tag,value)=>({textContent:value});
+const button=(label,click)=>({textContent:label,className:'',click});
 const flat=node=>node.textContent!==undefined?[node.textContent]:node.children.flatMap(flat);
 ''' + source + r'''
 const target=new Element();
@@ -426,8 +428,8 @@ drawUnifiedStatement(target,{remaining_yuan:'1',reserved_yuan:'0',used_yuan:'0',
   {label:'音乐视频',status:'settled',created_at:'2026-10-01T13:03:27+00:00',charged_yuan:'3.88',reserved_yuan:'0'},
   {label:'写回信',status:'settled',created_at:'not-a-date',charged_yuan:'0.01',reserved_yuan:'0'}]});
 const lines=flat(target);
-assert.ok(lines.some(line=>/2026.*10.*01/.test(line)), lines.join('|'));  // local date and time of the charge
-assert.ok(lines.includes('写回信 · 已结算'));                              // an unreadable time is simply omitted
+assert.ok(lines.some(line=>/10.*0[12].*已结算/.test(line)), lines.join('|'));  // local month, day and time of the charge
+assert.equal(lines[lines.indexOf('写回信')+1],'已结算');                     // an unreadable time is simply omitted
 '''
     result = subprocess.run([node, '-e', harness], capture_output=True, text=True, encoding='utf-8', timeout=60)
     assert result.returncode == 0, result.stderr

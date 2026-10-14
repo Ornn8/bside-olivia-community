@@ -2003,30 +2003,39 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const drawUnifiedStatement = (target, account) => {
     const money=value=>'¥'+new Intl.NumberFormat('zh-CN',{minimumFractionDigits:2,maximumFractionDigits:8}).format(Number(value));
     const status={pending:'预留中',review:'等待结算',reserved:'预留中',settled:'已结算',released:'已释放',rejected:'未收费'};
-    target.replaceChildren(text('h4','统一消费账单'));
-    target.append(text('p',`可用 ${money(account.remaining_yuan)} · 预留 ${money(account.reserved_yuan)} · 累计消费 ${money(account.used_yuan)}`));
-    for(const item of account.items||[]){
-      const row=document.createElement('div');row.style.cssText='display:flex;justify-content:space-between;gap:16px;padding:12px 0;border-bottom:1px solid #8884';
+    target.replaceChildren();
+    if(Number(account.reserved_yuan)>0)target.append(text('p',`有 ${money(account.reserved_yuan)} 正在预留，完成后按实际用量结算。`,'text-text-secondary text-caption-m'));
+    // The latest few first; older ones only on request, so the page stays short.
+    const items=account.items||[];
+    const list=document.createElement('div');list.className='olivia-statement-list';
+    const row=item=>{
+      const el=document.createElement('div');el.className='olivia-statement-row';
       const held=Number(item.reserved_yuan)>0;
-      const name=document.createElement('span');name.style.cssText='display:grid;gap:2px;min-width:0';
-      name.append(text('span',`${item.label} · ${status[item.status]||item.status}`));
+      const name=document.createElement('span');name.className='olivia-statement-name';
       const at=new Date(item.created_at||'');
-      if(!Number.isNaN(at.getTime()))name.append(text('span',at.toLocaleString('zh-CN',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}),'text-text-secondary text-caption-m'));
-      row.append(name,text('span',(held?'预留 ':'−')+money(held?item.reserved_yuan:item.charged_yuan)));
-      target.append(row);
-    }
-    if(!(account.items||[]).length)target.append(text('p','还没有消费记录。'));
+      const when=Number.isNaN(at.getTime())?'':at.toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false});
+      name.append(text('span',item.label),text('span',[when,status[item.status]||item.status].filter(Boolean).join(' · '),'text-text-secondary text-caption-m'));
+      el.append(name,text('span',(held?'预留 ':'−')+money(held?item.reserved_yuan:item.charged_yuan),'olivia-statement-amount'));
+      return el;
+    };
+    let shown=0;
+    const more=button('显示更早的记录',()=>show(10));
+    more.className+=' olivia-quiet-action';
+    const show=count=>{for(const item of items.slice(shown,shown+count))list.append(row(item));shown=Math.min(items.length,shown+count);more.hidden=shown>=items.length;};
+    target.append(list);
+    if(items.length){show(10);target.append(more);}else target.append(text('p','还没有消费记录。','text-text-secondary text-body-m'));
     const minimum=account.minimum_charge_yuan?`回信中转与 JEV 判断按用量计费，每次最低 ${money(account.minimum_charge_yuan)}，未产生费用的调用不收费。`:'';
-    target.append(text('p',minimum+'中转和 GPU 共用同一余额；释放预留不是额外扣款或充值。'+(account.has_more?'当前显示最近 50 笔。':''),'text-text-secondary text-caption-m'));
+    target.append(text('p',minimum+'中转和 GPU 共用同一余额；释放预留不是额外扣款或充值。'+(account.has_more?'这里显示最近 50 笔。':''),'text-text-secondary text-caption-m'));
   };
 
-  const mountRelayAccount = (panel) => {
-    panel.style.cssText = "display:grid;gap:20px;min-width:0";
+  const mountRelayAccount = (panel, keyExtras = null) => {
+    panel.style.cssText = "display:grid;gap:16px;min-width:0";
     const account = text("p", "正在读取账户…", "text-text-secondary text-body-m");
     account.setAttribute("role", "status");
     const controls = actions(); controls.style.cssText = "display:flex;flex-wrap:wrap;gap:12px";
     const billing = document.createElement("section");
     const models = document.createElement("section");
+    const records = document.createElement("section");
     const identity = document.createElement("section");
     identity.className = "olivia-account-key";
     const key = setupInput("我的 Olivia Key", "password");
@@ -2034,6 +2043,30 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     key.input.autocomplete = "off";
     const errors = {RELAY_AUTH_FAILED:"Key 已失效，请检查或联系管理员。", RELAY_ORDER_LIMIT:"申请过于频繁，请稍后重试。", RELAY_NOT_CONFIGURED:"请先申请 Key，或导入已有 Key。"};
     Object.assign(errors, {RELAY_TLS_FAILED:"无法验证回信服务证书，请检查系统时间和网络代理。", RELAY_TIMEOUT:"连接回信服务超时，请稍后重试。", RELAY_CONNECTION_FAILED:"无法连接回信服务，请检查网络或代理。", RELAY_RESPONSE_INVALID:"回信服务返回了无法识别的响应，请稍后重试。"});
+    // A connected account is one short page: the balance card, then tabs instead of one long
+    // scroll of models, records and key. Before the key exists, only the key part shows.
+    const keyPage = document.createElement("section");
+    keyPage.style.cssText = "display:grid;gap:16px;min-width:0";
+    const tabs = document.createElement("div");
+    tabs.className = "olivia-account-tabs";
+    tabs.setAttribute("aria-label", "账户内容");
+    tabs.hidden = true;
+    const pages = {};
+    let current = "models";
+    const show = id => {
+      current = id;
+      for (const [name, [tab, page]] of Object.entries(pages)) {
+        tab.setAttribute("aria-pressed", String(name === id));
+        page.hidden = name !== id;
+      }
+    };
+    for (const [id, label, page] of [["models", "模型", models], ["records", "消费记录", records], ["key", "Key", keyPage]]) {
+      const tab = button(label, () => show(id));
+      tab.setAttribute("aria-pressed", "false");
+      tabs.append(tab);
+      pages[id] = [tab, page];
+      page.hidden = true;
+    }
     let busy = false;
     const refresh = async () => {
       const result = await requestSetup("/toy/relay/action", {action:"account"});
@@ -2046,7 +2079,17 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       copy.hidden = !result.configured;
       billing.replaceChildren();
       models.replaceChildren();
-      if (result.configured) { mountRelayModels(models); mountRelayBalance(billing); }
+      records.replaceChildren();
+      if (result.configured) {
+        keyPage.append(identity);
+        if (keyExtras) keyPage.append(keyExtras);
+        tabs.hidden = false;
+        show(current);
+        mountRelayModels(models); mountRelayBalance(billing, {records});
+      } else {
+        tabs.hidden = true;
+        for (const [, page] of Object.values(pages)) page.hidden = true;
+      }
     };
     const run = async (action, payload = {}) => {
       if (busy) return;
@@ -2057,7 +2100,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         if (action === "export_key") {
           if (payload.display) { key.input.value=result.key; key.input.type="text"; account.textContent="Key 已显示，请妥善保管。"; }
           else { await navigator.clipboard.writeText(result.key); account.textContent = "Key 已复制，请妥善保存，不要发给他人。"; }
-        } else { key.input.value=""; await refresh(); }
+        } else { key.input.value=""; if (action === "claim") current = "key"; await refresh(); }
       } catch (e) {
         const code=e.name==='AbortError'?'RELAY_TIMEOUT':e instanceof TypeError?'RELAY_LOCAL_CONNECTION_FAILED':/^[A-Z][A-Z0-9_]{0,95}$/.test(e.code||'')?e.code:'RELAY_UNAVAILABLE';
         account.textContent=(errors[code] || "暂时无法完成，请重试。已有账户和余额不会因此丢失。")+`（${code}）`;
@@ -2070,7 +2113,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     claim.hidden=reveal.hidden=copy.hidden=true;
     controls.append(claim,reveal,copy);
     identity.append(key.wrapper,controls,account);
-    panel.append(identity,models,billing);
+    panel.append(identity);
+    if (keyExtras) panel.append(keyExtras);
+    panel.append(billing,tabs,models,records,keyPage);
     void refresh().catch(()=>{account.textContent="账户读取失败，请关闭后重试。";});
   };
 
@@ -2079,7 +2124,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     box.setAttribute("data-olivia-relay-models", "");
     box.style.cssText = "display:grid;gap:12px;margin:24px 0;min-width:0";
     const title = text("h3", "回信模型", "text-text-title text-title-m");
-    const description = text("p", "以 Claude Sonnet 5.5 为 1 倍。输入和输出分别计费，实际消费取决于用量；短请求可能受最低计费规则影响。", "text-text-secondary text-body-m");
+    const description = text("p", "以 Claude Sonnet 5.5 为 1 倍。输入和输出分别计费，实际消费取决于用量；短请求可能受最低计费规则影响。", "text-text-secondary text-caption-m");
+    const about = text("p", "", "text-text-secondary text-body-m");
+    about.className += " olivia-model-about";
     const list = document.createElement("fieldset");
     list.style.cssText = "margin:0;padding:0;border:0;min-width:0";
     const legend = text("legend", "选择回信模型");
@@ -2106,7 +2153,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     });
     apply.disabled = true;
     controls.append(apply);
-    box.append(title, description, list, controls, status);
+    box.append(title, description, list, about, controls, status);
     list.append(legend); panel.append(box);
     void requestSetup("/toy/relay/action", {action:"models"}).then(data => {
       if (!box.isConnected) return;
@@ -2115,39 +2162,40 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       for (const item of rows) {
         const row = document.createElement("label");
         row.className = "olivia-model-row";
-        row.style.cssText = "display:grid;grid-template-columns:20px minmax(0,1fr) auto;align-items:center;gap:12px;padding:14px 0;border-bottom:1px solid #383b42;cursor:pointer";
+        row.style.cssText = "display:grid;grid-template-columns:20px minmax(0,1fr) auto;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid #2c2e33;cursor:pointer";
         const radio = document.createElement("input");
         radio.type = "radio"; radio.name = "olivia-reply-model"; radio.value = item.id;
         radio.checked = item.id === active;
         radio.style.cssText = "margin:0;accent-color:#ded3bd;width:16px;height:16px";
-        radio.addEventListener("change", () => { selected = radio.value; apply.disabled = busy || selected === active; });
+        radio.addEventListener("change", () => { selected = radio.value; apply.disabled = busy || selected === active; explain(); });
         radios.push(radio);
         const name = text("span", item.display_name, "text-text-title text-body-m");
         name.style.cssText = "overflow-wrap:anywhere;line-height:1.5";
         const detail = document.createElement("span");
         detail.style.cssText = "display:grid;gap:4px;min-width:0";
         detail.append(name);
-        if (item.description) {
-          const intro = text("span", item.description, "text-text-secondary text-body-m");
-          intro.style.cssText = "font-size:13px;line-height:1.65;overflow-wrap:anywhere";
-          detail.append(intro);
-        }
+        if (item.description) row.title = item.description;
         const ratio = value => Number(value).toLocaleString("zh-CN", {maximumFractionDigits:2});
         const ratios = text("span", `输入 ${ratio(item.input_multiplier)}× · 输出 ${ratio(item.output_multiplier)}×`, "text-text-secondary text-body-m");
         ratios.className += " olivia-model-multipliers";
         ratios.style.cssText = "font-variant-numeric:tabular-nums;font-size:13px;line-height:1.5";
         row.append(radio, detail, ratios); list.append(row);
       }
+      // Only the chosen model's introduction is shown, under the list.
+      const explain = () => { about.textContent = rows.find(item => item.id === selected)?.description || ""; about.hidden = !about.textContent; };
+      explain();
       status.textContent = rows.length ? "选择后点击「使用所选模型」，下一次发送生效。" : "暂无可用模型，请稍后重新打开账户页面。";
       if (rows.length) mountModelRoutes(box, rows, data.routes || {});
     }).catch(() => { status.textContent = "模型列表读取失败，请稍后重新打开账户页面。"; });
   };
 
   const mountModelRoutes = (box, rows, saved) => {
-    const section = document.createElement("section");
+    const section = document.createElement("details");
     section.setAttribute("data-olivia-model-routes", "");
-    section.style.cssText = "display:grid;gap:12px;margin-top:12px;min-width:0";
-    const title = text("h3", "按用途选择模型", "text-text-title text-title-m");
+    section.className = "olivia-model-routes";
+    section.style.cssText = "display:grid;gap:12px;margin-top:4px;min-width:0";
+    section.open = ["qq", "letter", "diary"].some(use => typeof saved[use] === "string" && saved[use]);
+    const title = text("summary", "按用途分别选择（QQ 聊天、写信、日记）");
     const description = text("p", "QQ 聊天、写信、写日记可以分别用不同的模型，按各自模型的价格计费。选「跟随回信模型」就用上面选中的模型。", "text-text-secondary text-body-m");
     const status = text("p", "", "text-text-secondary text-body-m");
     status.setAttribute("role", "status");
@@ -2187,22 +2235,22 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     box.append(section);
   };
 
-  const mountRelayBalance = (panel) => {
+  const mountRelayBalance = (panel, {records = null} = {}) => {
     const box = document.createElement("section"); box.setAttribute("data-olivia-relay-billing", "true");
-    box.style.cssText = "display:grid;grid-template-columns:minmax(0,1fr);min-width:0;max-width:100%;gap:16px";
-    const title = text("h3", "余额与调用量", "text-text-title text-title-m");
+    box.style.cssText = "display:grid;grid-template-columns:minmax(0,1fr);min-width:0;max-width:100%;gap:12px";
     const balance = text("p", "读取已保存的 Olivia 服务账户。", "text-text-secondary text-body-m");
     const usage = text("p", "调用量待读取。", "text-text-secondary text-body-m");
-    const metrics = document.createElement("div"); metrics.className="olivia-account-metrics";
-    const metric = label => {
-      const item=document.createElement("div");
-      const value=text("p","—","olivia-metric-value");
-      item.append(text("p",label,"olivia-metric-label"),value);metrics.append(item);return value;
-    };
-    const available=metric("可用余额");
-    const spent=metric("累计消费");
-    const calls=metric("调用次数");
-    const tokens=metric("总 Token");
+    // The card: what is left (large), what was spent, and the two actions people need here.
+    const metrics = document.createElement("div"); metrics.className="olivia-account-summary";
+    const figures = document.createElement("div");
+    const available = text("p","—","olivia-metric-value olivia-balance-value");
+    const spentLine = text("p","累计消费 ","olivia-metric-label");
+    const spent = text("span","—");
+    spentLine.append(spent);
+    figures.append(text("p","可用余额","olivia-metric-label"),available,spentLine);
+    const quick = actions(); quick.className="olivia-summary-actions";
+    metrics.append(figures,quick);
+    const topup = document.createElement("div"); topup.className="olivia-account-topup"; topup.hidden = true;
     const status = text("p", "", "text-text-secondary text-body-m"); status.setAttribute("role", "status");
     const orderView = document.createElement("div"); orderView.style.cssText="display:grid;grid-template-columns:minmax(0,1fr);min-width:0;gap:12px";
     const controls = actions(); controls.style.cssText="display:flex;flex-wrap:wrap;gap:12px;min-width:0";
@@ -2233,6 +2281,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       const signature = JSON.stringify(order && [order.id, order.state, order.expires_at]);
       // Keep the pending controls mounted so polling cannot steal keyboard focus.
       if (order && order.state === "pending" && signature === shownSignature) { queuePoll(generation); return; }
+      if (order && order.state === "pending") topup.hidden = false;
       shownSignature = signature; orderView.replaceChildren(); active = null;
       const serial = ++generation;
       if (!order) { enabled(); return; }
@@ -2289,9 +2338,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       spent.textContent=`¥${Number(data.used_yuan).toFixed(4)}`;
       try {drawUnifiedStatement(unifiedHistory,await call({action:'statement'}));} catch(_){unifiedHistory.textContent='统一账单暂时无法读取，请稍后刷新。';}
       const counts = data.usage;
-      calls.textContent=counts ? counts.calls.toLocaleString() : "—";
-      tokens.textContent=counts ? counts.total_tokens.toLocaleString() : "—";
-      usage.textContent = counts ? `输入 ${counts.input_tokens.toLocaleString()} / 输出 ${counts.output_tokens.toLocaleString()} Token · 仅统计已结算调用` : "调用量暂不可用，请稍后刷新。";
+      usage.textContent = counts ? `调用 ${counts.calls.toLocaleString()} 次 · ${counts.total_tokens.toLocaleString()} Token（输入 ${counts.input_tokens.toLocaleString()} / 输出 ${counts.output_tokens.toLocaleString()}）· 仅统计已结算调用` : "调用量暂不可用，请稍后刷新。";
     };
     const run = async work => { if(busy)return;busy=true;enabled();status.textContent="正在读取…";
       try { await work();if(status.textContent==="正在读取…")status.textContent=""; }
@@ -2300,11 +2347,15 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     };
     const refresh = button("刷新", () => run(async()=>{await readBalance();drawOrder(await call({action:"order_status"}));}));
     const create = button("获取付款金额", () => run(async()=>{await readBalance();drawOrder(await call({action:"create_order",amount_cents:Number(select.value)}));}));
-    controls.append(select,create,refresh);
+    controls.append(select,create);
     create.className += " olivia-primary-action";
-    const recharge = text("h3","账户充值","text-text-title text-title-m");
-    recharge.style.marginTop="12px";
-    box.append(title,metrics,balance,usage,unifiedHistory,recharge,controls,orderView,status);
+    const charge = button("充值", () => { topup.hidden = !topup.hidden; });
+    charge.className += " olivia-primary-action";
+    quick.append(charge,refresh);
+    topup.append(text("h3","账户充值","text-text-title text-title-m"),controls,orderView);
+    balance.hidden = true;
+    box.append(metrics,balance,topup,status);
+    (records || box).append(usage,unifiedHistory);
     panel.append(box);
     let telemetryPageRecorded = false;
     const recordRechargePage = () => {
@@ -3233,7 +3284,17 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] .olivia-primary-action { background:#ded3bd !important;color:#202126 !important;border-color:#ded3bd !important; }
           [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] .olivia-account-key { display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px 16px;align-items:end;padding:20px;background:#23252a;border-radius:12px; }
           [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] .olivia-account-key > p { grid-column:1/-1;font-size:12px;color:#b9bcc4; }
-          [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] .olivia-account-metrics { display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:20px;padding:20px 0;border-bottom:1px solid #383b42; }
+          [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] .olivia-account-summary { display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:end;gap:12px 16px;padding:20px;background:#23252a;border-radius:12px; }
+          [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] .olivia-balance-value { font-size:32px;line-height:40px; }
+          [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] .olivia-summary-actions { display:flex;gap:10px;flex-wrap:wrap; }
+          [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] .olivia-account-topup { display:grid;gap:12px;padding:16px 20px;border:1px solid #383b42;border-radius:12px; }
+          [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] .olivia-account-tabs { display:flex;gap:24px;border-bottom:1px solid #383b42;margin-top:4px; }
+          [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] .olivia-statement-row { display:flex;justify-content:space-between;align-items:center;gap:16px;padding:10px 0;border-bottom:1px solid #2c2e33; }
+          [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] .olivia-statement-name { display:grid;gap:2px;min-width:0;overflow-wrap:anywhere; }
+          [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] .olivia-statement-amount { font-variant-numeric:tabular-nums;white-space:nowrap; }
+          [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] .olivia-quiet-action { background:transparent !important;border:0 !important;color:#b9bcc4 !important;padding:6px 0 !important;min-height:0 !important;justify-self:start; }
+          [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] .olivia-model-routes > summary { cursor:pointer;color:#cfd2d8;padding:8px 0; }
+          [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] .olivia-model-about { font-size:13px;line-height:1.65;padding:4px 0 0; }
           [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] .olivia-metric-label { font-size:12px;color:#b9bcc4;margin-bottom:8px; }
           [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] .olivia-metric-value { font-size:24px;line-height:32px;font-weight:600;font-variant-numeric:tabular-nums;overflow-wrap:anywhere;color:#f1ece2; }
           [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] [aria-pressed] { background:transparent !important;border:0 !important;border-radius:0 !important;border-bottom:2px solid transparent !important;padding:10px 4px !important; }
@@ -3242,7 +3303,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
             [data-olivia-relay-models] .olivia-model-row { grid-template-columns:20px minmax(0,1fr) !important;gap:4px 12px !important; }
             [data-olivia-relay-models] .olivia-model-multipliers { grid-column:2; }
             [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] .olivia-account-key { grid-template-columns:minmax(0,1fr); }
-            [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] .olivia-account-metrics { grid-template-columns:repeat(2,minmax(0,1fr));gap:16px; }
+            [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] .olivia-account-summary { grid-template-columns:minmax(0,1fr); }
           }
         `;
         dialog.style.height = "min(800px, calc(100vh - 80px))";
@@ -3259,16 +3320,16 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         const account = document.createElement("section");
         const connection = document.createElement("details");
         connection.className = "olivia-account-connection";
-        connection.style.cssText = "margin-top:24px;padding-top:20px;border-top:1px solid #8884";
+        connection.style.cssText = "padding-top:4px";
         const connectionBody = document.createElement("section");
         connectionBody.style.cssText = "display:grid;gap:14px;min-width:0;margin-top:16px";
         const connectionTitle = text("summary", "已有 Key？在这里导入或更换");
         connectionTitle.style.cssText = "cursor:pointer;color:#b9bcc4";
         connection.append(connectionTitle, connectionBody);
-        viewport.append(account, connection);
+        viewport.append(account);
         content.append(viewport);
         void renderLlmSetupPanel(connectionBody, false, {offerClaim: false});
-        mountRelayAccount(account);
+        mountRelayAccount(account, connection);
       }
       dialog.append(header, content);
       backdrop.append(theme, dialog);
