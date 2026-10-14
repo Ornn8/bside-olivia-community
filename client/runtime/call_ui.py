@@ -121,8 +121,19 @@ JAVASCRIPT = r'''
     if (group && entry.parentElement !== group) group.prepend(entry);
   }
 
+  // A slow or failed read keeps the last answer and tries again in 30 s: one network hiccup to the
+  // call service used to hide the button for five minutes (2026-10-14). Only a real answer from the
+  // service (open, closed, no account) changes it.
+  let configRetry = null;
   async function refreshConfig() {
-    try { config = await local('/toy/call/config'); } catch (_) { config = null; }
+    let value = null;
+    try { value = await local('/toy/call/config'); } catch (_) {}
+    clearTimeout(configRetry);
+    if (!value || value.reason === 'network' || value.reason === 'service') {
+      configRetry = setTimeout(refreshConfig, 30000);
+      if (config || !value) return;
+    }
+    config = value;
     entry.toggleAttribute('data-ready', !!config?.available);
   }
 
@@ -245,13 +256,21 @@ JAVASCRIPT = r'''
       if (known !== null && phones.length > known) { hint.textContent = '配对成功，现在可以在手机上给她打电话了。'; box.hidden = true; intro.hidden = true; }
       known = phones.length; draw(phones);
     };
+    const retry = node('button', null, '重试', node('div', 'olivia-call-actions', null, panel)); retry.type = 'button';
+    retry.parentElement.hidden = true;
     const pair = async () => {
+      retry.parentElement.hidden = true; box.hidden = false; hint.textContent = '正在生成二维码…';
       try {
         const value = await local('/toy/call/phone/pair', {});
         box.replaceChildren(qrSvg(value.url));
         hint.textContent = '二维码 10 分钟内有效，只能用一次。以后从手机桌面图标直接打（扫码后按页面提示添加到主屏幕）。';
-      } catch (e) { hint.textContent = MESSAGES[e.message] || '暂时没能生成二维码，请稍后再试。'; box.hidden = true; }
+      } catch (e) {
+        hint.textContent = e.message === 'CALL_NETWORK' ? '连不上服务器，请检查网络后重试。'
+          : MESSAGES[e.message] || '暂时没能生成二维码，请稍后再试。';
+        box.hidden = true; retry.parentElement.hidden = false;
+      }
     };
+    retry.onclick = pair;
     back.onclick = () => {
       clearInterval(phoneTimer); panel.remove();
       shown.forEach(el => { el.hidden = el.dataset.wasHidden === '1'; delete el.dataset.wasHidden; });

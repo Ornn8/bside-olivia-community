@@ -24,7 +24,10 @@ from runtime.tls import client_tls_context
 
 # A call holds money in blocks while it runs; this is only the per-call ceiling the user consents to.
 MAX_CHARGE_CENTS = 6000
-CONFIG_TIMEOUT = ClientTimeout(total=6)
+# Some users' networks to the call service are slow at times (2026-10-14: the call button vanished
+# and pairing failed after 6 s); these reads may take longer, and pairing tries twice.
+CONFIG_TIMEOUT = ClientTimeout(total=12)
+PAIR_TIMEOUT = ClientTimeout(total=15)
 TICKET_TIMEOUT = ClientTimeout(total=12)
 
 
@@ -132,11 +135,15 @@ async def pair_phone(server):
     base, key = _cloud()
     if base is None:
         raise web.HTTPServiceUnavailable(reason='CALL_ACCOUNT_REQUIRED')
-    try:
-        status, value = await _cloud_json('POST', '/v1/call/pair', timeout=CONFIG_TIMEOUT,
-                                          headers={'Authorization': 'Bearer ' + key})
-    except (ClientError, asyncio.TimeoutError, ValueError):
-        raise web.HTTPServiceUnavailable(reason='CALL_NETWORK')
+    for attempt in (1, 2):
+        try:
+            status, value = await _cloud_json('POST', '/v1/call/pair', timeout=PAIR_TIMEOUT,
+                                              headers={'Authorization': 'Bearer ' + key})
+            break
+        except (ClientError, asyncio.TimeoutError, ValueError):
+            if attempt == 2:
+                raise web.HTTPServiceUnavailable(reason='CALL_NETWORK')
+            await asyncio.sleep(1)
     if status != 200 or not isinstance(value, dict) or not str(value.get('url', '')).startswith('https://'):
         raise web.HTTPServiceUnavailable(reason='CALL_AUTH_FAILED' if status == 401 else 'CALL_UNAVAILABLE')
     return {'url': value['url'], 'expires_in': value.get('expires_in')}
