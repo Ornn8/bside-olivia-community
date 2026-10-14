@@ -989,6 +989,8 @@ def test_start_local_matches_first_party_client_launch_contract(
     assert _client_command(client, local) == [
         str(client),
         f'--user-data-dir={local / "cef"}',
+        '--enable-media-stream',
+        '--use-fake-ui-for-media-stream',
     ]
     assert environment["APPDATA"] == str(roaming)
     assert environment["LOCALAPPDATA"] == str(local)

@@ -49,6 +49,9 @@ def cross_channel_reason(server, *, channel, now, profile, exclude_id=None):
         return reason
     window = max(600, profile.im_interval_min)
     cooldown = max(1800, profile.im_interval_min)
+    from runtime.call.store import quiet_reason
+    if quiet_reason(server, now, window):  # on the phone with her, or just hung up
+        return reason
     for rows in (getattr(server.store, 'letters', []), getattr(server.store, 'personal_chats', [])):
         for row in reversed(rows):
             if row.get('letter_id') == exclude_id:
