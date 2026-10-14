@@ -189,3 +189,26 @@ def test_page_scripts_invalidate_the_frontend_repair_receipt():
     source = Path(__file__).resolve().parents[2]
     names = {path.relative_to(source).as_posix() for path in _frontend_patcher_files(source)}
     assert {'runtime/call_ui.py', 'runtime/native_piano_ui.py', 'original_client_settings_ui.py'} <= names
+
+
+def test_the_chosen_model_goes_with_the_ticket_and_config_lists_the_models(monkeypatch):
+    monkeypatch.setenv('OLIVIA_GPU_API_URL', 'https://api.example.cn')
+    monkeypatch.setenv('OLIVIA_GPU_API_KEY', 'secret')
+    monkeypatch.setattr(call_context, 'build', lambda server, backend: ({'persona': 'p'}, 'answer'))
+    sent = []
+
+    async def cloud(method, path, *, timeout, headers=None, body=None):
+        sent.append(body)
+        if path == '/v1/call/config':
+            return 200, {'available': True, 'cents_per_minute': 40, 'default_model': 'flash', 'models': [
+                {'id': 'flash', 'cents_per_minute': 40, 'base_cents_per_minute': 40, 'busy_cents_per_minute': 48},
+                {'id': 'plus', 'cents_per_minute': 80, 'base_cents_per_minute': 80, 'busy_cents_per_minute': 96}]}
+        return 200, {'ticket': 't' * 40, 'cents_per_minute': 80, 'model': 'plus'}
+    monkeypatch.setattr(call_http, '_cloud_json', cloud)
+    status, value = answer(asyncio.run(call_http.call_http(Server(), Request('/toy/call/config'))))
+    assert [m['id'] for m in value['data']['models']] == ['flash', 'plus']
+    assert value['data']['models'][1]['busy_cents_per_minute'] == 96 and value['data']['default_model'] == 'flash'
+    status, value = answer(asyncio.run(call_http.call_http(Server(), Request('/toy/call/start', 'POST', {'model': 'plus'}))))
+    assert status == 200 and sent[-1]['model'] == 'plus' and value['data']['cents_per_minute'] == 80
+    status, value = answer(asyncio.run(call_http.call_http(Server(), Request('/toy/call/start', 'POST', {'model': '../x'}))))
+    assert status == 400

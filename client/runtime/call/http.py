@@ -54,10 +54,14 @@ async def config(server):
     if status != 200 or not isinstance(value, dict):
         return {'available': False, 'reason': 'service'}
     price = value.get('cents_per_minute')
+    models = [{key: m.get(key) for key in ('id', 'cents_per_minute', 'base_cents_per_minute', 'busy_cents_per_minute')}
+              for m in value.get('models') or [] if isinstance(m, dict) and isinstance(m.get('id'), str)
+              and type(m.get('cents_per_minute')) is int]
     return {'available': bool(value.get('available')) and type(price) is int,
             'cents_per_minute': price if type(price) is int else None,
             'base_cents_per_minute': value.get('base_cents_per_minute'),
-            'busy_cents_per_minute': value.get('busy_cents_per_minute')}
+            'busy_cents_per_minute': value.get('busy_cents_per_minute'),
+            'models': models, 'default_model': value.get('default_model')}
 
 
 async def start(server, request):
@@ -71,6 +75,13 @@ async def start(server, request):
         backend = _backend(request)
     except Exception:
         backend = None
+    try:
+        body = json.loads(await request.text() or '{}')
+    except ValueError:
+        body = {}
+    model = body.get('model') if isinstance(body, dict) else None
+    if model is not None and (not isinstance(model, str) or not model.isalnum() or len(model) > 20):
+        raise ValueError('CALL_REQUEST_INVALID')
     context, pickup = await asyncio.to_thread(build, server, backend)
     if pickup == 'missed':
         await asyncio.to_thread(record_missed, server, 'bathing')
@@ -78,12 +89,13 @@ async def start(server, request):
     headers = {'Authorization': 'Bearer ' + key, 'X-Olivia-Max-Charge-Cents': str(MAX_CHARGE_CENTS)}
     try:
         status, value = await _cloud_json('POST', '/v1/call/ticket', timeout=TICKET_TIMEOUT, headers=headers,
-                                          body={'v': 1, 'context': context, 'pickup': pickup})
+                                          body={'v': 1, 'context': context, 'pickup': pickup,
+                                                **({'model': model} if model else {})})
     except (ClientError, asyncio.TimeoutError, ValueError):
         raise web.HTTPServiceUnavailable(reason='CALL_NETWORK')
     if status != 200 or not isinstance(value, dict) or not isinstance(value.get('ticket'), str):
         raise web.HTTPServiceUnavailable(reason={401: 'CALL_AUTH_FAILED', 402: 'CALL_INSUFFICIENT_BALANCE',
-                                                 503: 'CALL_BUSY'}.get(status, 'CALL_UNAVAILABLE'))
+                                                 503: 'CALL_BUSY', 400: 'CALL_MODEL_UNKNOWN'}.get(status, 'CALL_UNAVAILABLE'))
     return {'pickup': pickup, 'ticket': value['ticket'], 'ws_url': _ws_url(base),
             'cents_per_minute': value.get('cents_per_minute')}
 

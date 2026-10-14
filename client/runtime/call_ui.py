@@ -26,6 +26,11 @@ JAVASCRIPT = r'''
   @keyframes olivia-ring{0%,100%{transform:scale(1)}50%{transform:scale(1.08)}}
   .olivia-call-title{font-size:18px;margin:0}.olivia-call-status{min-height:22px;color:#c9bfae;margin:6px 0 14px;font-variant-numeric:tabular-nums}
   .olivia-call-price{font-size:12px;color:#a69c8b;margin:0 0 18px}
+  .olivia-call-models{display:flex;gap:8px;justify-content:center;margin:0 0 10px}
+  .olivia-call-models button{padding:6px 12px;border-radius:16px;border:1px solid #5a554d;background:#2c2a27;color:#c9bfae;
+    cursor:pointer;font:inherit;font-size:13px}
+  .olivia-call-models button[aria-pressed="true"]{background:#eee9df;color:#1f1d1b;border-color:#eee9df}
+  .olivia-call-models button:focus-visible{outline:2px solid #f3eee4;outline-offset:2px}
   .olivia-call-caption{min-height:44px;max-height:88px;overflow:hidden;font-size:13px;color:#d8cfbf;margin:0 0 18px}
   .olivia-call-actions{display:flex;gap:14px;justify-content:center}
   .olivia-call-actions button{min-width:88px;padding:10px 14px;border-radius:22px;border:1px solid #5a554d;background:#2c2a27;color:#eee9df;cursor:pointer}
@@ -88,18 +93,32 @@ JAVASCRIPT = r'''
     fab.toggleAttribute('data-ready', !!config?.available);
   }
 
-  function priceText() {
-    if (!config?.cents_per_minute) return '';
-    const low = config.base_cents_per_minute, high = config.busy_cents_per_minute;
+  // The user picks the model of each call; the last choice is remembered on this computer.
+  const MODEL_LABELS = {flash: ['标准', '日常聊天'], plus: ['增强', '回应更生动、更像她']};
+  const MODEL_KEY = 'olivia-call-model';
+  const models = () => (config?.models || []).filter(m => MODEL_LABELS[m.id] && typeof m.cents_per_minute === 'number');
+  function chosenModel() {
+    let saved = null;
+    try { saved = localStorage.getItem(MODEL_KEY); } catch (_) {}
+    const list = models();
+    return (list.find(m => m.id === saved) || list.find(m => m.id === config?.default_model) || list[0] || null);
+  }
+  function remember(id) { try { localStorage.setItem(MODEL_KEY, id); } catch (_) {} }
+
+  function priceText(model) {
+    const plan = model || (config?.cents_per_minute ? config : null);
+    if (!plan?.cents_per_minute) return '';
+    const low = plan.base_cents_per_minute, high = plan.busy_cents_per_minute;
     return high && low && high !== low
       ? `每分钟 ${yuan(low)}，通话的人多时 ${yuan(high)}；接通时的价格整通电话不变，按秒计费。`
-      : `每分钟 ${yuan(config.cents_per_minute)}，按秒计费。`;
+      : `每分钟 ${yuan(plan.cents_per_minute)}，按秒计费。`;
   }
 
   const MESSAGES = {
     CALL_ACCOUNT_REQUIRED: '还没有连接 Olivia 账户，暂时不能打电话。',
     CALL_INSUFFICIENT_BALANCE: '余额不足，充值后再打吧。', CALL_BUSY: '线路有点忙，稍后再打试试。',
     CALL_NETWORK: '网络不太稳定，没能打通。', CALL_AUTH_FAILED: '账户 Key 无效，请在设置里重新连接。',
+    CALL_MODEL_UNKNOWN: '这个通话模型暂时不能用，换一个试试。',
     MIC: '没能打开麦克风，请检查麦克风权限和设备。'
   };
 
@@ -111,7 +130,21 @@ JAVASCRIPT = r'''
     const orb = node('div', 'olivia-call-orb', null, card);
     node('p', 'olivia-call-title', '语音通话', card);
     const status = node('p', 'olivia-call-status', '', card); status.setAttribute('role', 'status');
-    const price = node('p', 'olivia-call-price', priceText(), card);
+    let model = chosenModel();
+    const choices = node('div', 'olivia-call-models', null, card);
+    choices.setAttribute('role', 'group'); choices.setAttribute('aria-label', '通话模型');
+    choices.hidden = models().length < 2;
+    const price = node('p', 'olivia-call-price', priceText(model), card);
+    for (const plan of models()) {
+      const [label, hint] = MODEL_LABELS[plan.id];
+      const button = node('button', null, `${label} ${yuan(plan.cents_per_minute)}/分钟`, choices);
+      button.type = 'button'; button.title = hint; button.dataset.model = plan.id;
+      button.setAttribute('aria-pressed', String(plan.id === model?.id));
+      button.onclick = () => {
+        model = plan; remember(plan.id); price.textContent = priceText(plan);
+        for (const other of choices.children) other.setAttribute('aria-pressed', String(other === button));
+      };
+    }
     const caption = node('p', 'olivia-call-caption', '', card); caption.setAttribute('aria-live', 'polite');
     const actions = node('div', 'olivia-call-actions', null, card);
     const dial = node('button', null, '拨打', actions); dial.type = 'button'; dial.dataset.kind = 'dial';
@@ -121,8 +154,8 @@ JAVASCRIPT = r'''
     hang.onclick = () => call ? call.hangup() : close();
     mute.onclick = () => { const on = mute.getAttribute('aria-pressed') !== 'true'; mute.setAttribute('aria-pressed', String(on)); call?.mute(on); };
     dial.onclick = async () => {
-      dial.hidden = true; hang.textContent = '挂断'; card.dataset.state = 'ringing'; status.textContent = '正在呼叫…';
-      call = new Call({status, caption, orb, card, mute, hang, price, done: () => { call = null; }});
+      dial.hidden = true; choices.hidden = true; hang.textContent = '挂断'; card.dataset.state = 'ringing'; status.textContent = '正在呼叫…';
+      call = new Call({status, caption, orb, card, mute, hang, price, model: model?.id, done: () => { call = null; }});
       await call.start();
     };
     hang.focus();
@@ -150,7 +183,8 @@ JAVASCRIPT = r'''
       this.ringing = this.ring();
       const minimum = new Promise(r => setTimeout(r, 2500));
       let started;
-      try { started = await local('/toy/call/start', {}); } catch (e) { await minimum; return this.fail(e.message); }
+      try { started = await local('/toy/call/start', ui.model ? {model: ui.model} : {}); }
+      catch (e) { await minimum; return this.fail(e.message); }
       if (started.pickup === 'missed') {
         await new Promise(r => setTimeout(r, 18000));
         return this.finish('暂时无人接听', null);
@@ -185,9 +219,13 @@ JAVASCRIPT = r'''
         this.capture(); this.worldTimer = setInterval(() => this.world(), 300000);
       } else if (m.type === 'her') {
         if (m.turn !== this.turn) { this.turn = m.turn; this.her = ''; }
-        this.her += m.delta; ui.caption.textContent = this.her;
+        if (!this.stopped.has(m.turn)) { this.her += m.delta; ui.caption.textContent = this.her; }
       } else if (m.type === 'stop') {
         this.stopped.add(m.turn); this.player.port.postMessage({clear: true});
+        // The caption keeps only what she said aloud before she was cut off.
+        if (typeof m.heard === 'string' && m.turn === this.turn) { this.her = m.heard; ui.caption.textContent = m.heard ? m.heard + '……' : ''; }
+      } else if (m.type === 'hush') {
+        this.player.port.postMessage({clear: true});   // her filler sound, when the user goes on talking
       } else if (m.type === 'her_done') {
         this.herDone.add(m.turn);
         if ((this.drainedAt[m.turn] || 0) > (this.lastAudioAt[m.turn] || 0)) this.reportPlayed(m.turn);
