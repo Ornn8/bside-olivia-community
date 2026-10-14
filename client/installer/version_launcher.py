@@ -715,6 +715,15 @@ def _close_restart_windows(pids: set[int]) -> None:
     user.EnumWindows(close_window, 0)
 
 
+def _rolled_back(root: Path) -> bool:
+    try:
+        marker = json.loads((root / PROBATION_NAME).read_text(encoding="utf-8"))
+        state = json.loads((root / STATE_NAME).read_text(encoding="utf-8"))
+        return bool(marker.get("rejected")) and state["previous_components"]["local_backend"]["version"] == marker.get("version")
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return False
+
+
 def _restart_failure_prompt() -> None:
     import ctypes
     ctypes.windll.user32.MessageBoxW(None, "Olivia 自动重启失败，请手动打开", "Olivia", 0x10 | 0x40000)
@@ -794,7 +803,8 @@ def _update_restart(root: Path, ready: Path, owner_pid: int | None = None) -> in
     except Exception as exc:
         code = str(exc) if isinstance(exc, RuntimeError) and re.fullmatch(r"UPDATE_RESTART_[A-Z_]+", str(exc)) else "UPDATE_RESTART_HELPER_FAILED"
         _restart_event(root, "failed", code=code)
-        _restart_failure_prompt()
+        if not _rolled_back(root):  # a rolled-back start is already bringing the previous version up
+            _restart_failure_prompt()
         return 2
     finally:
         for _, handle in handles:

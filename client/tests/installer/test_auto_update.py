@@ -179,6 +179,8 @@ def test_a_failed_first_start_goes_back_once(tmp_path):
     assert state['active_components']['local_backend'] == old and state['previous_components']['local_backend'] == new
     assert json.loads((tmp_path / PROBATION_NAME).read_text())['rejected'] is True
     assert not _probation_rollback(tmp_path)                                   # never twice
+    from installer.version_launcher import _rolled_back
+    assert _rolled_back(tmp_path)                                              # no "restart failed" box then
     assert 'update_rolled_back' in (tmp_path / 'data' / 'logs' / 'launcher.jsonl').read_text()
 
 
