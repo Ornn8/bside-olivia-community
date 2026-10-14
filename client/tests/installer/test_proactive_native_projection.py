@@ -57,6 +57,30 @@ def test_proactive_selection_skips_paired_letter_and_updates_native_audio_props(
     assert _repair_native_proactive_collection(patched) == patched
 
 
+@pytest.mark.parametrize('unread,empty', [
+    ('e.isRead===0,replyKind:e.replyKind||"text_letter",', '0'),
+    ('e.letterStatus!==bt.NO_REPLY&&e.isRead===0,replyKind:e.replyKind||"text_letter",', 'null'),
+])
+def test_fresh_install_shapes_get_the_projection(unread, empty):
+    # A fresh install runs every step in one pass: replyKind sits between isUnread and coverId, and a
+    # later start has the NO_REPLY unread check and a ??null paper timestamp. 2.4.0 skipped both.
+    model = 'return{id:e.letterId,isUnread:' + unread + 'coverId:e.coverId||"",'
+    source = model + model + (
+        'h=j({get:()=>i("mailbox_welcome_content"),set:()=>{}})'
+        ':x.selectedMail&&!o(p)?paired:o(p)&&o(l).welcomeMailRead?welcome:empty;'
+        'k(ks,{modelValue:o(h),"onUpdate:modelValue":I[1]||(I[1]=A=>be(h)?h.value=A:null),'
+        'class:"w-[516px] aspect-[16/9]","is-visible":!0,readonly:"",'
+        'timestamp:((M=(E=x.selectedMail)==null?void 0:E.received)==null?void 0:M.timestamp)??' + empty + ','
+        'type:"text"},null,8,["modelValue","timestamp"])'
+    )
+    patched = _repair_native_proactive_collection(source)
+    assert patched.startswith('/*olivia-proactive-native-v1*/')
+    assert patched.count('isUnread:' + unread.split(',')[0] + ',origin:e.origin||"",title:e.title||e.summary||"",'
+                         'replyAllowed:e.replyAllowed!==false,') == 2
+    assert '["modelValue","timestamp","coverId","audioUrl","audioStatus","songUrl"]' in patched
+    assert _repair_native_proactive_collection(patched) == patched
+
+
 def test_changed_supported_native_shape_fails_before_partial_patch():
     source = 'return{id:e.letterId,isUnread:e.isRead===0,coverId:e.coverId||"",' * 2
     with pytest.raises(CompanionSettingsPatchError, match='COMPANION_PROACTIVE_ANCHOR_INVALID'):

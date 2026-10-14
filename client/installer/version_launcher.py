@@ -556,8 +556,52 @@ def main(argv: list[str] | None = None) -> int:
     return _run_main(_parse_arguments(argv))
 
 
+ELEVATED_RELAUNCH_NAME = "elevated-relaunch.json"
+
+
+def _is_elevated() -> bool:
+    try:
+        import ctypes
+
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except (AttributeError, OSError):
+        return False
+
+
+def _relaunch_unelevated(root: Path) -> bool:
+    """Hand a start made as administrator to Explorer, which starts Olivia as the normal user.
+
+    Files Python writes through a temporary folder keep that folder's owner-only permissions. Started as
+    administrator, Olivia rewrote its client files readable by administrators only, and every normal start
+    after that failed (2026-10-15). Where every start is elevated (UAC off) the second try within two
+    minutes runs as it is.
+    """
+    if os.name != "nt" or not _is_elevated():
+        return False
+    marker = root / "data" / "logs" / ELEVATED_RELAUNCH_NAME
+    try:
+        if time.time() - marker.stat().st_mtime < 120:
+            return False
+    except OSError:
+        pass
+    launcher = root / "Olivia.exe"
+    explorer = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "explorer.exe"
+    if not launcher.is_file() or not explorer.is_file():
+        return False
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(json.dumps({"at": time.time()}), encoding="utf-8")
+        subprocess.Popen([str(explorer), str(launcher)], close_fds=True)
+    except OSError:
+        return False
+    _append_launcher_event(root, "elevated_relaunch", timestamp=time.time())
+    return True
+
+
 def _cli(argv: list[str] | None = None) -> int:
     args = _parse_arguments(argv)
+    if args.action == "start" and _relaunch_unelevated(Path(args.install_root).expanduser().resolve()):
+        return 0
     code = _run_main(args, own_windows_tree=True)
     if args.action == "start" and code and _START_FAILED:
         root = Path(args.install_root).expanduser().resolve()
