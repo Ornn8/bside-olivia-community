@@ -73,19 +73,71 @@ def test_finished_call_is_kept_once_and_cleaned():
 
 def test_call_becomes_canonical_memory_in_chunks():
     server = Server()
-    lines = [{'role': 'user' if i % 2 else 'her', 'text': '这是一句比较长的话' * 12} for i in range(60)]
+    lines = [{'role': 'user' if i % 2 else 'her', 'text': f'第{i}句。' + '这是一句比较长的话。' * 3} for i in range(80)]
     row = finished(server, transcript=lines, seconds=1800)
     rows = list(call_store.memory_rows(row))
     assert len(rows) > 1
-    assert rows[0]['content'].startswith('（用户和她的语音电话记录，约30分钟，第1/')
-    assert rows[0]['reply_text'] == '通话笔记：聊了加班。；她答应：明天弹琴给他听'
-    assert rows[1]['reply_text'] == '（同一通电话的后续）'
+    assert rows[0]['content'].startswith('（语音电话里我对她说的话，约30分钟，第1/')
+    # Memory reads the message as the user's words and the reply as hers: never mixed.
+    assert '第1句' in rows[0]['content'] and '第0句' not in rows[0]['content']
+    assert '第0句' in rows[0]['reply_text'] and '第1句' not in rows[0]['reply_text']
+    assert rows[0]['reply_text'].endswith('通话笔记：聊了加班。；她答应：明天弹琴给他听')
+    assert '通话笔记' not in rows[1]['reply_text']
     assert len({r['letter_id'] for r in rows}) == len(rows)
+    from runtime.call.store import _spans
     for item in rows:
         delivery = _delivery_from_row(item, user_id='olivia-user')
         assert isinstance(delivery, CanonicalMemoryDelivery)
-        assert len(item['content']) <= call_store.CHUNK_CHARS + 60
+        assert _spans(item['content']) <= 64 and _spans(item['reply_text']) <= 64
+    said = ''.join(r['content'] for r in rows) + ''.join(r['reply_text'] for r in rows)
+    assert all(f'第{i}句' in said for i in range(80))
     assert list(call_store.memory_rows({'missed': True, 'call_id': 'x'})) == []
+
+
+def test_calls_kept_before_the_split_format_keep_their_delivered_rows():
+    server = Server()
+    row = dict(finished(server))
+    row.pop('memory_format')
+    rows = list(call_store.memory_rows(row))
+    assert rows[0]['content'].startswith('（用户和她的语音电话记录') and rows[0]['reply_text'].startswith('通话笔记')
+
+
+def test_world_facts_carry_her_meals_weather_events_and_classes():
+    now = datetime(2026, 10, 14, 4, 53, tzinfo=timezone.utc)  # 12:53 Beijing
+    snapshot = {
+        'current': {'activity': '练琴：乐句衔接', 'location': '家里音乐房', 'note': '顺了一些。'},
+        'rhythm': {},
+        'world': {
+            'today_activities': [{'note': '音乐史：记下疑问。'}, {'note': '顺了一些。'}, {'note': '顺了一些。'}],
+            'meals': [
+                {'slot': 'lunch', 'food': '米饭和番茄炒蛋', 'status': 'eaten', 'date': '2026-10-14',
+                 'started_at': '2026-10-14T04:00:50+00:00'},
+                {'slot': 'breakfast', 'food': '豆浆和包子', 'status': 'eaten', 'date': '2026-10-14',
+                 'started_at': '2026-10-14T08:30:00+08:00'},
+                {'slot': 'dinner', 'food': '清蒸鲈鱼', 'status': 'eaten', 'date': '2026-10-12',
+                 'started_at': '2026-10-12T18:30:00+08:00'}],
+            'weather': {'city': '上海', 'temperature_c': 24.0, 'cloud_cover': 'CAVOK', 'weather_codes': '', 'status': 'fresh'},
+            'recent_episodes': [{'occurred_at': '2026-10-14T04:20:50+00:00', 'process': [{'obstacle': '吃得比预想慢'}],
+                                 'result': {'detail': '这一餐吃完了。'}}],
+            'schedule': {'classes': [{'title': '音乐史', 'start': '2026-10-14T10:00:00+08:00', 'end': '2026-10-14T11:40:00+08:00'}]},
+        },
+        'projects': [],
+    }
+    server = SimpleNamespace(daily_life_runtime=SimpleNamespace(store=SimpleNamespace(snapshot=lambda now: snapshot)))
+    facts, _ = call_context.world(server, now)
+    assert facts['meals'] == ['早饭：豆浆和包子（08:30，吃过了）', '午饭：米饭和番茄炒蛋（12:00，吃过了）']
+    assert facts['weather'].startswith('上海 24度 晴')
+    assert facts['events'] == ['12:20 吃得比预想慢，这一餐吃完了。']
+    assert facts['classes'] == ['音乐史 10:00-11:40（按课表已经下课）']
+    assert facts['today'] == ['音乐史：记下疑问。', '顺了一些。']
+
+
+def test_a_new_call_knows_the_calls_before_it():
+    server = Server()
+    finished(server)
+    calls = call_context.recent_calls(server, NOW + timedelta(hours=1))
+    assert calls == [{'at': calls[0]['at'], 'minutes': 2, 'summary': '聊了加班。'}]
+    assert call_context.recent_calls(server, NOW + timedelta(days=3)) == []
 
 
 def test_qq_sees_recent_call_and_missed_calls_after_the_last_chat():

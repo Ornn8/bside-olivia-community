@@ -8,9 +8,12 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import hashlib
+import re
 import uuid
 
 CHUNK_CHARS = 3000
+CHUNK_SPANS = 56      # memory extraction judges at most 64 sentences of one message
+MEMORY_FORMAT = 2     # 2: what the user said is the message, what she said aloud is the reply
 MAX_ROWS = 200
 TRANSCRIPT_ROWS = 600
 RECENT = timedelta(hours=24)
@@ -75,17 +78,64 @@ def record_call(server, body, now=None):
         'seconds': seconds, 'pickup': body.get('pickup') if body.get('pickup') in ('answer', 'brief', 'sleepy') else 'answer',
         'reason': str(body.get('reason') or '')[:40],
         'charge_cents': charge if type(charge) is int and charge >= 0 else None,
-        'transcript': _clean_transcript(body.get('transcript')), 'notes': _clean_notes(body.get('notes'))})
+        'transcript': _clean_transcript(body.get('transcript')), 'notes': _clean_notes(body.get('notes')),
+        'memory_format': MEMORY_FORMAT})
 
 
 def _label(row):
     return '她' if row['role'] == 'her' else '用户'
 
 
+def _spans(text):
+    return len(re.findall(r'[^。！？!?\n]+[。！？!?\n]*', text))
+
+
 def memory_rows(row):
-    """Canonical memory rows of one finished call: the dialogue in chunks, the notes on the first."""
+    """Canonical memory rows of one finished call, one per stretch of it.
+
+    Memory takes a row's message as the user's words and its reply as hers, so a stretch's message
+    holds only what the user said and its reply what she said aloud, plus the call notes on the
+    first. Calls kept before format 2 stay in their original rows (already delivered)."""
     if row.get('missed') or not row.get('transcript'):
         return
+    if row.get('memory_format') != MEMORY_FORMAT:
+        yield from _memory_rows_v1(row)
+        return
+    try:
+        when = datetime.fromisoformat(row['ended_at'])
+    except (KeyError, TypeError, ValueError):
+        return
+    minutes = max(1, round(row.get('seconds', 0) / 60))
+    notes = row.get('notes') or {}
+    note = ('通话笔记：' + notes['summary'] + (('；她答应：' + '、'.join(notes['her_promises'])) if notes.get('her_promises') else '')
+            if notes.get('summary') else '')
+    stretches, user, her = [], [], []
+    for item in row['transcript']:
+        mine = item['role'] == 'user'
+        grown_user, grown_her = user + [item['text']] * mine, her + [item['text']] * (not mine)
+        too_big = (_spans('\n'.join(grown_user)) + 1 > CHUNK_SPANS  # + the heading
+                   or _spans('\n'.join(grown_her + [note] * (not stretches))) > CHUNK_SPANS
+                   or sum(map(len, grown_user + grown_her)) > CHUNK_CHARS)
+        if too_big and (user or her):
+            stretches.append((user, her))
+            grown_user, grown_her = [item['text']] * mine, [item['text']] * (not mine)
+        user, her = grown_user, grown_her
+    if user or her:
+        stretches.append((user, her))
+    for index, (said, answered) in enumerate(stretches):
+        part = f'，第{index + 1}/{len(stretches)}段' if len(stretches) > 1 else ''
+        content = f'（语音电话里我对她说的话，约{minutes}分钟{part}）\n' + ('\n'.join(said) or '（这一段我没有说话）')
+        reply = '\n'.join(answered) or '（这一段她没有说话）'
+        if index == 0 and note:
+            reply += '\n' + note
+        identity = f"{row['call_id']}:v2:{index}"
+        yield dict(letter_id='call-' + hashlib.sha256(identity.encode()).hexdigest()[:32], reply_revision=1,
+                   content=content, reply_text=reply, letter_status='COMPLETED', origin='user',
+                   created_at=when.timestamp(), private_world_occurred_at=when.isoformat())
+
+
+def _memory_rows_v1(row):
+    """The first format (whole dialogue as the message), for calls already delivered that way."""
     try:
         when = datetime.fromisoformat(row['ended_at'])
     except (KeyError, TypeError, ValueError):
