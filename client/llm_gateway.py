@@ -998,6 +998,11 @@ class OpenAICompatibleAdapter(Gateway):
         )
         from runtime.model_policy import encode_chat
         body = encode_chat(body, endpoint or self._url())
+        if request_id.startswith(('story:', 'story-revise:')):
+            from runtime.story import REQUEST_FREE
+            from original_client_relay_api import RELAY_BASE
+            if self.config.base_url.rstrip('/') == RELAY_BASE:
+                body = {**body, 'free': REQUEST_FREE.get() is True}
         if request_id.startswith('personal-chat:'):
             encoded_size = len(json.dumps(body, ensure_ascii=False, separators=(',', ':')).encode('utf-8'))
             from runtime.reply.context_budget import PERSONAL_CHAT_MAX_INPUT_BYTES

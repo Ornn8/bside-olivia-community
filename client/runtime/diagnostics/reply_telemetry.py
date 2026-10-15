@@ -48,6 +48,9 @@ TIMING_NAMES = frozenset({'queue_wait', 'memory_ready', 'media_in', 'world', 'em
     'interpretation', 'history', 'decision', 'writer', 'quality', 'voice_wait', 'send_ack',
     'world_local', 'world_selection', 'writer_search', 'writer_http', 'jev_http', 'jev_settlement'})
 _collector = None
+RELATIONSHIP_METRICS = frozenset({'disclosure_personal', 'disclosure_vulnerable', 'care_user', 'care_her',
+    'plan', 'kept', 'created', 'affection', 'boundary', 'repair', 'conflict', 'volume',
+    'story_enabled', 'story_paused', 'chapter_written', 'chapter_failed', 'chapter_deferred'})
 
 
 def safe_timings(value):
@@ -94,6 +97,7 @@ class Collector:
         self.lock = threading.RLock()
         self.last_error = None
         self.schema = 1
+        self.relationship_story_supported = False
         self.policy_version_supported = False
         self.model = lambda: 'unknown'
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -146,6 +150,7 @@ class Collector:
             self.owner, self.since, self.salt = digest, since, salt
             self.schema = 1
             self.policy_version_supported = False
+            self.relationship_story_supported = False
             if digest: self.emit('app', 'ok')
             return True
 
@@ -171,7 +176,7 @@ class Collector:
         return hmac.new(self.salt.encode(), str(source).encode(), hashlib.sha256).hexdigest()
 
     def _event(self, stage, status, *, source='', channel='client', attempt=0, duration_ms=None,
-               error=None, model=None, transport=None, initiative=None, daily_video_result=None):
+               error=None, model=None, transport=None, initiative=None, daily_video_result=None, relationship_story=None):
         valid = status in TRANSPORT_STATUSES if stage == 'transport' else stage in STAGES and status in STATUSES
         if stage == 'transport' and channel != 'qq':
             return None
@@ -193,6 +198,14 @@ class Collector:
                      error if isinstance(error, str) and error in ERROR_CODES else 'UNKNOWN')
         from runtime.cloud_policy import policy_version
         extra['policy_version'] = policy_version()
+        if relationship_story is not None:
+            if (not isinstance(relationship_story, dict) or relationship_story.get('kind') not in RELATIONSHIP_METRICS
+                    or set(relationship_story) - {'kind', 'billing_request_id'}):
+                return None
+            billing = relationship_story.get('billing_request_id')
+            if billing is not None and (not isinstance(billing, str) or not re.fullmatch(r'story:[0-9a-f]{32}', billing)):
+                return None
+            extra['relationship_story'] = dict(relationship_story)
         if stage == 'media' and daily_video_result is not None:
             extra['daily_video_result'] = (daily_video_result if isinstance(daily_video_result, str)
                 and daily_video_result in DAILY_VIDEO_RESULTS else 'other')
@@ -323,6 +336,8 @@ class Collector:
             events = [dict(json.loads(row[1]), seq=row[0]) for row in
                     db.execute('SELECT seq,payload FROM queue ORDER BY seq LIMIT 100')] if self.enabled else []
             for event in events:
+                if not self.relationship_story_supported:
+                    event.pop('relationship_story', None)
                 if schema not in (2, 3) or event.get('stage') != 'media':
                     event.pop('daily_video_result', None)
                 elif 'daily_video_result' in event and (not isinstance(event['daily_video_result'], str)
@@ -356,21 +371,26 @@ class Collector:
             result = await send(events)
             expected = [e['event_id'] for e in events]
             if (not isinstance(result, dict) or set(result) not in ({'accepted'}, {'accepted', 'supported_schemas'},
-                    {'accepted', 'supported_schemas', 'policy_version_supported'})
+                    {'accepted', 'supported_schemas', 'policy_version_supported'},
+                    {'accepted', 'supported_schemas', 'policy_version_supported', 'relationship_story_supported'})
                     or result.get('accepted') != expected):
                 raise ValueError('bad acknowledgment')
             supported = result.get('supported_schemas', [])
             if 'policy_version_supported' in result and type(result['policy_version_supported']) is not bool:
                 raise ValueError('bad capabilities')
+            if 'relationship_story_supported' in result and type(result['relationship_story_supported']) is not bool:
+                raise ValueError('bad capabilities')
             if (not isinstance(supported, list) or any(type(value) is not int for value in supported)):
                 raise ValueError('bad capabilities')
             self.ack(expected)
             self.policy_version_supported = result.get('policy_version_supported') is True
+            self.relationship_story_supported = result.get('relationship_story_supported') is True
             self.schema = 3 if 3 in supported else 2 if 2 in supported else 1
             self.last_error = None
         except (OSError, sqlite3.Error, ValueError, RuntimeError, TimeoutError):
             self.schema = 1
             self.policy_version_supported = False
+            self.relationship_story_supported = False
             self.last_error = 'TELEMETRY_UPLOAD_FAILED'
 
 

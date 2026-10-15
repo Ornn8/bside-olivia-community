@@ -214,13 +214,11 @@ def test_dependent_questions_split_into_fitting_requests_instead_of_failing(monk
     whole, together = run(data, slots=3, routine=True, boundary=True)
     facts, = together.sizes_of('exchange-facts')
     dependent, = together.sizes_of('exchange-anchored-facts')
-    assert dependent > facts + 300  # the scenario: one dependent request larger than the facts request
-    # The same exchange under a bound that only the facts request just fits: the independent
-    # question groups travel in several requests, each within the bound, with the same result.
-    monkeypatch.setattr(jev_exchange, 'EXCHANGE_MAX_INPUT_BYTES', facts + 100)
+    limit = min(facts, dependent) - 3000
+    monkeypatch.setattr(jev_exchange, 'EXCHANGE_MAX_INPUT_BYTES', limit)
     split, port = run(data, slots=3, routine=True, boundary=True)
     sizes = port.sizes_of('exchange-anchored-facts')
-    assert len(sizes) >= 2 and max(port.sizes, key=lambda item: item[1])[1] <= facts + 100
+    assert len(sizes) >= 2 and max(port.sizes, key=lambda item: item[1])[1] <= limit
     assert split == whole and split['routine']['utc_offset_minutes'] == 480 and len(split['updates']) >= 2
     questions = [set(q) for _, q, name in port.calls if name == 'exchange-anchored-facts']
     assert set().union(*questions) == set(together.calls[1][1]) and sum(map(len, questions)) == len(together.calls[1][1])

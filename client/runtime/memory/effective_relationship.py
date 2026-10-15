@@ -21,8 +21,29 @@ _EVERYDAY = ('familiarity', 'comfort')
 _DEEP = ('trust', 'closeness')
 
 
-def effective_relationship_stage(snapshot, history):
+def effective_relationship_stage(snapshot, history, *, policy=None):
     stage = _value(snapshot, 'relationship_stage')
+    if _value(snapshot, 'relationship_route', '') in {'friend', 'family'} and stage in {'close', 'committed'}:
+        stage = 'trusted_friend'
+    if _value(snapshot, 'relationship_days', ()):
+        from runtime.cloud_policy import get_policy
+        policy = policy or get_policy('relationship_stages')
+        days = len(_value(snapshot, 'relationship_days', ()))
+        if stage in {'close', 'committed'}:
+            return stage
+        floor = {1: 'unknown', 2: 'familiar', 3: 'friend', 4: 'trusted_friend', 5: 'trusted_friend'}.get(
+            min(5, _value(snapshot, 'story_volume', 1)), 'unknown')
+        proposed = 'unknown'
+        familiarity, comfort, trust, closeness = (_value(snapshot, key, 0) for key in ('familiarity', 'comfort', 'trust', 'closeness'))
+        if days >= policy['familiar_days'] and familiarity >= policy['familiar_score']:
+            proposed = 'familiar'
+        if days >= policy['friend_days'] and min(familiarity, comfort) >= policy['friend_score'] and min(trust, closeness) > 0:
+            proposed = 'friend'
+        if (days >= policy['trusted_days'] and min(familiarity, comfort) >= policy['trusted_score']
+                and min(trust, closeness) >= policy['trusted_deep']):
+            proposed = 'trusted_friend'
+        stages = ('unknown', 'acquaintance', 'familiar', 'friend', 'trusted_friend')
+        return max((stage, floor, proposed), key=stages.index)
     if stage not in {'unknown', 'acquaintance', 'familiar'}:
         return stage
     everyday = [level(snapshot, name) for name in _EVERYDAY]

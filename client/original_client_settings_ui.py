@@ -1610,15 +1610,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         pending = true;
         if (!loaded) content.replaceChildren(text("p", "读取关系状态…", "text-text-secondary text-body-m"));
         try {
-          const result = await requestJson(PRIVATE_WORLD_PATH);
+          const result = await routeRequest('/toy/relationship-story');
           if (!alive() || !area.isConnected) return;
-          if (!result || result.status !== "READY" || !result.levels) throw new Error("RELATIONSHIP_UNAVAILABLE");
-          const stages = {unknown:"尚未确定", acquaintance:"初识", familiar:"逐渐熟悉", friend:"朋友", trusted_friend:"信赖的朋友", close:"亲近", committed:"稳定的亲密关系"};
-          const descriptions = {unknown:"你们的关系还在慢慢建立。", acquaintance:"你们刚认识不久，她对你还有些拘谨。", familiar:"你们渐渐熟了，聊得来的话题越来越多。", friend:"你们已经是朋友了，她跟你在一起很自在。", trusted_friend:"你们是彼此信赖的朋友，她愿意跟你说心里话。", close:"你们很亲近，她会想你，也愿意让你知道。", committed:"你们已经确认了彼此的关系。"};
-          content.replaceChildren(text("p", `关系阶段：${stages[result.relationship_stage] || "尚未确定"}`, "text-text-body text-body-m"));
-          content.append(text("p", descriptions[result.relationship_stage] || descriptions.unknown, "text-text-body text-body-m"));
-          if (result.levels.tension === "high") content.append(text("p", "最近你们之间有点小别扭。", "text-text-secondary text-body-m"));
-          content.append(text("p", "这里读取既有关系记录；生活动态的刷新不会增加好感或改变关系阶段。", "text-text-secondary text-caption-m"));
+          window.oliviaRelationshipView(content,result,{text,button,request:routeRequest,refresh:read});
           loaded = true;
         } catch (_error) {
           content.replaceChildren(text("p", "关系状态暂时无法读取。", "text-text-secondary text-body-m"), button("重试读取关系", read));
@@ -2194,12 +2188,12 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     section.setAttribute("data-olivia-model-routes", "");
     section.className = "olivia-model-routes";
     section.style.cssText = "display:grid;gap:12px;margin-top:4px;min-width:0";
-    section.open = ["qq", "letter", "diary"].some(use => typeof saved[use] === "string" && saved[use]);
-    const title = text("summary", "按用途分别选择（QQ 聊天、写信、日记）");
-    const description = text("p", "QQ 聊天、写信、写日记可以分别用不同的模型，按各自模型的价格计费。选「跟随回信模型」就用上面选中的模型。", "text-text-secondary text-body-m");
+    section.open = ["qq", "letter", "diary", "story"].some(use => typeof saved[use] === "string" && saved[use]);
+    const title = text("summary", "按用途分别选择（QQ 聊天、写信、日记、故事）");
+    const description = text("p", "每种用途按各自模型的价格计费。故事默认使用 Gemini 4 Argon；其他用途选「跟随回信模型」就用上面选中的模型。", "text-text-secondary text-body-m");
     const status = text("p", "", "text-text-secondary text-body-m");
     status.setAttribute("role", "status");
-    const uses = [["qq", "QQ 聊天"], ["letter", "写信（回信和主动来信）"], ["diary", "日记和回忆录"]];
+    const uses = [["qq", "QQ 聊天"], ["letter", "写信（回信和主动来信）"], ["diary", "日记和回忆录"], ["story", "故事模型"]];
     const selects = {};
     const grid = document.createElement("div");
     grid.style.cssText = "display:grid;grid-template-columns:minmax(0,1fr);gap:10px;min-width:0";
@@ -2209,7 +2203,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       const select = document.createElement("select");
       select.className = "rounded-3 border border-grey-5 bg-transparent px-4 py-2.5 text-text-body text-body-m";
       select.setAttribute("aria-label", label);
-      select.append(new Option("跟随回信模型", ""));
+      select.append(new Option(use === 'story' ? '默认故事模型（Gemini 4 Argon）' : '跟随回信模型', ""));
       for (const item of rows) select.append(new Option(item.display_name, item.id));
       select.value = typeof saved[use] === "string" && rows.some(item => item.id === saved[use]) ? saved[use] : "";
       selects[use] = select;
@@ -3015,6 +3009,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     diaryState.checkedAt=Date.now();
     try{
       const page=await routeRequest('/toy/diary?limit=1');diaryState.unseen=Number(page?.unseen)||0;
+      try{const story=await routeRequest('/toy/story');diaryState.unseen+=Number(story?.unseen)||0;}catch(_){}
       for(const target of document.querySelectorAll?.('[data-diary-badge]')||[]){
         let dot=target.querySelector('[data-diary-unseen]');
         if(diaryState.unseen>0&&!dot){dot=document.createElement('span');dot.setAttribute('data-diary-unseen','');dot.setAttribute('aria-label','有新日记');
@@ -4333,8 +4328,10 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const diaryStyle = () => {
     const style=document.createElement('style');style.textContent=`
       [data-olivia-diary-page]{width:100%;height:100%;min-height:0;color:#ded9d1;display:flex;flex-direction:column;gap:20px;-webkit-app-region:no-drag}
-      .od-header{height:40px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
+      .od-header{min-height:40px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;flex-wrap:wrap;gap:12px}
       .od-header h1{font-size:30px;margin:0;font-weight:700}
+      .od-header nav button{border:1px solid #686a70;border-radius:999px;background:transparent;color:#ded9d1;padding:8px 18px;font:inherit;cursor:pointer}
+      .od-header nav button:focus-visible,.od-main button:focus-visible{outline:2px solid #ded9d1;outline-offset:3px}
       .od-main{overflow-y:auto;background:#191a1c;border-radius:12px;padding:24px 32px;min-height:0;flex:1;box-sizing:border-box;scrollbar-width:thin}
       .od-main button{border:1px solid #686a70;border-radius:999px;background:transparent;color:#ded9d1;padding:8px 18px;font:inherit;cursor:pointer}
       .od-main button:hover:not(:disabled){background:#ffffff08}.od-main button:disabled{opacity:.5;cursor:wait}
@@ -4370,11 +4367,13 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     let pageNo=1,entries=[],total=0,enabled=true;
     const status=document.createElement('p');status.className='od-status';status.setAttribute('role','status');
     const showList=async(append=false)=>{
+      const token=main.oliviaDiaryViewToken={};
       if(!append){main.replaceChildren(text('p','正在翻开日记本……','od-empty'));pageNo=1;entries=[];}
       try{
         const data=await routeRequest('/toy/diary?page='+pageNo+'&limit=20');
+        if(main.oliviaDiaryViewToken!==token)return;
         entries=[...entries,...data.entries];total=data.total;enabled=data.enabled!==false;
-      }catch(_){main.replaceChildren(text('p','日记暂时打不开。','od-empty'),button('重试',()=>showList()));return;}
+      }catch(_){if(main.oliviaDiaryViewToken===token)main.replaceChildren(text('p','日记暂时打不开。','od-empty'),button('重试',()=>showList()));return;}
       if(!page.isConnected)return;
       const tools=document.createElement('div');tools.className='od-tools';
       const note=text('span',enabled?'她每天凌晨会把前一天和你的事写下来；电脑没开的话，下次打开时补上。':'写日记已暂停。');
@@ -4403,12 +4402,17 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       main.replaceChildren(tools,list,status);
       if(entries.length<total)main.append(button('更早的日记',()=>{pageNo+=1;showList(true);}));
     };
+    const storyTab=button('我们的故事',()=>window.oliviaStoryView(main,{text,button,request:routeRequest}));
+    const tabs=document.createElement('nav');tabs.setAttribute('aria-label','日记分类');
+    tabs.style.cssText='display:flex;flex-wrap:wrap;gap:12px';
+    tabs.append(button('日记',()=>showList()),button('月度回忆',()=>showMemoir()),storyTab);header.append(tabs);
     const showMemoir=async()=>{
+      const token=main.oliviaDiaryViewToken={};
       main.replaceChildren(text('p','正在清点以前的信……','od-empty'));
       let info;
       try{info=await routeRequest('/toy/diary/memoir');}
-      catch(_){main.replaceChildren(text('p','暂时清点不了以前的信。','od-empty'),button('返回',()=>showList()));return;}
-      if(!page.isConnected)return;
+      catch(_){if(main.oliviaDiaryViewToken===token)main.replaceChildren(text('p','暂时清点不了以前的信。','od-empty'),button('返回',()=>showList()));return;}
+      if(!page.isConnected || main.oliviaDiaryViewToken!==token)return;
       const box=document.createElement('section');box.className='od-entry';
       box.append(button('返回日记本',()=>showList()),text('h2','整理以前的回忆'));
       if(info.running){
@@ -4428,12 +4432,13 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       box.append(start);main.replaceChildren(box);
     };
     const showEntry=async day=>{
+      const token=main.oliviaDiaryViewToken={};
       main.replaceChildren(text('p','正在翻到这一页……','od-empty'));
       let entry;
       if(!/^\d{4}-\d{2}(-\d{2})?$/.test(day))return showList();
       try{entry=await routeRequest('/toy/diary/entry?day='+day);}
-      catch(_){main.replaceChildren(text('p','这一页暂时打不开。','od-empty'),button('返回',()=>showList()));return;}
-      if(!page.isConnected)return;
+      catch(_){if(main.oliviaDiaryViewToken===token)main.replaceChildren(text('p','这一页暂时打不开。','od-empty'),button('返回',()=>showList()));return;}
+      if(!page.isConnected || main.oliviaDiaryViewToken!==token)return;
       void refreshDiaryBadge(true);
       const article=document.createElement('article');article.className='od-entry';
       const back=button('返回日记本',()=>showList());
@@ -4469,7 +4474,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       main.replaceChildren(article,comments);
       main.scrollTop=0;
     };
-    void showList();
+    if(window.location.hash.includes('story=1'))void window.oliviaStoryView(main,{text,button,request:routeRequest});else void showList();
   };
   const mountCamerasPage = page => {
     page.setAttribute('data-olivia-cameras-page','');page.setAttribute('aria-label','林离的拍摄设备');
@@ -5754,6 +5759,7 @@ BOOTSTRAP_JAVASCRIPT = r'''
 from runtime.native_piano_ui import JAVASCRIPT as _PIANO_JAVASCRIPT
 from runtime.call_ui import JAVASCRIPT as _CALL_JAVASCRIPT
 from runtime.update_ui import JAVASCRIPT as _UPDATE_JAVASCRIPT
+from runtime.story_ui import JAVASCRIPT as _STORY_JAVASCRIPT
 
 
 def _isolated(script: str) -> str:
@@ -5762,7 +5768,7 @@ def _isolated(script: str) -> str:
     return 'try {' + script + '} catch (error) { console.error(error); }\n'
 
 
-BOOTSTRAP_JAVASCRIPT = (_isolated(_CALL_JAVASCRIPT) + _isolated(_PIANO_JAVASCRIPT) + _isolated(_UPDATE_JAVASCRIPT)
+BOOTSTRAP_JAVASCRIPT = (_isolated(_STORY_JAVASCRIPT) + _isolated(_CALL_JAVASCRIPT) + _isolated(_PIANO_JAVASCRIPT) + _isolated(_UPDATE_JAVASCRIPT)
                         + BOOTSTRAP_JAVASCRIPT)
 
 __all__ = ["BOOTSTRAP_JAVASCRIPT", "SETTINGS_UI_VERSION"]

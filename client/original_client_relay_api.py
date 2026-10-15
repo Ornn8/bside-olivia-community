@@ -15,7 +15,7 @@ RELAY_MODEL = 'claude-haiku-5-5'
 # Price-multiplier display baseline only; it is not a default model.
 RELAY_MULTIPLIER_BASELINE = 'claude-sonnet-5-5'
 # First-run routes for a brand-new account: replies follow the main model, the diary uses Opus.
-NEW_ACCOUNT_ROUTES = {'qq': None, 'letter': None, 'diary': 'claude-opus-5-5'}
+NEW_ACCOUNT_ROUTES = {'qq': None, 'letter': None, 'diary': 'claude-opus-5-5', 'story': 'gemini-4-argon'}
 RELAY_MODELS = frozenset({RELAY_MODEL, 'gemini-3.8-flash', 'gemini-4-argon', 'qwen3.7-flash', 'claude-opus-5-5',
     'claude-sonnet-5-5', 'claude-opus-4-6', 'qwen3.8-max', 'claude-fable-5-1',
     'gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-luna', 'claude-haiku-5-5'})
@@ -220,7 +220,7 @@ def mount_relay_api(app, setup):
     # The query tells the server this client reads supported_schemas in the ACK;
     # released clients require the exact {'accepted': [...]} reply.
     mount_telemetry(app, setup, stored_key,
-                    lambda key, payload: relay_request(RELAY_BASE, key, 'POST', '/telemetry/events?schemas=1,2,3&policy_version=1', payload))
+                    lambda key, payload: relay_request(RELAY_BASE, key, 'POST', '/telemetry/events?schemas=1,2,3&policy_version=1&relationship_story=1', payload))
     from runtime.reply.jev_billing import configure_account
     configure_account(stored_key)
     from runtime.memory.remote_embedding import configure as configure_embeddings

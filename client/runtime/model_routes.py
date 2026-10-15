@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 import tempfile
 
-USES = ('qq', 'letter', 'diary')
+USES = ('qq', 'letter', 'diary', 'story')
 CURRENT = ContextVar('olivia_model_use', default=None)
 _PINNED = ContextVar('olivia_pinned_model', default=None)
 _path = None
@@ -33,7 +33,7 @@ def _allowed():
 def load():
     """{use: model or None}; a missing or damaged file follows the main model everywhere."""
     global _cache
-    empty = {use: None for use in USES}
+    empty = {use: 'gemini-4-argon' if use == 'story' else None for use in USES}
     if _path is None:
         return empty
     try:
@@ -46,13 +46,15 @@ def load():
         value = json.loads(_path.read_text(encoding='utf-8'))
     except (OSError, ValueError):
         return empty
-    routes = {use: value.get(use) if isinstance(value, dict) and value.get(use) in _allowed() else None
+    routes = {use: value.get(use) if isinstance(value, dict) and value.get(use) in _allowed() else empty[use]
               for use in USES}
     _cache = (stamp, routes)
     return dict(routes)
 
 
 def validate(routes):
+    if isinstance(routes, dict) and set(routes) == set(USES) - {'story'}:
+        routes = {**routes, 'story': 'gemini-4-argon'}
     if (not isinstance(routes, dict) or set(routes) != set(USES)
             or any(model is not None and model not in _allowed() for model in routes.values())):
         raise ValueError('MODEL_ROUTES_INVALID')

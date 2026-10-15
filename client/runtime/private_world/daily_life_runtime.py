@@ -63,15 +63,10 @@ boundaries 只提取林离在本轮正式回信中明确建立或撤销的、后
 今天困了、暂时不想聊、一次婉拒、情绪抱怨、调侃、引用、假设或用户单方面要求不成为持续边界，填空数组。边界只描述具体通信意愿，不提炼成性格、关系等级、身体接触授权或永久疏离；不能截掉“今天”“如果”等条件来制造长期禁令。明确撤销才 withdraw，普通友好、默认沉默不算撤销。新边界不能倒推用户在本轮已经违反了此前不存在的规则。
 承诺自己会做什么、说明日常安排或表示当前没有某个打算，不等于对后续通信设限。“我白天会看信，也会回”不是边界，“本来没打算陪到那么晚”本身也不是长期限制；“以后别要求我半夜随叫随到”则明确约束后续通信。只复制能独立表达具体限制或撤销的原句，不将周围的解释和安慰一起扩成限制。
 routine 仅在用户明确陈述稳定作息且明确当地时区或所在地时提取 {"sleep_minute":当地通常入睡时刻从午夜起的分钟数,"utc_offset_minutes":当地UTC偏移分钟数,"quote":"含作息与地点/时区的连续用户原文"}。不把今天偶尔熬夜、要求她熬夜、假设或回信猜测当作用户习惯；地点或时间不明确则 null。用户明确撤回固定作息时，可用两个数值都为 null 和连续原文撤回。它只是用户作息参考，不立即改变她的安排。
-每封都判断 relationship；仅双方正文清楚支持一次真实互动变化时填 {"kind":"meaningful_exchange|shared_experience|support_received|boundary_respected|conflict|repair","user_quote":"来信连续原文，240字内","reply_quote":"回信连续原文，240字内"}。
-仅当双方在本轮明确确认或更改关系身份时，可在 relationship 内另加 relationship_stage（unknown|acquaintance|familiar|close|committed），上述双方引文必须直接证明该确认。普通情绪、调侃、称呼、单方面表白、假设和互动次数不算确认，省略该字段。committed必须是双方明确同意的伴侣承诺，不能从亲近、熟悉或分数推断；阶段不授予身体接触等行为权限。取消关系也必须有明确原文，不能从争执自动降级。
-meaningful_exchange 是用户分享具体日常、兴趣、想法或感受，她针对具体内容作了有内容的回应；不要求安慰、赞美或郑重表态，自然讨论和有内容的调侃也可以。机械复述、泛泛建议、问候和无具体内容的闲聊不算。
-shared_experience 是双方正文确认的一次共同参与、约定兑现或有后续结果的共同话题，例如用户明确反馈此前双方讨论过的书、练习或建议的实际进展，她具体承接；不能凭她单方编造的回忆、用户未认可的安排、想象或未来计划认定已共同经历。只能从本轮双方原文举证，证据不足按 meaningful_exchange 或 null。
-每封至多一种互动，不叠加计分；有真实冲突优先 conflict，化解已有冲突优先 repair，其他选证据最明确的一类。不把同一件事换个说法当成新进展。亲近感不等于恋爱确认、昵称许可或身体接触权限。
-support_received 是她明确收到并认可具体关心/理解/支持；不要求先发生冲突或郑重道谢。针对具体处境说“先休息，不用赶着回我”，她回应“谢谢理解，轻松多了”，属于 support_received，不因措辞日常就漏掉；只有泛泛问候或单方面关心且她没有认可时才不能据此认定。boundary_respected 是她的意愿被尊重且她有所回应；repair 是双方明确化解已有矛盾。
-conflict 是已经发生的关系摩擦：用户针对她施压、贬低或侵犯意愿，她明确抵触、拒绝施压、划清界限或表达不适。她平静说明立场也可构成摩擦，不要求愤怒、争吵或双方都不悦。普通意见不同、善意请求被礼貌婉拒不算冲突；用户对外部工作的不满也不算双方冲突。
-rhythm 只说明她的身体状态，不证明用户施压或侵犯意愿。夜间普通发信、倾诉、她困倦或回信中的责备本身不构成 conflict；必须有用户正文中明确的施压、贬低或违背已知边界的行为。interrupted_rest 表示仍醒着，不能宣称又被叫醒。
-问候、客套谢谢、用户单方面宣称、假设/引用/玩笑、不涉及双方关系的情绪均填 null。不从发信次数、礼物或表白强度推断。不要评价关系等级、身体接触或现实权限，不输出分数。
+每封分别判断 rel_disclosure、rel_care、rel_shared、rel_affection、rel_friction、rel_boundary，按独立题目的准则，不互相代替，不从频率、礼物或分数推断关系。
+rel_moment 指出最有意义的一项非none证据；rel_user_quote 与 rel_reply_quote 必须是直接支持它的完整原句。身份确认同样需要双方引文直接支持，不能从亲近、称呼或单方面表白推断。committed 必须是双方明确同意的伴侣承诺。
+conflict 必须是用户针对她施压、贬低或违反已知边界，她明确抵触；平静说明立场也可能是抵触。不把普通意见不同、礼貌婉拒或对第三方的不满当作双方冲突。rhythm、她的困倦或责备本身不能倒推用户施压；interrupted_rest 表示仍醒着，不能宣称又被叫醒。
+关系证据不授予昵称或身体接触权限，不输出分数。挚友和家人路线的亲近属于友情和亲情，绝不解读成恋爱。
 current_quote 仅在林离明确描述自己现在的活动时，填写回信中连续原文（180字内）；回忆、假设、以后打算或普通聊天填 null。它仅保存角色说法，不会覆盖已发布生活状态，也不证明活动已发生。current_quote 必须与 occurred_at 对应的北京时间和 rhythm 一致；用户问“吃晚饭了吗”“睡醒了吗”等不能把其时间前提当事实。若回信顺着错误时间前提声称正在/刚吃完不合时段的早餐、午饭或晚饭，current_quote 必须为 null。
 previous_observation 是此前已发布的生活观察，不是本轮信件原文。先核对本次回信是否无依据地改写同一活动的既有进度。此前明确完成而回信又说尚未完成，且双方本轮未明确说明更正、重做或开始另一件新活动时，不用这段矛盾回信改写事项，也不把它保存为 current_quote；对应 updates 不添加，current_quote 为 null。明确开始另一批、新一轮活动仍可记录，不能因为活动名称相同就禁止新进展。一次随口自我评价或泛化性格不属于现在活动，不夹入 current_quote。
 每项字段严格为 id,title,detail,status,kind,actor,quote，最多{max_exchange_updates}项；没有明确变化返回空数组。
@@ -644,6 +639,9 @@ class DailyLifeRuntime:
                 "user_letter": user_text, "linli_reply": reply_text, "origin": origin, "contact_invited": contact_invited,
                 "active_boundaries": [{**item, "boundary_id": alias} for alias, item in zip(boundary_ids, known_boundaries)],
             }
+            if self.relationship is not None:
+                from runtime.relationship_growth import route
+                data['relationship_route'] = route(self.relationship())
             development_context = self.store.development_exchange_context(receipt_time) if duties is not None else None
             if duties is not None:
                 del data['development_topics'], data['development_episodes']
@@ -694,15 +692,21 @@ class DailyLifeRuntime:
                                 raise ValueError("DAILY_LIFE_BOUNDARY_UNKNOWN")
                             change["boundary_id"] = boundary_ids[raw["boundary_id"]]
                     relation = payload.get("relationship")
-                    if isinstance(relation, dict) and relation.get("kind") in {"conflict", "boundary_respected"}:
-                        # A generated reproach or new condition cannot prove
-                        # prior user conduct. Verify without the generated reply.
-                        conflict = relation["kind"] == "conflict"
+                    conduct_checks = []
+                    if isinstance(relation, dict):
+                        if relation.get('kind') == 'conflict' or relation.get('signals', {}).get('rel_friction') == 'conflict':
+                            conduct_checks.append(True)
+                        if relation.get('kind') == 'boundary_respected' or relation.get('signals', {}).get('rel_boundary') == 'respected':
+                            conduct_checks.append(False)
+                    for conflict in conduct_checks:
+                        relation = payload['relationship']
+                        if relation is None:
+                            break
                         allowed = ("none", "pressure", "denigration", "boundary_violation") if conflict else ("none", "respect")
                         boundaries = data["active_boundaries"]
                         proof = await self._complete(_CONFLICT_CONDUCT_PROMPT if conflict else _BOUNDARY_CONDUCT_PROMPT, {
                             "user_letter": user_text, "active_boundaries": boundaries,
-                        }, request_id + ":conduct" + (":correct" if attempt else ""))
+                        }, request_id + ":conduct" + (":boundary" if len(conduct_checks) > 1 and not conflict else "") + (":correct" if attempt else ""))
                         conduct, quote = proof.get("conduct"), proof.get("quote")
                         target = proof.get("target") if conflict else None
                         expected_fields = (
@@ -726,18 +730,24 @@ class DailyLifeRuntime:
                         # Harm aimed at a parent, boss, ex-partner, the user, or
                         # an unclear target is story context, not interpersonal
                         # conflict with Lin Li. Frequency never upgrades it.
-                        payload["relationship"] = (
-                            None
-                            if conduct == "none" or (conflict and target != "linli")
-                            else {**relation, "user_quote": quote}
-                        )
+                        rejected = conduct == 'none' or conflict and target != 'linli'
+                        if relation.get('kind') == 'relationship_evidence':
+                            field, answer = ('rel_friction', 'conflict') if conflict else ('rel_boundary', 'respected')
+                            primary = relation['moment'] == field + ':' + answer
+                            if rejected:
+                                payload['relationship'] = None if primary else {
+                                    **relation, 'signals': {**relation['signals'], field: 'none'}}
+                            elif primary:
+                                payload['relationship'] = {**relation, 'user_quote': quote}
+                        else:
+                            payload['relationship'] = None if rejected else {**relation, 'user_quote': quote}
                     candidates = payload.get('development')
                     if duties is not None:
                         relation = validate_exchange_relationship(payload.get('relationship'), user_text, reply_text)
                         updates = validate_exchange_updates(source_id, user_text, reply_text, payload['updates'],
                                                             stamp=_time(occurred_at), origin=origin)
                         episodes = {}
-                        if relation and relation.get('kind') == 'shared_experience':
+                        if relation and (relation.get('kind') == 'shared_experience' or relation.get('signals', {}).get('rel_shared') in {'kept', 'created'}):
                             episodes.update({'shared:' + u['id']: {'episode_id': 'shared:' + u['id'], 'description': u['quote']}
                                              for u in updates if u['kind'] == 'shared' and u['status'] in {'ongoing', 'completed'}})
                         if len(episodes) > 12:
@@ -753,7 +763,7 @@ class DailyLifeRuntime:
                         packet = {'mode': 'exchange', 'topics': development_topics, 'source_id': source_id,
                                   'source_hash': development_digest(pair), 'as_of': _time(receipt_time),
                                   'user_text': user_text, 'character_text': reply_text, 'origin': origin,
-                                  'relationship_kind': relation.get('kind') if relation and relation.get('kind') == 'shared_experience' else None,
+                                  'relationship_kind': 'shared_experience' if relation and (relation.get('kind') == 'shared_experience' or relation.get('signals', {}).get('rel_shared') in {'kept', 'created'}) else None,
                                   'episodes': list(episodes.values()),
                                   'withdrawal_candidates': development_context['withdrawal_candidates']}
                         candidates = await _development_candidates(duties, 'exchange', packet)

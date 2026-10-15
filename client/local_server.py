@@ -1106,6 +1106,17 @@ class LetterAdapter:
             )
             for index, nickname in enumerate(projected.authorized_nicknames)
         )
+        from runtime.relationship_story import writer_line
+        # The route line is optional: a broken private world must never block the reply itself.
+        try:
+            route_line = writer_line(private_snapshot,
+                getattr(globals().get('private_world_relationship_committer'), 'ledger', None)
+                if world_state_available else None)
+        except (sqlite3.Error, OSError, ValueError, RuntimeError):
+            route_line = None
+        if route_line:
+            facts += (TrustedWorldFact(fact_id='private.relationship.route', source_id='private_world.character_view',
+                statement=route_line, kind=WorldFactKind.TRUSTED_RUNTIME),)
         if projected.continuation_known:
             facts += (
                 TrustedWorldFact(
@@ -1502,6 +1513,13 @@ def _write_store_snapshot(root, payload):
     _store_state_error_code = None
     from runtime.diagnostics.reply_telemetry import observe_rows
     observe_rows([*payload.get('letters', []), *payload.get('personal_chats', [])])
+    committer = globals().get('private_world_relationship_committer')
+    if committer is not None and root == _state_root():
+        try:
+            from runtime.relationship_moments import sync_messages
+            sync_messages(committer.ledger, [*payload.get('letters', []), *payload.get('personal_chats', [])])
+        except (OSError, sqlite3.Error, RuntimeError):
+            _safe_log('relationship_moments_cleanup_deferred')
     try:
         _atomic_write_store_file(root / "state.json.bak", serialized)
     except StoreStateUnavailable:
@@ -4060,6 +4078,8 @@ async def _diary_loop() -> None:
         try:
             with model_use('diary'):
                 await _diary_tick()
+            from runtime.relationship_story import tick as story_tick
+            await story_tick(sys.modules[__name__])
         except (OSError, RuntimeError, ValueError, TypeError, sqlite3.Error):
             _safe_log('diary_check_unavailable')
         try:
@@ -4867,6 +4887,62 @@ async def route(
         except (OSError, RuntimeError):
             return err(503, 'IMPROVE_FORGET_UNAVAILABLE', {'error_code': 'IMPROVE_FORGET_UNAVAILABLE'})
         return err(400, 'IMPROVE_REQUEST_INVALID', {'error_code': 'IMPROVE_REQUEST_INVALID'})
+
+    if p.startswith('/toy/story') or p.startswith('/toy/relationship-story'):
+        from runtime import relationship_story
+        from runtime.story import StoryStore
+        try:
+            if diary_store is None:
+                raise RuntimeError('STORY_UNAVAILABLE')
+            server = sys.modules[__name__]
+            stories = StoryStore(diary_store)
+            if method == 'GET' and p == '/toy/story':
+                return ok(relationship_story.page(server))
+            if method == 'GET' and p == '/toy/relationship-story':
+                return ok(relationship_story.details(server))
+            if method != 'POST':
+                return err(405, 'METHOD_NOT_ALLOWED', {})
+            if not companion_confirmed:
+                return err(403, 'COMPANION_CONFIRMATION_REQUIRED', {})
+            if not isinstance(body, dict):
+                raise ValueError('STORY_REQUEST_INVALID')
+            if p == '/toy/story/comment' and set(body) == {'id', 'text'}:
+                if not isinstance(body['id'], str):
+                    raise ValueError('STORY_CHAPTER_NOT_FOUND')
+                stories.comment(body['id'], body['text'])
+                return ok(relationship_story.page(server))
+            if p == '/toy/relationship-story/mark' and set(body) == {'id', 'enabled'}:
+                from runtime.relationship_moments import mark
+                mark(relationship_story.ledger(server), body['id'], body['enabled'])
+                return ok(relationship_story.details(server))
+            if p == '/toy/relationship-story/route' and set(body) == {'route', 'version'}:
+                relationship_story.change_route(relationship_story.ledger(server), body['route'], body['version'])
+                return ok(relationship_story.details(server))
+            if p == '/toy/story/settings' and set(body) == {'enabled'}:
+                stories.enable(body['enabled'])
+                if body['enabled']:
+                    task = asyncio.create_task(relationship_story.tick(server))
+                    media_tasks.add(task)
+                    task.add_done_callback(media_tasks.discard)
+                return ok(relationship_story.page(server))
+            if set(body) == {'id'} and p in {'/toy/story/delete', '/toy/story/seen', '/toy/story/rewrite'}:
+                if not isinstance(body['id'], str) or body['id'] not in {row['id'] for row in stories.chapters()}:
+                    return err(404, 'STORY_CHAPTER_NOT_FOUND', {})
+                if p.endswith('/delete'):
+                    stories.delete(body['id'])
+                elif p.endswith('/seen'):
+                    stories.seen(body['id'])
+                else:
+                    task = asyncio.create_task(relationship_story.tick(server, replace_id=body['id']))
+                    media_tasks.add(task)
+                    task.add_done_callback(media_tasks.discard)
+                return ok(relationship_story.page(server))
+            raise ValueError('STORY_REQUEST_INVALID')
+        except ValueError as exc:
+            code = str(exc) if str(exc).startswith(('STORY_', 'RELATIONSHIP_')) else 'STORY_REQUEST_INVALID'
+            return err(400, code, {'error_code': code})
+        except (OSError, RuntimeError, sqlite3.Error):
+            return err(503, 'STORY_UNAVAILABLE', {'error_code': 'STORY_UNAVAILABLE'})
 
     if p.startswith('/toy/diary'):
         if diary_store is None:
@@ -6574,6 +6650,9 @@ def _schedule_daily_life_exchange(letter: dict) -> None:
             )
             origin_kwargs = {'origin': 'proactive'} if letter.get('origin') == 'proactive' else {}
             signal = daily_life_runtime.store.exchange_relationship(source_id, letter["content"], letter["reply_text"], **origin_kwargs)
+            if signal is None and letter.get('origin') != 'proactive' and private_world_relationship_committer is not None:
+                private_world_relationship_committer.commit_interaction_day(letter['private_world_delivery_id'], letter['reply_text'],
+                    occurred_at=datetime.fromisoformat(letter['private_world_occurred_at']))
             if signal is not None:
                 if private_world_relationship_committer is None:
                     raise RuntimeError("DAILY_LIFE_RELATIONSHIP_UNAVAILABLE")

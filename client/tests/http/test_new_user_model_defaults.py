@@ -11,7 +11,7 @@ from original_client_setup_api import LLMSetupError, LLMSetupService, mount_orig
 from runtime import model_routes
 
 KEY = 'olivia-synthetic-private-key'
-NEW_ROUTES = {'qq': None, 'letter': None, 'diary': 'claude-opus-5-5'}
+NEW_ROUTES = {'qq': None, 'letter': None, 'diary': 'claude-opus-5-5', 'story': 'gemini-4-argon'}
 
 
 @pytest.fixture(autouse=True)
@@ -181,6 +181,6 @@ def test_save_if_absent_never_overwrites(tmp_path):
     other = {'qq': 'qwen3.7-flash', 'letter': None, 'diary': None}
     model_routes.save(other)
     assert model_routes.save_if_absent(NEW_ROUTES) is False
-    assert model_routes.load() == other
+    assert model_routes.load() == {**other, 'story': 'gemini-4-argon'}
     with pytest.raises(ValueError):
         model_routes.save_if_absent({'qq': None})

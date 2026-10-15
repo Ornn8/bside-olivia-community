@@ -30,9 +30,9 @@ def quote_ref(state, text):
 FACTS = {
     'world_update': 'reconsider',
     'current_quote': lambda state: quote_ref(state, RECORDED),
-    'relationship': 'meaningful_exchange',
-    'relationship_user_quote': lambda state: quote_ref(state, USER_SENTENCE),
-    'relationship_reply_quote': lambda state: quote_ref(state, RECORDED),
+    'rel_disclosure': 'everyday', 'rel_moment': 'rel_disclosure:everyday',
+    'rel_user_quote': lambda state: quote_ref(state, USER_SENTENCE),
+    'rel_reply_quote': lambda state: quote_ref(state, RECORDED),
     'routine': 'set',
     'routine_quote': lambda state: quote_ref(state, USER_SENTENCE),
     'sleep_hour': '23', 'sleep_minute': '30', 'utc_offset': '480', 'utc_offset_literal': 't0',
@@ -115,7 +115,8 @@ def test_every_other_fact_is_produced_when_no_updates_conflict():
     # The control for the scenarios below: the same exchange with one plain update.
     payload, _ = run(MOON_DATA, Port([RECORD]))
     assert [(item['id'], item['status']) for item in payload['updates']] == [('p8', 'completed')]
-    assert payload['relationship']['kind'] == 'meaningful_exchange'
+    assert payload['relationship']['kind'] == 'relationship_evidence'
+    assert payload['relationship']['signals']['rel_disclosure'] == 'everyday'
     assert payload['routine'] == {'sleep_minute': 1410, 'utc_offset_minutes': 480, 'quote': USER_SENTENCE}
     assert payload['boundaries'] == [{'action': 'set', 'boundary_id': None, 'quote': BOUNDARY}]
     assert payload['addressing'] == {'user_calls_linli': '小林，'}

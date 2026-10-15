@@ -324,6 +324,7 @@ class SQLitePrivateWorldLedger:
             raise TypeError(
                 "expected snapshot version must be a positive integer"
             )
+        moment_kind = None
         try:
             with self._connection() as connection:
                 connection.execute("BEGIN IMMEDIATE")
@@ -389,7 +390,8 @@ class SQLitePrivateWorldLedger:
                         event.event_id,
                         event.delivery_id,
                         event.event_type,
-                        event._payload_json(),
+                        json.dumps({key: value for key, value in event.payload.items() if key != 'relationship_moment'},
+                                   ensure_ascii=False, sort_keys=True, separators=(',', ':')),
                         event.occurred_at,
                     ),
                 )
@@ -407,6 +409,15 @@ class SQLitePrivateWorldLedger:
                             event.event_id,
                         ),
                     )
+                moment = event.payload.get('relationship_moment')
+                if moment and event.payload.get('reason_code') != 'SEMANTIC_DUPLICATE':
+                    from runtime.relationship_moments import record_moment
+                    moment_kind = record_moment(connection, event.payload['canonical_delivery_id'], event.occurred_at, moment)
+                if snapshot.story_volume > current.story_volume:
+                    connection.execute('CREATE TABLE IF NOT EXISTS relationship_volumes '
+                                       '(volume INTEGER PRIMARY KEY, opened_at TEXT NOT NULL)')
+                    connection.executemany('INSERT OR IGNORE INTO relationship_volumes VALUES (?,?)',
+                        ((volume, event.occurred_at) for volume in range(current.story_volume + 1, snapshot.story_volume + 1)))
                 initialized = (event.event_type == 'initialize_historical_relationship'
                                and event.payload.get('reason_code') == 'INITIALIZE_HISTORICAL_RELATIONSHIP')
                 if initialized or (event.reducer_input is None and snapshot != current):
@@ -418,6 +429,11 @@ class SQLitePrivateWorldLedger:
             raise LedgerWriteError(
                 "private world transaction failed"
             ) from exc
+        from runtime.diagnostics.reply_telemetry import emit
+        if moment_kind:
+            emit('app', 'ok', relationship_story={'kind': moment_kind})
+        if snapshot.story_volume > current.story_volume:
+            emit('app', 'ok', relationship_story={'kind': 'volume'})
         return True
 
     def _save_projection_base(self, connection, snapshot):
@@ -502,7 +518,8 @@ class SQLitePrivateWorldLedger:
                     raise LedgerWriteError('stored reducer event time mismatch')
                 if candidate.kind in {ReducerEventKind.SUPPORT_RECEIVED, ReducerEventKind.BOUNDARY_RESPECTED,
                                       ReducerEventKind.MEANINGFUL_EXCHANGE, ReducerEventKind.SHARED_EXPERIENCE,
-                                      ReducerEventKind.CONFLICT, ReducerEventKind.REPAIR}:
+                                      ReducerEventKind.CONFLICT, ReducerEventKind.REPAIR,
+                                      ReducerEventKind.RELATIONSHIP_EVIDENCE}:
                     keys = {candidate.semantic_key, 'canonical-interaction:' + candidate.kind.value}
                     times = [at for key, at in equivalents if key in keys]
                     predecessor = max((at for at in times if at <= candidate.occurred_at), default=None)
@@ -545,6 +562,15 @@ class SQLitePrivateWorldLedger:
                 incoming_reason = result.delta.reason_code
                 incoming_qualification = sum(getattr(projected, key) >= 70
                     for key in ('familiarity', 'trust', 'comfort', 'closeness')) >= 3
+        if projected.story_volume < current.story_volume:
+            floors = {'familiarity': 1} if current.story_volume >= 2 else {}
+            if current.story_volume >= 3:
+                floors.update(familiarity=35, comfort=35)
+            if current.story_volume >= 4:
+                floors['trust'] = 35
+            projected = replace(projected, story_volume=current.story_volume,
+                volume_started_days=min(current.volume_started_days, len(projected.relationship_days)),
+                **{key: max(value, getattr(projected, key)) for key, value in floors.items()})
         changed = [field for field in current.__dataclass_fields__
                    if field != 'version' and getattr(current, field) != getattr(projected, field)]
         initialized = incoming_reason == 'INITIALIZE_HISTORICAL_RELATIONSHIP'
@@ -673,6 +699,12 @@ class SQLitePrivateWorldLedger:
             intimacy_grants=grants,
             growth_window_start=payload.get("growth_window_start", ""),
             growth_used=payload.get("growth_used", 0),
+            relationship_growth=tuple(tuple(row) for row in payload.get('relationship_growth', ())),
+            story_volume=payload.get('story_volume', 1),
+            relationship_route=payload.get('relationship_route', ''),
+            relationship_days=tuple(payload.get('relationship_days', ())),
+            volume_started_days=payload.get('volume_started_days', 0),
+            route_asked=payload.get('route_asked', False),
             active_boundaries=boundaries,
             acknowledged_affection=affection,
         )
@@ -834,7 +866,8 @@ class SQLitePrivateWorldLedger:
             raise LedgerWriteError("stored snapshot row version is invalid")
         try:
             payload = self._payload_object(payload_json)
-            if set(payload) != _V4_PAYLOAD_FIELDS:
+            if set(payload) - {'relationship_growth', 'story_volume', 'relationship_route', 'relationship_days',
+                               'volume_started_days', 'route_asked'} != _V4_PAYLOAD_FIELDS:
                 raise ValueError("stored state fields are invalid")
             if payload["view"] != "snapshot":
                 raise ValueError("stored state view is invalid")
