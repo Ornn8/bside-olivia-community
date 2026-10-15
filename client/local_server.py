@@ -1726,8 +1726,11 @@ def _create_daily_life_runtime() -> DailyLifeRuntime | None:
                       error_code='DAILY_LIFE_DISABLED' if not enabled else 'DAILY_LIFE_UNAVAILABLE',
                       recorded_at_ms=int(time.time() * 1000))
             return None
+        life_store = DailyLifeStore(path.with_name("daily_life.sqlite3"))
+        from runtime.private_world.self_name_migration import run_once as repair_her_self_name
+        repair_her_self_name(life_store)  # one-off, marker-guarded, never fatal
         return DailyLifeRuntime(
-            DailyLifeStore(path.with_name("daily_life.sqlite3")),
+            life_store,
             lambda: letters_adapter.gateway,
             lambda: life_persona(letters_adapter.persona_v2_path),
             emotion_persona=lambda: life_persona(letters_adapter.persona_v2_path, include_emotion_traits=True),
