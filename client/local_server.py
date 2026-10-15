@@ -1107,10 +1107,16 @@ class LetterAdapter:
             for index, nickname in enumerate(projected.authorized_nicknames)
         )
         from runtime.relationship_story import writer_line
-        facts += (TrustedWorldFact(fact_id='private.relationship.route', source_id='private_world.character_view',
-            statement=writer_line(private_snapshot,
-                getattr(globals().get('private_world_relationship_committer'), 'ledger', None)),
-            kind=WorldFactKind.TRUSTED_RUNTIME),)
+        # The route line is optional: a broken private world must never block the reply itself.
+        try:
+            route_line = writer_line(private_snapshot,
+                getattr(globals().get('private_world_relationship_committer'), 'ledger', None)
+                if world_state_available else None)
+        except (sqlite3.Error, OSError, ValueError, RuntimeError):
+            route_line = None
+        if route_line:
+            facts += (TrustedWorldFact(fact_id='private.relationship.route', source_id='private_world.character_view',
+                statement=route_line, kind=WorldFactKind.TRUSTED_RUNTIME),)
         if projected.continuation_known:
             facts += (
                 TrustedWorldFact(
