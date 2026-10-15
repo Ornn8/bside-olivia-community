@@ -4,6 +4,9 @@ from copy import deepcopy
 import json
 from pathlib import Path
 import re
+from runtime.relationship_growth import DEFAULTS as RELATIONSHIP_GROWTH_DEFAULTS
+from runtime.relationship_growth import CRITERIA as RELATIONSHIP_CRITERIA_DEFAULTS
+from runtime.story_policy import DEFAULTS as STORY_DEFAULTS
 
 
 BALANCE_CODES = ['JEV_BALANCE_INSUFFICIENT', 'JEV_BILLING_HTTP_402',
@@ -12,6 +15,11 @@ BALANCE_CODES = ['JEV_BALANCE_INSUFFICIENT', 'JEV_BILLING_HTTP_402',
 _BALANCE_NOTICE = '【系统提示】Olivia 账户余额不足，这条消息没能回复。请在“回信服务 → Olivia 账户”充值后再聊天。'
 _PENDING_NOTICE = '【系统提示】这条消息暂时没能回复，用量仍在核对。请勿反复重发同一条；你可以发送新消息继续聊天。'
 DEFAULTS = {
+    'relationship_stages': {'familiar_days': 3, 'friend_days': 8, 'trusted_days': 21,
+        'familiar_score': 3, 'friend_score': 35, 'trusted_score': 70, 'trusted_deep': 35},
+    'relationship_story': STORY_DEFAULTS,
+    'relationship_criteria': RELATIONSHIP_CRITERIA_DEFAULTS,
+    'relationship_growth': RELATIONSHIP_GROWTH_DEFAULTS,
     'qq_default_voice': {'mode': 'voice_only', 'wait_seconds': 60},
     'proactive': {
         'intervals': {tier: {'min_minutes': low, 'max_minutes': high} for tier, low, high in (
@@ -47,6 +55,36 @@ def _object(value, allowed, strict):
 def _validate_key(key, value, strict):
     default = DEFAULTS[key]
     _object(value, default, strict and key != 'notices')
+    if key == 'relationship_stages':
+        return {name: _number(value.get(name, fallback), 1, 100, strict) for name, fallback in default.items()}
+    if key == 'relationship_story':
+        from runtime.story_policy import validate_texts
+        return validate_texts(value, default)
+    if key == 'relationship_criteria':
+        result = deepcopy(default)
+        for question, criteria in value.items():
+            if question not in default:
+                continue
+            _object(criteria, default[question], True)
+            for choice, description in criteria.items():
+                if not isinstance(description, str) or not 1 <= len(description) <= 1000:
+                    raise ValueError('CLIENT_POLICY_INVALID')
+                result[question][choice] = description
+        return result
+    if key == 'relationship_growth':
+        result = deepcopy(default)
+        for name in ('everyday_daily', 'deep_daily', 'deep_weekly'):
+            result[name] = _number(value.get(name, default[name]), 1, 100, strict)
+        deltas = value.get('deltas', {})
+        _object(deltas, default['deltas'], strict)
+        for signal, dimensions in deltas.items():
+            if signal not in result['deltas']:
+                continue
+            _object(dimensions, default['deltas'][signal], True)
+            for dimension, delta in dimensions.items():
+                negative = signal.startswith('friction_') or dimension == 'tension'
+                result['deltas'][signal][dimension] = _number(delta, -10 if negative else 0, 10, strict)
+        return result
     if key == 'qq_default_voice':
         mode = value.get('mode', default['mode'])
         if not isinstance(mode, str) or mode not in {'voice_only', 'text_then_voice', 'text_only'}:

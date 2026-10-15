@@ -38,6 +38,16 @@ class CurrentUserResetResult:
 
 
 class PrivateWorldAdmin:
+    @staticmethod
+    def _clear_relationship_data(connection):
+        tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        for table in ('relationship_moments', 'relationship_deleted_sources', 'relationship_message_sources',
+                      'relationship_volumes', 'relationship_story_marks', 'private_world_projection_inputs'):
+            if table in tables:
+                connection.execute('DELETE FROM ' + table)
+        if 'private_world_metadata' in tables:
+            connection.execute("DELETE FROM private_world_metadata WHERE key='ordered_projection_v1'")
+
     def __init__(self, database_path: Path, *, user_id: str = "local-user") -> None:
         path = Path(database_path)
         if str(path) in {"", "."} or path.exists() and path.is_dir():
@@ -109,6 +119,7 @@ class PrivateWorldAdmin:
         try:
             with closing(sqlite3.connect(self._database_path, timeout=5)) as connection, connection:
                 connection.execute("PRAGMA foreign_keys = ON")
+                self._clear_relationship_data(connection)
                 connection.execute("DELETE FROM private_world_snapshots")
                 connection.execute("DELETE FROM private_world_events")
         except sqlite3.Error as exc:
@@ -196,6 +207,7 @@ class PrivateWorldAdmin:
                 affected_event_count = int(
                     connection.execute("SELECT COUNT(*) FROM private_world_events").fetchone()[0]
                 )
+                self._clear_relationship_data(connection)
                 connection.execute("DELETE FROM private_world_snapshots")
                 connection.execute("DELETE FROM private_world_events")
                 connection.execute(

@@ -27,7 +27,8 @@ const document={createElement:()=>new Element()}, alive=()=>true;
 const text=(tag,value)=>({textContent:value,style:{}}), button=()=>({});
 const PRIVATE_WORLD_PATH='world';
 let resolve, calls=0;
-const requestJson=()=>{calls++;return new Promise(r=>resolve=r);};
+const routeRequest=()=>{calls++;return new Promise(r=>resolve=r);};
+const window={oliviaRelationshipView:(target,data)=>target.replaceChildren(text('p','关系'),text('p','说明'))};
 '''
     harness += 'const relationshipPanel =' + source
     harness += r'''

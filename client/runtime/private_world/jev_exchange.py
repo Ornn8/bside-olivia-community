@@ -123,7 +123,7 @@ def _exchange_context(data, previous, boundaries):
     # Existing detail and prior records remain host-side; JEV matches known items by their
     # title/kind/status (the host maps a choice back to the durable id) and evaluates only
     # this exchange's verbatim evidence.
-    result = _fields(data, ('origin', 'contact_invited', 'validation_error'))
+    result = _fields(data, ('origin', 'contact_invited', 'validation_error', 'relationship_route'))
     result['previous_state'] = {group: [_fields(item, ('title', 'kind', 'actor', 'status'))
         for item in previous.get(group, [])] for group in ('projects', 'shared')}
     rhythm = data.get('rhythm') or {}
@@ -643,17 +643,21 @@ async def _extract(port, data, instructions, request_id, level, update_slots, bo
         questions[f'boundary_{i}_quote'] = _q(f'按slot_contract，边界{i + 1}的quote。', quote_options(reply))
     if not proactive:
         questions.update({
-            'relationship': _q('双方本轮实际互动类型；不能从回信责备倒推用户伤害。', {
-                'none': '无证实变化', 'meaningful_exchange': '针对具体内容的有意义交流', 'shared_experience': '双方确认实际共同经历或实际后续',
-                'support_received': '她认可收到具体支持', 'boundary_respected': '明确尊重她意愿且她回应', 'conflict': '用户明确伤害且她抵触', 'repair': '双方化解已有矛盾'}),
             'relationship_stage': _q('双方是否明确共同确认关系身份？不能从亲近、称呼、争执或分数推断。',
                 {'none': '未双方确认', **{s: s for s in ('unknown', 'acquaintance', 'familiar', 'close', 'committed')}}),
             'routine': _q('用户明确稳定作息及当地地点/时区或明确撤回？偶尔熬夜不算。',
                 {'none': '无完整变更', 'set': '明确稳定作息和地点/时区', 'withdraw': '明确撤回'}),
-            'relationship_user_quote': _q('独立按relationship同一规则判断本轮双方有无真实互动；有则选用户参与该互动的完整原句，无则none。普通有内容的问答也可能meaningful_exchange，不要求用户自己宣告发生互动；关系身份若确认须原句明确双方同意。', quote_options(user)),
-            'relationship_reply_quote': _q('独立按relationship同一规则判断本轮双方有无真实互动；有则选角色具体回应的完整原句，无则none。关系身份若确认须原句明确双方同意。', quote_options(reply)),
+            'rel_user_quote': _q('支持rel_moment的用户完整原句；身份若确认也必须直接证明双方同意。无完整证据none。', quote_options(user)),
+            'rel_reply_quote': _q('支持rel_moment的角色完整回应；身份若确认也必须直接证明双方同意。无完整证据none。', quote_options(reply)),
             'routine_quote': _q('用户自己明确通常的稳定入睡时间及当地地点/时区，或明确撤回的完整用户原句。'
                 '第三方时间、引用、假设和偶尔熬夜不算，缺少适用证据则none。', quote_options(user))})
+        from runtime.cloud_policy import get_policy
+        from runtime.relationship_growth import CHOICES
+        questions.update({key: _q('独立判断本轮实际发生的关系证据，不从其他答案推断。', criteria)
+                          for key, criteria in get_policy('relationship_criteria').items()})
+        questions['rel_moment'] = _q('本轮最有意义的一项关系时刻。必须与对应题目的非none答案一致。',
+            {'none': '没有关系时刻', **{key + ':' + choice: key + ':' + choice
+                for key, choices in CHOICES.items() for choice in choices if choice != 'none'}})
         # How each side addresses the other, kept as exact original quotes so a
         # later reply uses this user's own names instead of "用户" or a guess.
         questions.update({
@@ -803,14 +807,18 @@ async def _extract(port, data, instructions, request_id, level, update_slots, bo
         action, boundary_id = ('set', None) if action == 'new' else (
             action.split('_')[0], boundaries[int(action.split('_')[1])]['boundary_id'])
         payload['boundaries'].append({'action': action, 'boundary_id': boundary_id, 'quote': reply[sid]})
-    relation = answers.get('relationship', 'none')
-    # Relationship evidence is a separate proof from life progress. Never mint
-    # a relationship from a bare classifier label, nor discard independently
-    # evidenced meal/activity updates because one side of that proof is absent.
-    if (relation != 'none' and answers.get('relationship_user_quote') in user
-            and answers.get('relationship_reply_quote') in reply):
-        payload['relationship'] = {'kind': relation, 'user_quote': evidence('relationship_user_quote', user),
-                                   'reply_quote': evidence('relationship_reply_quote', reply)}
+    moment = answers.get('rel_moment', 'none')
+    if (moment != 'none' and answers.get('rel_user_quote') in user
+            and answers.get('rel_reply_quote') in reply):
+        from runtime.relationship_growth import CHOICES
+        key, choice = moment.split(':')
+        if answers.get(key) != choice:
+            raise ValueError('JEV_EXCHANGE_EVIDENCE_INVALID')
+        payload['relationship'] = {
+            'kind': 'relationship_evidence',
+            'signals': {key: answers[key] for key in CHOICES}, 'moment': moment,
+            'user_quote': evidence('rel_user_quote', user),
+            'reply_quote': evidence('rel_reply_quote', reply)}
         if answers['relationship_stage'] != 'none':
             payload['relationship']['relationship_stage'] = answers['relationship_stage']
     routine = answers.get('routine', 'none')

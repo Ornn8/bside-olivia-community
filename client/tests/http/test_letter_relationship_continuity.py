@@ -31,7 +31,8 @@ class WorldSelector:
         assert state['sources']['linli_reply'] == case[1]
         exchange_calls.append(case[0])
         if case[2]:
-            answers.update(relationship=case[2], relationship_user_quote='u0', relationship_reply_quote='r0')
+            answers.update(rel_friction=case[2], rel_moment='rel_friction:' + case[2],
+                           rel_user_quote='u0', rel_reply_quote='r0')
         return answers
 jev_questions.configured_questions = lambda: WorldSelector()
 cases = [

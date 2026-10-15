@@ -18,7 +18,7 @@ def routes(tmp_path):
 
 
 def test_saved_routes_apply_only_inside_their_use(routes):
-    assert model_routes.load() == {'qq': None, 'letter': None, 'diary': None}
+    assert model_routes.load() == {'qq': None, 'letter': None, 'diary': None, 'story': 'gemini-4-argon'}
     model_routes.save({'qq': 'qwen3.7-flash', 'letter': None, 'diary': 'claude-opus-5-5'})
     assert model_routes.routed_model(RELAY_BASE, 'claude-sonnet-5-5') == 'claude-sonnet-5-5'  # no use marked
     with model_routes.using('qq'):
@@ -38,7 +38,7 @@ def test_invalid_routes_are_rejected(routes, bad):
 
 def test_damaged_file_follows_the_main_model(routes):
     (routes / 'olivia_model_routes.json').write_text('{broken', encoding='utf-8')
-    assert model_routes.load() == {'qq': None, 'letter': None, 'diary': None}
+    assert model_routes.load() == {'qq': None, 'letter': None, 'diary': None, 'story': 'gemini-4-argon'}
 
 
 @pytest.mark.parametrize('model', ['claude-haiku-5-5', 'gemini-4-argon'])
@@ -86,8 +86,36 @@ def test_settings_action_saves_and_lists_routes(tmp_path, monkeypatch):
                                       json={'action': 'select_routes', 'routes': {'qq': 'qwen3.7-flash', 'letter': None, 'diary': None}})
             assert saved.status == 200
             listed = await (await client.post('/toy/relay/action', headers=headers, json={'action': 'models'})).json()
-            assert listed['routes'] == {'qq': 'qwen3.7-flash', 'letter': None, 'diary': None}
+            assert listed['routes'] == {'qq': 'qwen3.7-flash', 'letter': None, 'diary': None, 'story': 'gemini-4-argon'}
     try:
         asyncio.run(scenario())
     finally:
         model_routes._path, model_routes._cache = None, (None, {})
+
+
+def test_story_free_flag_reaches_only_story_requests(monkeypatch):
+    import original_client_relay_api as relay
+    from runtime.story import REQUEST_FREE
+    seen = []
+    async def endpoint(request):
+        seen.append(await request.json())
+        return web.json_response({'choices':[{'message':{'content':'{}'},'finish_reason':'stop'}]})
+    async def scenario():
+        app = web.Application()
+        app.router.add_post('/v1/chat/completions', endpoint)
+        async with TestServer(app) as server:
+            base = str(server.make_url('/v1'))
+            monkeypatch.setattr(relay, 'RELAY_BASE', base)
+            adapter = OpenAICompatibleAdapter(GatewayConfig(provider='openai_compatible', base_url=base,
+                model='synthetic', feature_enabled=True, requires_api_key=False))
+            body = {'model':'synthetic','messages':[{'role':'user','content':'synthetic'}]}
+            await adapter._post_json(body, 'story:paid')
+            token = REQUEST_FREE.set(True)
+            try:
+                await adapter._post_json(body, 'story:free')
+                await adapter._post_json(body, 'story-revise:free')
+                await adapter._post_json(body, 'diary:paid')
+            finally:
+                REQUEST_FREE.reset(token)
+    asyncio.run(scenario())
+    assert [row.get('free') for row in seen] == [False, True, True, None]

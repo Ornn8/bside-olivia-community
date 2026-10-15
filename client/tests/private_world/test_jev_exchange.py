@@ -222,8 +222,8 @@ def test_relationship_boundary_and_contact_keep_separate_originals():
     from runtime.private_world.jev_exchange import extract
     from runtime.memory.private_world_relationship import validate_boundary_changes, validate_exchange_relationship
     def choose(key, q, state):
-        return {'relationship': 'meaningful_exchange', 'relationship_user_quote': 'u0',
-                'relationship_reply_quote': 'r0', 'boundary_0_quote': 'r0', 'boundary_0_action': 'withdraw_0',
+        return {'rel_disclosure': 'everyday', 'rel_moment': 'rel_disclosure:everyday', 'rel_user_quote': 'u0',
+                'rel_reply_quote': 'r0', 'boundary_0_quote': 'r0', 'boundary_0_action': 'withdraw_0',
                 'contact_choice': 'qq', 'contact_quote': 'u0'}.get(key, first(key, q, state))
     data = {'user_letter': '我选QQ，我们用QQ交流练琴感受吧。', 'linli_reply': '之前那条不准聊练琴的约定撤销，我们可以聊。',
             'contact_invited': True, 'origin': 'user', 'previous_state': {},
@@ -356,8 +356,8 @@ def test_incomplete_relationship_does_not_discard_evidenced_life_update():
     from runtime.private_world.jev_exchange import extract
     def choose(key, q, state):
         return {'update_0_quote': 'r0', 'update_0_status': 'linli_completed',
-                'relationship': 'meaningful_exchange', 'relationship_stage': 'committed',
-                'relationship_user_quote': 'u0', 'relationship_reply_quote': 'none'}.get(key, first(key, q, state))
+                'rel_disclosure': 'everyday', 'rel_moment': 'rel_disclosure:everyday', 'relationship_stage': 'committed',
+                'rel_user_quote': 'u0', 'rel_reply_quote': 'none'}.get(key, first(key, q, state))
     result = asyncio.run(extract(Port(choose), {'user_letter': '吃完了？', 'linli_reply': '我吃完午饭了。'}, '', 'life:partial'))
     assert result['relationship'] is None
     assert result['updates'][0]['status'] == 'completed'
@@ -391,7 +391,7 @@ def test_realistic_letter_with_existing_projects_fits_one_packet():
     state, questions, purpose = port.calls[0]
     size = len(json.dumps(dict(state=state, questions=questions, purpose=purpose), ensure_ascii=False, separators=(',', ':')).encode())
     assert size < JEV_MAX_INPUT_BYTES
-    assert len(questions) == 17  # anchors and independent facts; routine values depend on its proof
+    assert len(questions) == 23  # anchors and independent facts; routine values depend on its proof
     assert state['sources'] == {key: data[key] for key in ('user_letter', 'linli_reply')}
     assert _EXCHANGE_LIFE_PROMPT not in str(state)
     assert all(value == key for key, value in questions['update_0_quote']['criteria'].items() if key != 'none')

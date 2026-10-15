@@ -44,6 +44,7 @@ class ReducerInputError(ValueError):
 
 
 class ReducerEventKind(str, Enum):
+    RELATIONSHIP_EVIDENCE = 'relationship_evidence'
     CANONICAL_REPLY_DELIVERED = "canonical_reply_delivered"
     BOUNDARY_RESPECTED = "boundary_respected"
     SUPPORT_RECEIVED = "support_received"
@@ -107,8 +108,15 @@ class ReducerEvent:
     boundary_id: str | None = None
     acknowledged_affection: AcknowledgedAffection | None = None
     asserted_affection_scope: AffectionScope | None = None
+    relationship_signals: dict | None = None
+    relationship_policy: dict | None = None
 
     def __post_init__(self) -> None:
+        if self.kind is ReducerEventKind.RELATIONSHIP_EVIDENCE:
+            from runtime.relationship_growth import validate_signals
+            validate_signals(self.relationship_signals)
+        elif self.relationship_signals is not None or self.relationship_policy is not None:
+            raise ReducerInputError('relationship evidence belongs to its own event')
         if not isinstance(self.kind, ReducerEventKind):
             raise ReducerInputError("event kind is invalid")
         if (
@@ -246,7 +254,11 @@ def reducer_event_record(event: ReducerEvent) -> dict:
         if isinstance(value, (list, tuple)):
             return [encode(item) for item in value]
         return value
-    return encode(asdict(event))
+    result = encode(asdict(event))
+    for key in ('relationship_signals', 'relationship_policy'):
+        if result[key] is None:
+            result.pop(key)
+    return result
 
 
 def reducer_event_from_record(record: dict) -> ReducerEvent:
@@ -396,6 +408,13 @@ def reduce_private_world(
     if _duplicate(event):
         return _no_change(snapshot, "SEMANTIC_DUPLICATE")
 
+    if event.kind is ReducerEventKind.RELATIONSHIP_EVIDENCE:
+        from runtime.relationship_growth import growth_updates
+        from runtime.cloud_policy import get_policy
+        return _apply_updates(snapshot, growth_updates(snapshot, event.relationship_signals,
+            event.occurred_at, event.relationship_policy or get_policy('relationship_growth')),
+            reason_code='RELATIONSHIP_EVIDENCE')
+
     updates: dict[str, object] = {}
     reason_code = event.kind.value.upper()
     if event.kind in {ReducerEventKind.BOUNDARY_RESPECTED, ReducerEventKind.SUPPORT_RECEIVED}:
@@ -446,6 +465,11 @@ def reduce_private_world(
         updates = {
             "relationship_stage": event.target_stage or "unknown",
         }
+        if snapshot.relationship_route or snapshot.relationship_days:
+            from runtime.relationship_growth import volume_updates
+            if event.target_stage in {'close', 'committed'} and snapshot.relationship_route == 'undecided':
+                updates['relationship_route'] = 'romantic'
+            updates.update(volume_updates(snapshot, updates, len(snapshot.relationship_days)))
         # Stage is an explicit relationship fact, not a score reward.
     elif event.kind is ReducerEventKind.INTIMACY_GRANTED:
         grant = event.intimacy_grant

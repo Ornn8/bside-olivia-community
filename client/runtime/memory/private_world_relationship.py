@@ -19,12 +19,14 @@ from runtime.private_world.reducer import _DEDUPLICATION_WINDOW
 _ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,96}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _INTERACTION_KINDS = {
+    ReducerEventKind.RELATIONSHIP_EVIDENCE,
     ReducerEventKind.BOUNDARY_RESPECTED, ReducerEventKind.SUPPORT_RECEIVED,
     ReducerEventKind.CONFLICT, ReducerEventKind.REPAIR,
     ReducerEventKind.MEANINGFUL_EXCHANGE, ReducerEventKind.SHARED_EXPERIENCE,
 }
 _RELATIONSHIP_FACT_KINDS = frozenset(
     {
+        ReducerEventKind.RELATIONSHIP_EVIDENCE,
         ReducerEventKind.CHARACTER_BOUNDARY_SET,
         ReducerEventKind.CHARACTER_BOUNDARY_WITHDRAWN,
         ReducerEventKind.CHARACTER_AFFECTION_ACKNOWLEDGED,
@@ -42,8 +44,16 @@ _RELATIONSHIP_FACT_KINDS = frozenset(
 def validate_exchange_relationship(signal: object, user_text: str, reply_text: str) -> dict | None:
     if signal is None:
         return None
-    if not isinstance(signal, dict) or not {"kind", "user_quote", "reply_quote"} <= set(signal) or set(signal) - {"kind", "user_quote", "reply_quote", "relationship_stage"}:
+    if not isinstance(signal, dict) or not {"kind", "user_quote", "reply_quote"} <= set(signal) or set(signal) - {"kind", "user_quote", "reply_quote", "relationship_stage", "signals", "moment"}:
         raise ValueError("DAILY_LIFE_RELATIONSHIP_INVALID")
+    if signal['kind'] == 'relationship_evidence':
+        from runtime.relationship_growth import validate_signals
+        validate_signals(signal.get('signals'))
+        moment = signal.get('moment', '').split(':')
+        if len(moment) != 2 or moment[1] == 'none' or signal['signals'].get(moment[0]) != moment[1]:
+            raise ValueError('DAILY_LIFE_RELATIONSHIP_INVALID')
+    elif 'signals' in signal or 'moment' in signal:
+        raise ValueError('DAILY_LIFE_RELATIONSHIP_INVALID')
     if signal.get('relationship_stage') not in {None, 'unknown', 'acquaintance', 'familiar', 'close', 'committed'}:
         raise ValueError("DAILY_LIFE_RELATIONSHIP_INVALID")
     if signal["kind"] not in {kind.value for kind in _INTERACTION_KINDS}:
@@ -100,6 +110,9 @@ class RelationshipFactCommand:
     acknowledged_affection: AcknowledgedAffection | None = None
     asserted_affection_scope: AffectionScope | None = None
     target_stage: str | None = None
+    relationship_signals: dict | None = None
+    relationship_policy: dict | None = None
+    moment: dict | None = None
 
     def __post_init__(self) -> None:
         if any(
@@ -144,12 +157,23 @@ class RelationshipFactCommand:
             asserted_affection_scope=self.asserted_affection_scope,
             target_stage=self.target_stage,
             basis_event_ids=(self.canonical_delivery_id,) if self.target_stage is not None else (),
+            relationship_signals=self.relationship_signals,
+            relationship_policy=self.relationship_policy,
         )
 
 
 class PrivateWorldRelationshipCommitter:
     def __init__(self, ledger: SQLitePrivateWorldLedger) -> None:
         self.ledger = ledger
+
+    def commit_interaction_day(self, delivery_id, reply_text, *, occurred_at):
+        from runtime.cloud_policy import get_policy
+        identity = 'day.' + hashlib.sha256(delivery_id.encode()).hexdigest()
+        return self.commit(RelationshipFactCommand(command_id=identity, kind=ReducerEventKind.RELATIONSHIP_EVIDENCE,
+            occurred_at=occurred_at.astimezone(timezone.utc), semantic_key=identity,
+            canonical_delivery_id=delivery_id, canonical_reply_sha256=hashlib.sha256(reply_text.encode()).hexdigest(),
+            evidence_ref_id=delivery_id + '.interaction-day', relationship_signals={},
+            relationship_policy={**get_policy('relationship_growth'), 'stages': get_policy('relationship_stages')}))
 
     def commit_boundaries(self, delivery_id: str, reply_text: str, changes: list, *, occurred_at: datetime) -> RelationshipFactStatus:
         changes = validate_boundary_changes(changes, reply_text)
@@ -231,14 +255,29 @@ class PrivateWorldRelationshipCommitter:
                 # cooldown. Record the late event through canonical validation as
                 # a no-op, rather than passing an invalid future predecessor.
                 last_equivalent = occurred_at
+            from runtime.cloud_policy import get_policy
             result = self.commit(RelationshipFactCommand(
                 command_id="exchange." + hashlib.sha256(delivery_id.encode()).hexdigest(),
                 kind=ReducerEventKind(signal["kind"]), occurred_at=occurred_at,
                 semantic_key=semantic_key, canonical_delivery_id=delivery_id,
                 canonical_reply_sha256=hashlib.sha256(reply_text.encode("utf-8")).hexdigest(),
                 evidence_ref_id=delivery_id + ".interaction", last_equivalent_at=last_equivalent,
+                relationship_signals=signal.get('signals'),
+                relationship_policy={**get_policy('relationship_growth'), 'stages': get_policy('relationship_stages')}
+                    if signal.get('signals') is not None else None,
+                moment={key: signal[key] for key in ('moment', 'user_quote', 'reply_quote')}
+                    if signal.get('signals') is not None else None,
             ))
             if result not in {RelationshipFactStatus.COMMITTED, RelationshipFactStatus.DUPLICATE} or signal.get('relationship_stage') is None:
+                return result
+            from runtime.relationship_growth import route
+            state = self.ledger.snapshot()
+            stages = ('unknown', 'acquaintance', 'familiar', 'friend', 'trusted_friend', 'close', 'committed')
+            if stages.index(state.relationship_stage) >= stages.index(signal['relationship_stage']):
+                import logging
+                logging.getLogger(__name__).info('RELATIONSHIP_STAGE_RECONFIRMED')
+                return result
+            if signal['relationship_stage'] in {'close', 'committed'} and route(state) not in {'undecided', 'romantic'}:
                 return result
             return self.commit(RelationshipFactCommand(
                 command_id='stage.' + hashlib.sha256(delivery_id.encode()).hexdigest(),
@@ -299,6 +338,8 @@ class PrivateWorldRelationshipCommitter:
             asserted_affection_scope=command.asserted_affection_scope,
             target_stage=command.target_stage,
             basis_event_ids=(command.canonical_delivery_id,) if command.target_stage is not None else (),
+            relationship_signals=command.relationship_signals,
+            relationship_policy=command.relationship_policy,
         )
         try:
             snapshot = self.ledger.snapshot()
@@ -322,6 +363,7 @@ class PrivateWorldRelationshipCommitter:
                         "canonical_reply_sha256": command.canonical_reply_sha256,
                         "evidence_ref_id": command.evidence_ref_id,
                         "semantic_key": command.semantic_key,
+                        **({'relationship_moment': command.moment} if command.moment else {}),
                         **({"boundary_id": command.boundary.boundary_id if command.boundary else command.boundary_id}
                            if command.kind in {ReducerEventKind.CHARACTER_BOUNDARY_SET, ReducerEventKind.CHARACTER_BOUNDARY_WITHDRAWN} else {}),
                     },

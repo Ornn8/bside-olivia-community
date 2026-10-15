@@ -67,6 +67,8 @@ async def absorb(server, row):
         await runtime.consume_exchange(source_id, user, her, occurred_at=ended, received_at=started)
         signal = runtime.store.exchange_relationship(source_id, user, her)
         relationship = getattr(server, 'private_world_relationship_committer', None)
+        if signal is None and relationship is not None and delivered:
+            relationship.commit_interaction_day(letter_id + ':1', her, occurred_at=ended)
         if signal is not None and relationship is not None and delivered:
             relationship.commit_exchange(letter_id + ':1', user, her, signal, occurred_at=ended)
             refresh = getattr(server, '_refresh_contact_relationship_projection', None)
