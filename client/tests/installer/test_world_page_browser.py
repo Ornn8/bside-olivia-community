@@ -48,7 +48,13 @@ window.renderWorld = '''+renderer+';')
         render()
         assert '挂心的事：' + concern in page.locator('#world').inner_text()
         page.screenshot(path=str(tmp_path/'world-concern-source.png'), full_page=True)
-        page.evaluate("()=>window.payload.emotion.concerns=[{summary:'明天的课堂展示'}]")
+        # A concern quoting the user's message and the user's own shared plan say whose words they are.
+        page.evaluate("()=>{window.payload.emotion.concerns=[{summary:'用户说：我明天要面试，好紧张。'}];"
+                      "window.payload.shared=[{title:'我周末带你去看海',actor:'user',status:'planned'}]}")
+        render()
+        assert '挂心的事：你说：我明天要面试，好紧张。' in page.locator('#world').inner_text()
+        assert '你说：我周末带你去看海' in page.locator('#world').inner_text()
+        page.evaluate("()=>{window.payload.emotion.concerns=[{summary:'明天的课堂展示'}];window.payload.shared=[]}")
         render()
         assert page.locator('#world img').count()==0
         assert '课表计划' in page.locator('#world').inner_text()

@@ -1722,6 +1722,11 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       const feelings = card();
       feelings.append(text('h5', '她现在的心情', 'text-text-title text-label-l'));
       const emotion = payload.emotion;
+      // Her concerns can quote the user's message, and shared items can be the user's own
+      // words; both say whose words they are, so the user's 我 never reads as hers.
+      const yours=value=>String(value ?? '').startsWith('用户说：') ? '你说：'+String(value).slice(4) : value;
+      const concernText=item=>yours(item.summary);
+      const said=item=>item.actor==='user' ? `你说：${item.title}` : item.title;
       const reactions = {pleased:'开心', anticipation:'期待', relieved:'松了口气', moved:'感动', affection:'心动', shy:'害羞',
         missing:'想你', angry:'生气', frustrated:'烦躁', jealous:'吃醋', sad:'难过', disappointed:'失落', hurt:'委屈', lonely:'孤单',
         concerned:'担心', afraid:'不安', surprised:'惊讶', bored:'无聊', calm:'平静'};
@@ -1761,14 +1766,14 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           const entry = document.createElement('div');
           entry.style.cssText = 'display:grid;gap:6px;padding:8px 0';
           entry.append(text('p', reactions[item.reaction], 'text-text-title text-label-l'),
-            text('p', `相关事件或话语：${item.quote}`, 'text-text-body text-body-m'),
+            text('p', `相关事件或话语：${yours(item.quote)}`, 'text-text-body text-body-m'),
             text('p', `她在意的是：${typeof item.goal_or_need === 'string' && item.goal_or_need.trim() ? item.goal_or_need : '尚未明确'}`, 'text-text-secondary text-body-m'),
             text('small', when(item.occurred_at), 'text-text-secondary text-caption-m'));
           feelings.append(entry);
         }
         if ((emotion.concerns || []).length) {
           feelings.append(text('h5', '挂心的事', 'text-text-title text-label-l'));
-          for (const item of emotion.concerns) feelings.append(text('p', item.summary, 'text-text-body text-body-m'));
+          for (const item of emotion.concerns) feelings.append(text('p', concernText(item), 'text-text-body text-body-m'));
         }
         feelings.append(text('small', '这些是她对事件的暂时理解；多种感受可能并存，旧反应会随时间淡出。', 'text-text-secondary text-caption-m'));
       }
@@ -1782,7 +1787,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         for (const item of items) {
           const el = document.createElement("details");
           el.style.cssText = "padding:8px 0;overflow-wrap:anywhere";
-          el.append(text("summary", `${item.title} · ${item.time_scope === 'transient' ? '当时的活动记录' : item.deadline_expired ? (item.time_scope_pending ? '时限待确认（上次时限已过）' : '时限已过，进展未确认') : (labels[item.status] || "进展未知") + (item.time_scope_pending ? ' · 时限待确认' : '')}`, "text-text-title text-label-l"),
+          el.append(text("summary", `${said(item)} · ${item.time_scope === 'transient' ? '当时的活动记录' : item.deadline_expired ? (item.time_scope_pending ? '时限待确认（上次时限已过）' : '时限已过，进展未确认') : (labels[item.status] || "进展未知") + (item.time_scope_pending ? ' · 时限待确认' : '')}`, "text-text-title text-label-l"),
             text("p", item.detail, "text-text-body text-body-m"),
             text("small", when(item.updated_at), "text-text-secondary text-caption-m"));
           if(item.deadline_at)el.append(text('small',`${item.time_scope_pending?'上次时限':'时限'}：${when(item.deadline_at)}`,'text-text-secondary text-caption-m'));
@@ -1890,12 +1895,12 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         }
         for(const {item,count,first} of changes){
           const entry=document.createElement('div');entry.className='olivia-world-emotion-entry';
-          entry.append(text('h5',reactions[item.reaction]),text('p',`相关事件或话语：${item.quote}`),text('p',`她在意的需要：${typeof item.goal_or_need === 'string' && item.goal_or_need.trim() ? item.goal_or_need : '尚未明确'}`),text('small',count>1?`${when(first)} — ${when(item.occurred_at)} · 相同感受 ${count} 次`:when(item.occurred_at)));
+          entry.append(text('h5',reactions[item.reaction]),text('p',`相关事件或话语：${yours(item.quote)}`),text('p',`她在意的需要：${typeof item.goal_or_need === 'string' && item.goal_or_need.trim() ? item.goal_or_need : '尚未明确'}`),text('small',count>1?`${when(first)} — ${when(item.occurred_at)} · 相同感受 ${count} 次`:when(item.occurred_at)));
           if(item.reaction==='relieved')entry.append(text('p','变化：对这件事感到释然，不等同于开心。'));
           detail.append(entry);
         }
         if(recent.length)mood.append(detail);
-        if(valid && emotion.concerns?.length)mood.append(line('thought',`挂心的事：${emotion.concerns.map(item=>item.summary).join('；')}`));
+        if(valid && emotion.concerns?.length)mood.append(line('thought',`挂心的事：${emotion.concerns.map(concernText).join('；')}`));
         overview.append(mood);
         const tabs=document.createElement('div');tabs.className='olivia-world-tabs';tabs.setAttribute('role','tablist');tabs.setAttribute('aria-label','世界内容');
         const today=document.createElement('div');today.className='olivia-world-content';
@@ -1912,7 +1917,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         if(schedule.next_class)next.append(line('calendar',`${when(schedule.next_class.start)}　${schedule.next_class.title}`,'olivia-world-agenda'));
         else next.append(text('p','暂无下一节课的安排。','olivia-world-muted'));
         const promise=payload.shared.find(item=>item.time_scope !== 'transient' && !item.deadline_expired && !['completed','cancelled'].includes(item.status));
-        if(promise){next.append(line('link','与你的约定','olivia-world-agenda'),text('p',promise.title),text('small',labels[promise.status] || '状态待确认','olivia-world-muted'))}
+        if(promise){next.append(line('link','与你的约定','olivia-world-agenda'),text('p',said(promise)),text('small',labels[promise.status] || '状态待确认','olivia-world-muted'))}
         columns.append(agenda,next);today.append(columns);
         const connections=document.createElement('div');connections.className='olivia-world-content';
         const relationColumns=document.createElement('div');relationColumns.className='olivia-world-columns';
@@ -1939,8 +1944,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           basis.append(text('p',`当时的活动：${frozen.activity || (frozen.world_used?'没有确定的当前活动':'这次未采用世界状态')}`));
           const names=[...new Set((frozen.reactions || []).map(item=>reactions[item.reaction]).filter(Boolean))];
           basis.append(text('p',`当时的情绪：${names.join('、') || (frozen.emotion_used?'没有已记录的情绪反应':'这次未采用情绪状态')}`));
-          for(const item of frozen.reactions || [])if(item.quote)basis.append(text('p',`相关原因：${item.quote}`));
-          if(frozen.concerns?.length)basis.append(text('p',`当时挂心的事：${frozen.concerns.join('；')}`));
+          for(const item of frozen.reactions || [])if(item.quote)basis.append(text('p',`相关原因：${yours(item.quote)}`));
+          if(frozen.concerns?.length)basis.append(text('p',`当时挂心的事：${frozen.concerns.map(yours).join('；')}`));
           basis.append(text('small','这是生成回复时保存的状态，不会用当前世界状态替换。'));
         }else basis.append(text('p',frozen?.status==='unavailable'?'回应依据暂时无法读取。':'最近的 QQ 回复尚无可核验的状态快照，不能用当前状态代替。'));
         status.className='olivia-world-status';status.setAttribute('role','status');
@@ -3032,8 +3037,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       [data-world-main]{overflow-y:auto;overflow-x:hidden;background:#191a1c;border-radius:12px;padding:28px 32px;min-height:0;flex:1;display:block;box-sizing:border-box;scrollbar-width:thin}
       [data-world-main] p{line-height:1.7;margin:8px 0}
       [data-world-main] h3{font-size:26px;margin:0}[data-world-main] h4{font-size:21px;margin:0}
-      .olivia-world-tools{display:flex;justify-content:flex-end;margin:12px 0}
-      [data-world-main] button,.olivia-world-tools button{border:1px solid #686a70;border-radius:999px;background:transparent;color:#ded9d1;padding:9px 18px;font:inherit;cursor:pointer}
+      [data-world-main] button{border:1px solid #686a70;border-radius:999px;background:transparent;color:#ded9d1;padding:9px 18px;font:inherit;cursor:pointer}
       [data-world-main] summary{cursor:pointer;line-height:1.7}
       [data-world-main] article{background:transparent!important;padding:12px 0!important}
       .olivia-world-heading{display:flex;justify-content:space-between;align-items:center;gap:16px}
@@ -3076,13 +3080,10 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       @media(max-width:580px){.olivia-world-columns{grid-template-columns:1fr}.olivia-world-aside{padding:20px 0 0;border-left:0;border-top:1px solid #383a3e}.olivia-world-tabs{gap:20px}.olivia-world-heading{align-items:flex-start}.olivia-world-heading .olivia-world-line{align-items:flex-start}[data-world-main]{padding:18px}.olivia-world-meta{gap:8px}}
     `;
     const header=document.createElement('header');header.className='olivia-world-header';header.append(text('h1','世界'));
-    const wardrobeEntry=button('物品栏',()=>openItems());wardrobeEntry.setAttribute('data-olivia-items-entry','');
-    wardrobeEntry.setAttribute('aria-label','打开林离的物品栏');wardrobeEntry.setAttribute('data-diary-badge','');
+    // 物品栏 is a main navigation tab (which carries the diary badge); the page adds no second entry.
     setTimeout(()=>void refreshDiaryBadge(true),0);
-    // The top row is shared with the native tabs and the account controls; keep it to the title.
-    const tools=document.createElement('div');tools.className='olivia-world-tools';tools.append(wardrobeEntry);
     const panel=document.createElement('section');panel.dataset.worldMain='';
-    page.replaceChildren(style,header,tools,panel);
+    page.replaceChildren(style,header,panel);
     panel.append(text('p','正在读取林离的生活……'));
     void requestJson(STATUS_PATH).then(payload=>{if(page.isConnected)return renderPrivateWorldPanel(panel,payload.capabilities?.private_world)}).catch(error=>{
       reportDailyLifeFailure(error, 'request', 'companion_status');
@@ -4286,7 +4287,6 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const router=window.__oliviaNativeView?.router;
     if(router)void router.push(path);else window.location.hash='#'+path;
   };
-  const openItems = () => goWorld('/world/items');
   const itemsBreadcrumb = current => {
     const breadcrumb=document.createElement('nav');breadcrumb.className='ow-breadcrumb';breadcrumb.setAttribute('aria-label','所在位置');
     const link=(label,path)=>{const a=text('a',label);a.href='#'+path;

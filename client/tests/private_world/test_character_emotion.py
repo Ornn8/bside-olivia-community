@@ -531,3 +531,48 @@ def test_existing_concern_continuation_cannot_bypass_late_context_change_with_ow
     commit(emotion, appraisal("late", "Practice is still uncertain.", "calm"))
     assert emotion.pending_source_ids() == ["continuation"]
     assert emotion.view(now=NOW + timedelta(seconds=2))["concerns"][0]["source_ids"] == ["original"]
+
+
+def test_open_concern_nothing_raised_again_leaves_the_view_but_not_the_ledger(stores):
+    """挂心的事 showed a morning line for days: an open concern is shown only while recent."""
+    from runtime.private_world.character_emotion import CONCERN_WINDOW
+    _, emotion = stores
+    emotion.receive("exam", "下周的视唱考试还没准备好。", occurred_at=NOW)
+    commit(emotion, appraisal("exam", "下周的视唱考试还没准备好", "concerned", concern={
+        "id": "exam", "action": "open", "summary": "视唱考试还没准备好"}))
+    assert [c["id"] for c in emotion.view(now=NOW + CONCERN_WINDOW - timedelta(minutes=1))["concerns"]] == ["exam"]
+    stale = NOW + CONCERN_WINDOW + timedelta(minutes=1)
+    assert emotion.view(now=stale)["concerns"] == []
+    # Still open in the ledger: a later source can raise it again, and it shows again.
+    emotion.receive("again", "考试的事还是没底。", occurred_at=stale)
+    basis = emotion.assessment(["again"])
+    assert [c["id"] for c in basis["source_contexts"]["again"]["concerns"]] == ["exam"]
+    emotion.commit(basis, {"appraisals": [appraisal("again", "考试的事还是没底", "concerned", concern={
+        "id": "exam", "action": "open", "summary": "视唱考试还没准备好"})]})
+    assert [c["id"] for c in emotion.view(now=stale)["concerns"]] == ["exam"]
+
+
+def test_concern_quoting_the_users_message_says_it_is_the_users_words(stores):
+    """A concern opened on a user message quotes the user's 我; bare, it read as hers."""
+    life, emotion = stores
+    emotion.receive("m1", "我明天要面试，好紧张。", occurred_at=NOW)
+    commit(emotion, appraisal("m1", "我明天要面试，好紧张。", "concerned", concern={
+        "id": "emotion:m1", "action": "open", "summary": "我明天要面试，好紧张。"}))
+    note = "在家里练琴：左手两处衔接还是不稳。"
+    life.publish_day("day:practice", dict(location="家里", activity="练琴", note=note), [],
+                     occurred_at=NOW + timedelta(minutes=1))
+    assert emotion.publish("day:practice") is True
+    commit(emotion, appraisal("day:practice", note, "concerned", concern={
+        "id": "emotion:day:practice", "action": "open", "summary": note}))
+    view = emotion.view(now=NOW + timedelta(minutes=2))
+    assert [c["summary"] for c in view["concerns"]] == ["用户说：我明天要面试，好紧张。", note]
+    # Her reaction to the user's message quotes it the same way; her own life stays unlabelled.
+    assert [r["quote"] for r in view["reactions"]] == ["用户说：我明天要面试，好紧张。", note]
+
+
+def test_concern_written_in_her_words_is_not_labelled_as_the_users(stores):
+    _, emotion = stores
+    emotion.receive("m1", "约好的练习时间还没有确定。", occurred_at=NOW)
+    commit(emotion, appraisal("m1", "练习时间还没有确定", "concerned", concern={
+        "id": "practice-time", "action": "open", "summary": "还在意练习时间没有确定"}))
+    assert [c["summary"] for c in emotion.view(now=NOW)["concerns"]] == ["还在意练习时间没有确定"]

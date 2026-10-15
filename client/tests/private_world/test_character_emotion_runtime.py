@@ -54,7 +54,8 @@ def test_world_snapshot_exposes_same_emotion_and_evidence_without_new_judgment(t
     shown = life.snapshot(NOW)['emotion']
     assert shown['status'] == 'available'
     assert shown['reactions'] == expected['reactions']
-    assert shown['reactions'][0]['quote'] == TEXT
+    # A received message is the user's words, and its quote says so.
+    assert shown['reactions'][0]['quote'] == '用户说：' + TEXT
     assert shown['concerns'] == expected['concerns']
     assert 'reported_affects' not in shown
     assert len(gateway.calls) == calls
