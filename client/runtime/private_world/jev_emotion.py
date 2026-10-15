@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 
 
 def active_concerns(concerns, as_of, *, limit=4):
-    """Bound attention at source time without changing historical concern facts."""
+    """Bound attention at source time without changing recorded concern facts."""
     try:
         stamp = datetime.fromisoformat(as_of)
         if stamp.utcoffset() is None:
