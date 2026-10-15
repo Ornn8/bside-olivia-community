@@ -10,6 +10,7 @@
     POST /toy/call/phone/unpair   (confirmed) {id}: unpair one phone ("all": every phone)
     GET  /toy/call/avatar         whether this account owns her call avatar (runtime/call_avatar_ui.py)
     GET  /toy/call/avatar/files/<name>   the avatar's rig, atlas and effects, fetched with the key
+    POST /toy/call/avatar/buy     {"max_cents": n}: buy it once with this account's key (confirmed action)
 """
 from __future__ import annotations
 
@@ -211,6 +212,29 @@ async def avatar_state(server):
     return state
 
 
+async def avatar_buy(body):
+    """One purchase with this account's key; the cloud never charges an owned avatar twice."""
+    base, key = _cloud()
+    if base is None:
+        return {'owned': False, 'error': 'account'}
+    if not isinstance(body, dict) or type(body.get('max_cents')) is not int or not 0 < body['max_cents'] <= 100000:
+        raise ValueError('CALL_AVATAR_BUY_INVALID')
+    try:
+        status, value = await _cloud_json('POST', '/v1/call/avatar', timeout=CONFIG_TIMEOUT,
+                                          headers={'Authorization': 'Bearer ' + key},
+                                          body={'action': 'buy', 'max_cents': body['max_cents']})
+    except (ClientError, asyncio.TimeoutError, ValueError):
+        return {'owned': False, 'error': 'network'}
+    if status == 402:
+        return {'owned': False, 'error': 'balance'}
+    if status != 200 or not isinstance(value, dict):
+        return {'owned': False, 'error': 'service'}
+    state = {name: value.get(name) for name in ('available', 'owned', 'for_sale', 'cents', 'version', 'charged_cents')}
+    if state['version'] != _avatar['version']:
+        _avatar.update(version=state['version'], files={})
+    return state
+
+
 async def avatar_file(name, headers):
     if not AVATAR_FILE.fullmatch(name):
         raise web.HTTPNotFound(reason='CALL_AVATAR_FILE')
@@ -298,6 +322,13 @@ async def call_http(server, request):
             return reply(await unpair_phone(server, json.loads(await request.text() or '{}')))
         if path == '/toy/call/avatar' and method == 'GET':
             return reply(await avatar_state(server))
+        if path == '/toy/call/avatar/buy' and method == 'POST':
+            if request.headers.get('X-Olivia-Companion-Action') != 'confirmed':
+                return reply('COMPANION_CONFIRMATION_REQUIRED', 403)
+            try:
+                return reply(await avatar_buy(json.loads(await request.text() or '{}')))
+            except ValueError:
+                return reply('CALL_AVATAR_BUY_INVALID', 400)
         if path.startswith('/toy/call/avatar/files/') and method == 'GET':
             return await avatar_file(path.rsplit('/', 1)[1], headers)
         if path == '/toy/call/recover' and method == 'POST':

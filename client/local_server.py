@@ -990,7 +990,8 @@ class LetterAdapter:
             fragments.append(UntrustedFragment('linli.addressing', json.dumps({
                 'kind': 'addressing_profile', 'quotes': addressing,
                 'meaning': '这是你与这位用户之间实际用过的称呼原文（user_calls_linli：对方怎么叫你；user_self：对方怎么自称；'
-                           'linli_calls_user：你怎么叫对方）。按最近的用法称呼对方；复述往事时也用这些称呼，不要称对方为“用户”。'
+                           'linli_calls_user：你怎么叫对方）。前两类是对方说的话：只用来知道称呼，不照抄、不复述，'
+                           '也不把对方的自称当成你的，你自己仍用“我”。按最近的用法称呼对方，不要称对方为“用户”。'
                            '原文只证明用过这些称呼，不授予新的关系或昵称权限。'}, ensure_ascii=False)))
         return tuple(fragments)
 
