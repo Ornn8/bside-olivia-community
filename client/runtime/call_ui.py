@@ -316,6 +316,17 @@ JAVASCRIPT = r'''
       if (this.startedAt && !this.ended) { avatar.event('ready'); this.toneTimer = this.toneTimer || setInterval(() => this.toneDue(), 100); }
     }
 
+    // Her words cue small reactions where she says them: ？ tilts, ！ hops, ～ sways, 哈哈 laughs, …… ponders.
+    cues(turn, before, delta) {
+      const text = before + delta;
+      for (let i = before.length; i < text.length; i++) {
+        const ch = text[i], two = text.slice(i - 1, i + 1);
+        const cue = '？?'.includes(ch) ? 'question' : '！!'.includes(ch) ? 'exclaim' : '~～'.includes(ch) ? 'sway'
+          : /^(哈哈|嘻嘻|嘿嘿|呵呵)$/.test(two) ? 'laugh' : ch === '…' && text[i - 1] !== '…' ? 'ponder' : null;
+        if (cue && this.tones.length < 80) this.tones.push({turn, at: i, cue});
+      }
+    }
+
     // A tone change takes effect when her voice reaches it (her text runs ahead of her voice).
     toneDue() {
       const now = performance.now();
@@ -324,7 +335,8 @@ JAVASCRIPT = r'''
         const start = this.firstAudioAt[x.turn];
         if (start === undefined) return true;
         if (now < start + 150 + x.at / 4.5 * 1000) return true;
-        this.avatar?.tone(x.tone); return false;
+        if (x.cue) this.avatar?.cue(x.cue); else this.avatar?.tone(x.tone);
+        return false;
       });
     }
 
@@ -390,7 +402,10 @@ JAVASCRIPT = r'''
         if (typeof m.tone === 'string' && typeof m.at === 'number' && this.tones.length < 50) this.tones.push(m);
       } else if (m.type === 'her') {
         if (m.turn !== this.turn) { this.turn = m.turn; this.her = ''; }
-        if (!this.stopped.has(m.turn)) { this.her += m.delta; ui.caption.textContent = this.her; }
+        if (!this.stopped.has(m.turn)) {
+          if (this.avatar) this.cues(m.turn, this.her, m.delta);
+          this.her += m.delta; ui.caption.textContent = this.her;
+        }
       } else if (m.type === 'stop') {
         this.stopped.add(m.turn); this.player.port.postMessage({clear: true}); this.avatar?.event('stop');
         // The caption keeps only what she said aloud before she was cut off.
