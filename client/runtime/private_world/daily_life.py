@@ -624,12 +624,16 @@ class DailyLifeStore:
             db.execute("INSERT OR REPLACE INTO life_current VALUES (1,?)", (_json(current),))
 
     ADDRESSING_KINDS = ('user_calls_linli', 'user_self', 'linli_calls_user')
+    # A quote is the shortest whole span the judgment can pick, so a long one is a full sentence of the
+    # user's. Shown to the writer as "how you address each other" it was copied as her own words and
+    # the user's self-reference became hers (2026-10-15); only short spans are names.
+    ADDRESSING_QUOTE_MAX = 16
 
     def record_addressing(self, source_id: str, addressing: dict, *, occurred_at: datetime) -> None:
         """Keep exact addressing quotes from one delivered exchange (idempotent per exchange)."""
         _identifier(source_id)
         rows = [(source_id, kind, quote, _time(occurred_at)) for kind, quote in (addressing or {}).items()
-                if kind in self.ADDRESSING_KINDS and isinstance(quote, str) and 0 < len(quote) <= 80]
+                if kind in self.ADDRESSING_KINDS and isinstance(quote, str) and 0 < len(quote) <= self.ADDRESSING_QUOTE_MAX]
         if not rows:
             return
         with self._db() as db:
@@ -643,7 +647,8 @@ class DailyLifeStore:
                 seen = []
                 for quote, stamp in db.execute(
                         'SELECT quote, occurred_at FROM life_addressing WHERE kind=? AND occurred_at<=? '
-                        'ORDER BY occurred_at DESC, source_id DESC', (kind, _time(now))):
+                        'AND length(quote)<=? ORDER BY occurred_at DESC, source_id DESC',
+                        (kind, _time(now), self.ADDRESSING_QUOTE_MAX)):
                     if quote not in (item['quote'] for item in seen):
                         seen.append({'quote': quote, 'occurred_at': stamp})
                     if len(seen) == per_kind:

@@ -829,7 +829,8 @@ async def _extract(port, data, instructions, request_id, level, update_slots, bo
         for field, name, catalog in (('address_linli_quote', 'user_calls_linli', user),
                                      ('address_self_quote', 'user_self', user),
                                      ('address_user_quote', 'linli_calls_user', reply)):
-            if answers.get(field, 'none') in catalog and len(catalog[answers[field]]) <= 80:
+            # Only a short span is a name; a whole sentence would reach the writer as her own words.
+            if answers.get(field, 'none') in catalog and len(catalog[answers[field]]) <= 16:
                 payload['addressing'][name] = catalog[answers[field]]
     if data.get('contact_invited') and not proactive:
         contact = answers['contact_choice']

@@ -34,6 +34,13 @@ JAVASCRIPT = r'''
   .olivia-call-avatar{display:block;width:100%;aspect-ratio:1;margin:-14px auto 2px}
   .olivia-call-avatar[hidden]{display:none}
   .olivia-call-card.has-avatar .olivia-call-orb{display:none}
+  .olivia-call-offer{display:flex;align-items:center;gap:10px;margin:-6px 0 14px;padding:10px 12px;border-radius:12px;
+    background:rgba(255,255,255,.05);text-align:left;font-size:12px;color:#b9bbc0;line-height:1.5}
+  .olivia-call-offer b{display:block;color:#f6f4f0;font-size:13px}
+  .olivia-call-offer button{flex:none;margin-left:auto;padding:6px 12px;border:0;border-radius:999px;
+    background:#efe3cc;color:#2a2620;font-weight:600;cursor:pointer}
+  .olivia-call-offer button:disabled{opacity:.6;cursor:default}
+  .olivia-call-card.has-avatar .olivia-call-offer{display:none}
   @keyframes olivia-ring{0%,100%{transform:scale(1)}50%{transform:scale(1.08)}}
   .olivia-call-title{font-size:20px;font-weight:700;margin:0;color:#f6f4f0}
   .olivia-call-status{min-height:22px;color:#b9bbc0;margin:4px 0 14px;font-variant-numeric:tabular-nums}
@@ -176,6 +183,10 @@ JAVASCRIPT = r'''
     if (!window.OliviaAvatar) return;
     try {
       if (!avatarState?.owned) avatarState = await local('/toy/call/avatar');
+      if (!avatarState.owned && avatarState.for_sale && avatarState.available && Number.isInteger(avatarState.cents)) {
+        offerAvatar(canvas, card, call);
+        return;
+      }
       if (!avatarState.owned || !avatarState.available) return;
       const made = await window.OliviaAvatar.create(canvas, name => fetch(new URL('/toy/call/avatar/files/' + name, base)));
       if (!made) return;
@@ -183,6 +194,40 @@ JAVASCRIPT = r'''
       avatar = made; canvas.hidden = false; card.classList.add('has-avatar');
       call()?.attach(made);
     } catch (_) {}
+  }
+
+  // Not owned yet: one line under the orb to unlock her avatar (the price is confirmed before buying).
+  function offerAvatar(canvas, card, call) {
+    if (card.querySelector('.olivia-call-offer')) return;
+    const price = '¥' + (avatarState.cents / 100).toFixed(avatarState.cents % 100 ? 2 : 0);
+    const offer = node('div', 'olivia-call-offer');
+    const words = node('div', null, null, offer);
+    node('b', null, '她的通话形象', words);
+    const note = node('span', null, '通话时换成会动的她，表情和手势跟着说话变化。', words);
+    const buy = node('button', null, '解锁 ' + price, offer);
+    buy.type = 'button';
+    // Two steps in the button itself: the first click states the one-time price, the second buys.
+    buy.onclick = async () => {
+      if (!buy.dataset.armed) {
+        buy.dataset.armed = '1'; buy.textContent = '确认 ' + price;
+        note.textContent = '一次性 ' + price + '，之后一直可用。再点一次确认购买。';
+        return;
+      }
+      buy.disabled = true;
+      try {
+        const result = await local('/toy/call/avatar/buy', {max_cents: avatarState.cents});
+        if (result.owned) {
+          avatarState = result; offer.remove();
+          await showAvatar(canvas, card, call);
+          return;
+        }
+        note.textContent = result.error === 'balance' ? '余额不足，先到「账户」里充值再来解锁吧。' : '暂时没能完成购买，请稍后再试。';
+      } catch (_) {
+        note.textContent = '暂时没能完成购买，请稍后再试。';
+      }
+      delete buy.dataset.armed; buy.textContent = '解锁 ' + price; buy.disabled = false;
+    };
+    card.querySelector('.olivia-call-orb')?.after(offer);
   }
 
   function open() {

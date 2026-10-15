@@ -401,6 +401,33 @@ def test_the_avatar_state_comes_from_the_cloud_with_the_key(monkeypatch):
     assert value['data'] == {'available': False, 'owned': False}
 
 
+def test_buying_the_avatar_is_confirmed_and_goes_through_the_key(monkeypatch):
+    monkeypatch.setenv('OLIVIA_GPU_API_URL', 'https://api.example.cn')
+    monkeypatch.setenv('OLIVIA_GPU_API_KEY', 'secret')
+    sent = []
+    outcome = {'status': 402}
+
+    async def cloud(method, path, *, timeout, headers=None, body=None):
+        sent.append((method, path, headers, body))
+        if outcome['status'] != 200:
+            return outcome['status'], None
+        return 200, {'available': True, 'owned': True, 'for_sale': True, 'cents': 3000, 'version': 'v2',
+                     'charged_cents': 3000, 'already_owned': False}
+    monkeypatch.setattr(call_http, '_cloud_json', cloud)
+    buy = lambda body, confirmed=True: answer(asyncio.run(call_http.call_http(
+        Server(), Request('/toy/call/avatar/buy', 'POST', body, confirmed=confirmed))))
+    status, value = buy({'max_cents': 3000}, confirmed=False)
+    assert status == 403 and sent == []
+    assert buy({'max_cents': '3000'})[0] == 400 and sent == []
+    status, value = buy({'max_cents': 3000})
+    assert value['data'] == {'owned': False, 'error': 'balance'}
+    assert sent[-1] == ('POST', '/v1/call/avatar', {'Authorization': 'Bearer secret'}, {'action': 'buy', 'max_cents': 3000})
+    outcome['status'] = 200
+    status, value = buy({'max_cents': 3000})
+    assert status == 200 and value['data']['owned'] is True and value['data']['charged_cents'] == 3000
+    assert 'secret' not in json.dumps(value)
+
+
 def test_avatar_files_are_named_and_kept_for_the_version(monkeypatch):
     monkeypatch.setenv('OLIVIA_GPU_API_URL', 'https://api.example.cn')
     monkeypatch.setenv('OLIVIA_GPU_API_KEY', 'secret')
