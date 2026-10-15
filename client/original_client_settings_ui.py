@@ -2024,7 +2024,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const show=count=>{for(const item of items.slice(shown,shown+count))list.append(row(item));shown=Math.min(items.length,shown+count);more.hidden=shown>=items.length;};
     target.append(list);
     if(items.length){show(10);target.append(more);}else target.append(text('p','还没有消费记录。','text-text-secondary text-body-m'));
-    const minimum=account.minimum_charge_yuan?`回信中转与 JEV 判断按用量计费，每次最低 ${money(account.minimum_charge_yuan)}，未产生费用的调用不收费。`:'';
+    // The judgment floor is listed on its own when the service reports it.
+    const judgment=typeof account.jev_minimum_charge_yuan==='string'?(Number(account.jev_minimum_charge_yuan)>0?`JEV 判断每次最低 ${money(account.jev_minimum_charge_yuan)}`:'JEV 判断按实际用量计费'):null;
+    const minimum=!account.minimum_charge_yuan?'':judgment===null?`回信中转与 JEV 判断按用量计费，每次最低 ${money(account.minimum_charge_yuan)}，未产生费用的调用不收费。`:`回信中转与 JEV 判断按用量计费：回信中转每次最低 ${money(account.minimum_charge_yuan)}，${judgment}，未产生费用的调用不收费。`;
     target.append(text('p',minimum+'中转和 GPU 共用同一余额；释放预留不是额外扣款或充值。'+(account.has_more?'这里显示最近 50 笔。':''),'text-text-secondary text-caption-m'));
   };
 

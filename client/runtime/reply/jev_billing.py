@@ -13,7 +13,7 @@ import time
 import urllib.error
 import urllib.request
 
-from runtime.diagnostics.jev_pricing import CURRENT_PRICE_VERSION, INPUT_RATE_UNITS, PRICE_VERSION
+from runtime.diagnostics.jev_pricing import CURRENT_PRICE_VERSION, PRICE_VERSION, settlement_rates
 
 
 @dataclass(frozen=True)
@@ -156,15 +156,19 @@ def settle_receipt_sync(billing, expected_body_digest):
     except Exception:
         # Do not expose provider bodies, tokens or signed receipt contents.
         raise ValueError('JEV_BILLING_UNAVAILABLE') from None
-    rate = INPUT_RATE_UNITS.get(result.get('price_version')) if isinstance(result, dict) else None
-    amount = receipt['input_tokens'] * (rate or 0)
-    # Exact usage, or the published minimum when usage is below it. A charge
-    # that is neither is a real mismatch, reported as such (not "unavailable").
-    allowed = {amount} | ({MINIMUM_CHARGE_UNITS} if 0 < amount < MINIMUM_CHARGE_UNITS else set())
+    rates = settlement_rates(result.get('price_version') if isinstance(result, dict) else None,
+                             receipt.get('purpose'))
+    # Exact usage at a rate the settled version allows for this purpose, or the
+    # published minimum when that usage is below it. A charge that is neither is
+    # a real mismatch, reported as such (not "unavailable").
+    allowed = set()
+    for rate in rates:
+        amount = receipt['input_tokens'] * rate
+        allowed |= {amount} | ({MINIMUM_CHARGE_UNITS} if 0 < amount < MINIMUM_CHARGE_UNITS else set())
     if (not isinstance(result, dict) or result.get('status') != 'settled'
             or result.get('turn_id') != turn.turn_id
             or result.get('operation_id') != receipt['operation_id']
-            or rate is None
+            or not rates
             or type(result.get('input_tokens')) is not int or result['input_tokens'] != receipt['input_tokens']
             or type(result.get('charged_units')) is not int or result['charged_units'] not in allowed
             or type(result.get('replayed')) is not bool
