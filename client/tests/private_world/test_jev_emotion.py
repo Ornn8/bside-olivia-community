@@ -23,23 +23,22 @@ class Decisions:
                 else template[key.split('_', 1)[1]] for key in questions}
 
 
-def test_resolved_concern_status_remains_visible_to_independent_action_question():
+def test_resolved_concern_is_not_asked_again():
     from runtime.private_world.jev_emotion import prepare
     source = dict(source_id='new', text='这件事已经解决了。', occurred_at=NOW.isoformat())
     concern = dict(id='emotion:old', summary='之前的担心。', status='resolve', occurred_at=NOW.isoformat())
     plan = prepare(dict(persona='', assessment=dict(sources=[source], source_contexts={
         'new': dict(concerns=[concern], prior_appraisals=[])})))
     state = plan[0]
-    reference = state['sources']['s0']['concerns']['c0']['shared_context']
-    assert state['shared_context'][reference]['status'] == 'resolve'
-    assert 'resolve' not in plan[1]['s0_existing_c0']['criteria']
+    assert state['sources']['s0']['concerns'] == {}
+    assert not any('_existing_' in key for key in plan[1])
 
 
 def test_evidence_catalog_preserves_full_sources_and_reduces_repeated_criteria():
     import copy, json
     from runtime.private_world.jev_emotion import appraise
     text = '本次练习进展不顺，需要继续休息。' * 6
-    concern = {'id': 'c-old', 'summary': '担心练习进度。' * 25, 'occurred_at': '2026-09-28T04:00:00+00:00'}
+    concern = {'id': 'c-old', 'summary': '担心练习进度。' * 25, 'status': 'open', 'occurred_at': '2026-09-28T04:00:00+00:00'}
     prior = {'source_id': 'old', 'quote': '上次遇到困难。' * 25, 'reaction': 'concerned', 'occurred_at': '2026-09-28T03:00:00+00:00'}
     source = {'source_id': 'new', 'text': text, 'occurred_at': '2026-09-28T05:00:00+00:00'}
     packet = {'persona': '学生', 'assessment': {'sources': [source], 'source_contexts': {'new': {
