@@ -11,6 +11,18 @@ _jobs = {}
 _MAX_FAILURES = 4
 
 
+def _validate_output(path, resolution):
+    from PIL import Image
+    minimum = {'1K': 850, '2K': 1450, '4K': 3000}[resolution]
+    with Image.open(path) as image:
+        # The cloud preserves larger native outputs within its 4096px limit.
+        if (image.format != 'PNG' or getattr(image, 'n_frames', 1) != 1
+                or not minimum <= image.height <= 4096 or image.width > 4096
+                or not .70 <= image.width / image.height <= .80):
+            raise ValueError('IMAGE_OUTPUT_INVALID')
+        image.verify()
+
+
 def photo_reply_context(context, settings, *, channel='letter'):
     """Tell the writer the same per-reply permission used by photo preparation."""
     from dataclasses import replace
@@ -521,13 +533,7 @@ async def _prepare_once(server, row, content, text, *, channel='letter', on_read
             raise ValueError('IMAGE_GENERATION_BINDING_CHANGED')
         def validate(p):
             progress('validation', {})
-            minimum, maximum = {'1K':(850,1300), '2K':(1450,2500),
-                                '4K':(3000,4100)}[settings['resolution']]
-            with Image.open(p) as image:
-                if (image.format != 'PNG' or not minimum <= image.height <= maximum
-                        or not 0.70 <= image.width / image.height <= 0.80):
-                    raise ValueError('IMAGE_OUTPUT_INVALID')
-                image.verify()
+            _validate_output(p, settings['resolution'])
         if on_ready is not None and not path.exists():
             await on_ready()
         row['image_status'] = 'GENERATING';server._persist_store_state()
@@ -606,11 +612,7 @@ async def _server_photo(server, row, content, text, api, photo_id, settings, pro
     row['image_server_planned'] = True
     server._persist_store_state()
     def validate(output):
-        minimum,maximum={'1K':(850,1300),'2K':(1450,2500),'4K':(3000,4100)}[settings['resolution']]
-        with Image.open(output) as image:
-            if image.format!='PNG' or not minimum<=image.height<=maximum or not .70<=image.width/image.height<=.80:
-                raise ValueError('IMAGE_OUTPUT_INVALID')
-            image.verify()
+        _validate_output(output, settings['resolution'])
     if on_ready is not None and not path.exists():
         await on_ready()
     row['image_status']='GENERATING'
