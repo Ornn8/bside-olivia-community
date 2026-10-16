@@ -405,6 +405,10 @@ const withMinimum=render({...base,minimum_charge_yuan:'0.01'});
 assert.match(withMinimum,/每次最低 ¥0\.01/);
 assert.match(withMinimum,/未产生费用的调用不收费/);
 assert.doesNotMatch(render(base),/每次最低/);
+const split=render({...base,minimum_charge_yuan:'0.02',jev_minimum_charge_yuan:'0.01'});
+assert.match(split,/回信中转每次最低 ¥0\.02/);
+assert.match(split,/JEV 判断每次最低 ¥0\.01/);
+assert.match(render({...base,minimum_charge_yuan:'0.02',jev_minimum_charge_yuan:'0'}),/JEV 判断按实际用量计费/);
 '''
     result = subprocess.run([node, '-e', harness], capture_output=True, text=True, encoding='utf-8', timeout=30)
     assert result.returncode == 0, result.stderr

@@ -216,7 +216,10 @@ def test_account_key_missing_only_when_billing_needs_a_key(monkeypatch):
 
 
 @pytest.mark.parametrize('version,rate,ok', [
-    ('jev-input-cny-20261012-v3', 169, True),   # declared current price
+    ('jev-input-cny-20261016-v5', 101, True),   # declared current version, listed purpose
+    ('jev-input-cny-20261016-v5', 169, False),  # a listed purpose never settles at the version rate
+    ('jev-input-cny-20261012-v3', 169, True),   # a turn still settled under v3
+    ('jev-input-cny-20261012-v3', 101, False),  # v3 has no purpose rate
     ('jev-input-cny-20261012-v3', 135, False),  # price does not match its version
     ('jev-input-cny-20261002-v2', 135, True),   # a server that has not applied v3 yet
     ('jev-input-cny-20260928-v1', 150, True),   # a server that has not applied it yet
@@ -228,10 +231,51 @@ def test_settlement_is_verified_against_its_declared_price_version(configured, m
     answer = result(signed(tokens))
     answer.update(price_version=version, charged_units=tokens * rate, debited_units=tokens * rate)
     monkeypatch.setattr(billing, '_post_settlement', lambda *a: answer)
-    assert billing.MINIMUM_HEADER['X-Olivia-JEV-Price'] == 'jev-input-cny-20261012-v3'
+    assert billing.MINIMUM_HEADER['X-Olivia-JEV-Price'] == 'jev-input-cny-20261016-v5'
     with billing.billing_scope('synthetic:turn'):
         if ok:
             assert billing.settle_receipt_sync(signed(tokens), DIGEST)['charged_units'] == tokens * rate
         else:
             with pytest.raises(ValueError, match='JEV_BILLING_RESPONSE_INVALID'):
                 billing.settle_receipt_sync(signed(tokens), DIGEST)
+
+
+def purpose_receipt(tokens, purpose):
+    value = signed(tokens)
+    value['receipt']['purpose'] = purpose
+    return value
+
+
+@pytest.mark.parametrize('purpose,tokens,charged,ok', [
+    ('character-emotion', 17000, 17000 * 101, True),   # listed purpose: its purpose rate
+    ('character-emotion', 17000, 17000 * 169, False),  # ... never the version rate
+    ('world-decision', 17000, 17000 * 169, True),      # other purpose: the version rate
+    ('world-decision', 17000, 17000 * 101, True),      # ... or the purpose rate once the service moves it
+    ('world-decision', 17000, 17000 * 135, False),
+    ('quality-review', 500, 1_000_000, True),          # the published minimum for a small judgment
+    ('quality-review', 500, 500 * 101, True),          # an account without the minimum
+    ('quality-review', 500, 500 * 169, False),
+    ('quality-review', 500, 2_000_000, False),         # no other floor
+    ('world-decision', 9000, 1_000_000, True),         # 9000 x 101 is below the minimum
+    ('world-decision', 9000, 9000 * 169, True),
+    ('reply_photo_plan', 0, 0, True),
+    ('reply_photo_plan', 0, 1_000_000, False),         # zero usage is never charged
+])
+def test_v5_settlement_is_verified_per_purpose(configured, monkeypatch, purpose, tokens, charged, ok):
+    answer = result(purpose_receipt(tokens, purpose))
+    answer.update(price_version='jev-input-cny-20261016-v5', charged_units=charged, debited_units=charged)
+    monkeypatch.setattr(billing, '_post_settlement', lambda *a: answer)
+    with billing.billing_scope('synthetic:turn'):
+        if ok:
+            assert billing.settle_receipt_sync(purpose_receipt(tokens, purpose), DIGEST)['charged_units'] == charged
+        else:
+            with pytest.raises(ValueError, match='JEV_BILLING_RESPONSE_INVALID'):
+                billing.settle_receipt_sync(purpose_receipt(tokens, purpose), DIGEST)
+
+
+def test_a_server_without_v5_still_settles_under_the_receipt_version(configured, monkeypatch):
+    # Until the service knows v5 it settles a declaring client under v1; that stays valid.
+    answer = result(signed(17000))
+    monkeypatch.setattr(billing, '_post_settlement', lambda *a: answer)
+    with billing.billing_scope('synthetic:turn'):
+        assert billing.settle_receipt_sync(signed(17000), DIGEST)['charged_units'] == 17000 * 150
