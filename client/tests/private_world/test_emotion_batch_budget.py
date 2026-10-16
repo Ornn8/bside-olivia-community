@@ -30,7 +30,7 @@ def test_eight_sources_with_concerns_and_current_affect_fit_one_packet(tmp_path)
     sources = [dict(source_id=f'budget-{i}', source_kind='received_input', source_order=i,
                     occurred_at=f'2026-09-28T10:0{i}:00+00:00',
                     text=f'第{i}次练习遇到困难，我想先休息。请不要继续催促，让我整理一下。') for i in range(8)]
-    concerns = [dict(id=f'old-{i}', summary=f'第{i}段练习还不顺畅。',
+    concerns = [dict(id=f'old-{i}', summary=f'第{i}段练习还不顺畅。', status='open',
                      occurred_at='2026-09-28T09:00:00+00:00') for i in range(4)]
     contexts = {s['source_id']: dict(as_of=s['occurred_at'], prior_appraisals=[], concerns=concerns,
                     rhythm=dict(phase='day', fatigue='tired'), recent_dialogue=[],
@@ -121,7 +121,7 @@ def test_irrelevant_history_never_enters_emotion_packet_and_concern_anchor_remai
                   source_kind='received_input', source_order=11, text='对不起，不催你了。')
     prior = [dict(source_id=f'old-{i}', occurred_at=f'2026-09-28T09:{i:02d}:00+00:00',
                   quote=f'第{i}条原始证据。', reaction='frustrated') for i in range(10)]
-    concern = dict(id='emotion:old-0', summary='仍在意被催促。', occurred_at=prior[0]['occurred_at'],
+    concern = dict(id='emotion:old-0', summary='仍在意被催促。', status='open', occurred_at=prior[0]['occurred_at'],
                    source_ids=['old-0', 'old-4'])
     context = dict(prior_appraisals=prior, concerns=[concern], rhythm={'phase':'day'},
                    recent_dialogue=['UNRELATED_DIALOGUE' * 1000], character_development={'raw':'UNRELATED_GROWTH' * 1000})

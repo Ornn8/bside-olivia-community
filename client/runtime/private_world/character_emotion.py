@@ -22,7 +22,7 @@ CONCERN_WINDOW = timedelta(hours=24)
 MAX_SOURCE_CHARS = 100_000
 _BATCH_LIMIT = 32
 _VIEW_LIMIT = 12
-from .jev_emotion import REACTIONS as _REACTION_MEANINGS
+from .jev_emotion import REACTIONS as _REACTION_MEANINGS, active_concerns
 _REACTIONS = set(_REACTION_MEANINGS)
 _ACTIONS = {"none", "continue", "adjust", "rest", "share", "quiet"}
 _FIELDS = {"source_id", "quote", "reported_affect", "reaction", "goal_or_need",
@@ -815,13 +815,8 @@ class CharacterEmotionStore:
             state = self._state_view(db, stamp)
             recent = state.live[bisect_left(state.live_stamps, now - REACTION_WINDOW):]
             reactions = [item for item in recent if item["reaction"] != "none"][-_VIEW_LIMIT:]
-            open_concerns = []
-            fresh_after = _time(now - CONCERN_WINDOW)
-            for concern in reversed(state.concerns.values()):
-                if concern["status"] == "open" and concern["occurred_at"] >= fresh_after:
-                    open_concerns.append(concern)
-                    if len(open_concerns) == _VIEW_LIMIT:
-                        break
+            # Expiry removes attention only; the ledger does not claim resolution.
+            open_concerns = active_concerns(state.concerns.values(), stamp, limit=_VIEW_LIMIT)
             open_concerns.reverse()
             # Only what the view shows needs its original wording.
             wanted = sorted({item["source_id"] for item in reactions}

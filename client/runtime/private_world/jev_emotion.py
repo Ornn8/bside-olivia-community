@@ -1,6 +1,29 @@
 """Jev chooses emotion and evidence; application code only projects validated choices."""
 import re
 import json
+from datetime import datetime, timedelta
+
+
+def active_concerns(concerns, as_of, *, limit=4):
+    """Bound attention at source time without changing recorded concern facts."""
+    try:
+        stamp = datetime.fromisoformat(as_of)
+        if stamp.utcoffset() is None:
+            return []
+    except (TypeError, ValueError):
+        return []
+    fresh = []
+    for concern in concerns:
+        if concern.get('status') != 'open':
+            continue
+        try:
+            touched = datetime.fromisoformat(concern.get('occurred_at'))
+            if touched.utcoffset() is None or not timedelta(0) <= stamp - touched <= timedelta(hours=24):
+                continue
+        except (TypeError, ValueError):
+            continue
+        fresh.append((touched, concern.get('source_order', 0), concern['id'], concern))
+    return [item[-1] for item in sorted(fresh, key=lambda item: item[:3], reverse=True)[:limit]]
 
 
 # The character's own emotions, grouped as joy / closeness / anger / sorrow /
@@ -78,7 +101,7 @@ def prepare(packet):
         quotes = spans(published_wording(source))
         if len(quotes) > 128:
             raise ValueError('JEV_EMOTION_EVIDENCE_TOO_LARGE')
-        concerns = {c['id']: c for c in context['concerns']}
+        concerns = {c['id']: c for c in active_concerns(context['concerns'], source.get('occurred_at'))}
         historical = context['prior_appraisals']
         protected = {c['id'].removeprefix('emotion:') for c in concerns.values()}
         retained = historical[-1:]
