@@ -1208,6 +1208,7 @@ class Store:
         self.settings = {}
         self.request_keys = {}
         self.letter_maintenance = {}  # reversible mailbox display/time overrides
+        self.letter_trash = {}  # source-exact deletion backups, excluded from recall
 
 store = Store()
 _store_state_error_code: str | None = None
@@ -1312,7 +1313,7 @@ def _read_store_state(path: Path) -> dict:
         ):
             raise ValueError("store state contains an invalid collection")
         normalized[name] = value
-    for name in ("settings", "request_keys", "personal_chat_cursors", "letter_maintenance"):
+    for name in ("settings", "request_keys", "personal_chat_cursors", "letter_maintenance", "letter_trash"):
         value = loaded.get(name, {})
         if not isinstance(value, dict):
             raise ValueError("store state contains invalid metadata")
@@ -1455,6 +1456,7 @@ def _load_store_state() -> None:
     if isinstance(loaded.get("personal_chat_cursors"), dict):
         store.personal_chat_cursors = loaded["personal_chat_cursors"]
     store.letter_maintenance = loaded.get("letter_maintenance", {})
+    store.letter_trash = loaded.get("letter_trash", {})
     if needs_persist or recovered_from_backup:
         try:
             _persist_store_state()
@@ -1480,6 +1482,7 @@ def _submit_store_state():
         "settings": store.settings,
         "request_keys": store.request_keys,
         "letter_maintenance": getattr(store, "letter_maintenance", {}),
+        "letter_trash": getattr(store, "letter_trash", {}),
     }
     # Capture mutable state on the caller thread; serialize/write snapshots in
     # submission order so a slow older save cannot overwrite a newer one.
@@ -1825,6 +1828,8 @@ def _missing_memory_component() -> str | None:
 
 
 def _conversation_memory_ready_for_reply() -> bool:
+    if any(item.get('status') in {'prepared', 'restoring'} for item in store.letter_trash.values()):
+        return False
     bootstrap = getattr(
         letters_adapter.memory_prompt_builder,
         "conversation_runtime_status",
@@ -2946,7 +2951,8 @@ def _letter_collection(scope: str, *, strict: bool = False, maintenance: bool = 
         _mark_superseded_failed_retries()
     current = [letter for letter in store.letters if not letter.get("superseded_by")
                and (letter.get("origin") != "proactive" or letter.get("letter_status") == "COMPLETED")]
-    rows = [*current, *_official_history_mailbox_projection(strict=strict)]
+    rows = [row for row in [*current, *_official_history_mailbox_projection(strict=strict)]
+            if row.get('content') or row.get('reply_text') or not row.get('_deleted_parts')]
     if maintenance:
         from runtime.imports.letter_maintenance import project
         rows = project(rows, getattr(store, "letter_maintenance", {}))
@@ -4373,6 +4379,50 @@ async def route(
         return await piano_route(piano_sys.modules[__name__], p, body, query)
     if spec["state"] == "not_implemented":
         return not_implemented(spec["error_code"] or "ROUTE_NOT_IMPLEMENTED")
+
+    if p.startswith('/toy/letter/deletion/'):
+        import sys as deletion_sys
+        from runtime.imports.letter_delete_runtime import operate
+        if companion_confirmed is not True:
+            return err(403, 'COMPANION_CONFIRMATION_REQUIRED')
+        if _store_state_error_code or _state_root() is None:
+            return err(503, 'LETTER_DELETE_STORAGE_UNAVAILABLE')
+        if not _history_memory_admin_gate.acquire(blocking=False):
+            return err(409, 'MEMORY_ADMIN_BUSY')
+        try:
+            lid = body.get('letter_id')
+            if p.endswith('/delete') and (not isinstance(lid, str) or body.get('part') not in {'user', 'reply'}):
+                return err(400, 'LETTER_DELETE_INVALID')
+            # Let derived-state writes settle; cancel generation after deletion commits.
+            tasks = [task for jobs in (reply_jobs, media_jobs) for key, task in jobs.items() if key == lid and not task.done()]
+            from runtime.image_reply import _jobs as image_jobs
+            tasks += [task for key, task in image_jobs.items() if key == lid and not task.done()]
+            # A daily-life task may own a worker thread: cancellation would not
+            # stop its SQL write. Let that already-started write settle first.
+            pending_life = [task for key, task in daily_life_tasks.items()
+                            if isinstance(lid, str) and key.startswith('reply:' + lid + ':') and not task.done()]
+            if pending_life:
+                await asyncio.gather(*(asyncio.shield(task) for task in pending_life), return_exceptions=True)
+            if p.endswith('/delete') and private_world_candidate_tasks:
+                await asyncio.gather(*(asyncio.shield(task) for task in tuple(private_world_candidate_tasks)), return_exceptions=True)
+            result = operate(deletion_sys.modules[__name__], p.rsplit('/', 1)[-1], body)
+            if p.endswith('/delete'):
+                for task in tasks:
+                    task.cancel()
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
+            elif p.endswith('/restore'):
+                _schedule_pending_reply_jobs()
+            return ok(result)
+        except ValueError as exc:
+            code = str(exc)
+            if not code.startswith('LETTER_DELETE_'):
+                code = 'LETTER_DELETE_INVALID'
+            return err(409, code, {'status': 'FAILED', 'error_code': code})
+        except (OSError, sqlite3.Error, RuntimeError):
+            return err(503, 'LETTER_DELETE_STORAGE_UNAVAILABLE', {'status': 'FAILED', 'error_code': 'LETTER_DELETE_STORAGE_UNAVAILABLE'})
+        finally:
+            _history_memory_admin_gate.release()
 
     if p.startswith('/toy/letter/maintenance/'):
         from runtime.imports.letter_maintenance import preview, apply_selection, project, source_rows, key, digest
@@ -6305,7 +6355,21 @@ async def _refresh_daily_life_periodically() -> None:
             daily_life_runtime.schedule_refresh(datetime.now(timezone.utc))
 
 
+async def _letter_trash_loop():
+    import sys as deletion_sys
+    from runtime.imports.letter_delete_runtime import purge
+    while True:
+        try:
+            purge(deletion_sys.modules[__name__])
+        except (OSError, RuntimeError, ValueError):
+            _safe_log('letter_trash_purge_unavailable')
+        await asyncio.sleep(3600)
+
+
 async def _start_reply_tasks(_app: web.Application) -> None:
+    trash_task = asyncio.create_task(_letter_trash_loop())
+    media_tasks.add(trash_task)
+    trash_task.add_done_callback(media_tasks.discard)
     global _proactive_task, _visit_task
     if _refresh_contact_relationship_projection():
         try:
@@ -6547,6 +6611,8 @@ _LETTER_LIFE_ATTEMPTS = 3
 
 
 def _schedule_daily_life_exchange(letter: dict) -> None:
+    if letter.get('_deleted_parts'):
+        return
     if daily_life_runtime is None:
         return
     if not letter.get("letter_id") or not letter.get("reply_revision"):
@@ -6658,7 +6724,7 @@ def _schedule_private_world_candidate(
     user_message: str,
     canonical_reply: str,
 ) -> None:
-    if private_world_candidate_store is None:
+    if private_world_candidate_store is None or letter.get('_deleted_parts'):
         return
     task = asyncio.create_task(
         _deliver_private_world_candidate(letter, user_message, canonical_reply)
@@ -6674,6 +6740,8 @@ async def wait_for_private_world_candidate_tasks() -> None:
 
 
 def _commit_private_world_letter(letter: dict) -> bool:
+    if letter.get('_deleted_parts'):
+        return False
     if letter.get("private_world_status") != "PENDING":
         return False
     if private_world_committer is None:

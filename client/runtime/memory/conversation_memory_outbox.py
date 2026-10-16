@@ -546,6 +546,8 @@ def _delivery_from_row(
     *,
     user_id: str,
 ) -> CanonicalMemoryDelivery | None:
+    if row.get('_deleted_parts'):
+        return None
     if str(row.get("letter_status", "")).upper() != "COMPLETED":
         return None
     origin = row.get("origin", "user")

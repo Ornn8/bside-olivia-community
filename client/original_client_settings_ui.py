@@ -3102,6 +3102,78 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     });
     if(window.location.hash==='#/collection?view=world')native.router.replace('/world');
   };
+  const openLetterDeletion = async () => {
+    if (document.querySelector('[data-letter-deletion]')) return;
+    const dialog = document.createElement('dialog');
+    dialog.setAttribute('data-letter-deletion', '');
+    dialog.setAttribute('aria-label', '管理信件');
+    dialog.style.cssText = 'box-sizing:border-box;width:min(800px,calc(100vw - 48px));max-height:85vh;overflow:auto;background:#202124;color:#ede9e1;border:1px solid #666;border-radius:16px;padding:24px;font-family:inherit';
+    const header = actions(), body = stack(), notice = text('p', '', 'text-text-secondary');
+    notice.setAttribute('role', 'status');
+    let recent = false, busy = false, changed = false;
+    const dismiss = () => { dialog.close(); dialog.remove(); if (changed) window.location.reload(); };
+    const close = button('关闭', dismiss);
+    const tabs = button('最近删除', async () => { if (!busy) { recent = !recent; await load(); } });
+    header.append(text('h2', '管理信件'), tabs, close);
+    dialog.append(header, notice, body); document.body.append(dialog); dialog.showModal(); close.focus();
+    dialog.addEventListener('cancel', event => { event.preventDefault(); if (!busy) dismiss(); });
+    const mutate = async (action, payload) => {
+      busy = true; tabs.disabled = close.disabled = true;
+      for (const control of body.querySelectorAll('button')) control.disabled = true;
+      notice.textContent = '正在处理，请稍候…';
+      try {
+        await routeRequest('/toy/letter/deletion/' + action, payload, {confirmed:true});
+        changed = true; await load();
+        notice.textContent = action === 'restore' ? '信件和关联记忆已恢复。' : '已删除。30 天内可在“最近删除”恢复。';
+      } catch (error) {
+        const messages = {
+          LETTER_DELETE_LEGACY_RELATIONSHIP_UNSUPPORTED: '这封旧信的关系记录缺少可重放来源，暂不能安全清理。信件未删除。',
+          LETTER_DELETE_UNATTRIBUTED_DIARY: '相关日记缺少逐封信的来源记录，暂不能安全清理这封信；整篇清除会影响其他信件。信件未删除。',
+          LETTER_DELETE_RELATIONSHIP_REPLAY_UNSUPPORTED: '相关关系记录含交错或重复证据，暂不能安全重算。信件未删除。',
+          LETTER_DELETE_RESTORE_CONFLICT: '关联记录在删除后发生了变化，已停止恢复以保护新记录。请保留最近删除中的备份。',
+          LETTER_DELETE_MEMORY_BUSY: '记忆正在写入，请稍后重试。',
+          LETTER_DELETE_MEMORY_UNAVAILABLE: '记忆存储暂不可用，请恢复连接后重试。',
+        };
+        notice.textContent = messages[error.message] || '操作未完成。请查看“最近删除”，重试清理或恢复；备份会保留。';
+      } finally { busy = false; tabs.disabled = close.disabled = false; for (const control of body.querySelectorAll('button')) control.disabled = false; }
+    };
+    async function load() {
+      body.replaceChildren(); tabs.textContent = recent ? '返回信箱' : '最近删除';
+      notice.textContent = recent ? '保留 30 天。恢复会同时还原本次移除的记忆。' : '删除你的信会保留她已有的回信；她的信也可以单独删除。';
+      const payload = recent ? await routeRequest('/toy/letter/deletion/list', {}, {confirmed:true}) : await routeRequest('/toy/letter/list');
+      const rows = recent ? payload.items : payload.list;
+      if (!rows?.length) body.append(text('p', recent ? '最近没有删除的信件。' : '信箱里还没有信件。'));
+      for (const row of rows || []) {
+        const card = stack(); card.style.cssText = 'padding:16px 0;border-bottom:1px solid #48494c;white-space:pre-wrap;overflow-wrap:anywhere';
+        card.append(text('p', row.summary || '（空）'));
+        if (recent) {
+          card.append(text('p', `${row.part === 'user' ? '你的信' : '她的信'} · ${new Date(row.expires_at * 1000).toLocaleDateString('zh-CN')} 到期`));
+          card.append(button('恢复这轮信件和记忆', async () => {
+            if (busy || !await confirmAction('将恢复这轮往来中仍在保留期内的已删除信件和关联记忆。如果你的信和她的信都已删除，会一起恢复。确定恢复吗？')) return;
+            await mutate('restore', {id:row.id});
+          }));
+          if (row.status === 'prepared') card.append(button('继续清理', () => mutate('delete', {letter_id:row.letter_id, part:row.part})));
+        } else {
+          card.append(button('查看并删除', async () => {
+            try {
+              const detail = await routeRequest('/toy/letter/detail?' + new URLSearchParams({letter_id:row.letter_id}));
+              card.replaceChildren();
+              for (const [part, label, value] of [['user','你的信',detail.content], ['reply','她的信',detail.reply_text]]) {
+                if (!value || part === 'user' && detail.origin === 'proactive') continue;
+                card.append(text('h3', label), text('p', value));
+                card.append(button('删除' + label, async () => {
+                  if (busy || !await confirmAction('删除这封信后，她关于这封信的记忆也会一并清理。30 天内可在“最近删除”恢复。确定删除吗？')) return;
+                  await mutate('delete', {letter_id:row.letter_id, part});
+                }));
+              }
+            } catch (_) { notice.textContent = '信件读取失败，请关闭后重试。'; }
+          }));
+        }
+        body.append(card);
+      }
+    }
+    try { await load(); } catch (_) { notice.textContent = '信箱读取失败，请关闭后重试。'; }
+  };
   const mountMainNavigation = () => {
     const route = window.location.hash.split("?")[0];
     const world=route===WORLD_ROUTE||route.startsWith(WORLD_ROUTE+'/');
@@ -3137,6 +3209,10 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       }
       document.body.append(nav);
     }
+    let deletion = nav.querySelector('[data-letter-deletion-entry]');
+    if (route === '#/collection' && !deletion) {
+      deletion = button('管理信件', openLetterDeletion); deletion.setAttribute('data-letter-deletion-entry', ''); nav.append(deletion);
+    } else if (route !== '#/collection') deletion?.remove();
     // A longer sub-page title (拍摄设备) would sit under the fixed navigation.
     const title=world&&route!==WORLD_ROUTE?document.querySelector('main header h1'):null;
     const titleText=title&&document.createRange();titleText?.selectNodeContents(title);

@@ -49,6 +49,8 @@ class SourceRetrieval:
         db.execute("CREATE TABLE IF NOT EXISTS originals (user TEXT, source TEXT, actor TEXT, stamp TEXT, text TEXT, PRIMARY KEY(user,source,actor))")
         db.execute("CREATE VIRTUAL TABLE IF NOT EXISTS chunks USING fts5(user UNINDEXED, source UNINDEXED, actor UNINDEXED, stamp UNINDEXED, start UNINDEXED, text UNINDEXED, tokens)")
         db.execute("CREATE TABLE IF NOT EXISTS forgotten (user TEXT, source TEXT, PRIMARY KEY(user,source))")
+        db.execute('CREATE TABLE IF NOT EXISTS letter_deleted_sources '
+                   '(user TEXT, letter_id TEXT, part TEXT, letter TEXT, PRIMARY KEY(user,letter_id,part))')
         db.execute("CREATE TABLE IF NOT EXISTS archive_targets (user TEXT, source TEXT, PRIMARY KEY(user,source))")
         db.execute("CREATE TABLE IF NOT EXISTS archive_scan (user TEXT PRIMARY KEY, stamp TEXT)")
         db.execute('CREATE TABLE IF NOT EXISTS source_dependencies '
@@ -69,6 +71,27 @@ class SourceRetrieval:
                    'WHERE categories IS NULL')
         db.execute("CREATE INDEX IF NOT EXISTS relationship_kept ON relationship_quotes(user) WHERE categories!='[]'")
         return db
+
+    def mark_letter_deleted(self, user, letter, part, *, restore=False):
+        with closing(self.connect()) as db, db:
+            if restore:
+                db.execute('DELETE FROM letter_deleted_sources WHERE user=? AND letter_id=? AND part=?',
+                           (user, letter['letter_id'], part))
+            else:
+                identity = {key: letter[key] for key in ('letter_id', 'source_record_id') if key in letter}
+                db.execute('INSERT OR REPLACE INTO letter_deleted_sources VALUES (?,?,?,?)',
+                           (user, letter['letter_id'], part, json.dumps(identity)))
+
+    @staticmethod
+    def _letter_deleted(db, user, source, actor=None):
+        from runtime.imports.letter_delete import Sources
+        return any((actor is None or actor == ('user' if part == 'user' else 'linli'))
+                   and Sources(json.loads(letter), part, user).matches(source)
+                   for part, letter in db.execute('SELECT part,letter FROM letter_deleted_sources WHERE user=?', (user,)))
+
+    def letter_deleted(self, user, source):
+        with closing(self.connect()) as db:
+            return self._letter_deleted(db, user, source)
 
     @staticmethod
     def _aliases(db, user, sources):
@@ -131,6 +154,8 @@ class SourceRetrieval:
             return False
         with closing(self.connect()) as db, db:
             db.execute('BEGIN IMMEDIATE')
+            if self._letter_deleted(db, user, source, 'user'):
+                return False
             old = db.execute('SELECT text FROM originals WHERE user=? AND source=? AND actor=?', (user, source, 'user')).fetchone()
             if old and old[0] != text:
                 return False
@@ -363,6 +388,8 @@ class SourceRetrieval:
                 return
             changed = False
             for actor, text in (("user", user_text), ("linli", reply_text)):
+                if self._letter_deleted(db, user, source, actor):
+                    continue
                 previous = db.execute("SELECT text,stamp FROM originals WHERE user=? AND source=? AND actor=?", (user, source, actor)).fetchone()
                 if previous == (text, stamp):
                     continue
@@ -375,7 +402,7 @@ class SourceRetrieval:
                     db.execute("INSERT INTO chunks VALUES (?,?,?,?,?,?,?)", (user, source, actor, stamp, start, chunk, " ".join(terms(chunk))))
             if changed:
                 self._queue_vector_source(db, user, source, stamp)
-            if reply_text.strip():
+            if reply_text.strip() and not self._letter_deleted(db, user, source):
                 digest = _digest(json.dumps([user_text, reply_text, stamp], ensure_ascii=False))
                 # Re-indexing old delivered originals also queues their missing
                 # character statements. A changed original invalidates old labels.

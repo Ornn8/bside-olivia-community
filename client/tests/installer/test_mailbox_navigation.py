@@ -28,6 +28,7 @@ class Element {
  remove() { if(this.parent) this.parent.children=this.parent.children.filter(x=>x!==this); }
  addEventListener(k,fn) { this.listeners[k]=fn; }
  querySelectorAll(selector) { return this.children.filter(x=>x.tagName==='a'); }
+ querySelector(selector) { return this.children.find(x=>Object.hasOwn(x.attributes,selector.slice(1,-1))) || null; }
 }
 const body=new Element('body');
 const document={body,documentElement:body,currentScript:{dataset:{apiBase:'http://127.0.0.1:8899'}},
@@ -51,10 +52,12 @@ vm.runInNewContext(source,context);
  context.navigation.mountMainNavigation();
  assert.equal(body.children.length,1,'rerenders must not duplicate navigation');
  assert.equal(body.children[0].children[0].getAttribute('aria-current'),'page');
+ assert.equal(body.children[0].children.filter(x=>Object.hasOwn(x.attributes,'data-letter-deletion-entry')).length,1);
  window.location.hash='#/studio';
  context.navigation.mountMainNavigation();
  assert.equal(body.children[0].children[0].href,'#/collection','music must retain a mailbox entry');
  assert.equal(body.children[0].children[3].getAttribute('aria-current'),'page');
+ assert.equal(body.children[0].children.filter(x=>Object.hasOwn(x.attributes,'data-letter-deletion-entry')).length,0);
  window.location.hash='#/login';
  context.navigation.mountMainNavigation();
  assert.equal(body.children.length,0,'do not mount navigation on login');
