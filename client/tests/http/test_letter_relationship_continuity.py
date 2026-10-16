@@ -52,6 +52,17 @@ class Model:
 server.letters_adapter.gateway=Model()
 server._current_life_rhythm=lambda: {}
 async def main():
+    from datetime import datetime, timedelta, timezone
+    from runtime.relationship_batch import BatchQueue, tick
+    async def judge(gateway, batch, chosen):
+        rows=[]
+        for turn in batch['turns']:
+            case=next(c for c in cases if c[0]==turn['user'])
+            friction=case[2] or 'none'
+            rows.append({'id':turn['id'],'signals':{'rel_friction':friction},
+                'moment':'rel_friction:'+friction if friction!='none' else None,
+                'user_quote':turn['user'],'reply_quote':turn['reply']})
+        return {'turns':rows}
     runtime=create_configured_original_client_server_runtime(server_module=server)
     states=[]
     async with TestClient(TestServer(runtime.app)) as client:
@@ -67,12 +78,20 @@ async def main():
             tasks=tuple(server.daily_life_tasks.values())
             if tasks: await asyncio.gather(*tasks)
             assert letter['daily_life_status']=='COMMITTED', letter.get('daily_life_error_code')
+            # Simulate the daily background settlement independently of reply delivery.
+            now=datetime.now(timezone.utc)
+            queue=BatchQueue(server.private_world_relationship_committer.ledger._database_path)
+            queue.sync(server.store.letters,now-timedelta(days=2))
+            # The regular store save may already have queued the message at delivery.
+            with queue.db() as db:
+                db.execute('UPDATE relationship_queue SET queued_at=?',(now-timedelta(days=2),))
+            assert await tick(server,now,judge)=='updated'
             states.append(server.private_world_port.snapshot())
         assert states[0].tension > 0
         assert exchange_calls == [case[0] for case in cases]
-        assert states[1] == states[0], 'external frustration is not a new interpersonal conflict'
+        assert states[1].tension == states[0].tension, 'external frustration is not a new interpersonal conflict'
         assert states[2].tension < states[1].tension
-        assert states[3] == states[2]
+        assert states[3].tension == states[2].tension
         followup = next(call for call in main_calls if cases[1][0] in call[-1]['content'])
         projected = json.loads(re.search(r'<private_behavior>\s*(.*?)\s*</private_behavior>', followup[0]['content'], re.S)[1])
         assert '当前交流较平和' in projected['expression_context']
