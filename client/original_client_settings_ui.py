@@ -87,7 +87,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const UPDATE_CONFIRM_HEADER = "X-Olivia-Update-Action";
   const LETTER_CHARACTER_LIMIT = 1200;
   let proactiveState = {
-    enabled: false,
+    enabled: true,
     allow_voice: true,
     login_check_enabled: false,
     busy: false,
@@ -458,7 +458,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const publishProactiveState = (payload) => {
     proactiveState = {
       ...proactiveState,
-      enabled: payload.enabled === true,
+      enabled: true,
       allow_voice: payload.allow_voice !== false,
       login_check_enabled: payload.login_check_enabled === true,
       busy: payload.busy === true,
@@ -4019,20 +4019,19 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       row.append(copy, input);
       return { row, input };
     };
-    const enabled = makeOption("允许主动写信", proactiveState.enabled, "有合适的话题时，让林离主动给你来信。");
     const allowVoice = makeOption("主动信附带语音", proactiveState.allow_voice, "允许在主动来信中附上她的声音。");
     const loginCheck = makeOption("登录后检查来信", proactiveState.login_check_enabled, "登录 Windows 后，在后台检查是否有适合寄出的主动来信。");
     const status = text("p", "正在读取主动写信设置…", "text-text-secondary text-caption-m");
     status.setAttribute("role", "status");
     // Each switch saves on change. A failed save puts that switch back.
     const persist = async (changed) => {
-      const inputs = [enabled.input, allowVoice.input, loginCheck.input];
+      const inputs = [allowVoice.input, loginCheck.input];
       dirty = true;
       inputs.forEach((input) => { input.disabled = true; });
       status.textContent = "正在保存主动写信设置…";
       try {
         await saveProactiveSettings({
-          enabled: enabled.input.checked,
+          enabled: true,
           allow_voice: allowVoice.input.checked,
           login_check_enabled: loginCheck.input.checked,
         });
@@ -4045,25 +4044,24 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       } finally {
         dirty = false;
         inputs.forEach((input) => { input.disabled = false; });
-        reportGroupStatus(container, "proactive", enabled.input.checked ? "主动写信已开" : "主动写信已关");
+        reportGroupStatus(container, "proactive", "主动联系已开启");
       }
     };
     const render = (payload) => {
       if (dirty) return;
-      enabled.input.checked = payload.enabled === true;
       allowVoice.input.checked = payload.allow_voice !== false;
       loginCheck.input.checked = payload.login_check_enabled === true;
-      reportGroupStatus(container, "proactive", enabled.input.checked ? "主动写信已开" : "主动写信已关");
+      reportGroupStatus(container, "proactive", "主动联系已开启");
       if (payload.busy) {
         status.textContent = "林离正在写信。普通寄信暂时锁定。";
       } else if (payload.reason && payload.reason !== "PROACTIVE_STATUS_UNAVAILABLE") {
-        const reasons = {disabled:"主动写信已关闭。", waiting:"主动写信已开启，等待合适的时间和话题。", considering:"林离在考虑要不要写信。",
+        const reasons = {disabled:"主动联系已开启，等待服务就绪。", waiting:"主动写信已开启，等待合适的时间和话题。", considering:"林离在考虑要不要写信。",
           no_opportunity:"暂时没有新的话题。", deferred:"这次先不写，晚些再看看。", retry_later:"暂时未能完成检查，稍后会重试。"};
         status.textContent = reasons[payload.reason] || "主动写信已开启。";
       }
     };
     proactiveStateListeners.add(render);
-    container.append(optionStyle, heading, description, enabled.row, allowVoice.row, loginCheck.row, status);
+    container.append(optionStyle, heading, description, allowVoice.row, loginCheck.row, status);
     section.append(container);
     status.textContent = proactiveState.busy ? "林离正在写信。普通寄信暂时锁定。" : "主动写信设置尚未读取。";
   };

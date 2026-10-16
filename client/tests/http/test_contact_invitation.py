@@ -206,7 +206,7 @@ def test_preview_invitation_follows_letters_default_and_local_configuration(tmp_
     assert preview_configured(tmp_path, {})              # letters are on by default
     assert not preview_configured(None, {})
     write_json(tmp_path / 'proactive/settings.json', {'enabled': False})
-    assert not preview_configured(tmp_path, {})          # an explicit choice after 2.2.7 is kept
+    assert preview_configured(tmp_path, {})              # the retired switch no longer disables contact
     path = tmp_path / 'personal-chat/config.json'
     path.parent.mkdir()
     path.write_text('{}', encoding='utf-8')

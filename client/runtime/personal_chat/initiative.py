@@ -50,11 +50,12 @@ def _usual_user_gap(rows):
 
 class Initiative:
     def __init__(self, rows, clock=time.time, interval=None, *, profile_provider=None, state_path=None, active_provider=None,
-                 channel_gate=None):
+                 channel_gate=None, daily_provider=None):
         self.rows, self.clock = rows, clock
         self.profile_provider = profile_provider
         # Whether this channel is the one the owner talks on most (None: no preference).
         self.channel_gate = channel_gate
+        self.daily_provider = daily_provider or (lambda: False)
         self.active_provider = active_provider or (lambda: False)
         # Tests and explicit callers may pin a deterministic interval. Normal
         # runtime derives cadence from the persisted relationship profile.
@@ -196,9 +197,10 @@ class Initiative:
                 callable(getattr(self.target[1], 'is_available', None)) and not self.target[1].is_available()):
             return 'no_target'
         profile = self.profile()
+        daily = self.daily_provider()
         if not scheduled:
             self._recalibrate_if_relationship_changed(now, profile)
-            if now < self.due:
+            if now < self.due and not daily:
                 return 'not_due'
         local = datetime.fromtimestamp(now, LOCAL)
         # Quiet hours limit her own initiative; an appointment the user asked
@@ -238,7 +240,7 @@ class Initiative:
         # pressure decays with time and does not permanently lock initiative;
         # closer relationships recover sooner, shallow ones remain conservative.
         wait = unanswered_wait(profile, _usual_user_gap(history), unanswered)
-        if unanswered and now - last_proactive_at < wait:
+        if unanswered and now - last_proactive_at < wait and not daily:
             return 'unanswered_wait'
         return 'ready'
 

@@ -1,7 +1,7 @@
 """Windowless login-time scanner for proactive-letter intents.
 
-This process reads only ``data/proactive/settings.json`` until both proactive
-switches are enabled.  It then delegates one file-only scan to
+This process reads only ``data/proactive/settings.json`` until login checks
+are enabled. It then delegates one file-only scan to
 ``runtime.reply.proactive_letters`` and never starts the web server, UI, voice,
 or LLM runtime.
 """
@@ -81,7 +81,7 @@ def _read_settings(data_root: Path) -> dict[str, object]:
 
 
 def _enabled(settings: dict[str, object]) -> bool:
-    return settings.get("enabled") is True and settings.get("login_check_enabled") is True
+    return settings.get("login_check_enabled") is True
 
 
 def _scan_once(data_root: Path, *, now: float) -> dict:

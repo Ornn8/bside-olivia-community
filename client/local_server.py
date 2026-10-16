@@ -3501,7 +3501,7 @@ async def _prepare_proactive_turn(intent: dict, *, now: datetime) -> dict:
     source_id = intent.get('previous_source_id', intent['source_id'])
     source = next((row for row in sources
                    if f"reply:{row.get('letter_id')}:{row.get('reply_revision', 1)}" == source_id), None)
-    life_opportunity = development and intent.get('kind') in {'life_share', 'affection_checkin'}
+    life_opportunity = intent.get('kind') == 'daily_checkin' or development and intent.get('kind') in {'life_share', 'affection_checkin'}
     if source is None and not life_opportunity:
         raise ValueError('PROACTIVE_SOURCE_UNAVAILABLE')
     source = source or {}
@@ -3576,6 +3576,11 @@ def _proactive_turn_current(intent, turn):
         return False
     if intent.get('id') != turn['intent'].get('id') or intent.get('source_id') != turn['intent'].get('source_id'):
         return False
+    if intent.get('kind') == 'daily_checkin':
+        from runtime.reply.daily_proactive import server_daily
+        current = server_daily(sys.modules[__name__], time.time())
+        if not current or current['id'] != intent['id']:
+            return False
     if turn.get('initiative_state') is not None:
         from runtime.reply.proactive_runtime import live_state, state_binding
         try:
@@ -3587,6 +3592,8 @@ def _proactive_turn_current(intent, turn):
             return False
         if turn.get('life_opportunity') and not turn['query']:
             return True
+    if intent.get('kind') == 'daily_checkin':
+        return True
     return any(f"reply:{row.get('letter_id')}:{row.get('reply_revision', 1)}" == turn.get('source_id', intent.get('source_id'))
                and row.get('content', '') == turn['query'] and row.get('reply_text', '') == turn['previous_reply']
                 for row in [*store.letters, *store.personal_chats])
@@ -3763,19 +3770,22 @@ async def _jev_proactive_tick() -> None:
             return
         now = datetime.fromtimestamp(time.time(), timezone.utc)
         schedule = read_json(root / 'proactive/schedule.json')
-        if now.timestamp() < schedule.get('next_check_at', 0):
-            _observe_letter_initiative('not_due')
-            return
+        from runtime.reply.daily_proactive import server_daily, daily_retry_ids
         attempts = [item for item in schedule.get('attempts', [])
                     if isinstance(item, dict) and isinstance(item.get('id'), str)
-                    and type(item.get('at')) in (int, float) and item['at'] > now.timestamp() - DAY]
+                     and type(item.get('at')) in (int, float) and item['at'] > now.timestamp() - DAY]
+        excluded = daily_retry_ids(attempts, now.timestamp())
+        daily = server_daily(sys.modules[__name__], now.timestamp())
+        if now.timestamp() < schedule.get('next_check_at', 0) and (not daily or daily['id'] in excluded):
+            _observe_letter_initiative('not_due')
+            return
         from runtime.reply.proactive_runtime import live_profile
         profile = live_profile(sys.modules[__name__])
         if len(attempts) >= profile.letter_daily_limit * 3:
             _proactive_reason = 'waiting'
             _observe_letter_initiative('attempt_limit')
             return
-        intent = scan_pending(root, excluded_ids={item['id'] for item in attempts})
+        intent = scan_pending(root, excluded_ids=excluded)
         if not intent:
             _proactive_reason = 'no_opportunity'
             _observe_letter_initiative('no_opportunity')
@@ -3788,7 +3798,7 @@ async def _jev_proactive_tick() -> None:
         state = turn['initiative_state']
         kinds = {'correspondence_followup': 'followup', 'shared_followup': 'shared_topic', 'diary_due': 'shared_topic',
                  'relationship_checkin': 'connection', 'affection_checkin': 'connection',
-                 'contact_invitation': 'connection', 'life_share': 'daily_share'}
+                  'contact_invitation': 'connection', 'life_share': 'daily_share', 'daily_checkin': 'connection'}
         offered = [{'id': intent['id'], 'kind': kinds[intent['kind']],
                     'description': json.dumps({**intent, 'contact_guidance': state['profile'].reason_floor},
                                               ensure_ascii=False, separators=(',', ':'))}]
@@ -3848,9 +3858,7 @@ async def _legacy_proactive_tick() -> None:
     now = time.time()
     intent = scan_pending(root)
     contact = intent.get('kind') == 'contact_invitation'
-    if not contact and now < schedule.get('next_check_at', 0):
-        _observe_letter_initiative('not_due')
-        return
+    daily = intent.get('kind') == 'daily_checkin'
     # A decision attempt counts even when the provider fails, defers, or the
     # process exits. Keep both limits on disk, independent of model/provider.
     attempts = [item for item in schedule.get('attempts', [])
@@ -3858,6 +3866,11 @@ async def _legacy_proactive_tick() -> None:
                 and type(item.get('at')) in (int, float) and item['at'] > now - DAY]
     contact_attempts = [item for item in attempts if item['id'] == 'contact-invitation-v1']
     ordinary_attempts = [item for item in attempts if item['id'] != 'contact-invitation-v1']
+    from runtime.reply.daily_proactive import daily_retry_ids
+    excluded = daily_retry_ids(attempts, now)
+    if not contact and now < schedule.get('next_check_at', 0) and (not daily or intent['id'] in excluded):
+        _observe_letter_initiative('not_due')
+        return
     from runtime.reply.proactive_runtime import live_profile
     profile = live_profile(sys.modules[__name__], now)
     if (contact and (len(contact_attempts) >= 3 or
@@ -3867,7 +3880,7 @@ async def _legacy_proactive_tick() -> None:
         _observe_letter_initiative('attempt_limit')
         return
     if not contact:
-        intent = scan_pending(root, excluded_ids={item['id'] for item in attempts})
+        intent = scan_pending(root, excluded_ids=excluded)
     if not intent:
         _proactive_reason = 'no_opportunity'
         _observe_letter_initiative('no_opportunity')
@@ -3878,10 +3891,11 @@ async def _legacy_proactive_tick() -> None:
     attempts.append({'id': intent['id'], 'at': now})
     write_json(root / 'proactive/schedule.json', {'next_check_at': now + profile.letter_followup_delay, 'attempts': attempts})
     _proactive_reason = 'considering'
+    daily = intent.get('kind') == 'daily_checkin'
     turn = await _prepare_proactive_turn(intent, now=datetime.fromtimestamp(now, timezone.utc))
     # Eligibility already supplies a concrete reason. The model writes the
     # invitation in character, but does not postpone it or add media latency.
-    plan = ({'decision': 'send', 'format': 'text', 'title': '想和你聊两句'} if contact
+    plan = ({'decision': 'send', 'format': 'text', 'title': '想和你聊两句'} if contact or daily
             else json.loads(await _proactive_complete(intent, planning=True, turn=turn)))
     if (not isinstance(plan, dict) or set(plan) != {'decision', 'format', 'title'}
             or plan['decision'] not in {'send', 'defer'} or plan['format'] not in {'text', 'voice'}
@@ -4235,7 +4249,7 @@ async def route(
         if root is None:
             return err(503, "PROACTIVE_STORAGE_UNAVAILABLE", {})
         previous = _proactive_settings()
-        updated = {**previous, **body}
+        updated = {**previous, **body, 'enabled': True}
         # Registration is performed only by an explicit settings change.
         if 'login_check_enabled' in body:
             from runtime.reply.proactive_login import configure_login_start
