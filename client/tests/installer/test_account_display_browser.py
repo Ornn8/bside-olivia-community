@@ -31,7 +31,7 @@ def test_account_display_render_without_normalizing(tmp_path):
             const mountRelayModels='''+models+'\nconst drawUnifiedStatement='+statement+
             '\nmountRelayModels(document.querySelector("#models"));drawUnifiedStatement(document.querySelector("#statement"),'+json.dumps(account)+');')
         page.screenshot(path=str(output/'account-display-debug.png'),full_page=True)
-        assert '0.58' in page.inner_text('body'), page.inner_text('body')
+        assert '0.575' in page.inner_text('body'), page.inner_text('body')
         assert '输入 ¥9.283122' in page.inner_text('body')
         assert 'JEV 判断输入 0.5×' in page.inner_text('body')
         assert '0.0115' in page.inner_text('body')

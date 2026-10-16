@@ -2279,7 +2279,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         detail.append(name);
         if(item.pricing)detail.append(text('span',`每百万 token：输入 ¥${item.pricing.input_per_million_yuan} · 输出 ¥${item.pricing.output_per_million_yuan}`,'text-text-secondary text-caption-m'));
         if (item.description) row.title = item.description;
-        const ratio = value => Number(value).toLocaleString("zh-CN", {maximumFractionDigits:2});
+        const ratio = value => Number(value).toLocaleString("zh-CN", {maximumFractionDigits:5});
         const ratios = text("span", `输入 ${ratio(item.input_multiplier)}× · 输出 ${ratio(item.output_multiplier)}×`, "text-text-secondary text-body-m");
         ratios.className += " olivia-model-multipliers";
         ratios.style.cssText = "font-variant-numeric:tabular-nums;font-size:13px;line-height:1.5";
