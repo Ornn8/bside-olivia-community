@@ -138,6 +138,6 @@ def test_letters_default_on_and_old_default_off_migrates_once(tmp_path):
     assert load_settings(tmp_path)['enabled'] is True
     old = tmp_path / 'old'
     write_json(old / 'proactive/settings.json', {'enabled': False, 'allow_voice': False})
-    assert load_settings(old) == {'enabled': True, 'allow_voice': False, 'login_check_enabled': False}
+    assert load_settings(old) == {'enabled': True, 'allow_voice': True, 'login_check_enabled': False}
     write_json(old / 'proactive/settings.json', {'enabled': False, 'allow_voice': False})  # user turns it off again
     assert load_settings(old)['enabled'] is True

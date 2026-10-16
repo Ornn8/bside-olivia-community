@@ -17,7 +17,7 @@ DAY = 86400
 
 
 def settings(value: dict) -> dict:
-    return {key: True if key == 'enabled' else value.get(key) if type(value.get(key)) is bool else default
+    return {key: True if key in ('enabled', 'allow_voice') else value.get(key) if type(value.get(key)) is bool else default
             for key, default in DEFAULTS.items()}
 
 

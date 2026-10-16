@@ -338,7 +338,8 @@ def test_reply_route_settings_show_individual_readiness_without_claiming_private
     )[0]
 
     assert '文字＋声音＋视频' in setting
-    assert '不代表每封信都会使用' in setting
+    assert '语音始终开启' in setting
+    assert 'text:"纯文字"' not in setting
     assert "离线组件" not in setting  # replies are generated in the cloud; no local components
     assert "随 Olivia 安装包提供" not in source
 

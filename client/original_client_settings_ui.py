@@ -460,7 +460,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     proactiveState = {
       ...proactiveState,
       enabled: true,
-      allow_voice: payload.allow_voice !== false,
+      allow_voice: true,
       login_check_enabled: payload.login_check_enabled === true,
       busy: payload.busy === true,
       remaining: Number.isInteger(payload.remaining) && payload.remaining >= 0 ? payload.remaining : 0,
@@ -499,7 +499,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       headers: { "Accept": "application/json", "Content-Type": "application/json", [CONFIRM_HEADER]: CONFIRM_VALUE },
       body: JSON.stringify({
         enabled: body.enabled === true,
-        allow_voice: body.allow_voice !== false,
+        allow_voice: true,
         login_check_enabled: body.login_check_enabled === true,
       }),
     });
@@ -4105,20 +4105,20 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       row.append(copy, input);
       return { row, input };
     };
-    const allowVoice = makeOption("主动信附带语音", proactiveState.allow_voice, "允许在主动来信中附上她的声音。");
+    const voiceNote = text("p", "主动信语音始终开启。", "text-text-secondary text-body-m");
     const loginCheck = makeOption("登录后检查来信", proactiveState.login_check_enabled, "登录 Windows 后，在后台检查是否有适合寄出的主动来信。");
     const status = text("p", "正在读取主动写信设置…", "text-text-secondary text-caption-m");
     status.setAttribute("role", "status");
     // Each switch saves on change. A failed save puts that switch back.
     const persist = async (changed) => {
-      const inputs = [allowVoice.input, loginCheck.input];
+      const inputs = [loginCheck.input];
       dirty = true;
       inputs.forEach((input) => { input.disabled = true; });
       status.textContent = "正在保存主动写信设置…";
       try {
         await saveProactiveSettings({
           enabled: true,
-          allow_voice: allowVoice.input.checked,
+          allow_voice: true,
           login_check_enabled: loginCheck.input.checked,
         });
         status.textContent = "主动写信设置已保存。";
@@ -4135,7 +4135,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     };
     const render = (payload) => {
       if (dirty) return;
-      allowVoice.input.checked = payload.allow_voice !== false;
+
       loginCheck.input.checked = payload.login_check_enabled === true;
       reportGroupStatus(container, "proactive", "主动联系已开启");
       if (payload.busy) {
@@ -4147,7 +4147,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       }
     };
     proactiveStateListeners.add(render);
-    container.append(optionStyle, heading, description, allowVoice.row, loginCheck.row, status);
+    container.append(optionStyle, heading, description, voiceNote, loginCheck.row, status);
     section.append(container);
     status.textContent = proactiveState.busy ? "林离正在写信。普通寄信暂时锁定。" : "主动写信设置尚未读取。";
   };
@@ -4157,9 +4157,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     container.setAttribute("data-olivia-reply-routes", "true");
     container.className = "flex flex-col gap-4";
     container.append(text("div", "回信能力", "text-text-body text-title-m"),
-      text("p", "林离会在允许的范围内决定怎样回信，也会听取你的明确要求。开启声音或视频，不代表每封信都会使用。", "text-text-secondary text-body-m font-regular"));
+      text("p", "林离会在允许的范围内决定怎样回信，也会听取你的明确要求。语音始终开启；可选择是否允许视频。", "text-text-secondary text-body-m font-regular"));
     const choices = document.createElement("div"); choices.setAttribute("role", "radiogroup"); choices.setAttribute("aria-label", "回信能力档位");
-    const labels = {text:"纯文字",audio:"文字＋声音",video:"文字＋声音＋视频"};
+    const labels = {audio:"文字＋声音",video:"文字＋声音＋视频"};
     const descriptions = {text:"通过文字回信。",audio:"可回复文字，也可用说话、唱歌或两者组合的音频。",video:"文字、声音和视频都可使用，由本次内容决定。"};
     let selected = null, busy = false, imageEnabled = false, imageResolution = '1K', imageModel = '', imageCapability = null;
     const imageControls = document.createElement('div'); imageControls.style.cssText='display:flex;gap:8px;align-items:center;flex-wrap:wrap';
@@ -4239,7 +4239,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         imageCapability=result.image_capability||imageCapability;
         if(catalogOnly&&selected!==null)return;
         if(busy)return;
-        selected=result.tier || (Object.values(result.routes||{}).some(Boolean) ? "video" : "text");
+        selected=result.tier === 'video' ? 'video' : 'audio';
         imageEnabled=result.image?.enabled===true;imageResolution=result.image?.resolution||'1K';
         imageModel=result.image?.model||'';imageCapability=result.image_capability||null;
         if(!labels[selected]) throw Error("invalid tier");
