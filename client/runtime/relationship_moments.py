@@ -63,4 +63,4 @@ def plans(life_store):
     with life_store._db() as db:
         rows = db.execute("SELECT payload FROM life_projects WHERE json_extract(payload,'$.kind')='shared'")
         return [item for (raw,) in rows if (item := json.loads(raw)).get('status')
-                in {'planned', 'ongoing', 'paused', 'awaiting_user'}]
+                in {'planned', 'ongoing', 'paused'}]

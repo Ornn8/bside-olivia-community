@@ -193,7 +193,7 @@ def test_promise_completion_is_per_project(tmp_path):
     import json
     life=DailyLifeStore(tmp_path/'life.sqlite3')
     with life._db() as db:
-        for identity,status in [('song','completed'),('walk','planned')]:
+        for identity,status in [('song','completed'),('walk','planned'),('invitation','awaiting_user')]:
             db.execute('INSERT INTO life_projects VALUES (?,?)',
                        (identity,json.dumps({'id':identity,'kind':'shared','status':status})))
     assert [p['id'] for p in plans(life)]==['walk']
