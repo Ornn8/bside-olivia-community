@@ -73,6 +73,8 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 import local_server as server
 from runtime.reply.proactive_letters import scan_pending, write_json
+from runtime.reply import daily_proactive
+daily_proactive.daily_candidate = lambda rows, now: None  # Exercise correspondence, independent of wall-clock evening.
 root = server._state_root()
 write_json(root / 'proactive/settings.json', {'enabled': True, 'allow_voice': True})
 assert server._proactive_reason == 'disabled'

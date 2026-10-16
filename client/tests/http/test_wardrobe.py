@@ -18,7 +18,7 @@ def test_style_persists_and_frozen_photo_does_not_follow_later_changes(tmp_path)
     store.mutate_wardrobe('video_reply_setting:next', {'style_id': 'stage'})
     assert frozen['wardrobe_style'] == 'home_knit'
     assert 'wardrobe_style' not in before
-    assert store.tier_snapshot() == 'text'
+    assert store.tier_snapshot() == 'audio'
     assert store.mutate_wardrobe('video_reply_setting:outfit', {'style_id': 'home_knit'})['status'] == 'DUPLICATE'
     with pytest.raises(VideoReplySettingsError):
         store.mutate_wardrobe('video_reply_setting:outfit', {'style_id': 'stage'})
@@ -40,7 +40,7 @@ def test_wardrobe_api_does_not_change_other_preferences(tmp_path, monkeypatch):
         result = (await server.route('GET', '/toy/settings/reply-routes', {}, {}))['data']
         assert result['wardrobe'] == {'style_id': 'city_casual'}
         assert len(result['wardrobe_styles']) == 6
-        assert result['tier'] == 'text' and result['image']['enabled'] is True
+        assert result['tier'] == 'audio' and result['image']['enabled'] is True
     asyncio.run(scenario())
 
 

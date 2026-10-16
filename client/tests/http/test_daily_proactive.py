@@ -94,6 +94,7 @@ asyncio.run(main())
 def test_daily_qq_uses_real_voice_pipeline_without_model_veto(monkeypatch, tmp_path):
     from tests.http.test_chat_jev_proactive import environment, run_contact
     from runtime.personal_chat import backend
+    from runtime.personal_chat import service
     from runtime.reply.daily_proactive import daily_candidate
     env = environment(monkeypatch, tmp_path, action='defer', daily=True)
     instant = datetime.fromtimestamp(at(19), BEIJING)
@@ -102,6 +103,7 @@ def test_daily_qq_uses_real_voice_pipeline_without_model_veto(monkeypatch, tmp_p
         def now(cls, tz=None):
             return instant.astimezone(tz) if tz else instant.replace(tzinfo=None)
     monkeypatch.setattr(backend, 'datetime', Clock)
+    monkeypatch.setattr(service, 'datetime', Clock)
     monkeypatch.setattr(env.server.letters_adapter, '_now', lambda: instant)
     env.snapshot['current']['occurred_at'] = instant.isoformat()
     run_contact(env)

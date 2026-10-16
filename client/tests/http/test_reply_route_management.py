@@ -9,7 +9,7 @@ from runtime.video_reply_settings import REPLY_ROUTES, VideoReplySettingsStore, 
 
 def test_independent_preferences_persist_and_old_master_switch_remains_compatible(tmp_path):
     settings = VideoReplySettingsStore.initialize(tmp_path)
-    assert settings.routes_snapshot() == dict.fromkeys(REPLY_ROUTES, False)
+    assert settings.routes_snapshot() == {key: key == 'voice_reply' for key in REPLY_ROUTES}
     settings.mutate("video_reply_setting:legacy", True)
     assert all(settings.routes_snapshot().values())
     routes = dict.fromkeys(REPLY_ROUTES, False); routes["voice_reply"] = True
@@ -20,7 +20,7 @@ def test_independent_preferences_persist_and_old_master_switch_remains_compatibl
     with pytest.raises(VideoReplySettingsError):
         restored.mutate_routes("video_reply_setting:new", dict.fromkeys(REPLY_ROUTES, True))
     restored.mutate("video_reply_setting:off", False)
-    assert not any(restored.routes_snapshot().values())
+    assert restored.routes_snapshot() == {key: key == 'voice_reply' for key in REPLY_ROUTES}
 
 
 def test_video_flags_are_independent_persistent_and_part_of_idempotency(tmp_path):
@@ -67,7 +67,7 @@ def test_explicit_disabled_route_requires_confirmation_and_freezes_once(tmp_path
     monkeypatch.setattr(server, "emotion_triage", SimpleNamespace(classify=classify))
     async def run():
         preview = await server.route("POST", "/toy/letter/route-preview", {"content": "synthetic"}, {})
-        assert preview["data"]["needs_confirmation"] is True
+        assert preview["data"]["needs_confirmation"] is (requested != 'voice_reply')
         token = preview["data"]["token"]
         original_videos = settings.videos_snapshot()
         settings.mutate_routes("video_reply_setting:change", settings.routes_snapshot(), dict.fromkeys(REPLY_ROUTES, True))
@@ -75,21 +75,23 @@ def test_explicit_disabled_route_requires_confirmation_and_freezes_once(tmp_path
         assert stale["data"]["error_code"] == "REPLY_ROUTE_PREVIEW_EXPIRED"
         settings.mutate_routes("video_reply_setting:restore", settings.routes_snapshot(), original_videos)
         body = {"content": "synthetic", "material": {"route_preview_token": token}, "idempotency_key": "synthetic-send"}
-        rejected = await server.route("POST", "/toy/letter/send", body, {}, defer_reply=True)
-        assert rejected["data"]["error_code"] == "REPLY_ROUTE_CONFIRM_REQUIRED"
-        assert not server.store.letters
+        if requested != 'voice_reply':
+            rejected = await server.route("POST", "/toy/letter/send", body, {}, defer_reply=True)
+            assert rejected["data"]["error_code"] == "REPLY_ROUTE_CONFIRM_REQUIRED"
+            assert not server.store.letters
         altered = {**body, "content": "different input"}
         assert (await server.route("POST", "/toy/letter/send", altered, {}, defer_reply=True))["code"] == 409
-        body["material"]["route_allow_once"] = requested
+        if requested != 'voice_reply':
+            body["material"]["route_allow_once"] = requested
         accepted = await server.route("POST", "/toy/letter/send", body, {}, defer_reply=True)
         assert accepted["code"] == 0, accepted
         letter = server.store.letters[0]
         assert letter["music_provider"] == "ace_step_xl_original"
         assert "cover_source_id" not in letter["material"]
         assert letter["route_preflight"]["reply_mode"] == requested
-        assert letter["reply_routes"] == {key: key == requested for key in REPLY_ROUTES}
+        assert letter["reply_routes"] == {key: key in (requested, 'voice_reply') for key in REPLY_ROUTES}
         assert "route_preview_token" not in letter["material"]
-        assert not any(settings.routes_snapshot().values())
+        assert settings.routes_snapshot() == {key: key == 'voice_reply' for key in REPLY_ROUTES}
         assert len(calls) == 1
         again = await server.route("POST", "/toy/letter/send", body, {}, defer_reply=True)
         assert again["data"]["letter_id"] == letter["letter_id"]
