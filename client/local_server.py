@@ -1111,7 +1111,7 @@ class LetterAdapter:
             try:
                 line = writer_line(private_snapshot,
                     getattr(globals().get('private_world_relationship_committer'), 'ledger', None),
-                    getattr(self.daily_life, 'store', None))
+                    getattr(getattr(self, 'daily_life', None), 'store', None))
                 facts += (TrustedWorldFact(fact_id='private.relationship.route', source_id='private_world.character_view',
                     statement=line, kind=WorldFactKind.TRUSTED_RUNTIME),)
             except (sqlite3.Error, OSError, ValueError, RuntimeError):

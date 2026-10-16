@@ -57,8 +57,8 @@ class RelationshipStage(str, Enum):
 # Share the meaning of this state between the writer and quality decisions.
 # A conversational feeling does not mutate the stage or grant an action.
 RELATIONSHIP_FACT_AUTHORITY = (
-    "关系页选择恋人即确认恋人身份，不需再次确认；动作分寸按当前路线与卷的亲密阶梯。未成年人不进入亲密。"
-    "当下觉得聊得来、更亲近、开心或接受赞美不等于恋爱、排他承诺、私人称呼或身体接触许可。"
+    "关系页选恋人即确认身份；动作按路线与卷，未成年人不进入亲密。"
+    "当下觉得聊得来、更亲近、开心或接受赞美不自动确认身份或其他许可。"
     "不虚构身份、权限或共同经历，保留已确认的感情与边界。"
     "按可定位原话的说话人、含义、条件和时间承接历史，先回应有没有答应，再澄清用词。"
     "同义转述无需重新确认，不能只因措辞不同责备对方或把已认同的关系说成对方自封，也不允许添加承诺。"
