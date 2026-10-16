@@ -12,7 +12,11 @@ from runtime.personal_chat.events import PersonalMessage
 from runtime.personal_chat.service import PersonalChatService
 
 
-def environment(monkeypatch, tmp_path, *, action='send', medium='audio_speech', body=None, writer_hook=None, legacy=False):
+def environment(monkeypatch, tmp_path, *, action='send', medium='audio_speech', body=None, writer_hook=None, legacy=False, daily=False):
+    from runtime.reply import daily_proactive
+    # These cases exercise model-decided contact, not the separately tested evening floor.
+    if not daily:
+        monkeypatch.setattr(daily_proactive, 'daily_candidate', lambda rows, now: None)
     from llm_gateway import GatewayRequestScope, GatewayResponse
     from runtime.personal_chat import backend
     from runtime.reply import companion_duties, companion_proactive

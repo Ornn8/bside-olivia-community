@@ -285,7 +285,10 @@ class VideoReplySettingsStore:
         tier = document.get("settings", {}).get("tier")
         if tier is not None:
             expected_routes, expected_videos = tier_preferences(tier)
-            if document["settings"].get("routes") != expected_routes or document["settings"].get("videos") != expected_videos:
+            saved_routes = document["settings"].get("routes")
+            # Pre-2.4.4 text preferences remain valid; reads enable voice without rewriting the ledger.
+            legacy_text = tier == "text" and saved_routes == dict.fromkeys(REPLY_ROUTES, False)
+            if (saved_routes != expected_routes and not legacy_text) or document["settings"].get("videos") != expected_videos:
                 raise VideoReplySettingsError(_UNAVAILABLE)
         videos = document.get("settings", {}).get("videos", DEFAULT_ROUTE_VIDEOS)
         if not isinstance(videos, dict) or set(videos) != set(REPLY_ROUTES) or any(type(v) is not bool for v in videos.values()):

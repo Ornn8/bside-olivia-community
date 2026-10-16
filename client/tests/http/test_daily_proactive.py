@@ -21,7 +21,7 @@ def test_daily_window_and_success_across_channels():
 def test_legacy_false_is_on_but_other_settings_survive(tmp_path):
     from runtime.reply.proactive_letters import load_settings, write_json
     write_json(tmp_path / 'proactive/settings.json', {'enabled': False, 'allow_voice': False})
-    assert load_settings(tmp_path) == dict(enabled=True, allow_voice=False, login_check_enabled=False)
+    assert load_settings(tmp_path) == dict(enabled=True, allow_voice=True, login_check_enabled=False)
     write_json(tmp_path / 'proactive/settings.json', {'enabled': False, 'allow_voice': False})
     assert load_settings(tmp_path)['enabled'] is True
 
@@ -95,7 +95,7 @@ def test_daily_qq_uses_real_voice_pipeline_without_model_veto(monkeypatch, tmp_p
     from tests.http.test_chat_jev_proactive import environment, run_contact
     from runtime.personal_chat import backend
     from runtime.reply.daily_proactive import daily_candidate
-    env = environment(monkeypatch, tmp_path, action='defer')
+    env = environment(monkeypatch, tmp_path, action='defer', daily=True)
     instant = datetime.fromtimestamp(at(19), BEIJING)
     class Clock(datetime):
         @classmethod

@@ -91,7 +91,7 @@ def test_attached_cover_preflight_keeps_text_and_confirmed_mode(tmp_path, monkey
         assert saved['content'] == '今天想听这首歌'
         assert saved['material']['cover_lyrics'] == ('' if remote else '人工修正后的歌词')
         assert saved['route_preflight']['reply_mode'] == 'singing_video'
-        assert settings.saved_tier() == tier
+        assert settings.saved_tier() == ('audio' if tier == 'text' else tier)
     asyncio.run(run())
 
 

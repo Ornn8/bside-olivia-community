@@ -1,5 +1,22 @@
 from runtime.video_reply_settings import VideoReplySettingsStore, tier_preferences
 from runtime.reply.proactive_letters import settings
+import json
+
+
+def test_existing_text_document_remains_available(tmp_path):
+    store = VideoReplySettingsStore.initialize(tmp_path)
+    store.mutate_tier('video_reply_setting:legacy', 'text')
+    document = json.loads(store.path.read_text())
+    document['settings']['routes']['voice_reply'] = False
+    document['settings']['video_reply_enabled'] = False
+    document['ledger']['video_reply_setting:legacy']['routes']['voice_reply'] = False
+    document['ledger']['video_reply_setting:legacy']['enabled'] = False
+    store.path.write_text(json.dumps(document))
+    reopened = VideoReplySettingsStore(tmp_path)
+    assert reopened.snapshot().state == 'available'
+    assert reopened.routes_snapshot()['voice_reply'] is True
+    assert reopened.tier_snapshot() == 'audio'
+    assert not any(reopened.videos_snapshot().values())
 
 
 def test_legacy_text_setting_cannot_disable_voice(tmp_path):
