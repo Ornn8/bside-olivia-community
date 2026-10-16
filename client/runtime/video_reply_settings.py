@@ -70,7 +70,7 @@ def require_image_model(image, capabilities):
 def tier_preferences(tier):
     if not isinstance(tier, str) or tier not in REPLY_TIERS:
         raise VideoReplySettingsError("VIDEO_REPLY_SETTING_PAYLOAD_INVALID", status=400)
-    return dict.fromkeys(REPLY_ROUTES, tier != "text"), dict.fromkeys(REPLY_ROUTES, tier == "video")
+    return {**dict.fromkeys(REPLY_ROUTES, tier != "text"), "voice_reply": True}, dict.fromkeys(REPLY_ROUTES, tier == "video")
 
 def routed_video(mode, contexts, ceilings):
     if not ceilings.get(mode, False) or mode == "text_letter": return False
@@ -130,13 +130,14 @@ class VideoReplySettingsStore:
             if self._committed.state != "available":
                 raise VideoReplySettingsError(_UNAVAILABLE)
             saved = self._document.get("settings", {}).get("routes")
-            return dict(saved) if saved is not None else dict.fromkeys(REPLY_ROUTES, self._committed.enabled is True)
+            return {**(dict(saved) if saved is not None else dict.fromkeys(REPLY_ROUTES, self._committed.enabled is True)), "voice_reply": True}
     def videos_snapshot(self) -> dict[str, bool]:
         with self._lock:
             if self._committed.state != "available": raise VideoReplySettingsError(_UNAVAILABLE)
             return dict(self._document.get("settings", {}).get("videos", DEFAULT_ROUTE_VIDEOS))
     def saved_tier(self):
-        return self._document.get("settings", {}).get("tier")
+        tier = self._document.get("settings", {}).get("tier")
+        return "audio" if tier == "text" else tier
     def image_snapshot(self):
         with self._lock:
             if self._committed.state != 'available':
@@ -284,7 +285,10 @@ class VideoReplySettingsStore:
         tier = document.get("settings", {}).get("tier")
         if tier is not None:
             expected_routes, expected_videos = tier_preferences(tier)
-            if document["settings"].get("routes") != expected_routes or document["settings"].get("videos") != expected_videos:
+            saved_routes = document["settings"].get("routes")
+            # Pre-2.4.4 text preferences remain valid; reads enable voice without rewriting the ledger.
+            legacy_text = tier == "text" and saved_routes == dict.fromkeys(REPLY_ROUTES, False)
+            if (saved_routes != expected_routes and not legacy_text) or document["settings"].get("videos") != expected_videos:
                 raise VideoReplySettingsError(_UNAVAILABLE)
         videos = document.get("settings", {}).get("videos", DEFAULT_ROUTE_VIDEOS)
         if not isinstance(videos, dict) or set(videos) != set(REPLY_ROUTES) or any(type(v) is not bool for v in videos.values()):

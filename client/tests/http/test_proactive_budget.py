@@ -37,6 +37,9 @@ import local_server as server
 from llm_gateway import GatewayRequestScope
 from runtime.reply.proactive_letters import write_json
 root = server._state_root()
+# Ordinary opportunity budgeting is independent of the separately tested daily floor.
+import runtime.reply.daily_proactive as daily
+daily.daily_candidate = lambda rows, now: None
 now = [1000000.0]
 server.time.time = lambda: now[0]
 server._proactive_ready = lambda: True
@@ -135,6 +138,6 @@ def test_letters_default_on_and_old_default_off_migrates_once(tmp_path):
     assert load_settings(tmp_path)['enabled'] is True
     old = tmp_path / 'old'
     write_json(old / 'proactive/settings.json', {'enabled': False, 'allow_voice': False})
-    assert load_settings(old) == {'enabled': True, 'allow_voice': False, 'login_check_enabled': False}
+    assert load_settings(old) == {'enabled': True, 'allow_voice': True, 'login_check_enabled': False}
     write_json(old / 'proactive/settings.json', {'enabled': False, 'allow_voice': False})  # user turns it off again
-    assert load_settings(old)['enabled'] is False
+    assert load_settings(old)['enabled'] is True

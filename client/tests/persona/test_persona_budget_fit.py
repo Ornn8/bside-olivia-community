@@ -106,14 +106,11 @@ def test_release_attitude_requires_evidence_without_removing_personality(mode) -
     )
     rules = json.loads(re.search(r'<forbidden>\n([^\n]+)\n</forbidden>', assembled.system_content)[1])
     # This checks the provider-input contract, not the model's compliance.
-    attitude = next(rule for rule in rules if '不把猜测的动机' in rule)
-    assert '训诫、责备或人格定性' in attitude
-    assert '“我猜”' in attitude and '无依据的指责' in attitude
-    assert '核对、重复提问、纠正记忆不能证明用户有恶意或心理问题' in attitude
-    assert '不同意见和拒绝' in attitude and '主动调侃、嘴硬' in attitude
-    assert '轻调侃不等于对真实动机的认定' in attitude
-    assert '不顺带给用户的理智、品性或生活选择打分' in attitude
-    assert '有分歧或越界就谈具体行为及自己的边界' in attitude
+    attitude = next(rule for rule in rules if '不训人、不搬规矩' in rule)
+    assert '不训人、不搬规矩、不刻意推开' in attitude
+    assert '自然关心、调侃或想念' in attitude
+    assert '不替用户补动机' in assembled.system_content
+    assert '也能不同意、拒绝或暂时少说' in assembled.system_content
     assert '"declaration_id":"trait.tease_and_refuse"' in assembled.system_content
     assert assembled.user_content == '我只是在核对记忆，不是在试探你。'
 

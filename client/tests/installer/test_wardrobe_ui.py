@@ -67,10 +67,14 @@ def test_world_wardrobe_entry_browse_confirm_rollback_and_layout():
           installNativeWorldRoute();installNativeWardrobeRoute();installNativeDiaryRoute();
           window.__oliviaNativeView.router.push('/world');
         ''')
-        assert page.get_by_role('button', name='打开林离的物品栏').is_visible()
+        # 物品栏 is reached from the main navigation; the world page has no second entry.
+        assert page.get_by_role('button', name='打开林离的物品栏').count() == 0
+        assert page.get_by_role('button', name='物品栏').count() == 0
+        items_tab = page.locator('[data-olivia-main-navigation] a', has_text='物品栏')
+        assert items_tab.is_visible()
         output = Path('.evidence');output.mkdir(exist_ok=True)
         page.screenshot(path=str(output / 'wardrobe-world-entry.png'), full_page=True)
-        page.get_by_role('button', name='打开林离的物品栏').click()
+        items_tab.click()
         assert page.get_by_role('button', name='打开林离的日记本').is_visible()
         page.screenshot(path=str(output / 'items-hub.png'), full_page=True)
         page.get_by_role('button', name='打开林离的衣橱').click()
@@ -116,8 +120,8 @@ def test_world_wardrobe_entry_browse_confirm_rollback_and_layout():
         assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
         page.screenshot(path=str(output / 'wardrobe-compact.png'), full_page=True)
         page.get_by_role('link', name='返回世界').click()
-        assert page.get_by_role('button', name='打开林离的物品栏').is_visible()
-        page.get_by_role('button', name='打开林离的物品栏').click()
+        assert page.get_by_role('button', name='打开林离的物品栏').count() == 0
+        page.locator('[data-olivia-main-navigation] a', has_text='物品栏').click()
         assert page.get_by_role('button', name='打开林离的衣橱').is_visible()
         page.evaluate('window.failLoad=true')
         page.get_by_role('button', name='打开林离的衣橱').click()

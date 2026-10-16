@@ -42,13 +42,42 @@ window.renderWorld = '''+renderer+';')
             page.evaluate("async()=>{await window.renderWorld(document.querySelector('#world'),{state:'available'})}")
         render()
         assert '心情：松了口气' in page.locator('#world').inner_text()
-        assert '挂心的事：明天的课堂展示' in page.locator('#world').inner_text()
+        assert page.locator('.olivia-world-concerns li').all_text_contents() == ['明天的课堂展示']
         concern = '上钢琴专业课时，有一部分内容还没理解；具体疑问尚未记录。'
         page.evaluate('(summary)=>window.payload.emotion.concerns=[{summary}]', concern)
         render()
-        assert '挂心的事：' + concern in page.locator('#world').inner_text()
+        assert page.locator('.olivia-world-concerns li').all_text_contents() == [concern]
         page.screenshot(path=str(tmp_path/'world-concern-source.png'), full_page=True)
-        page.evaluate("()=>window.payload.emotion.concerns=[{summary:'明天的课堂展示'}]")
+        # A concern quoting the user's message and the user's own shared plan say whose words they are.
+        page.evaluate("()=>{window.payload.emotion.concerns=[{summary:'用户说：我明天要面试，好紧张。'}];"
+                      "window.payload.shared=[{title:'我周末带你去看海',actor:'user',status:'planned'}]}")
+        render()
+        assert page.locator('.olivia-world-concerns li').all_text_contents() == ['你说：我明天要面试，好紧张。']
+        assert '你说：我周末带你去看海' in page.locator('#world').inner_text()
+        # Unsorted legacy concerns: cap each row, preserve attribution, newest first.
+        concerns = [dict(summary=f'事项{i}：' + '准备课堂展示还需要再练习' * 8,
+                         occurred_at=f'2026-09-28T{i:02d}:00:00Z') for i in range(12)]
+        concerns[11]['summary'] = '用户说：' + '😀还在准备面试' * 8
+        concerns[10]['summary'] = '<img src=x onerror=alert(1)>' * 3
+        page.evaluate('(items)=>window.payload.emotion.concerns=items', concerns[::-1])
+        render()
+        rows = page.locator('.olivia-world-concerns li')
+        assert rows.count() == 3
+        assert rows.nth(0).inner_text().startswith('你说：😀')
+        assert rows.nth(1).inner_text().startswith('<img')
+        assert rows.nth(2).inner_text().startswith('事项9：')
+        assert all(len(value) == 30 and value.endswith('…') for value in rows.all_text_contents())
+        assert page.locator('.olivia-world-concerns img').count() == 0
+        assert page.evaluate('window.payload.emotion.concerns.length') == 12
+        for width in (1200, 390):
+            page.set_viewport_size({'width': width, 'height': 900})
+            assert rows.evaluate_all('items=>items.every(el=>el.scrollWidth<=el.clientWidth)')
+            page.screenshot(path=str(tmp_path/f'world-concerns-{width}.png'), full_page=True)
+        page.set_viewport_size({'width': 1200, 'height': 900})
+        page.evaluate('()=>window.payload.emotion.concerns=[]')
+        render()
+        assert page.locator('.olivia-world-concerns').count() == 0
+        page.evaluate("()=>{window.payload.emotion.concerns=[{summary:'明天的课堂展示'}];window.payload.shared=[]}")
         render()
         assert page.locator('#world img').count()==0
         assert '课表计划' in page.locator('#world').inner_text()
@@ -173,7 +202,7 @@ window.renderWorld = '''+renderer+';')
         page.evaluate('(value)=>window.payload=value',payload)
         render()
         assert '心情：暂时读不到' in page.locator('#world').inner_text()
-        assert '挂心的事：明天的课堂展示' not in page.locator('#world').inner_text()
+        assert page.locator('.olivia-world-concerns').count() == 0
         payload['emotion'].update(status='available', reactions=[original], current_affect=dict(
             status='available', label='calm', as_of='2026-09-28T08:45:00Z',
             reason='练习后的休息与刚才被理解的对话，让心情渐渐平稳。',

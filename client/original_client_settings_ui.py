@@ -87,7 +87,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const UPDATE_CONFIRM_HEADER = "X-Olivia-Update-Action";
   const LETTER_CHARACTER_LIMIT = 1200;
   let proactiveState = {
-    enabled: false,
+    enabled: true,
     allow_voice: true,
     login_check_enabled: false,
     busy: false,
@@ -408,6 +408,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       httpStatus = response.status; failureStage = 'response';
       const responseBody = await response.json();
       const payload = (path === VIDEO_REPLY_SETTINGS_PATH
+          || path === '/toy/relationship'
           || path === LOCAL_LETTER_IMPORT_PATH
           || path === PROACTIVE_STATUS_PATH)
         && responseBody && responseBody.data
@@ -458,8 +459,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const publishProactiveState = (payload) => {
     proactiveState = {
       ...proactiveState,
-      enabled: payload.enabled === true,
-      allow_voice: payload.allow_voice !== false,
+      enabled: true,
+      allow_voice: true,
       login_check_enabled: payload.login_check_enabled === true,
       busy: payload.busy === true,
       remaining: Number.isInteger(payload.remaining) && payload.remaining >= 0 ? payload.remaining : 0,
@@ -498,7 +499,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       headers: { "Accept": "application/json", "Content-Type": "application/json", [CONFIRM_HEADER]: CONFIRM_VALUE },
       body: JSON.stringify({
         enabled: body.enabled === true,
-        allow_voice: body.allow_voice !== false,
+        allow_voice: true,
         login_check_enabled: body.login_check_enabled === true,
       }),
     });
@@ -1598,36 +1599,121 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       return archive;
     };
     const relationshipPanel = () => {
-      const area = document.createElement("details");
-      area.style.cssText = "margin-top:20px;overflow-wrap:anywhere";
-      area.append(text("summary", "你们的关系", "text-text-title text-label-l"));
-      const content = document.createElement("div");
-      content.style.cssText = "display:grid;gap:10px;padding-top:12px";
+      const area = document.createElement('details');
+      area.style.cssText = 'margin-top:24px;overflow-wrap:anywhere';
+      area.append(text('summary', '你们的关系', 'text-text-title text-label-l'));
+      const content = document.createElement('div');
+      content.style.cssText = 'display:grid;gap:24px;padding-top:20px;max-width:68ch;line-height:1.75';
       area.append(content);
       let pending = false, loaded = false;
+      const section = title => {
+        const el = document.createElement('section');
+        const heading = text('h3', title, 'text-text-title text-label-l');
+        heading.style.cssText = 'margin:0 0 10px;font-size:15px;font-weight:600';
+        el.append(heading);
+        return el;
+      };
+      const render = result => {
+        const intro = document.createElement('div');
+        const number = ['','一','二','三','四','五','六','七','八','九','十'][result.volume] || result.volume;
+        const heading = text('h2', `${result.routes[result.route]} · 第${number}卷「${result.title}」`, 'text-text-title');
+        heading.style.cssText = 'font-size:22px;line-height:1.5;margin:0 0 10px;font-weight:600';
+        intro.append(heading, text('p', result.description, 'text-text-body text-body-m'));
+        const dynamic = text('p', result.dynamic, 'text-text-secondary text-body-m');
+        dynamic.style.marginTop = '10px';
+        intro.append(dynamic);
+        const routes = document.createElement('div');
+        routes.setAttribute('role', 'group'); routes.setAttribute('aria-label', '相处方式');
+        routes.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;margin-top:16px';
+        const feedback = text('p', '', 'text-text-secondary text-caption-m');
+        feedback.setAttribute('role','status');
+        for (const [key,label] of Object.entries(result.routes)) {
+          const choice = button(label, async () => {
+            if (pending || key === result.route) return;
+            pending = true;
+            routes.querySelectorAll('button').forEach(b => b.disabled = true);
+            feedback.textContent = '正在保存相处方式…';
+            try {
+              const response = await fetch(new URL('/toy/relationship/route', apiBase), {
+                method:'POST', credentials:'omit', headers:{'Content-Type':'application/json', [CONFIRM_HEADER]:CONFIRM_VALUE},
+                body:JSON.stringify({route:key, version:result.version}), signal:AbortSignal.timeout(10000)});
+              const payload = await response.json();
+              if (!response.ok || payload.code !== 0) throw new Error('RELATIONSHIP_SAVE_FAILED');
+              const updated = payload.data;
+              if (alive() && area.isConnected) render(updated);
+            } catch (_error) {
+              feedback.replaceChildren(text('span','这次选择没有保存，请刷新后重试。 '), button('刷新关系', () => {pending=false;read();}));
+            } finally {
+              pending = false;
+              routes.querySelectorAll('button').forEach(b => b.disabled = false);
+            }
+          });
+          choice.setAttribute('aria-pressed', String(key === result.route));
+          choice.style.cssText = 'min-height:36px;padding:6px 14px;border-radius:6px;font:inherit;cursor:pointer';
+          if (key === result.route) choice.style.fontWeight = '700';
+          routes.append(choice);
+        }
+        intro.append(routes, feedback);
+        const dimensions = section('相处的细节');
+        const list = document.createElement('dl');
+        list.style.cssText = 'display:grid;grid-template-columns:3em minmax(0,1fr);gap:12px 16px;margin:0';
+        for (const [key,label] of Object.entries({familiarity:'熟悉',trust:'信任',comfort:'安心',closeness:'亲近'})) {
+          const item = result.dimensions[key];
+          const term = text('dt',label,'text-text-secondary text-body-m');
+          const description = text('dd',item.text,'text-text-body text-body-m');
+          description.style.margin = '0';
+          if (item.rising) {
+            const change = text('span',' 最近在变','text-text-secondary text-caption-m');
+            change.style.cssText = 'display:inline-block;margin-left:6px;font-size:12px';
+            description.append(change);
+          }
+          list.append(term,description);
+        }
+        dimensions.append(list);
+        const moments = section('最近的瞬间');
+        if (!result.moments.length) moments.append(text('p','还没有留下新的瞬间。认真聊过的事，会慢慢留在这里。','text-text-secondary text-body-m'));
+        for (const item of result.moments) {
+          const row = document.createElement('div');
+          row.style.cssText = 'margin:0 0 14px';
+          const date = text('time',item.date,'text-text-secondary text-caption-m');
+          date.dateTime = item.date;
+          row.append(date, text('p',item.text,'text-text-body text-body-m'));
+          if (item.quote) row.append(text('p',`“${item.quote}”`,'text-text-secondary text-body-m'));
+          moments.append(row);
+        }
+        const promises = section('未完成的约定');
+        if (!result.plans.length) promises.append(text('p','暂时没有未完成的约定。','text-text-secondary text-body-m'));
+        for (const item of result.plans) {
+          const row = document.createElement('div'); row.style.marginBottom = '12px';
+          row.append(text('p',item.title,'text-text-body text-body-m'));
+          if (item.detail) row.append(text('p',item.detail,'text-text-secondary text-body-m'));
+          promises.append(row);
+        }
+        const names = section('彼此的称呼');
+        names.append(text('p',`她叫你：${result.addressing.linli_calls_user || '还没有特别的称呼'}`,'text-text-body text-body-m'),
+                     text('p',`你叫她：${result.addressing.user_calls_linli || '还没有特别的称呼'}`,'text-text-body text-body-m'));
+        const closer = section('再靠近一点');
+        closer.append(text('p',result.hint,'text-text-secondary text-body-m'));
+        content.replaceChildren(intro,dimensions,moments,promises,names,closer);
+      };
       const read = async () => {
         if (pending || !alive() || !area.isConnected) return;
         pending = true;
-        if (!loaded) content.replaceChildren(text("p", "读取关系状态…", "text-text-secondary text-body-m"));
+        if (!loaded) content.replaceChildren(text('p','读取你们的关系…','text-text-secondary text-body-m'));
         try {
-          const result = await requestJson(PRIVATE_WORLD_PATH);
+          const result = await requestJson('/toy/relationship');
           if (!alive() || !area.isConnected) return;
-          if (!result || result.status !== "READY" || !result.levels) throw new Error("RELATIONSHIP_UNAVAILABLE");
-          const stages = {unknown:"尚未确定", acquaintance:"初识", familiar:"逐渐熟悉", friend:"朋友", trusted_friend:"信赖的朋友", close:"亲近", committed:"稳定的亲密关系"};
-          const descriptions = {unknown:"你们的关系还在慢慢建立。", acquaintance:"你们刚认识不久，她对你还有些拘谨。", familiar:"你们渐渐熟了，聊得来的话题越来越多。", friend:"你们已经是朋友了，她跟你在一起很自在。", trusted_friend:"你们是彼此信赖的朋友，她愿意跟你说心里话。", close:"你们很亲近，她会想你，也愿意让你知道。", committed:"你们已经确认了彼此的关系。"};
-          content.replaceChildren(text("p", `关系阶段：${stages[result.relationship_stage] || "尚未确定"}`, "text-text-body text-body-m"));
-          content.append(text("p", descriptions[result.relationship_stage] || descriptions.unknown, "text-text-body text-body-m"));
-          if (result.levels.tension === "high") content.append(text("p", "最近你们之间有点小别扭。", "text-text-secondary text-body-m"));
-          content.append(text("p", "这里读取既有关系记录；生活动态的刷新不会增加好感或改变关系阶段。", "text-text-secondary text-caption-m"));
-          loaded = true;
+          if (!result?.dimensions || !result?.routes) throw new Error('RELATIONSHIP_UNAVAILABLE');
+          render(result); loaded = true;
         } catch (_error) {
-          content.replaceChildren(text("p", "关系状态暂时无法读取。", "text-text-secondary text-body-m"), button("重试读取关系", read));
+          content.replaceChildren(text('p','关系暂时没能读取，请稍后重试。','text-text-secondary text-body-m'),button('重试读取关系',read));
         } finally { pending = false; }
       };
-      area.addEventListener("toggle", () => { if (area.open && !loaded) read(); });
+      area.addEventListener('toggle', () => { if (area.open && !loaded) read(); });
       area.refresh = read;
       return area;
     };
+
     const relationship = relationshipPanel();
     const agendaRows = (world) => {
       const date=world?.schedule?.date;
@@ -1722,6 +1808,11 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       const feelings = card();
       feelings.append(text('h5', '她现在的心情', 'text-text-title text-label-l'));
       const emotion = payload.emotion;
+      // Her concerns can quote the user's message, and shared items can be the user's own
+      // words; both say whose words they are, so the user's 我 never reads as hers.
+      const yours=value=>String(value ?? '').startsWith('用户说：') ? '你说：'+String(value).slice(4) : value;
+      const concernText=item=>yours(item.summary);
+      const said=item=>item.actor==='user' ? `你说：${item.title}` : item.title;
       const reactions = {pleased:'开心', anticipation:'期待', relieved:'松了口气', moved:'感动', affection:'心动', shy:'害羞',
         missing:'想你', angry:'生气', frustrated:'烦躁', jealous:'吃醋', sad:'难过', disappointed:'失落', hurt:'委屈', lonely:'孤单',
         concerned:'担心', afraid:'不安', surprised:'惊讶', bored:'无聊', calm:'平静'};
@@ -1761,14 +1852,14 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           const entry = document.createElement('div');
           entry.style.cssText = 'display:grid;gap:6px;padding:8px 0';
           entry.append(text('p', reactions[item.reaction], 'text-text-title text-label-l'),
-            text('p', `相关事件或话语：${item.quote}`, 'text-text-body text-body-m'),
+            text('p', `相关事件或话语：${yours(item.quote)}`, 'text-text-body text-body-m'),
             text('p', `她在意的是：${typeof item.goal_or_need === 'string' && item.goal_or_need.trim() ? item.goal_or_need : '尚未明确'}`, 'text-text-secondary text-body-m'),
             text('small', when(item.occurred_at), 'text-text-secondary text-caption-m'));
           feelings.append(entry);
         }
         if ((emotion.concerns || []).length) {
           feelings.append(text('h5', '挂心的事', 'text-text-title text-label-l'));
-          for (const item of emotion.concerns) feelings.append(text('p', item.summary, 'text-text-body text-body-m'));
+          for (const item of emotion.concerns) feelings.append(text('p', concernText(item), 'text-text-body text-body-m'));
         }
         feelings.append(text('small', '这些是她对事件的暂时理解；多种感受可能并存，旧反应会随时间淡出。', 'text-text-secondary text-caption-m'));
       }
@@ -1782,7 +1873,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         for (const item of items) {
           const el = document.createElement("details");
           el.style.cssText = "padding:8px 0;overflow-wrap:anywhere";
-          el.append(text("summary", `${item.title} · ${item.time_scope === 'transient' ? '当时的活动记录' : item.deadline_expired ? (item.time_scope_pending ? '时限待确认（上次时限已过）' : '时限已过，进展未确认') : (labels[item.status] || "进展未知") + (item.time_scope_pending ? ' · 时限待确认' : '')}`, "text-text-title text-label-l"),
+          el.append(text("summary", `${said(item)} · ${item.time_scope === 'transient' ? '当时的活动记录' : item.deadline_expired ? (item.time_scope_pending ? '时限待确认（上次时限已过）' : '时限已过，进展未确认') : (labels[item.status] || "进展未知") + (item.time_scope_pending ? ' · 时限待确认' : '')}`, "text-text-title text-label-l"),
             text("p", item.detail, "text-text-body text-body-m"),
             text("small", when(item.updated_at), "text-text-secondary text-caption-m"));
           if(item.deadline_at)el.append(text('small',`${item.time_scope_pending?'上次时限':'时限'}：${when(item.deadline_at)}`,'text-text-secondary text-caption-m'));
@@ -1890,12 +1981,21 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         }
         for(const {item,count,first} of changes){
           const entry=document.createElement('div');entry.className='olivia-world-emotion-entry';
-          entry.append(text('h5',reactions[item.reaction]),text('p',`相关事件或话语：${item.quote}`),text('p',`她在意的需要：${typeof item.goal_or_need === 'string' && item.goal_or_need.trim() ? item.goal_or_need : '尚未明确'}`),text('small',count>1?`${when(first)} — ${when(item.occurred_at)} · 相同感受 ${count} 次`:when(item.occurred_at)));
+          entry.append(text('h5',reactions[item.reaction]),text('p',`相关事件或话语：${yours(item.quote)}`),text('p',`她在意的需要：${typeof item.goal_or_need === 'string' && item.goal_or_need.trim() ? item.goal_or_need : '尚未明确'}`),text('small',count>1?`${when(first)} — ${when(item.occurred_at)} · 相同感受 ${count} 次`:when(item.occurred_at)));
           if(item.reaction==='relieved')entry.append(text('p','变化：对这件事感到释然，不等同于开心。'));
           detail.append(entry);
         }
         if(recent.length)mood.append(detail);
-        if(valid && emotion.concerns?.length)mood.append(line('thought',`挂心的事：${emotion.concerns.map(item=>item.summary).join('；')}`));
+        if(valid && emotion.concerns?.length){
+          mood.append(line('thought','挂心的事：'));
+          const list=text('ul','','olivia-world-concerns');
+          const latest=[...emotion.concerns].sort((a,b)=>(Date.parse(b.occurred_at)||0)-(Date.parse(a.occurred_at)||0)).slice(0,3);
+          for(const item of latest){
+            const chars=Array.from(String(concernText(item) || '').replace(/\s+/g,' ').trim());
+            list.append(text('li',chars.length>30?chars.slice(0,29).join('')+'…':chars.join('')));
+          }
+          mood.append(list);
+        }
         overview.append(mood);
         const tabs=document.createElement('div');tabs.className='olivia-world-tabs';tabs.setAttribute('role','tablist');tabs.setAttribute('aria-label','世界内容');
         const today=document.createElement('div');today.className='olivia-world-content';
@@ -1912,7 +2012,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         if(schedule.next_class)next.append(line('calendar',`${when(schedule.next_class.start)}　${schedule.next_class.title}`,'olivia-world-agenda'));
         else next.append(text('p','暂无下一节课的安排。','olivia-world-muted'));
         const promise=payload.shared.find(item=>item.time_scope !== 'transient' && !item.deadline_expired && !['completed','cancelled'].includes(item.status));
-        if(promise){next.append(line('link','与你的约定','olivia-world-agenda'),text('p',promise.title),text('small',labels[promise.status] || '状态待确认','olivia-world-muted'))}
+        if(promise){next.append(line('link','与你的约定','olivia-world-agenda'),text('p',said(promise)),text('small',labels[promise.status] || '状态待确认','olivia-world-muted'))}
         columns.append(agenda,next);today.append(columns);
         const connections=document.createElement('div');connections.className='olivia-world-content';
         const relationColumns=document.createElement('div');relationColumns.className='olivia-world-columns';
@@ -1939,8 +2039,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           basis.append(text('p',`当时的活动：${frozen.activity || (frozen.world_used?'没有确定的当前活动':'这次未采用世界状态')}`));
           const names=[...new Set((frozen.reactions || []).map(item=>reactions[item.reaction]).filter(Boolean))];
           basis.append(text('p',`当时的情绪：${names.join('、') || (frozen.emotion_used?'没有已记录的情绪反应':'这次未采用情绪状态')}`));
-          for(const item of frozen.reactions || [])if(item.quote)basis.append(text('p',`相关原因：${item.quote}`));
-          if(frozen.concerns?.length)basis.append(text('p',`当时挂心的事：${frozen.concerns.join('；')}`));
+          for(const item of frozen.reactions || [])if(item.quote)basis.append(text('p',`相关原因：${yours(item.quote)}`));
+          if(frozen.concerns?.length)basis.append(text('p',`当时挂心的事：${frozen.concerns.map(yours).join('；')}`));
           basis.append(text('small','这是生成回复时保存的状态，不会用当前世界状态替换。'));
         }else basis.append(text('p',frozen?.status==='unavailable'?'回应依据暂时无法读取。':'最近的 QQ 回复尚无可核验的状态快照，不能用当前状态代替。'));
         status.className='olivia-world-status';status.setAttribute('role','status');
@@ -2024,7 +2124,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const show=count=>{for(const item of items.slice(shown,shown+count))list.append(row(item));shown=Math.min(items.length,shown+count);more.hidden=shown>=items.length;};
     target.append(list);
     if(items.length){show(10);target.append(more);}else target.append(text('p','还没有消费记录。','text-text-secondary text-body-m'));
-    const minimum=account.minimum_charge_yuan?`回信中转与 JEV 判断按用量计费，每次最低 ${money(account.minimum_charge_yuan)}，未产生费用的调用不收费。`:'';
+    // The judgment floor is listed on its own when the service reports it.
+    const judgment=typeof account.jev_minimum_charge_yuan==='string'?(Number(account.jev_minimum_charge_yuan)>0?`JEV 判断每次最低 ${money(account.jev_minimum_charge_yuan)}`:'JEV 判断按实际用量计费'):null;
+    const minimum=!account.minimum_charge_yuan?'':judgment===null?`回信中转与 JEV 判断按用量计费，每次最低 ${money(account.minimum_charge_yuan)}，未产生费用的调用不收费。`:`回信中转与 JEV 判断按用量计费：回信中转每次最低 ${money(account.minimum_charge_yuan)}，${judgment}，未产生费用的调用不收费。`;
     target.append(text('p',minimum+'中转和 GPU 共用同一余额；释放预留不是额外扣款或充值。'+(account.has_more?'这里显示最近 50 笔。':''),'text-text-secondary text-caption-m'));
   };
 
@@ -3032,8 +3134,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       [data-world-main]{overflow-y:auto;overflow-x:hidden;background:#191a1c;border-radius:12px;padding:28px 32px;min-height:0;flex:1;display:block;box-sizing:border-box;scrollbar-width:thin}
       [data-world-main] p{line-height:1.7;margin:8px 0}
       [data-world-main] h3{font-size:26px;margin:0}[data-world-main] h4{font-size:21px;margin:0}
-      .olivia-world-tools{display:flex;justify-content:flex-end;margin:12px 0}
-      [data-world-main] button,.olivia-world-tools button{border:1px solid #686a70;border-radius:999px;background:transparent;color:#ded9d1;padding:9px 18px;font:inherit;cursor:pointer}
+      [data-world-main] button{border:1px solid #686a70;border-radius:999px;background:transparent;color:#ded9d1;padding:9px 18px;font:inherit;cursor:pointer}
       [data-world-main] summary{cursor:pointer;line-height:1.7}
       [data-world-main] article{background:transparent!important;padding:12px 0!important}
       .olivia-world-heading{display:flex;justify-content:space-between;align-items:center;gap:16px}
@@ -3050,6 +3151,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       [data-world-main] svg{width:20px;height:20px;flex-shrink:0;fill:none;stroke:currentColor;stroke-width:1.65;stroke-linecap:round;stroke-linejoin:round}
       .olivia-world-meta svg{width:16px;height:16px}
       .olivia-world-mood{margin-top:22px;display:grid;gap:8px;font-size:15px}
+      .olivia-world-concerns{margin:0;padding-left:48px;display:grid;gap:6px;overflow-wrap:anywhere}
       .olivia-world-mood>.olivia-world-line svg{color:#b6c8b0}
       [data-world-main] .olivia-world-muted{color:#acb0b4;font-size:14px}
       [data-world-main] .olivia-world-mood>p{margin:0 0 0 32px}
@@ -3076,13 +3178,10 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       @media(max-width:580px){.olivia-world-columns{grid-template-columns:1fr}.olivia-world-aside{padding:20px 0 0;border-left:0;border-top:1px solid #383a3e}.olivia-world-tabs{gap:20px}.olivia-world-heading{align-items:flex-start}.olivia-world-heading .olivia-world-line{align-items:flex-start}[data-world-main]{padding:18px}.olivia-world-meta{gap:8px}}
     `;
     const header=document.createElement('header');header.className='olivia-world-header';header.append(text('h1','世界'));
-    const wardrobeEntry=button('物品栏',()=>openItems());wardrobeEntry.setAttribute('data-olivia-items-entry','');
-    wardrobeEntry.setAttribute('aria-label','打开林离的物品栏');wardrobeEntry.setAttribute('data-diary-badge','');
+    // 物品栏 is a main navigation tab (which carries the diary badge); the page adds no second entry.
     setTimeout(()=>void refreshDiaryBadge(true),0);
-    // The top row is shared with the native tabs and the account controls; keep it to the title.
-    const tools=document.createElement('div');tools.className='olivia-world-tools';tools.append(wardrobeEntry);
     const panel=document.createElement('section');panel.dataset.worldMain='';
-    page.replaceChildren(style,header,tools,panel);
+    page.replaceChildren(style,header,panel);
     panel.append(text('p','正在读取林离的生活……'));
     void requestJson(STATUS_PATH).then(payload=>{if(page.isConnected)return renderPrivateWorldPanel(panel,payload.capabilities?.private_world)}).catch(error=>{
       reportDailyLifeFailure(error, 'request', 'companion_status');
@@ -3101,6 +3200,78 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       },
     });
     if(window.location.hash==='#/collection?view=world')native.router.replace('/world');
+  };
+  const openLetterDeletion = async () => {
+    if (document.querySelector('[data-letter-deletion]')) return;
+    const dialog = document.createElement('dialog');
+    dialog.setAttribute('data-letter-deletion', '');
+    dialog.setAttribute('aria-label', '管理信件');
+    dialog.style.cssText = 'box-sizing:border-box;width:min(800px,calc(100vw - 48px));max-height:85vh;overflow:auto;background:#202124;color:#ede9e1;border:1px solid #666;border-radius:16px;padding:24px;font-family:inherit';
+    const header = actions(), body = stack(), notice = text('p', '', 'text-text-secondary');
+    notice.setAttribute('role', 'status');
+    let recent = false, busy = false, changed = false;
+    const dismiss = () => { dialog.close(); dialog.remove(); if (changed) window.location.reload(); };
+    const close = button('关闭', dismiss);
+    const tabs = button('最近删除', async () => { if (!busy) { recent = !recent; await load(); } });
+    header.append(text('h2', '管理信件'), tabs, close);
+    dialog.append(header, notice, body); document.body.append(dialog); dialog.showModal(); close.focus();
+    dialog.addEventListener('cancel', event => { event.preventDefault(); if (!busy) dismiss(); });
+    const mutate = async (action, payload) => {
+      busy = true; tabs.disabled = close.disabled = true;
+      for (const control of body.querySelectorAll('button')) control.disabled = true;
+      notice.textContent = '正在处理，请稍候…';
+      try {
+        await routeRequest('/toy/letter/deletion/' + action, payload, {confirmed:true});
+        changed = true; await load();
+        notice.textContent = action === 'restore' ? '信件和关联记忆已恢复。' : '已删除。30 天内可在“最近删除”恢复。';
+      } catch (error) {
+        const messages = {
+          LETTER_DELETE_LEGACY_RELATIONSHIP_UNSUPPORTED: '这封旧信的关系记录缺少可重放来源，暂不能安全清理。信件未删除。',
+          LETTER_DELETE_UNATTRIBUTED_DIARY: '相关日记缺少逐封信的来源记录，暂不能安全清理这封信；整篇清除会影响其他信件。信件未删除。',
+          LETTER_DELETE_RELATIONSHIP_REPLAY_UNSUPPORTED: '相关关系记录含交错或重复证据，暂不能安全重算。信件未删除。',
+          LETTER_DELETE_RESTORE_CONFLICT: '关联记录在删除后发生了变化，已停止恢复以保护新记录。请保留最近删除中的备份。',
+          LETTER_DELETE_MEMORY_BUSY: '记忆正在写入，请稍后重试。',
+          LETTER_DELETE_MEMORY_UNAVAILABLE: '记忆存储暂不可用，请恢复连接后重试。',
+        };
+        notice.textContent = messages[error.message] || '操作未完成。请查看“最近删除”，重试清理或恢复；备份会保留。';
+      } finally { busy = false; tabs.disabled = close.disabled = false; for (const control of body.querySelectorAll('button')) control.disabled = false; }
+    };
+    async function load() {
+      body.replaceChildren(); tabs.textContent = recent ? '返回信箱' : '最近删除';
+      notice.textContent = recent ? '保留 30 天。恢复会同时还原本次移除的记忆。' : '删除你的信会保留她已有的回信；她的信也可以单独删除。';
+      const payload = recent ? await routeRequest('/toy/letter/deletion/list', {}, {confirmed:true}) : await routeRequest('/toy/letter/list');
+      const rows = recent ? payload.items : payload.list;
+      if (!rows?.length) body.append(text('p', recent ? '最近没有删除的信件。' : '信箱里还没有信件。'));
+      for (const row of rows || []) {
+        const card = stack(); card.style.cssText = 'padding:16px 0;border-bottom:1px solid #48494c;white-space:pre-wrap;overflow-wrap:anywhere';
+        card.append(text('p', row.summary || '（空）'));
+        if (recent) {
+          card.append(text('p', `${row.part === 'user' ? '你的信' : '她的信'} · ${new Date(row.expires_at * 1000).toLocaleDateString('zh-CN')} 到期`));
+          card.append(button('恢复这轮信件和记忆', async () => {
+            if (busy || !await confirmAction('将恢复这轮往来中仍在保留期内的已删除信件和关联记忆。如果你的信和她的信都已删除，会一起恢复。确定恢复吗？')) return;
+            await mutate('restore', {id:row.id});
+          }));
+          if (row.status === 'prepared') card.append(button('继续清理', () => mutate('delete', {letter_id:row.letter_id, part:row.part})));
+        } else {
+          card.append(button('查看并删除', async () => {
+            try {
+              const detail = await routeRequest('/toy/letter/detail?' + new URLSearchParams({letter_id:row.letter_id}));
+              card.replaceChildren();
+              for (const [part, label, value] of [['user','你的信',detail.content], ['reply','她的信',detail.reply_text]]) {
+                if (!value || part === 'user' && detail.origin === 'proactive') continue;
+                card.append(text('h3', label), text('p', value));
+                card.append(button('删除' + label, async () => {
+                  if (busy || !await confirmAction('删除这封信后，她关于这封信的记忆也会一并清理。30 天内可在“最近删除”恢复。确定删除吗？')) return;
+                  await mutate('delete', {letter_id:row.letter_id, part});
+                }));
+              }
+            } catch (_) { notice.textContent = '信件读取失败，请关闭后重试。'; }
+          }));
+        }
+        body.append(card);
+      }
+    }
+    try { await load(); } catch (_) { notice.textContent = '信箱读取失败，请关闭后重试。'; }
   };
   const mountMainNavigation = () => {
     const route = window.location.hash.split("?")[0];
@@ -3137,6 +3308,10 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       }
       document.body.append(nav);
     }
+    let deletion = nav.querySelector('[data-letter-deletion-entry]');
+    if (route === '#/collection' && !deletion) {
+      deletion = button('管理信件', openLetterDeletion); deletion.setAttribute('data-letter-deletion-entry', ''); nav.append(deletion);
+    } else if (route !== '#/collection') deletion?.remove();
     // A longer sub-page title (拍摄设备) would sit under the fixed navigation.
     const title=world&&route!==WORLD_ROUTE?document.querySelector('main header h1'):null;
     const titleText=title&&document.createRange();titleText?.selectNodeContents(title);
@@ -3930,21 +4105,20 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       row.append(copy, input);
       return { row, input };
     };
-    const enabled = makeOption("允许主动写信", proactiveState.enabled, "有合适的话题时，让林离主动给你来信。");
-    const allowVoice = makeOption("主动信附带语音", proactiveState.allow_voice, "允许在主动来信中附上她的声音。");
+    const voiceNote = text("p", "主动信语音始终开启。", "text-text-secondary text-body-m");
     const loginCheck = makeOption("登录后检查来信", proactiveState.login_check_enabled, "登录 Windows 后，在后台检查是否有适合寄出的主动来信。");
     const status = text("p", "正在读取主动写信设置…", "text-text-secondary text-caption-m");
     status.setAttribute("role", "status");
     // Each switch saves on change. A failed save puts that switch back.
     const persist = async (changed) => {
-      const inputs = [enabled.input, allowVoice.input, loginCheck.input];
+      const inputs = [loginCheck.input];
       dirty = true;
       inputs.forEach((input) => { input.disabled = true; });
       status.textContent = "正在保存主动写信设置…";
       try {
         await saveProactiveSettings({
-          enabled: enabled.input.checked,
-          allow_voice: allowVoice.input.checked,
+          enabled: true,
+          allow_voice: true,
           login_check_enabled: loginCheck.input.checked,
         });
         status.textContent = "主动写信设置已保存。";
@@ -3956,25 +4130,24 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       } finally {
         dirty = false;
         inputs.forEach((input) => { input.disabled = false; });
-        reportGroupStatus(container, "proactive", enabled.input.checked ? "主动写信已开" : "主动写信已关");
+        reportGroupStatus(container, "proactive", "主动联系已开启");
       }
     };
     const render = (payload) => {
       if (dirty) return;
-      enabled.input.checked = payload.enabled === true;
-      allowVoice.input.checked = payload.allow_voice !== false;
+
       loginCheck.input.checked = payload.login_check_enabled === true;
-      reportGroupStatus(container, "proactive", enabled.input.checked ? "主动写信已开" : "主动写信已关");
+      reportGroupStatus(container, "proactive", "主动联系已开启");
       if (payload.busy) {
         status.textContent = "林离正在写信。普通寄信暂时锁定。";
       } else if (payload.reason && payload.reason !== "PROACTIVE_STATUS_UNAVAILABLE") {
-        const reasons = {disabled:"主动写信已关闭。", waiting:"主动写信已开启，等待合适的时间和话题。", considering:"林离在考虑要不要写信。",
+        const reasons = {disabled:"主动联系已开启，等待服务就绪。", waiting:"主动写信已开启，等待合适的时间和话题。", considering:"林离在考虑要不要写信。",
           no_opportunity:"暂时没有新的话题。", deferred:"这次先不写，晚些再看看。", retry_later:"暂时未能完成检查，稍后会重试。"};
         status.textContent = reasons[payload.reason] || "主动写信已开启。";
       }
     };
     proactiveStateListeners.add(render);
-    container.append(optionStyle, heading, description, enabled.row, allowVoice.row, loginCheck.row, status);
+    container.append(optionStyle, heading, description, voiceNote, loginCheck.row, status);
     section.append(container);
     status.textContent = proactiveState.busy ? "林离正在写信。普通寄信暂时锁定。" : "主动写信设置尚未读取。";
   };
@@ -3984,9 +4157,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     container.setAttribute("data-olivia-reply-routes", "true");
     container.className = "flex flex-col gap-4";
     container.append(text("div", "回信能力", "text-text-body text-title-m"),
-      text("p", "林离会在允许的范围内决定怎样回信，也会听取你的明确要求。开启声音或视频，不代表每封信都会使用。", "text-text-secondary text-body-m font-regular"));
+      text("p", "林离会在允许的范围内决定怎样回信，也会听取你的明确要求。语音始终开启；可选择是否允许视频。", "text-text-secondary text-body-m font-regular"));
     const choices = document.createElement("div"); choices.setAttribute("role", "radiogroup"); choices.setAttribute("aria-label", "回信能力档位");
-    const labels = {text:"纯文字",audio:"文字＋声音",video:"文字＋声音＋视频"};
+    const labels = {audio:"文字＋声音",video:"文字＋声音＋视频"};
     const descriptions = {text:"通过文字回信。",audio:"可回复文字，也可用说话、唱歌或两者组合的音频。",video:"文字、声音和视频都可使用，由本次内容决定。"};
     let selected = null, busy = false, imageEnabled = false, imageResolution = '1K', imageModel = '', imageCapability = null;
     const imageControls = document.createElement('div'); imageControls.style.cssText='display:flex;gap:8px;align-items:center;flex-wrap:wrap';
@@ -4066,7 +4239,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         imageCapability=result.image_capability||imageCapability;
         if(catalogOnly&&selected!==null)return;
         if(busy)return;
-        selected=result.tier || (Object.values(result.routes||{}).some(Boolean) ? "video" : "text");
+        selected=result.tier === 'video' ? 'video' : 'audio';
         imageEnabled=result.image?.enabled===true;imageResolution=result.image?.resolution||'1K';
         imageModel=result.image?.model||'';imageCapability=result.image_capability||null;
         if(!labels[selected]) throw Error("invalid tier");
@@ -4286,7 +4459,6 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const router=window.__oliviaNativeView?.router;
     if(router)void router.push(path);else window.location.hash='#'+path;
   };
-  const openItems = () => goWorld('/world/items');
   const itemsBreadcrumb = current => {
     const breadcrumb=document.createElement('nav');breadcrumb.className='ow-breadcrumb';breadcrumb.setAttribute('aria-label','所在位置');
     const link=(label,path)=>{const a=text('a',label);a.href='#'+path;

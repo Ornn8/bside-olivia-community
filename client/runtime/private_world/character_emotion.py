@@ -16,10 +16,13 @@ import time
 
 # A fictional continuity parameter, not a measured psychological recovery rate.
 REACTION_WINDOW = timedelta(hours=6)
+# An open concern nothing has raised again for this long is no longer shown as on her
+# mind. It stays in the ledger, so a later source can still raise or resolve it.
+CONCERN_WINDOW = timedelta(hours=24)
 MAX_SOURCE_CHARS = 100_000
 _BATCH_LIMIT = 32
 _VIEW_LIMIT = 12
-from .jev_emotion import REACTIONS as _REACTION_MEANINGS
+from .jev_emotion import REACTIONS as _REACTION_MEANINGS, active_concerns
 _REACTIONS = set(_REACTION_MEANINGS)
 _ACTIONS = {"none", "continue", "adjust", "rest", "share", "quiet"}
 _FIELDS = {"source_id", "quote", "reported_affect", "reaction", "goal_or_need",
@@ -142,6 +145,19 @@ def _parse_row(source_raw, order, raw, version, basis_raw):
         raise ValueError("EMOTION_STORED_EVIDENCE_INVALID")
     return {**item, "occurred_at": source["occurred_at"], "source_order": order,
             "version": version, "_dependencies": dependencies}
+
+
+USER_WORDS = "用户说："
+
+
+def _opening_source(concern):
+    """The source whose words a concern's summary quotes: the one a lifecycle-opened concern
+    is named after ("emotion:<source_id>"), else its first open contributor."""
+    identity = concern.get("id")
+    if isinstance(identity, str) and identity.startswith("emotion:") and len(identity) > len("emotion:"):
+        return identity[len("emotion:"):]
+    contributors = concern.get("source_ids") or []
+    return contributors[0] if contributors else None
 
 
 def _chunks(values, size=500):
@@ -799,16 +815,13 @@ class CharacterEmotionStore:
             state = self._state_view(db, stamp)
             recent = state.live[bisect_left(state.live_stamps, now - REACTION_WINDOW):]
             reactions = [item for item in recent if item["reaction"] != "none"][-_VIEW_LIMIT:]
-            open_concerns = []
-            for concern in reversed(state.concerns.values()):
-                if concern["status"] == "open":
-                    open_concerns.append(concern)
-                    if len(open_concerns) == _VIEW_LIMIT:
-                        break
+            # Expiry removes attention only; the ledger does not claim resolution.
+            open_concerns = active_concerns(state.concerns.values(), stamp, limit=_VIEW_LIMIT)
             open_concerns.reverse()
             # Only what the view shows needs its original wording.
             wanted = sorted({item["source_id"] for item in reactions}
-                            | {key for concern in open_concerns for key in concern["source_ids"]})
+                            | {key for concern in open_concerns for key in concern["source_ids"]}
+                            | {_opening_source(concern) for concern in open_concerns} - {None})
             sources = {}
             for chunk in _chunks(wanted):
                 sources.update((row[0], json.loads(row[1])) for row in db.execute(
@@ -820,7 +833,10 @@ class CharacterEmotionStore:
         shown = []
         for item in reactions:
             source = sources.get(item["source_id"])
-            shown.append({**item, "quote": presentation_text(source, item["quote"]) if source else item["quote"]})
+            quote = presentation_text(source, item["quote"]) if source else item["quote"]
+            if source and source["source_kind"] == "received_input" and quote and not quote.startswith(USER_WORDS):
+                quote = USER_WORDS + quote
+            shown.append({**item, "quote": quote})
         concerns = []
         for concern in open_concerns:
             summary = concern["summary"]
@@ -828,6 +844,12 @@ class CharacterEmotionStore:
                 source = sources.get(source_id)
                 if source:
                     summary = presentation_text(source, summary, with_subject=True)
+            opening = sources.get(_opening_source(concern))
+            if (opening and opening["source_kind"] == "received_input" and summary
+                    and summary in opening["text"] and not summary.startswith(USER_WORDS)):
+                # The summary quotes the user's own message. Said bare, the user's 我 would
+                # read as hers on the world page and in reply context.
+                summary = USER_WORDS + summary
             concerns.append(self._public_concern({**concern, "summary": summary}))
         return dict(reaction_subject="character", interpretation_only=True,
                     reactions=[{k: item[k] for k in ("source_id", "occurred_at", "quote", "reaction", "goal_or_need", "action_tendency")}

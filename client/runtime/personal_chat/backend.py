@@ -1315,6 +1315,7 @@ def install_personal_chat(app, server):
             from runtime.reply import proactive_runtime
             from .contact_activity import cross_channel_reason
             from .engagement import initiating_channel
+            from runtime.reply.daily_proactive import server_daily
             def qq_ready():
                 # Her own contact on QQ is a voice message, so QQ that cannot speak cannot start it.
                 target = initiative.target
@@ -1329,6 +1330,7 @@ def install_personal_chat(app, server):
                     server, channel='qq', now=datetime.now().timestamp(), profile=proactive_runtime.live_profile(server))),
                 state_path=server._state_root() / 'personal-chat-initiative.sqlite3',
                 profile_provider=lambda: proactive_runtime.live_profile(server),
+                daily_provider=lambda: bool(server_daily(server, datetime.now().timestamp())),
                 channel_gate=lambda: initiating_channel(server, qq_ready()) == 'qq')
             # Letters ask whether QQ can start contact before they do.
             runtime['qq_ready'] = server._qq_contact_ready = qq_ready

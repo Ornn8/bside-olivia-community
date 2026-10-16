@@ -955,7 +955,8 @@ vm.runInNewContext(source, context);
       await open.click();
       await flush();
       // Choosing a tier saves at once; a failed save re-reads the stored tier.
-      await findButton("纯文字").click();
+      if (findButton("纯文字")) throw new Error("removed voice toggle is visible");
+      await findButton("文字＋声音＋视频").click();
       await flush(); await flush();
       await findButton("文字＋声音").click();
       await flush(); await flush();

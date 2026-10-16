@@ -94,6 +94,8 @@ def secondary_photo_allowed(row):
 
 
 def schedule(server, row):
+    if row.get('_deleted_parts'):
+        return
     if not secondary_photo_allowed(row):
         return  # The user asked for a medium; JEV's plan owns this delivery.
     if not row.get('image_reply_settings', {}).get('enabled') or row.get('reply_mode') not in ('text', 'text_letter', 'voice_reply', 'spoken_video'):

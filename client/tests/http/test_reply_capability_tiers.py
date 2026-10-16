@@ -8,7 +8,7 @@ from letter_triage import TriageResult, restrict_reply_route
 
 @pytest.mark.parametrize('content', ['今天听了一首歌', '请给我唱一首歌'])
 @pytest.mark.parametrize('with_preview', [False, True])
-def test_text_tier_accepts_song_letters_without_media(tmp_path, monkeypatch, content, with_preview):
+def test_legacy_text_tier_accepts_text_reply_when_media_unavailable(tmp_path, monkeypatch, content, with_preview):
     from types import SimpleNamespace
     import local_server as server
     settings = VideoReplySettingsStore.initialize(tmp_path)
@@ -22,7 +22,7 @@ def test_text_tier_accepts_song_letters_without_media(tmp_path, monkeypatch, con
     monkeypatch.setattr(server, '_schedule_reply_job', lambda *a, **k: None)
     monkeypatch.setattr(server, '_route_readiness', lambda *a, **k: dict.fromkeys(REPLY_ROUTES, False))
     async def classify(_content):
-        pytest.fail('Text-only letters must not invoke media routing')
+        return TriageResult('normal', 'text_letter', 'synthetic', 'completed', False)
     monkeypatch.setattr(server, 'emotion_triage', SimpleNamespace(classify=classify))
 
     async def run():
@@ -66,8 +66,8 @@ def test_tier_is_a_capability_ceiling_and_persists(tmp_path, tier):
     store = VideoReplySettingsStore.initialize(tmp_path)
     store.mutate_tier('video_reply_setting:tier', tier)
     restored = VideoReplySettingsStore(tmp_path)
-    assert restored.saved_tier() == tier
-    assert restored.routes_snapshot() == dict.fromkeys(REPLY_ROUTES, tier != 'text')
+    assert restored.saved_tier() == ('audio' if tier == 'text' else tier)
+    assert restored.routes_snapshot() == {**dict.fromkeys(REPLY_ROUTES, tier != 'text'), 'voice_reply': True}
     assert restored.videos_snapshot() == dict.fromkeys(REPLY_ROUTES, tier == 'video')
     text = TriageResult('normal', 'text_letter', 'synthetic', 'completed', False)
     assert restrict_reply_route(text, restored.routes_snapshot()).reply_mode == 'text_letter'
@@ -146,21 +146,23 @@ def test_tier_preview_send_matrix(tmp_path, monkeypatch, tier, mode, contexts):
             assert not server.store.letters
             if preview['needs_confirmation']: material['route_allow_once'] = mode
             if preview['needs_video_confirmation']: material['route_video_once'] = mode
-        expected_mode = 'text_letter' if tier == 'text' else mode
+        # Legacy text keeps singing disabled unless explicitly requested and confirmed;
+        # ordinary speech is now available regardless of the old preference.
+        expected_mode = 'text_letter' if tier == 'text' and mode in ('singing_video', 'voice_song_video') and not contexts else mode
         if expected_mode in ('singing_video', 'voice_song_video'):
             material.update(cover_source_id=source_id, cover_lyrics='验收歌词')
         accepted = await server.route('POST', '/toy/letter/send', body, {}, defer_reply=True)
         assert accepted['code'] == 0, accepted
         letter = server.store.letters[0]
         assert letter['route_preflight']['reply_mode'] == expected_mode
-        assert letter['reply_capability_tier'] == tier
+        assert letter['reply_capability_tier'] == ('audio' if tier == 'text' else tier)
         actual_video = routed_video(expected_mode, contexts, letter['reply_route_videos'])
         expected_video = expected_mode != 'text_letter' and (
             'explicit_video_output_request' in contexts or
             (tier == 'video' and mode in ('singing_video', 'voice_song_video') and 'explicit_audio_output_request' not in contexts))
         assert actual_video == expected_video
-        assert settings.saved_tier() == tier
-        assert settings.routes_snapshot() == dict.fromkeys(REPLY_ROUTES, tier != 'text')
+        assert settings.saved_tier() == ('audio' if tier == 'text' else tier)
+        assert settings.routes_snapshot() == {**dict.fromkeys(REPLY_ROUTES, tier != 'text'), 'voice_reply': True}
         assert settings.videos_snapshot() == dict.fromkeys(REPLY_ROUTES, tier == 'video')
-        assert len(calls) == (0 if tier == 'text' else 1)
+        assert len(calls) == 1
     asyncio.run(run())

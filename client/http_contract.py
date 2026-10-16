@@ -249,6 +249,8 @@ ROUTES: dict[str, dict[str, Any]] = {
     "/toy/diary/settings": _route(["POST"], "letters.read", evidence="local-extension"),
     "/toy/diary/comment": _route(["POST"], "letters.read", evidence="local-extension"),
     "/toy/diary/delete": _route(["POST"], "letters.read", evidence="local-extension"),
+    "/toy/relationship": _route(["GET"], "letters.read", read_only=True, evidence="local-extension"),
+    "/toy/relationship/route": _route(["POST"], "letters.read", evidence="local-extension"),
     "/toy/image/ack": _route(["POST"], "settings.video_reply", evidence="local-extension"),
     "/toy/image/status": _route(["GET"], "settings.video_reply", evidence="local-extension"),
     "/toy/letter/route-preview": _route(["POST"], "letters.send", evidence="local-extension"),
@@ -313,6 +315,9 @@ ROUTES: dict[str, dict[str, Any]] = {
     "/toy/letter/maintenance/preview": _route(["POST"], "letters.legacy_import", evidence="local-extension"),
     "/toy/letter/maintenance/apply": _route(["POST"], "letters.legacy_import", evidence="local-extension"),
     "/toy/letter/maintenance/detail": _route(["POST"], "letters.legacy_import", evidence="local-extension"),
+    "/toy/letter/deletion/delete": _route(["POST"], "letters.legacy_import", evidence="local-extension"),
+    "/toy/letter/deletion/restore": _route(["POST"], "letters.legacy_import", evidence="local-extension"),
+    "/toy/letter/deletion/list": _route(["POST"], "letters.legacy_import", evidence="local-extension"),
     "/toy/letter/legacy/official-import": _route(
         ["GET", "POST"],
         "letters.official_import",

@@ -35,11 +35,12 @@ def high_count(snapshot):
 def observe(row, snapshot, events):
     if row.get("origin") == "proactive":
         return
+    row['initiative_route'] = getattr(snapshot, 'relationship_route', '')
     delivery = row.get("private_world_delivery_id")
     event = next((event for event in events if event.payload.get("canonical_delivery_id") == delivery
            and type((getattr(event, 'projection_result', None) or event.payload).get("contact_qualification")) is bool
            and event.event_type in {"meaningful_exchange", "shared_experience", "support_received",
-                                   "boundary_respected", "repair", "conflict"}), None)
+                                   "boundary_respected", "repair", "conflict", "relationship_evidence"}), None)
     if event:
         derived = getattr(event, 'projection_result', None)
         if derived is None and ('contact_qualification' in row or event.payload.get('applied') is not True):

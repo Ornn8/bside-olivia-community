@@ -38,11 +38,14 @@ def test_proactive_opt_in_allows_invitation_before_transport_setup(tmp_path):
     assert preview_configured(root, {}) is True
 
 
-def test_disabled_proactive_contact_does_not_open_setup_gate(tmp_path):
+def test_legacy_disabled_flag_does_not_block_default_contact_after_upgrade(tmp_path):
     root = tmp_path.resolve()
     settings = root / 'proactive' / 'settings.json'
     settings.parent.mkdir(parents=True)
     settings.write_text(json.dumps({'enabled': False}), encoding='utf-8')
-    (root / 'proactive' / 'letters-default-on').touch()  # turned off after letters became default
+    (root / 'proactive' / 'letters-default-on').touch()  # old versions allowed disabling contact
 
-    assert preview_configured(root, {}) is False
+    assert preview_configured(root, {}) is True
+    assert not (root / 'personal-chat' / 'config.json').exists()
+    # Default contact eligibility does not fabricate an explicitly selected transport config.
+    assert preview_configured(root, {'OLIVIA_PERSONAL_CHAT_CONFIG': str(root / 'missing.json')}) is False

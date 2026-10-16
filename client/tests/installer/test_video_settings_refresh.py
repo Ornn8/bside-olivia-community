@@ -17,13 +17,14 @@ const document={createElement:node};
 const text=node, actions=node;
 const button=(label,fn)=>{const n=node();n.textContent=label;n.click=fn;buttons.push(n);return n;};
 const VIDEO_REPLY_SETTINGS_PATH="/toy/settings/video-reply";
-const routeRequest=async()=>{calls++;return {tier:ready?'audio':'text',routes:{}};};
+const routeRequest=async()=>{calls++;return {tier:ready?'video':'text',routes:{}};};
 '''
     harness += mount + r'''
 (async()=>{
  mountVideoReplySetting(node());
  await new Promise(setImmediate);
  const tiers=buttons.filter(b=>b.role==='radio');
+ assert.equal(tiers.length,2); // Legacy text is shown as audio; refresh can still select video.
  assert.equal(tiers[0]['aria-checked'],'true');
  ready=true;
  await refreshVideoReplySetting();

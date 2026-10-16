@@ -459,8 +459,35 @@ class PrivateWorldSnapshot:
     growth_used: int = 0
     active_boundaries: tuple[ActiveBoundary, ...] = ()
     acknowledged_affection: AcknowledgedAffection | None = None
+    relationship_growth: tuple = ()
+    relationship_volume: int = 1
+    relationship_route: str = ''
+    relationship_days: tuple = ()
+    volume_started_days: int = 0
+    route_asked: bool = False
 
     def __post_init__(self) -> None:
+        if type(self.relationship_volume) is not int or self.relationship_volume < 1:
+            raise PrivateWorldError('story volume is invalid')
+        if self.relationship_route not in {'', 'undecided', 'romantic', 'friend', 'family'}:
+            raise PrivateWorldError('relationship route is invalid')
+        if (type(self.route_asked) is not bool or type(self.volume_started_days) is not int
+                or not 0 <= self.volume_started_days <= len(self.relationship_days)
+                or not isinstance(self.relationship_days, tuple)
+                or tuple(sorted(set(self.relationship_days))) != self.relationship_days):
+            raise PrivateWorldError('relationship days are invalid')
+        for day in self.relationship_days:
+            if not isinstance(day, str) or len(day) != 10:
+                raise PrivateWorldError('relationship day is invalid')
+            datetime.fromisoformat(day)
+        if len(self.relationship_growth) > 56:
+            raise PrivateWorldError('relationship growth is invalid')
+        for row in self.relationship_growth:
+            if (len(row) != 4 or row[1] not in {'everyday', 'deep'}
+                    or row[2] not in {'familiarity', 'trust', 'comfort', 'closeness'}
+                    or type(row[3]) is not int or row[3] < 0):
+                raise PrivateWorldError('relationship growth is invalid')
+            datetime.fromisoformat(row[0])
         if type(self.version) is not int or self.version < 1:
             raise PrivateWorldError("snapshot version must be positive")
         for name in _HIDDEN_NAMES:
@@ -545,6 +572,12 @@ class PrivateWorldSnapshot:
     def to_dict(self) -> dict[str, object]:
         payload = self.control_view().to_dict()
         payload["view"] = "snapshot"
+        if self.relationship_growth or self.relationship_volume != 1:
+            payload['relationship_growth'] = [list(row) for row in self.relationship_growth]
+            payload['relationship_volume'] = self.relationship_volume
+        if self.relationship_route or self.relationship_days:
+            payload.update(relationship_route=self.relationship_route, relationship_days=list(self.relationship_days),
+                           volume_started_days=self.volume_started_days, route_asked=self.route_asked)
         return {"version": self.version, **payload}
 
 

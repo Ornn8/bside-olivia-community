@@ -73,13 +73,15 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 import local_server as server
 from runtime.reply.proactive_letters import scan_pending, write_json
+from runtime.reply import daily_proactive
+daily_proactive.daily_candidate = lambda rows, now: None  # Exercise correspondence, independent of wall-clock evening.
 root = server._state_root()
 write_json(root / 'proactive/settings.json', {'enabled': True, 'allow_voice': True})
 assert server._proactive_reason == 'disabled'
 assert server._proactive_status()['reason'] == 'waiting'
 server._proactive_reason = 'considering'
 write_json(root / 'proactive/settings.json', {'enabled': False})
-assert server._proactive_status()['reason'] == 'disabled'
+assert server._proactive_status()['reason'] == 'considering'
 write_json(root / 'proactive/settings.json', {'enabled': True, 'allow_voice': True})
 server.store.letters.clear()
 server.store.letters.append({'letter_id':'u1', 'content':'之前说起谱子', 'reply_text':'好啊',
@@ -188,8 +190,8 @@ async def main():
     assert server.daily_life_runtime.closed and server._proactive_task is None
     result = await server.route('POST', '/toy/proactive/settings', {'enabled':False, 'allow_voice':False}, {},
                                 companion_confirmed=True)
-    assert result['code'] == 0 and result['data']['enabled'] is False
-    assert result['data']['reason'] == 'disabled'
+    assert result['code'] == 0 and result['data']['enabled'] is True
+    assert result['data']['reason'] != 'disabled'
     rejected = await server.route('POST', '/toy/proactive/settings', {'enabled':'true'}, {},
                                   companion_confirmed=True)
     assert rejected['code'] == 400

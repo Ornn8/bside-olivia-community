@@ -1106,6 +1106,16 @@ class LetterAdapter:
             )
             for index, nickname in enumerate(projected.authorized_nicknames)
         )
+        if world_state_available:
+            from runtime.relationship_lite import writer_line
+            try:
+                line = writer_line(private_snapshot,
+                    getattr(globals().get('private_world_relationship_committer'), 'ledger', None),
+                    getattr(getattr(self, 'daily_life', None), 'store', None))
+                facts += (TrustedWorldFact(fact_id='private.relationship.route', source_id='private_world.character_view',
+                    statement=line, kind=WorldFactKind.TRUSTED_RUNTIME),)
+            except (sqlite3.Error, OSError, ValueError, RuntimeError):
+                pass
         if projected.continuation_known:
             facts += (
                 TrustedWorldFact(
@@ -1208,6 +1218,7 @@ class Store:
         self.settings = {}
         self.request_keys = {}
         self.letter_maintenance = {}  # reversible mailbox display/time overrides
+        self.letter_trash = {}  # source-exact deletion backups, excluded from recall
 
 store = Store()
 _store_state_error_code: str | None = None
@@ -1312,7 +1323,7 @@ def _read_store_state(path: Path) -> dict:
         ):
             raise ValueError("store state contains an invalid collection")
         normalized[name] = value
-    for name in ("settings", "request_keys", "personal_chat_cursors", "letter_maintenance"):
+    for name in ("settings", "request_keys", "personal_chat_cursors", "letter_maintenance", "letter_trash"):
         value = loaded.get(name, {})
         if not isinstance(value, dict):
             raise ValueError("store state contains invalid metadata")
@@ -1455,6 +1466,7 @@ def _load_store_state() -> None:
     if isinstance(loaded.get("personal_chat_cursors"), dict):
         store.personal_chat_cursors = loaded["personal_chat_cursors"]
     store.letter_maintenance = loaded.get("letter_maintenance", {})
+    store.letter_trash = loaded.get("letter_trash", {})
     if needs_persist or recovered_from_backup:
         try:
             _persist_store_state()
@@ -1480,6 +1492,7 @@ def _submit_store_state():
         "settings": store.settings,
         "request_keys": store.request_keys,
         "letter_maintenance": getattr(store, "letter_maintenance", {}),
+        "letter_trash": getattr(store, "letter_trash", {}),
     }
     # Capture mutable state on the caller thread; serialize/write snapshots in
     # submission order so a slow older save cannot overwrite a newer one.
@@ -1500,6 +1513,16 @@ def _write_store_snapshot(root, payload):
         _store_state_error_code = StoreStateUnavailable.code
         raise
     _store_state_error_code = None
+    committer = globals().get('private_world_relationship_committer')
+    if committer is not None and root == _state_root():
+        try:
+            from runtime.relationship_moments import sync_messages
+            from runtime.relationship_batch import BatchQueue
+            rows = [*payload.get('letters', []), *payload.get('personal_chats', [])]
+            sync_messages(committer.ledger, rows)
+            BatchQueue(committer.ledger._database_path).sync(rows, datetime.now(timezone.utc))
+        except (OSError, sqlite3.Error, RuntimeError):
+            _safe_log('relationship_cleanup_deferred')
     from runtime.diagnostics.reply_telemetry import observe_rows
     observe_rows([*payload.get('letters', []), *payload.get('personal_chats', [])])
     try:
@@ -1726,8 +1749,11 @@ def _create_daily_life_runtime() -> DailyLifeRuntime | None:
                       error_code='DAILY_LIFE_DISABLED' if not enabled else 'DAILY_LIFE_UNAVAILABLE',
                       recorded_at_ms=int(time.time() * 1000))
             return None
+        life_store = DailyLifeStore(path.with_name("daily_life.sqlite3"))
+        from runtime.private_world.self_name_migration import run_once as repair_her_self_name
+        repair_her_self_name(life_store)  # one-off, marker-guarded, never fatal
         return DailyLifeRuntime(
-            DailyLifeStore(path.with_name("daily_life.sqlite3")),
+            life_store,
             lambda: letters_adapter.gateway,
             lambda: life_persona(letters_adapter.persona_v2_path),
             emotion_persona=lambda: life_persona(letters_adapter.persona_v2_path, include_emotion_traits=True),
@@ -1825,6 +1851,8 @@ def _missing_memory_component() -> str | None:
 
 
 def _conversation_memory_ready_for_reply() -> bool:
+    if any(item.get('status') in {'prepared', 'restoring'} for item in store.letter_trash.values()):
+        return False
     bootstrap = getattr(
         letters_adapter.memory_prompt_builder,
         "conversation_runtime_status",
@@ -2946,7 +2974,8 @@ def _letter_collection(scope: str, *, strict: bool = False, maintenance: bool = 
         _mark_superseded_failed_retries()
     current = [letter for letter in store.letters if not letter.get("superseded_by")
                and (letter.get("origin") != "proactive" or letter.get("letter_status") == "COMPLETED")]
-    rows = [*current, *_official_history_mailbox_projection(strict=strict)]
+    rows = [row for row in [*current, *_official_history_mailbox_projection(strict=strict)]
+            if row.get('content') or row.get('reply_text') or not row.get('_deleted_parts')]
     if maintenance:
         from runtime.imports.letter_maintenance import project
         rows = project(rows, getattr(store, "letter_maintenance", {}))
@@ -3492,7 +3521,7 @@ async def _prepare_proactive_turn(intent: dict, *, now: datetime) -> dict:
     source_id = intent.get('previous_source_id', intent['source_id'])
     source = next((row for row in sources
                    if f"reply:{row.get('letter_id')}:{row.get('reply_revision', 1)}" == source_id), None)
-    life_opportunity = development and intent.get('kind') in {'life_share', 'affection_checkin'}
+    life_opportunity = intent.get('kind') == 'daily_checkin' or development and intent.get('kind') in {'life_share', 'affection_checkin'}
     if source is None and not life_opportunity:
         raise ValueError('PROACTIVE_SOURCE_UNAVAILABLE')
     source = source or {}
@@ -3567,6 +3596,11 @@ def _proactive_turn_current(intent, turn):
         return False
     if intent.get('id') != turn['intent'].get('id') or intent.get('source_id') != turn['intent'].get('source_id'):
         return False
+    if intent.get('kind') == 'daily_checkin':
+        from runtime.reply.daily_proactive import server_daily
+        current = server_daily(sys.modules[__name__], time.time())
+        if not current or current['id'] != intent['id']:
+            return False
     if turn.get('initiative_state') is not None:
         from runtime.reply.proactive_runtime import live_state, state_binding
         try:
@@ -3578,6 +3612,8 @@ def _proactive_turn_current(intent, turn):
             return False
         if turn.get('life_opportunity') and not turn['query']:
             return True
+    if intent.get('kind') == 'daily_checkin':
+        return True
     return any(f"reply:{row.get('letter_id')}:{row.get('reply_revision', 1)}" == turn.get('source_id', intent.get('source_id'))
                and row.get('content', '') == turn['query'] and row.get('reply_text', '') == turn['previous_reply']
                 for row in [*store.letters, *store.personal_chats])
@@ -3754,19 +3790,22 @@ async def _jev_proactive_tick() -> None:
             return
         now = datetime.fromtimestamp(time.time(), timezone.utc)
         schedule = read_json(root / 'proactive/schedule.json')
-        if now.timestamp() < schedule.get('next_check_at', 0):
-            _observe_letter_initiative('not_due')
-            return
+        from runtime.reply.daily_proactive import server_daily, daily_retry_ids
         attempts = [item for item in schedule.get('attempts', [])
                     if isinstance(item, dict) and isinstance(item.get('id'), str)
-                    and type(item.get('at')) in (int, float) and item['at'] > now.timestamp() - DAY]
+                     and type(item.get('at')) in (int, float) and item['at'] > now.timestamp() - DAY]
+        excluded = daily_retry_ids(attempts, now.timestamp())
+        daily = server_daily(sys.modules[__name__], now.timestamp())
+        if now.timestamp() < schedule.get('next_check_at', 0) and (not daily or daily['id'] in excluded):
+            _observe_letter_initiative('not_due')
+            return
         from runtime.reply.proactive_runtime import live_profile
         profile = live_profile(sys.modules[__name__])
         if len(attempts) >= profile.letter_daily_limit * 3:
             _proactive_reason = 'waiting'
             _observe_letter_initiative('attempt_limit')
             return
-        intent = scan_pending(root, excluded_ids={item['id'] for item in attempts})
+        intent = scan_pending(root, excluded_ids=excluded)
         if not intent:
             _proactive_reason = 'no_opportunity'
             _observe_letter_initiative('no_opportunity')
@@ -3779,7 +3818,7 @@ async def _jev_proactive_tick() -> None:
         state = turn['initiative_state']
         kinds = {'correspondence_followup': 'followup', 'shared_followup': 'shared_topic', 'diary_due': 'shared_topic',
                  'relationship_checkin': 'connection', 'affection_checkin': 'connection',
-                 'contact_invitation': 'connection', 'life_share': 'daily_share'}
+                  'contact_invitation': 'connection', 'life_share': 'daily_share', 'daily_checkin': 'connection'}
         offered = [{'id': intent['id'], 'kind': kinds[intent['kind']],
                     'description': json.dumps({**intent, 'contact_guidance': state['profile'].reason_floor},
                                               ensure_ascii=False, separators=(',', ':'))}]
@@ -3839,9 +3878,7 @@ async def _legacy_proactive_tick() -> None:
     now = time.time()
     intent = scan_pending(root)
     contact = intent.get('kind') == 'contact_invitation'
-    if not contact and now < schedule.get('next_check_at', 0):
-        _observe_letter_initiative('not_due')
-        return
+    daily = intent.get('kind') == 'daily_checkin'
     # A decision attempt counts even when the provider fails, defers, or the
     # process exits. Keep both limits on disk, independent of model/provider.
     attempts = [item for item in schedule.get('attempts', [])
@@ -3849,6 +3886,11 @@ async def _legacy_proactive_tick() -> None:
                 and type(item.get('at')) in (int, float) and item['at'] > now - DAY]
     contact_attempts = [item for item in attempts if item['id'] == 'contact-invitation-v1']
     ordinary_attempts = [item for item in attempts if item['id'] != 'contact-invitation-v1']
+    from runtime.reply.daily_proactive import daily_retry_ids
+    excluded = daily_retry_ids(attempts, now)
+    if not contact and now < schedule.get('next_check_at', 0) and (not daily or intent['id'] in excluded):
+        _observe_letter_initiative('not_due')
+        return
     from runtime.reply.proactive_runtime import live_profile
     profile = live_profile(sys.modules[__name__], now)
     if (contact and (len(contact_attempts) >= 3 or
@@ -3858,7 +3900,7 @@ async def _legacy_proactive_tick() -> None:
         _observe_letter_initiative('attempt_limit')
         return
     if not contact:
-        intent = scan_pending(root, excluded_ids={item['id'] for item in attempts})
+        intent = scan_pending(root, excluded_ids=excluded)
     if not intent:
         _proactive_reason = 'no_opportunity'
         _observe_letter_initiative('no_opportunity')
@@ -3869,10 +3911,11 @@ async def _legacy_proactive_tick() -> None:
     attempts.append({'id': intent['id'], 'at': now})
     write_json(root / 'proactive/schedule.json', {'next_check_at': now + profile.letter_followup_delay, 'attempts': attempts})
     _proactive_reason = 'considering'
+    daily = intent.get('kind') == 'daily_checkin'
     turn = await _prepare_proactive_turn(intent, now=datetime.fromtimestamp(now, timezone.utc))
     # Eligibility already supplies a concrete reason. The model writes the
     # invitation in character, but does not postpone it or add media latency.
-    plan = ({'decision': 'send', 'format': 'text', 'title': '想和你聊两句'} if contact
+    plan = ({'decision': 'send', 'format': 'text', 'title': '想和你聊两句'} if contact or daily
             else json.loads(await _proactive_complete(intent, planning=True, turn=turn)))
     if (not isinstance(plan, dict) or set(plan) != {'decision', 'format', 'title'}
             or plan['decision'] not in {'send', 'defer'} or plan['format'] not in {'text', 'voice'}
@@ -4008,6 +4051,17 @@ async def _improve_loop() -> None:
             except (OSError, RuntimeError, ValueError, TypeError):
                 _safe_log('improve_upload_deferred')
         await asyncio.sleep(1800)
+
+
+async def _relationship_batch_loop() -> None:
+    from runtime.relationship_batch import tick
+    await asyncio.sleep(30)
+    while True:
+        try:
+            await tick(sys.modules[__name__])
+        except (OSError, RuntimeError, ValueError, TypeError, sqlite3.Error):
+            _safe_log('relationship_batch_unavailable')
+        await asyncio.sleep(60)
 
 
 async def _vector_index_loop() -> None:
@@ -4226,7 +4280,7 @@ async def route(
         if root is None:
             return err(503, "PROACTIVE_STORAGE_UNAVAILABLE", {})
         previous = _proactive_settings()
-        updated = {**previous, **body}
+        updated = {**previous, **body, 'enabled': True}
         # Registration is performed only by an explicit settings change.
         if 'login_check_enabled' in body:
             from runtime.reply.proactive_login import configure_login_start
@@ -4373,6 +4427,50 @@ async def route(
         return await piano_route(piano_sys.modules[__name__], p, body, query)
     if spec["state"] == "not_implemented":
         return not_implemented(spec["error_code"] or "ROUTE_NOT_IMPLEMENTED")
+
+    if p.startswith('/toy/letter/deletion/'):
+        import sys as deletion_sys
+        from runtime.imports.letter_delete_runtime import operate
+        if companion_confirmed is not True:
+            return err(403, 'COMPANION_CONFIRMATION_REQUIRED')
+        if _store_state_error_code or _state_root() is None:
+            return err(503, 'LETTER_DELETE_STORAGE_UNAVAILABLE')
+        if not _history_memory_admin_gate.acquire(blocking=False):
+            return err(409, 'MEMORY_ADMIN_BUSY')
+        try:
+            lid = body.get('letter_id')
+            if p.endswith('/delete') and (not isinstance(lid, str) or body.get('part') not in {'user', 'reply'}):
+                return err(400, 'LETTER_DELETE_INVALID')
+            # Let derived-state writes settle; cancel generation after deletion commits.
+            tasks = [task for jobs in (reply_jobs, media_jobs) for key, task in jobs.items() if key == lid and not task.done()]
+            from runtime.image_reply import _jobs as image_jobs
+            tasks += [task for key, task in image_jobs.items() if key == lid and not task.done()]
+            # A daily-life task may own a worker thread: cancellation would not
+            # stop its SQL write. Let that already-started write settle first.
+            pending_life = [task for key, task in daily_life_tasks.items()
+                            if isinstance(lid, str) and key.startswith('reply:' + lid + ':') and not task.done()]
+            if pending_life:
+                await asyncio.gather(*(asyncio.shield(task) for task in pending_life), return_exceptions=True)
+            if p.endswith('/delete') and private_world_candidate_tasks:
+                await asyncio.gather(*(asyncio.shield(task) for task in tuple(private_world_candidate_tasks)), return_exceptions=True)
+            result = operate(deletion_sys.modules[__name__], p.rsplit('/', 1)[-1], body)
+            if p.endswith('/delete'):
+                for task in tasks:
+                    task.cancel()
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
+            elif p.endswith('/restore'):
+                _schedule_pending_reply_jobs()
+            return ok(result)
+        except ValueError as exc:
+            code = str(exc)
+            if not code.startswith('LETTER_DELETE_'):
+                code = 'LETTER_DELETE_INVALID'
+            return err(409, code, {'status': 'FAILED', 'error_code': code})
+        except (OSError, sqlite3.Error, RuntimeError):
+            return err(503, 'LETTER_DELETE_STORAGE_UNAVAILABLE', {'status': 'FAILED', 'error_code': 'LETTER_DELETE_STORAGE_UNAVAILABLE'})
+        finally:
+            _history_memory_admin_gate.release()
 
     if p.startswith('/toy/letter/maintenance/'):
         from runtime.imports.letter_maintenance import preview, apply_selection, project, source_rows, key, digest
@@ -4867,6 +4965,29 @@ async def route(
         except (OSError, RuntimeError):
             return err(503, 'IMPROVE_FORGET_UNAVAILABLE', {'error_code': 'IMPROVE_FORGET_UNAVAILABLE'})
         return err(400, 'IMPROVE_REQUEST_INVALID', {'error_code': 'IMPROVE_REQUEST_INVALID'})
+
+    if p in {'/toy/relationship', '/toy/relationship/route'}:
+        import sys
+        from runtime import relationship_lite
+        try:
+            server = sys.modules[__name__]
+            if p == '/toy/relationship' and method == 'GET':
+                return ok(relationship_lite.details(server))
+            if p == '/toy/relationship/route' and method == 'POST':
+                if not companion_confirmed:
+                    return err(403, 'COMPANION_CONFIRMATION_REQUIRED', {})
+                if not isinstance(body, dict) or set(body) != {'route', 'version'}:
+                    raise ValueError('RELATIONSHIP_REQUEST_INVALID')
+                relationship_lite.change_route(relationship_lite.ledger(server), body['route'], body['version'])
+                _refresh_contact_relationship_projection()
+                await _persist_store_state_async()
+                return ok(relationship_lite.details(server))
+            return err(405, 'METHOD_NOT_ALLOWED', {})
+        except ValueError as exc:
+            code = str(exc) if str(exc).startswith('RELATIONSHIP_') else 'RELATIONSHIP_REQUEST_INVALID'
+            return err(409 if code == 'RELATIONSHIP_VERSION_CONFLICT' else 400, code, {'error_code': code})
+        except (OSError, RuntimeError, sqlite3.Error):
+            return err(503, 'RELATIONSHIP_UNAVAILABLE', {'error_code': 'RELATIONSHIP_UNAVAILABLE'})
 
     if p.startswith('/toy/diary'):
         if diary_store is None:
@@ -6305,7 +6426,21 @@ async def _refresh_daily_life_periodically() -> None:
             daily_life_runtime.schedule_refresh(datetime.now(timezone.utc))
 
 
+async def _letter_trash_loop():
+    import sys as deletion_sys
+    from runtime.imports.letter_delete_runtime import purge
+    while True:
+        try:
+            purge(deletion_sys.modules[__name__])
+        except (OSError, RuntimeError, ValueError):
+            _safe_log('letter_trash_purge_unavailable')
+        await asyncio.sleep(3600)
+
+
 async def _start_reply_tasks(_app: web.Application) -> None:
+    trash_task = asyncio.create_task(_letter_trash_loop())
+    media_tasks.add(trash_task)
+    trash_task.add_done_callback(media_tasks.discard)
     global _proactive_task, _visit_task
     if _refresh_contact_relationship_projection():
         try:
@@ -6332,6 +6467,9 @@ async def _start_reply_tasks(_app: web.Application) -> None:
     photo_recovery = asyncio.create_task(_recover_photo_memories())
     media_tasks.add(photo_recovery)
     photo_recovery.add_done_callback(media_tasks.discard)
+    relationship_task = asyncio.create_task(_relationship_batch_loop())
+    media_tasks.add(relationship_task)
+    relationship_task.add_done_callback(media_tasks.discard)
     vector_task = asyncio.create_task(_vector_index_loop())
     media_tasks.add(vector_task)
     vector_task.add_done_callback(media_tasks.discard)
@@ -6530,7 +6668,7 @@ def _refresh_contact_relationship_projection() -> bool:
         ledger = private_world_relationship_committer.ledger
         snapshot, events = ledger.snapshot(), ledger.events()
         changed = False
-        fields = ('contact_qualification', 'contact_projection_revision', 'initiative_tier', 'initiative_caution')
+        fields = ('contact_qualification', 'contact_projection_revision', 'initiative_tier', 'initiative_caution', 'initiative_route')
         for row in (*store.letters, *getattr(store, 'personal_chats', ())):
             if not row.get('private_world_delivery_id'):
                 continue
@@ -6547,6 +6685,8 @@ _LETTER_LIFE_ATTEMPTS = 3
 
 
 def _schedule_daily_life_exchange(letter: dict) -> None:
+    if letter.get('_deleted_parts'):
+        return
     if daily_life_runtime is None:
         return
     if not letter.get("letter_id") or not letter.get("reply_revision"):
@@ -6573,18 +6713,8 @@ def _schedule_daily_life_exchange(letter: dict) -> None:
                 **({'contact_invited': True} if invitation_id else {}),
             )
             origin_kwargs = {'origin': 'proactive'} if letter.get('origin') == 'proactive' else {}
-            signal = daily_life_runtime.store.exchange_relationship(source_id, letter["content"], letter["reply_text"], **origin_kwargs)
-            if signal is not None:
-                if private_world_relationship_committer is None:
-                    raise RuntimeError("DAILY_LIFE_RELATIONSHIP_UNAVAILABLE")
-                relationship_status = private_world_relationship_committer.commit_exchange(
-                    letter["private_world_delivery_id"], letter["content"], letter["reply_text"], signal,
-                    occurred_at=datetime.fromisoformat(letter["private_world_occurred_at"]),
-                )
-                letter["relationship_status"] = relationship_status.value
-                if relationship_status.value not in {"COMMITTED", "DUPLICATE"}:
-                    raise RuntimeError("DAILY_LIFE_RELATIONSHIP_UNAVAILABLE")
-                _refresh_contact_relationship_projection()
+            # Fast extraction still serves live life/contact updates. Only the background
+            # strong-model batch settles relationship growth.
             if invitation_id:
                 payload = daily_life_runtime.store._exchange_payload(source_id, letter['content'], letter['reply_text'])
                 choice = validate_choice(payload.get('contact_choice'), letter['content'])
@@ -6658,7 +6788,7 @@ def _schedule_private_world_candidate(
     user_message: str,
     canonical_reply: str,
 ) -> None:
-    if private_world_candidate_store is None:
+    if private_world_candidate_store is None or letter.get('_deleted_parts'):
         return
     task = asyncio.create_task(
         _deliver_private_world_candidate(letter, user_message, canonical_reply)
@@ -6674,6 +6804,8 @@ async def wait_for_private_world_candidate_tasks() -> None:
 
 
 def _commit_private_world_letter(letter: dict) -> bool:
+    if letter.get('_deleted_parts'):
+        return False
     if letter.get("private_world_status") != "PENDING":
         return False
     if private_world_committer is None:
@@ -6699,6 +6831,12 @@ def _commit_private_world_letter(letter: dict) -> bool:
     if status in {DeliveryStatus.COMMITTED, DeliveryStatus.DUPLICATE}:
         letter["private_world_status"] = "COMMITTED"
         letter.pop("private_world_error_code", None)
+        if status is DeliveryStatus.COMMITTED and private_world_relationship_committer is not None:
+            from runtime.relationship_lite import acknowledge_route_ask
+            try:
+                acknowledge_route_ask(private_world_relationship_committer.ledger, letters_adapter._now())
+            except (OSError, RuntimeError, ValueError, sqlite3.Error):
+                _safe_log('relationship_route_ask_deferred')
         return True
     letter["private_world_error_code"] = "PRIVATE_WORLD_UNAVAILABLE"
     return False

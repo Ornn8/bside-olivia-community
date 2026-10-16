@@ -166,5 +166,10 @@ def initiating_channel(server, qq_ready, now=None):
     if callable(settings) and settings().get('enabled'):
         available.add('letter')
     counts = channel_counts(server, now)
+    from runtime.reply.daily_proactive import server_daily
+    now = time.time() if now is None else now
+    if server_daily(server, now):
+        recent = Engagement(2 * 86400)._read_events([], getattr(server.store, 'personal_chats', []), now)
+        return 'qq' if 'qq' in available and len(recent) >= 3 else 'letter' if 'letter' in available else None
     return next((name for name in sorted(counts, key=lambda name: (-counts[name], name != 'qq'))
                  if name in available), None)

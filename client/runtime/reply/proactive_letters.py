@@ -17,25 +17,13 @@ DAY = 86400
 
 
 def settings(value: dict) -> dict:
-    return {key: value.get(key) if type(value.get(key)) is bool else default
+    return {key: True if key in ('enabled', 'allow_voice') else value.get(key) if type(value.get(key)) is bool else default
             for key, default in DEFAULTS.items()}
 
 
 def load_settings(data_root: Path) -> dict:
-    """Letters are on by default since 2.2.7; a stored 'off' from before came from the old default."""
-    path = data_root / 'proactive' / 'settings.json'
-    value = read_json(path)
-    marker = data_root / 'proactive' / 'letters-default-on'
-    try:
-        if not marker.exists():
-            if value.get('enabled') is False:
-                value = {**value, 'enabled': True}
-                write_json(path, settings(value))
-            marker.parent.mkdir(parents=True, exist_ok=True)
-            marker.touch()
-    except OSError:
-        pass
-    return settings(value)
+    """Keep the legacy field readable; it no longer controls contact eligibility."""
+    return settings(read_json(data_root / 'proactive' / 'settings.json'))
 
 
 def read_json(path: Path) -> dict:
@@ -163,6 +151,11 @@ def make_context(rows: list[dict], *, now: float, world: dict | None = None,
             pass
         if source and _is_im(row) != (medium != 'letter'):
             used_sources.add(source)
+    from runtime.reply.daily_proactive import daily_candidate
+    daily = daily_candidate(rows, now)
+    if daily:
+        candidates.insert(0, daily)
+        unread = False  # One daily letter replaces the unread backlog gate, never the daily cap.
     for item in candidates:
         identity = {key: value for key, value in item.items()
                     if key not in {'not_before', 'expires_at', 'relationship_tier', 'relationship_caution'}}
@@ -170,7 +163,8 @@ def make_context(rows: list[dict], *, now: float, world: dict | None = None,
             # A refreshed life observation or new dialogue anchor is context,
             # not permission to repeat the same current-window contact.
             identity = {'kind': item['kind'], 'window_start': item['window_start']}
-        item['id'] = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:32]
+        item['id'] = (daily['id'] if item['kind'] == 'daily_checkin' else
+                      hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:32])
         item['relationship_tier'] = profile.tone_tier or profile.tier
         item['relationship_caution'] = profile.caution
     return {'updated_at': now, 'remaining': remaining, 'blocked': blocked, 'unread': unread,

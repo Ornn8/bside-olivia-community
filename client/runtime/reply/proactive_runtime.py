@@ -150,6 +150,11 @@ def live_state(server, *, channel, now, exclude_id=None, appointment_due=False):
         # A contact time the user asked for is kept even if she was asleep, in
         # class or busy: people change plans for it. Contact rules still apply.
         world = [] if appointment_due else world_gates(snapshot)
+        from runtime.reply.daily_proactive import daily_candidate
+        if daily_candidate(rows, now.timestamp()):
+            gates['blocked_reasons'] = [r for r in gates['blocked_reasons'] if r != 'unanswered_limit']
+            if channel == 'letter':
+                world = [r for r in world if r not in {'busy', 'class', 'bathing'}]
         gates['blocked_reasons'] = list(dict.fromkeys([*world, *gates['blocked_reasons']]))
         return {'profile': profile, 'snapshot': snapshot, 'rows': rows, 'gates': gates}
     except Exception:
@@ -169,7 +174,8 @@ def opportunities(state, now):
     candidates = make_context(state['rows'], now=now.timestamp(), world=state['snapshot'],
                               profile=state['profile'], medium='qq')['candidates']
     kinds = {'correspondence_followup': 'followup', 'shared_followup': 'shared_topic',
-             'relationship_checkin': 'connection', 'affection_checkin': 'connection', 'life_share': 'daily_share'}
+             'relationship_checkin': 'connection', 'affection_checkin': 'connection', 'life_share': 'daily_share',
+             'daily_checkin': 'connection'}
     result = []
     for candidate in candidates:
         if candidate['not_before'] <= now.timestamp() < candidate['expires_at'] and candidate['kind'] in kinds:
@@ -221,6 +227,17 @@ def packet(*, channel, now, profile, world, rhythm, emotion, messages, opportuni
 
 
 async def decide(value, port=None):
+    # The daily floor is application scheduling policy, not a fabricated model verdict.
+    from runtime.reply.companion_proactive import _local_defer, _validate_input, SCHEMA_DIGEST
+    from runtime.reply.companion_duties import FrozenCompanionDutyResult
+    daily = next((item for item in value['opportunities'] if item['id'].startswith('daily:')), None)
+    if daily:
+        _validate_input(value)
+        encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False)
+        decision = _local_defer(value) or dict(action='send', opportunity_id=daily['id'], reason='opportunity',
+                        intent=daily['kind'], medium='text' if value['channel'] == 'letter' else 'audio_speech')
+        return FrozenCompanionDutyResult(decision_json=json.dumps(decision), input_json=encoded,
+            input_digest=hashlib.sha256(encoded.encode()).hexdigest(), schema_digest=SCHEMA_DIGEST)
     from runtime.reply.companion_proactive import configured_proactive
     port = port or configured_proactive()
     if port is None:
