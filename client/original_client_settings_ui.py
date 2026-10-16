@@ -2126,6 +2126,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     if(items.length){show(10);target.append(more);}else target.append(text('p','还没有消费记录。','text-text-secondary text-body-m'));
     // The judgment floor is listed on its own when the service reports it.
     const judgment=typeof account.jev_minimum_charge_yuan==='string'?(Number(account.jev_minimum_charge_yuan)>0?`JEV 判断每次最低 ${money(account.jev_minimum_charge_yuan)}`:'JEV 判断按实际用量计费'):null;
+    if(account.jev_pricing){const p=account.jev_pricing;target.append(text('p',`JEV 判断输入 ${p.input_multiplier}× · ¥${p.input_per_million_yuan}/百万 token；优惠判断类别 ¥${p.own_model_input_per_million_yuan}/百万 token`,'text-text-secondary text-body-m'));}
     const minimum=!account.minimum_charge_yuan?'':judgment===null?`回信中转与 JEV 判断按用量计费，每次最低 ${money(account.minimum_charge_yuan)}，未产生费用的调用不收费。`:`回信中转与 JEV 判断按用量计费：回信中转每次最低 ${money(account.minimum_charge_yuan)}，${judgment}，未产生费用的调用不收费。`;
     target.append(text('p',minimum+'中转和 GPU 共用同一余额；释放预留不是额外扣款或充值。'+(account.has_more?'这里显示最近 50 笔。':''),'text-text-secondary text-caption-m'));
   };
@@ -2226,7 +2227,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     box.setAttribute("data-olivia-relay-models", "");
     box.style.cssText = "display:grid;gap:12px;margin:24px 0;min-width:0";
     const title = text("h3", "回信模型", "text-text-title text-title-m");
-    const description = text("p", "以 Claude Sonnet 5.5 为 1 倍。输入和输出分别计费，实际消费取决于用量；短请求可能受最低计费规则影响。", "text-text-secondary text-caption-m");
+    const description = text("p", "以下为当前账户价格。倍率以原 Sonnet 基准价为 1 倍；输入和输出分别计费，短请求可能受最低计费规则影响。", "text-text-secondary text-caption-m");
     const about = text("p", "", "text-text-secondary text-body-m");
     about.className += " olivia-model-about";
     const list = document.createElement("fieldset");
@@ -2276,6 +2277,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         const detail = document.createElement("span");
         detail.style.cssText = "display:grid;gap:4px;min-width:0";
         detail.append(name);
+        if(item.pricing)detail.append(text('span',`每百万 token：输入 ¥${item.pricing.input_per_million_yuan} · 输出 ¥${item.pricing.output_per_million_yuan}`,'text-text-secondary text-caption-m'));
         if (item.description) row.title = item.description;
         const ratio = value => Number(value).toLocaleString("zh-CN", {maximumFractionDigits:2});
         const ratios = text("span", `输入 ${ratio(item.input_multiplier)}× · 输出 ${ratio(item.output_multiplier)}×`, "text-text-secondary text-body-m");

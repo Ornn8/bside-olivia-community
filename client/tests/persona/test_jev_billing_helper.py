@@ -231,7 +231,7 @@ def test_settlement_is_verified_against_its_declared_price_version(configured, m
     answer = result(signed(tokens))
     answer.update(price_version=version, charged_units=tokens * rate, debited_units=tokens * rate)
     monkeypatch.setattr(billing, '_post_settlement', lambda *a: answer)
-    assert billing.MINIMUM_HEADER['X-Olivia-JEV-Price'] == 'jev-input-cny-20261016-v5'
+    assert billing.MINIMUM_HEADER['X-Olivia-JEV-Price'] == 'jev-input-cny-20261017-v6'
     with billing.billing_scope('synthetic:turn'):
         if ok:
             assert billing.settle_receipt_sync(signed(tokens), DIGEST)['charged_units'] == tokens * rate
