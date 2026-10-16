@@ -110,7 +110,7 @@ def pending(rows, state):
     after = datetime.fromisoformat(state['uploaded_until'] or state['consent_at'])
     items = []
     for row in rows:
-        if not isinstance(row, dict) or row.get('read_only'):
+        if not isinstance(row, dict) or row.get('read_only') or row.get('_deleted_parts'):
             continue
         letter = (row.get('channel') or 'letter') == 'letter'
         if (row.get('letter_status') != 'COMPLETED') if letter else (row.get('delivery_status') != 'DELIVERED'):

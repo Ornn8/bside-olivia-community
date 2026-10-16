@@ -1740,6 +1740,8 @@ class Mem0ConversationMemoryAdapter:
         origin: str = "user",
     ) -> MemoryWriteResult:
         self._evidence_cache.clear()
+        if self._originals.letter_deleted(self._normalized_user_id(user_id), source_id):
+            return MemoryWriteResult(MemoryWriteStatus.SKIPPED, source_id)
         try:
             self._originals.put(self._normalized_user_id(user_id), source_id,
                                 user_message, assistant_message, occurred_at)
