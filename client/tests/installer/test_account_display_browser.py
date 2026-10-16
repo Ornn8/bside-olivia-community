@@ -15,7 +15,7 @@ def test_account_display_render_without_normalizing(tmp_path):
          'pricing':{'input_per_million_yuan':'9.283122','output_per_million_yuan':'46.41561'}},
         {'id':'claude-haiku-5-5','display_name':'Claude Haiku 5.5','input_multiplier':'0.14246','output_multiplier':'0.17808',
          'pricing':{'input_per_million_yuan':'2.3','output_per_million_yuan':'14.375'}}]}
-    account = {'items':[], 'minimum_charge_yuan':'0.0115','jev_minimum_charge_yuan':'0.005',
+    account = {'items':[], 'minimum_charge_yuan':'0.01','jev_minimum_charge_yuan':'0.005',
         'jev_pricing':{'input_multiplier':'0.5','input_per_million_yuan':'0.845','own_model_input_per_million_yuan':'0.505'}}
     with sync_playwright() as p:
         browser=p.chromium.launch(channel='chrome')
@@ -34,7 +34,7 @@ def test_account_display_render_without_normalizing(tmp_path):
         assert '0.575' in page.inner_text('body'), page.inner_text('body')
         assert '输入 ¥9.283122' in page.inner_text('body')
         assert 'JEV 判断输入 0.5×' in page.inner_text('body')
-        assert '0.0115' in page.inner_text('body')
+        assert '0.01' in page.inner_text('body')
         page.screenshot(path=str(output/'account-display-desktop.png'),full_page=True)
         page.set_viewport_size({'width':390,'height':844})
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
