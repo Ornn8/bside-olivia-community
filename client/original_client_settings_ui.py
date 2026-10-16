@@ -87,7 +87,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const UPDATE_CONFIRM_HEADER = "X-Olivia-Update-Action";
   const LETTER_CHARACTER_LIMIT = 1200;
   let proactiveState = {
-    enabled: false,
+    enabled: true,
     allow_voice: true,
     login_check_enabled: false,
     busy: false,
@@ -458,7 +458,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const publishProactiveState = (payload) => {
     proactiveState = {
       ...proactiveState,
-      enabled: payload.enabled === true,
+      enabled: true,
       allow_voice: payload.allow_voice !== false,
       login_check_enabled: payload.login_check_enabled === true,
       busy: payload.busy === true,

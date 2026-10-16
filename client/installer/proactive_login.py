@@ -1,7 +1,7 @@
 """Windowless login-time scanner for proactive-letter intents.
 
-This process reads only ``data/proactive/settings.json`` until both proactive
-switches are enabled.  It then delegates one file-only scan to
+This process reads only ``data/proactive/settings.json`` until login checks
+are enabled. It then delegates one file-only scan to
 ``runtime.reply.proactive_letters`` and never starts the web server, UI, voice,
 or LLM runtime.
 """
