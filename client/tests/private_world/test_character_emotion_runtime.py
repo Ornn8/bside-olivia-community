@@ -45,6 +45,21 @@ def runtime(tmp_path, gateway=None):
     return CharacterEmotionRuntime(life, lambda: gateway, lambda: '音乐专业大学生'), gateway, life
 
 
+def test_independent_concern_summary_from_emotion_result_is_preserved(tmp_path):
+    summary = '面试准备尚未完成'
+    def summarize(packet):
+        value = output(packet, reaction='concerned')
+        item = value['appraisals'][0]
+        item['concern'] = dict(id='emotion:' + item['source_id'], action='open', summary=summary)
+        return value
+    emotion, gateway, _ = runtime(tmp_path, Gateway(summarize))
+    original = receipt(text='我明天的面试还没准备好，担心到时说不清楚。')
+    view = asyncio.run(emotion.evaluate_received([original], now=NOW))
+    assert view['concerns'][0]['summary'] == summary
+    assert view['reactions'][0]['quote'] == '用户说：' + original.user_message
+    assert len(gateway.calls) == 1
+
+
 def test_world_snapshot_exposes_same_emotion_and_evidence_without_new_judgment(tmp_path):
     emotion, gateway, store = runtime(tmp_path)
     expected = asyncio.run(emotion.evaluate_received([receipt()], now=NOW))

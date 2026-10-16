@@ -1900,7 +1900,16 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           detail.append(entry);
         }
         if(recent.length)mood.append(detail);
-        if(valid && emotion.concerns?.length)mood.append(line('thought',`挂心的事：${emotion.concerns.map(concernText).join('；')}`));
+        if(valid && emotion.concerns?.length){
+          mood.append(line('thought','挂心的事：'));
+          const list=text('ul','','olivia-world-concerns');
+          const latest=[...emotion.concerns].sort((a,b)=>(Date.parse(b.occurred_at)||0)-(Date.parse(a.occurred_at)||0)).slice(0,3);
+          for(const item of latest){
+            const chars=Array.from(String(concernText(item) || '').replace(/\s+/g,' ').trim());
+            list.append(text('li',chars.length>30?chars.slice(0,29).join('')+'…':chars.join('')));
+          }
+          mood.append(list);
+        }
         overview.append(mood);
         const tabs=document.createElement('div');tabs.className='olivia-world-tabs';tabs.setAttribute('role','tablist');tabs.setAttribute('aria-label','世界内容');
         const today=document.createElement('div');today.className='olivia-world-content';
@@ -3054,6 +3063,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       [data-world-main] svg{width:20px;height:20px;flex-shrink:0;fill:none;stroke:currentColor;stroke-width:1.65;stroke-linecap:round;stroke-linejoin:round}
       .olivia-world-meta svg{width:16px;height:16px}
       .olivia-world-mood{margin-top:22px;display:grid;gap:8px;font-size:15px}
+      .olivia-world-concerns{margin:0;padding-left:48px;display:grid;gap:6px;overflow-wrap:anywhere}
       .olivia-world-mood>.olivia-world-line svg{color:#b6c8b0}
       [data-world-main] .olivia-world-muted{color:#acb0b4;font-size:14px}
       [data-world-main] .olivia-world-mood>p{margin:0 0 0 32px}

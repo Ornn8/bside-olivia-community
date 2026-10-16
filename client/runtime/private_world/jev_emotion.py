@@ -269,6 +269,13 @@ async def appraise(port, packet, *, prepared_plan=None):
             continue
         later = bindings[selected]
         opening = result[index]['quote']
+        # This finite-choice response has no independent summary. Keep the exact
+        # evidence in quote; use only a bounded topic fragment for the concern.
+        points = re.split(r'[，,。！？!?；;\n]+', opening)
+        topic = next((part.strip() for part in points if part.strip()), '未明确的事项')
+        topic = topic[:18] + ('…' if len(topic) > 18 else '')
+        prefix = '用户说：' if prepared[index][0].get('source_kind') == 'received_input' else '关于'
+        summary = f'{prefix}「{topic}」相关事项'
         ident = 'emotion:' + prepared[index][0]['source_id']
         changes = [(index, 'open', opening)]
         if later is not None:
@@ -276,7 +283,7 @@ async def appraise(port, packet, *, prepared_plan=None):
         for position, action, evidence in changes:
             from .character_emotion import _concern_changes
             current = _concern_changes(result[position]['concern'])
-            change = dict(id=ident, action=action, summary=opening)
+            change = dict(id=ident, action=action, summary=summary)
             matching = next((item for item in current if item['id'] == ident), None)
             if matching is not None and matching != change:
                 raise ValueError('JEV_EMOTION_CONCERN_CONFLICT')

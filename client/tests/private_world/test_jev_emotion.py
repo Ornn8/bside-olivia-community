@@ -23,6 +23,27 @@ class Decisions:
                 else template[key.split('_', 1)[1]] for key in questions}
 
 
+@pytest.mark.parametrize('kind', ['received_input', 'published_world'])
+@pytest.mark.parametrize('wording', ['我明天的面试还没准备好，担心到时说不清楚。', '明天怎么办？', '准备事项' * 30])
+def test_new_concern_is_a_short_topic_and_keeps_exact_evidence(kind, wording):
+    from runtime.private_world.jev_emotion import appraise
+    class Opening(Decisions):
+        async def ask(self, *args, **kwargs):
+            return {**await super().ask(*args, **kwargs), 'lifecycle_0': 'open'}
+    source = dict(source_id='new', source_kind=kind, text=wording, occurred_at=NOW.isoformat())
+    packet = dict(persona='', assessment=dict(sources=[source], source_contexts={
+        'new': dict(concerns=[], prior_appraisals=[])}))
+    port = Opening()
+    item = asyncio.run(appraise(port, packet))['appraisals'][0]
+    summary = item['concern']['summary']
+    assert summary != item['quote']
+    assert len(summary) <= 30
+    assert summary.endswith('」相关事项')
+    assert summary.startswith('用户说：' if kind == 'received_input' else '关于')
+    assert item['quote'] in wording
+    assert len(port.calls) == 1
+
+
 def test_resolved_concern_status_remains_visible_to_independent_action_question():
     from runtime.private_world.jev_emotion import prepare
     source = dict(source_id='new', text='这件事已经解决了。', occurred_at=NOW.isoformat())
