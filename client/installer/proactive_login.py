@@ -81,7 +81,7 @@ def _read_settings(data_root: Path) -> dict[str, object]:
 
 
 def _enabled(settings: dict[str, object]) -> bool:
-    return settings.get("enabled") is True and settings.get("login_check_enabled") is True
+    return settings.get("login_check_enabled") is True
 
 
 def _scan_once(data_root: Path, *, now: float) -> dict:

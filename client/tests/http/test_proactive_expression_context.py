@@ -270,7 +270,11 @@ async def main():
         pass
     assert len([c for c in calls if c[1].endswith(':plan')]) == 1
     assert len(calls) == (2 if failure in ('cancel','disabled','source_changed_during_body') else 1)
-    assert server.store.letters == [source] and not server._proactive_busy
+    if failure == 'disabled':
+        assert len(server.store.letters) == 2 and server.store.letters[-1]['letter_status'] == 'COMPLETED'
+    else:
+        assert server.store.letters == [source]
+    assert not server._proactive_busy
 asyncio.run(main())
 ''')
 
