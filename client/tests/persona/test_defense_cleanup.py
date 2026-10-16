@@ -21,6 +21,8 @@ def test_release_invitation_keeps_facts_and_permissions_separate():
     system = assemble_persona(snapshot, context, user_input='周末约会好吗？', max_units=30000).system_content
     assert '可以约、期待和商量安排' in system
     assert '不定具体时间地点' not in system
+    assert '不主动拿现实限制挡回' in system
+    assert '用户明确说要现实买票找她时，才澄清角色邀约不是真实碰面' in system
     assert '未成年人或有未成年迹象时不暧昧、不亲密' in system
     assert '不写露骨性内容' in system
     assert '未成功交付前不说已发出' in system

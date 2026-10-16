@@ -330,13 +330,18 @@ def test_daily_video_candidates_that_do_not_fit_are_dropped_not_fatal():
     """A long chat fits the budget; the optional video offer must not push the reply over it."""
     from tests.http.test_daily_video import payload
     candidate = {**payload(), 'detail': '刚整理好桌面。' * 40, 'location': '住处'}
+    history = (dict(role='assistant', content='x' * 4000),)
+    _, baseline = run(Port(plan(kind='video_speech')), mode=ReplyMode.FUTURE_IM,
+        history=history, kinds=['text', 'audio_speech', 'image', 'video_speech'])
+    # Size the boundary from the actual envelope so shorter prompts still test overflow.
+    budget = sum(len(str(m.get('content', ''))) for m in baseline.requests[0].messages) + 128
     result, engine = run(Port(plan(kind='video_speech')), mode=ReplyMode.FUTURE_IM, daily=[candidate],
-        history=(dict(role='assistant', content='x' * 32750),),
+        history=history, budget=budget,
         daily_selection=dict(event_id=candidate['event_id'], spoken_text='整理好了。'),
         kinds=['text', 'audio_speech', 'image', 'video_speech'])
     assert result.state is ReplyState.COMPLETED, result.error_code
     assert '<daily_video_candidates>' not in str(engine.requests[0].messages)
-    assert sum(len(str(m.get('content', ''))) for m in engine.requests[0].messages) <= 40000
+    assert sum(len(str(m.get('content', ''))) for m in engine.requests[0].messages) <= budget
 
 
 def test_selected_instant_video_keeps_candidate_by_trimming_old_dialogue():
@@ -344,7 +349,7 @@ def test_selected_instant_video_keeps_candidate_by_trimming_old_dialogue():
     candidate = {**payload(), 'detail': '刚整理好桌面。' * 40, 'location': '住处'}
     history = tuple(dict(role='user' if i % 2 == 0 else 'assistant',
         content='[历史消息 ' + json.dumps(dict(source=f'reply:old{i}', event_id=f'old{i}',
-            actor='user' if i % 2 == 0 else 'linli', truncated=False)) + ']\n' + '旧' * 4000)
+            actor='user' if i % 2 == 0 else 'linli', truncated=False)) + ']\n' + '旧' * 6000)
         for i in range(8))
     port = Port(plan(kind='video_speech'))
     result, engine = run(port, mode=ReplyMode.FUTURE_IM, daily=[candidate], history=history,
