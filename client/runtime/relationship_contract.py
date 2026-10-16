@@ -34,4 +34,3 @@ def validate_result(value, turns):
     if seen != set(sources):
         raise ValueError('RELATIONSHIP_BATCH_INCOMPLETE')
     return value['turns']
-

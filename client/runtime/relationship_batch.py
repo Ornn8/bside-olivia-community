@@ -57,7 +57,8 @@ class BatchQueue:
 
     def pending(self, now):
         with self.db() as db:
-            rows = db.execute("SELECT payload FROM relationship_queue WHERE status='pending' ORDER BY queued_at,id LIMIT 50").fetchall()
+            rows = db.execute("SELECT payload FROM relationship_queue WHERE status='pending' "
+                              "ORDER BY julianday(json_extract(payload,'$.at')),id LIMIT 50").fetchall()
         turns, size = [], 0
         for (raw,) in rows:
             # Whole exchanges only; a very long letter gets its own batch.

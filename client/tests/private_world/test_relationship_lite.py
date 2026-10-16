@@ -61,6 +61,17 @@ def test_batch_rejects_foreign_ids_and_invented_quotes():
         validate_result(result, turns)
 
 
+def test_batch_recovery_preserves_conversation_chronology(tmp_path):
+    from runtime.relationship_batch import BatchQueue
+    queue = BatchQueue(tmp_path / 'queue.sqlite3')
+    rows = [{'letter_id': identity, 'private_world_delivery_id': identity,
+             'content': '我们明天听歌', 'reply_text': '好呀',
+             'private_world_occurred_at': (NOW + timedelta(minutes=minute)).isoformat()}
+            for identity, minute in [('a-later', 2), ('z-earlier', 1)]]
+    queue.sync(rows, NOW + timedelta(days=1))
+    assert [turn['id'] for turn in queue.pending(NOW)['turns']] == ['z-earlier', 'a-later']
+
+
 def test_ladder_and_identity_reach_writer_and_reviewer():
     from runtime.memory.private_world_projection import project_private_world
     from runtime.reply.reply_context import IntimacyTier, RelationshipStage
@@ -197,4 +208,3 @@ def test_promise_completion_is_per_project(tmp_path):
             db.execute('INSERT INTO life_projects VALUES (?,?)',
                        (identity,json.dumps({'id':identity,'kind':'shared','status':status})))
     assert [p['id'] for p in plans(life)]==['walk']
-
