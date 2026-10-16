@@ -141,7 +141,17 @@ def profile_from_snapshot(snapshot, history=None) -> InitiativeProfile:
                 'close': 'close', 'committed': 'committed'}.get(stage, 'reserved')
     tension = int(getattr(snapshot, "tension", 0) or 0) if snapshot is not None else 0
     caution = "high" if tension >= 70 else "elevated" if tension >= 35 else "normal"
-    return _with_caution(_BASE[tier], caution)
+    return _with_route(_with_caution(_BASE[tier], caution), getattr(snapshot, 'relationship_route', ''))
+
+
+def _with_route(profile, chosen):
+    from dataclasses import replace
+    from runtime.cloud_policy import get_policy
+    factor = get_policy('relationship_care').get(chosen, 100) / 100
+    return replace(profile, im_interval_min=round(profile.im_interval_min * factor),
+                   im_interval_max=round(profile.im_interval_max * factor),
+                   letter_followup_delay=round(profile.letter_followup_delay * factor),
+                   letter_silence_delay=round(profile.letter_silence_delay * factor) if profile.letter_silence_delay else None)
 
 
 def profile_from_rows(rows: list[dict]) -> InitiativeProfile:
@@ -158,7 +168,7 @@ def profile_from_rows(rows: list[dict]) -> InitiativeProfile:
         tier = row.get("initiative_tier")
         caution = row.get("initiative_caution", "normal")
         if tier in _TIERS and caution in {"normal", "elevated", "high"}:
-            return _with_caution(_BASE[tier], caution)
+            return _with_route(_with_caution(_BASE[tier], caution), row.get('initiative_route', ''))
     for row in reversed(ordered):
         if row.get("contact_qualification") is True:
             return _with_caution(_BASE["close"], 'normal')

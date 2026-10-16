@@ -54,6 +54,14 @@ def test_scheduled_consumer_refreshes_old_letter_and_qq_row(tmp_path, monkeypatc
     async def run():
         server._schedule_daily_life_exchange(late)
         await asyncio.gather(*tuple(server.daily_life_tasks.values()))
+        assert original['contact_qualification'] is True  # Live extraction does not settle growth.
+        from runtime.relationship_batch import BatchQueue, tick
+        queue=BatchQueue(ledger._database_path)
+        queue.sync(server.store.letters,NOW)
+        async def judge(gateway,batch,chosen):
+            return {'turns':[{'id':'conflict','signals':{'rel_friction':'conflict'},
+                             'moment':'rel_friction:conflict','user_quote':'conflict','reply_quote':'reply'}]}
+        assert await tick(server,NOW+timedelta(days=2),judge)=='updated'
     asyncio.run(run())
     assert late['daily_life_status'] == 'COMMITTED'
     assert original['contact_qualification'] is False
