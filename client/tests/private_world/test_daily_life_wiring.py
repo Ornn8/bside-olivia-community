@@ -59,6 +59,7 @@ print(json.dumps({'ok':ok,'status':letter.get('daily_life_status'),'relationship
     assert payload["status"] == "COMMITTED", payload
     assert payload["snapshot"]["projects"][0]["source_id"] == "reply:life-letter:1"
     assert "慢练" in payload["context"][0]
-    assert payload['comfort'] == (1 if signal else 0)
+    # Live extraction updates life; the strong background batch owns growth.
+    assert payload['comfort'] == 0
     assert payload['same_after_retry'] is True
     assert payload['stage'] == 'unknown'

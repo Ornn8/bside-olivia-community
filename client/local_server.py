@@ -1106,6 +1106,16 @@ class LetterAdapter:
             )
             for index, nickname in enumerate(projected.authorized_nicknames)
         )
+        if world_state_available:
+            from runtime.relationship_lite import writer_line
+            try:
+                line = writer_line(private_snapshot,
+                    getattr(globals().get('private_world_relationship_committer'), 'ledger', None),
+                    getattr(self.daily_life, 'store', None))
+                facts += (TrustedWorldFact(fact_id='private.relationship.route', source_id='private_world.character_view',
+                    statement=line, kind=WorldFactKind.TRUSTED_RUNTIME),)
+            except (sqlite3.Error, OSError, ValueError, RuntimeError):
+                pass
         if projected.continuation_known:
             facts += (
                 TrustedWorldFact(
@@ -1500,6 +1510,16 @@ def _write_store_snapshot(root, payload):
         _store_state_error_code = StoreStateUnavailable.code
         raise
     _store_state_error_code = None
+    committer = globals().get('private_world_relationship_committer')
+    if committer is not None and root == _state_root():
+        try:
+            from runtime.relationship_moments import sync_messages
+            from runtime.relationship_batch import BatchQueue
+            rows = [*payload.get('letters', []), *payload.get('personal_chats', [])]
+            sync_messages(committer.ledger, rows)
+            BatchQueue(committer.ledger._database_path).sync(rows, datetime.now(timezone.utc))
+        except (OSError, sqlite3.Error, RuntimeError):
+            _safe_log('relationship_cleanup_deferred')
     from runtime.diagnostics.reply_telemetry import observe_rows
     observe_rows([*payload.get('letters', []), *payload.get('personal_chats', [])])
     try:
@@ -4010,6 +4030,17 @@ async def _improve_loop() -> None:
         await asyncio.sleep(1800)
 
 
+async def _relationship_batch_loop() -> None:
+    from runtime.relationship_batch import tick
+    await asyncio.sleep(30)
+    while True:
+        try:
+            await tick(sys.modules[__name__])
+        except (OSError, RuntimeError, ValueError, TypeError, sqlite3.Error):
+            _safe_log('relationship_batch_unavailable')
+        await asyncio.sleep(60)
+
+
 async def _vector_index_loop() -> None:
     """Embed earlier exchanges in the background so recall can match by meaning."""
     await asyncio.sleep(180)
@@ -4867,6 +4898,29 @@ async def route(
         except (OSError, RuntimeError):
             return err(503, 'IMPROVE_FORGET_UNAVAILABLE', {'error_code': 'IMPROVE_FORGET_UNAVAILABLE'})
         return err(400, 'IMPROVE_REQUEST_INVALID', {'error_code': 'IMPROVE_REQUEST_INVALID'})
+
+    if p in {'/toy/relationship', '/toy/relationship/route'}:
+        import sys
+        from runtime import relationship_lite
+        try:
+            server = sys.modules[__name__]
+            if p == '/toy/relationship' and method == 'GET':
+                return ok(relationship_lite.details(server))
+            if p == '/toy/relationship/route' and method == 'POST':
+                if not companion_confirmed:
+                    return err(403, 'COMPANION_CONFIRMATION_REQUIRED', {})
+                if not isinstance(body, dict) or set(body) != {'route', 'version'}:
+                    raise ValueError('RELATIONSHIP_REQUEST_INVALID')
+                relationship_lite.change_route(relationship_lite.ledger(server), body['route'], body['version'])
+                _refresh_contact_relationship_projection()
+                await _persist_store_state_async()
+                return ok(relationship_lite.details(server))
+            return err(405, 'METHOD_NOT_ALLOWED', {})
+        except ValueError as exc:
+            code = str(exc) if str(exc).startswith('RELATIONSHIP_') else 'RELATIONSHIP_REQUEST_INVALID'
+            return err(409 if code == 'RELATIONSHIP_VERSION_CONFLICT' else 400, code, {'error_code': code})
+        except (OSError, RuntimeError, sqlite3.Error):
+            return err(503, 'RELATIONSHIP_UNAVAILABLE', {'error_code': 'RELATIONSHIP_UNAVAILABLE'})
 
     if p.startswith('/toy/diary'):
         if diary_store is None:
@@ -6332,6 +6386,9 @@ async def _start_reply_tasks(_app: web.Application) -> None:
     photo_recovery = asyncio.create_task(_recover_photo_memories())
     media_tasks.add(photo_recovery)
     photo_recovery.add_done_callback(media_tasks.discard)
+    relationship_task = asyncio.create_task(_relationship_batch_loop())
+    media_tasks.add(relationship_task)
+    relationship_task.add_done_callback(media_tasks.discard)
     vector_task = asyncio.create_task(_vector_index_loop())
     media_tasks.add(vector_task)
     vector_task.add_done_callback(media_tasks.discard)
@@ -6530,7 +6587,7 @@ def _refresh_contact_relationship_projection() -> bool:
         ledger = private_world_relationship_committer.ledger
         snapshot, events = ledger.snapshot(), ledger.events()
         changed = False
-        fields = ('contact_qualification', 'contact_projection_revision', 'initiative_tier', 'initiative_caution')
+        fields = ('contact_qualification', 'contact_projection_revision', 'initiative_tier', 'initiative_caution', 'initiative_route')
         for row in (*store.letters, *getattr(store, 'personal_chats', ())):
             if not row.get('private_world_delivery_id'):
                 continue
@@ -6573,18 +6630,8 @@ def _schedule_daily_life_exchange(letter: dict) -> None:
                 **({'contact_invited': True} if invitation_id else {}),
             )
             origin_kwargs = {'origin': 'proactive'} if letter.get('origin') == 'proactive' else {}
-            signal = daily_life_runtime.store.exchange_relationship(source_id, letter["content"], letter["reply_text"], **origin_kwargs)
-            if signal is not None:
-                if private_world_relationship_committer is None:
-                    raise RuntimeError("DAILY_LIFE_RELATIONSHIP_UNAVAILABLE")
-                relationship_status = private_world_relationship_committer.commit_exchange(
-                    letter["private_world_delivery_id"], letter["content"], letter["reply_text"], signal,
-                    occurred_at=datetime.fromisoformat(letter["private_world_occurred_at"]),
-                )
-                letter["relationship_status"] = relationship_status.value
-                if relationship_status.value not in {"COMMITTED", "DUPLICATE"}:
-                    raise RuntimeError("DAILY_LIFE_RELATIONSHIP_UNAVAILABLE")
-                _refresh_contact_relationship_projection()
+            # Fast extraction still serves live life/contact updates. Only the background
+            # strong-model batch settles relationship growth.
             if invitation_id:
                 payload = daily_life_runtime.store._exchange_payload(source_id, letter['content'], letter['reply_text'])
                 choice = validate_choice(payload.get('contact_choice'), letter['content'])
@@ -6699,6 +6746,12 @@ def _commit_private_world_letter(letter: dict) -> bool:
     if status in {DeliveryStatus.COMMITTED, DeliveryStatus.DUPLICATE}:
         letter["private_world_status"] = "COMMITTED"
         letter.pop("private_world_error_code", None)
+        if status is DeliveryStatus.COMMITTED and private_world_relationship_committer is not None:
+            from runtime.relationship_lite import acknowledge_route_ask
+            try:
+                acknowledge_route_ask(private_world_relationship_committer.ledger, letters_adapter._now())
+            except (OSError, RuntimeError, ValueError, sqlite3.Error):
+                _safe_log('relationship_route_ask_deferred')
         return True
     letter["private_world_error_code"] = "PRIVATE_WORLD_UNAVAILABLE"
     return False

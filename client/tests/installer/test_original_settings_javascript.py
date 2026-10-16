@@ -22,18 +22,20 @@ class Element {
   append(...children){this.children.push(...children);}
   replaceChildren(...children){this.children=children;}
   addEventListener(name,handler){this.events[name]=handler;}
+  setAttribute(){}
 }
 const document={createElement:()=>new Element()}, alive=()=>true;
-const text=(tag,value)=>({textContent:value,style:{}}), button=()=>({});
+const text=(tag,value)=>Object.assign(new Element(),{textContent:value}), button=()=>new Element();
 const PRIVATE_WORLD_PATH='world';
 let resolve, calls=0;
 const requestJson=()=>{calls++;return new Promise(r=>resolve=r);};
+const payload={status:'READY',routes:{undecided:'先不定义'},route:'undecided',volume:1,title:'初识',description:'慢慢认识',dynamic:'慢慢来',dimensions:Object.fromEntries(['familiarity','trust','comfort','closeness'].map(k=>[k,{text:'慢慢了解'}])),moments:[],plans:[],addressing:{},hint:'分享日常'};
 '''
     harness += 'const relationshipPanel =' + source
     harness += r'''
 (async()=>{
   const first=relationship.refresh();
-  resolve({status:'READY',levels:{trust:'high'},relationship_stage:'friend'});
+  resolve(payload);
   await first;
   const content=relationship.children[1];
   const visible=content.children[0];
@@ -41,7 +43,7 @@ const requestJson=()=>{calls++;return new Promise(r=>resolve=r);};
   assert.equal(content.children[0],visible);
   relationship.events.toggle();
   assert.equal(calls,2);
-  resolve({status:'READY',levels:{trust:'high'},relationship_stage:'friend'});
+  resolve(payload);
   await next;
   assert.ok(content.children.length>1);
 })().catch(e=>{console.error(e);process.exitCode=1;});

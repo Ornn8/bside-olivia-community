@@ -408,6 +408,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       httpStatus = response.status; failureStage = 'response';
       const responseBody = await response.json();
       const payload = (path === VIDEO_REPLY_SETTINGS_PATH
+          || path === '/toy/relationship'
           || path === LOCAL_LETTER_IMPORT_PATH
           || path === PROACTIVE_STATUS_PATH)
         && responseBody && responseBody.data
@@ -1598,36 +1599,121 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       return archive;
     };
     const relationshipPanel = () => {
-      const area = document.createElement("details");
-      area.style.cssText = "margin-top:20px;overflow-wrap:anywhere";
-      area.append(text("summary", "你们的关系", "text-text-title text-label-l"));
-      const content = document.createElement("div");
-      content.style.cssText = "display:grid;gap:10px;padding-top:12px";
+      const area = document.createElement('details');
+      area.style.cssText = 'margin-top:24px;overflow-wrap:anywhere';
+      area.append(text('summary', '你们的关系', 'text-text-title text-label-l'));
+      const content = document.createElement('div');
+      content.style.cssText = 'display:grid;gap:24px;padding-top:20px;max-width:68ch;line-height:1.75';
       area.append(content);
       let pending = false, loaded = false;
+      const section = title => {
+        const el = document.createElement('section');
+        const heading = text('h3', title, 'text-text-title text-label-l');
+        heading.style.cssText = 'margin:0 0 10px;font-size:15px;font-weight:600';
+        el.append(heading);
+        return el;
+      };
+      const render = result => {
+        const intro = document.createElement('div');
+        const number = ['','一','二','三','四','五','六','七','八','九','十'][result.volume] || result.volume;
+        const heading = text('h2', `${result.routes[result.route]} · 第${number}卷「${result.title}」`, 'text-text-title');
+        heading.style.cssText = 'font-size:22px;line-height:1.5;margin:0 0 10px;font-weight:600';
+        intro.append(heading, text('p', result.description, 'text-text-body text-body-m'));
+        const dynamic = text('p', result.dynamic, 'text-text-secondary text-body-m');
+        dynamic.style.marginTop = '10px';
+        intro.append(dynamic);
+        const routes = document.createElement('div');
+        routes.setAttribute('role', 'group'); routes.setAttribute('aria-label', '相处方式');
+        routes.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;margin-top:16px';
+        const feedback = text('p', '', 'text-text-secondary text-caption-m');
+        feedback.setAttribute('role','status');
+        for (const [key,label] of Object.entries(result.routes)) {
+          const choice = button(label, async () => {
+            if (pending || key === result.route) return;
+            pending = true;
+            routes.querySelectorAll('button').forEach(b => b.disabled = true);
+            feedback.textContent = '正在保存相处方式…';
+            try {
+              const response = await fetch(new URL('/toy/relationship/route', apiBase), {
+                method:'POST', credentials:'omit', headers:{'Content-Type':'application/json', [CONFIRM_HEADER]:CONFIRM_VALUE},
+                body:JSON.stringify({route:key, version:result.version}), signal:AbortSignal.timeout(10000)});
+              const payload = await response.json();
+              if (!response.ok || payload.code !== 0) throw new Error('RELATIONSHIP_SAVE_FAILED');
+              const updated = payload.data;
+              if (alive() && area.isConnected) render(updated);
+            } catch (_error) {
+              feedback.replaceChildren(text('span','这次选择没有保存，请刷新后重试。 '), button('刷新关系', () => {pending=false;read();}));
+            } finally {
+              pending = false;
+              routes.querySelectorAll('button').forEach(b => b.disabled = false);
+            }
+          });
+          choice.setAttribute('aria-pressed', String(key === result.route));
+          choice.style.cssText = 'min-height:36px;padding:6px 14px;border-radius:6px;font:inherit;cursor:pointer';
+          if (key === result.route) choice.style.fontWeight = '700';
+          routes.append(choice);
+        }
+        intro.append(routes, feedback);
+        const dimensions = section('相处的细节');
+        const list = document.createElement('dl');
+        list.style.cssText = 'display:grid;grid-template-columns:3em minmax(0,1fr);gap:12px 16px;margin:0';
+        for (const [key,label] of Object.entries({familiarity:'熟悉',trust:'信任',comfort:'安心',closeness:'亲近'})) {
+          const item = result.dimensions[key];
+          const term = text('dt',label,'text-text-secondary text-body-m');
+          const description = text('dd',item.text,'text-text-body text-body-m');
+          description.style.margin = '0';
+          if (item.rising) {
+            const change = text('span',' 最近在变','text-text-secondary text-caption-m');
+            change.style.cssText = 'display:inline-block;margin-left:6px;font-size:12px';
+            description.append(change);
+          }
+          list.append(term,description);
+        }
+        dimensions.append(list);
+        const moments = section('最近的瞬间');
+        if (!result.moments.length) moments.append(text('p','还没有留下新的瞬间。认真聊过的事，会慢慢留在这里。','text-text-secondary text-body-m'));
+        for (const item of result.moments) {
+          const row = document.createElement('div');
+          row.style.cssText = 'margin:0 0 14px';
+          const date = text('time',item.date,'text-text-secondary text-caption-m');
+          date.dateTime = item.date;
+          row.append(date, text('p',item.text,'text-text-body text-body-m'));
+          if (item.quote) row.append(text('p',`“${item.quote}”`,'text-text-secondary text-body-m'));
+          moments.append(row);
+        }
+        const promises = section('未完成的约定');
+        if (!result.plans.length) promises.append(text('p','暂时没有未完成的约定。','text-text-secondary text-body-m'));
+        for (const item of result.plans) {
+          const row = document.createElement('div'); row.style.marginBottom = '12px';
+          row.append(text('p',item.title,'text-text-body text-body-m'));
+          if (item.detail) row.append(text('p',item.detail,'text-text-secondary text-body-m'));
+          promises.append(row);
+        }
+        const names = section('彼此的称呼');
+        names.append(text('p',`她叫你：${result.addressing.linli_calls_user || '还没有特别的称呼'}`,'text-text-body text-body-m'),
+                     text('p',`你叫她：${result.addressing.user_calls_linli || '还没有特别的称呼'}`,'text-text-body text-body-m'));
+        const closer = section('再靠近一点');
+        closer.append(text('p',result.hint,'text-text-secondary text-body-m'));
+        content.replaceChildren(intro,dimensions,moments,promises,names,closer);
+      };
       const read = async () => {
         if (pending || !alive() || !area.isConnected) return;
         pending = true;
-        if (!loaded) content.replaceChildren(text("p", "读取关系状态…", "text-text-secondary text-body-m"));
+        if (!loaded) content.replaceChildren(text('p','读取你们的关系…','text-text-secondary text-body-m'));
         try {
-          const result = await requestJson(PRIVATE_WORLD_PATH);
+          const result = await requestJson('/toy/relationship');
           if (!alive() || !area.isConnected) return;
-          if (!result || result.status !== "READY" || !result.levels) throw new Error("RELATIONSHIP_UNAVAILABLE");
-          const stages = {unknown:"尚未确定", acquaintance:"初识", familiar:"逐渐熟悉", friend:"朋友", trusted_friend:"信赖的朋友", close:"亲近", committed:"稳定的亲密关系"};
-          const descriptions = {unknown:"你们的关系还在慢慢建立。", acquaintance:"你们刚认识不久，她对你还有些拘谨。", familiar:"你们渐渐熟了，聊得来的话题越来越多。", friend:"你们已经是朋友了，她跟你在一起很自在。", trusted_friend:"你们是彼此信赖的朋友，她愿意跟你说心里话。", close:"你们很亲近，她会想你，也愿意让你知道。", committed:"你们已经确认了彼此的关系。"};
-          content.replaceChildren(text("p", `关系阶段：${stages[result.relationship_stage] || "尚未确定"}`, "text-text-body text-body-m"));
-          content.append(text("p", descriptions[result.relationship_stage] || descriptions.unknown, "text-text-body text-body-m"));
-          if (result.levels.tension === "high") content.append(text("p", "最近你们之间有点小别扭。", "text-text-secondary text-body-m"));
-          content.append(text("p", "这里读取既有关系记录；生活动态的刷新不会增加好感或改变关系阶段。", "text-text-secondary text-caption-m"));
-          loaded = true;
+          if (!result?.dimensions || !result?.routes) throw new Error('RELATIONSHIP_UNAVAILABLE');
+          render(result); loaded = true;
         } catch (_error) {
-          content.replaceChildren(text("p", "关系状态暂时无法读取。", "text-text-secondary text-body-m"), button("重试读取关系", read));
+          content.replaceChildren(text('p','关系暂时没能读取，请稍后重试。','text-text-secondary text-body-m'),button('重试读取关系',read));
         } finally { pending = false; }
       };
-      area.addEventListener("toggle", () => { if (area.open && !loaded) read(); });
+      area.addEventListener('toggle', () => { if (area.open && !loaded) read(); });
       area.refresh = read;
       return area;
     };
+
     const relationship = relationshipPanel();
     const agendaRows = (world) => {
       const date=world?.schedule?.date;

@@ -101,6 +101,14 @@ def project_private_world(
         from runtime.memory.effective_relationship import effective_relationship_stage
         stage = _stage(effective_relationship_stage(snapshot, history))
     granted_intimacy = character.granted_intimacy
+    from runtime.relationship_growth import route
+    chosen = route(snapshot)
+    if snapshot.relationship_route:
+        if chosen == 'romantic':
+            stage = RelationshipStage.COMMITTED
+        tier = (IntimacyTier.NONE if chosen in {'friend', 'family'} or snapshot.relationship_volume < 2
+                else IntimacyTier.LIGHT_CONTACT if snapshot.relationship_volume < 4 else IntimacyTier.CLOSE_CONTACT)
+        intimacy_ceiling = granted_intimacy = tier
     behavior = PrivateBehaviorView(
         familiarity=_level(snapshot.familiarity),
         trust=_level(snapshot.trust),
