@@ -192,9 +192,15 @@ def quiet_reason(server, now_ts, window):
 
 def diary_rows(server):
     """Finished calls as diary exchanges: what the user said, what she said, when."""
+    from runtime.diary.diary import _received_at, local_day
     rows = []
     for row in _calls(server):
         if row.get('missed') or not row.get('transcript'):
+            continue
+        started = _received_at({'life_received_at': row.get('started_at')})
+        ended = _received_at({'life_received_at': row.get('ended_at')})
+        # Transcripts have no per-utterance times, so a cross-day call cannot be dated safely.
+        if started is None or ended is None or local_day(started) != local_day(ended):
             continue
         user = '\n'.join(r['text'] for r in row['transcript'] if r['role'] == 'user')
         her = '\n'.join(r['text'] for r in row['transcript'] if r['role'] == 'her')

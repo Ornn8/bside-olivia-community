@@ -125,8 +125,20 @@ def _received_at(row):
             pass
     value = row.get('created_at')
     if type(value) in (int, float):
-        return datetime.fromtimestamp(value, timezone.utc)
+        try:
+            return datetime.fromtimestamp(value, timezone.utc)
+        except (ValueError, OverflowError, OSError):
+            pass
     return None
+
+
+def _reply_at(row):
+    for key in ('delivered_at', 'published_at', 'private_world_occurred_at', 'replied_at'):
+        value = row.get(key)
+        if value is not None:
+            return _received_at({'life_received_at': value, 'created_at': value})
+    # Older exchanges only recorded one timestamp.
+    return _received_at(row)
 
 
 def _delivered(row):
@@ -138,21 +150,35 @@ def _delivered(row):
 
 
 def day_messages(rows, day):
-    """That day's delivered exchanges, oldest first: who said what, and when."""
+    """Each side belongs to its own day, even when a reply or QQ batch crosses midnight."""
+    from runtime.memory.received_user_originals import received_originals
     start, end = _day_bounds(day)
     items = []
+    originals = {}
+    for original in received_originals(rows):
+        for source in original.exchange_sources:
+            originals.setdefault(source, []).append(original)
     for row in rows:
         if not isinstance(row, dict) or row.get('read_only') or not _delivered(row):
             continue
         stamp = _received_at(row)
-        if stamp is None or not start <= stamp < end:
-            continue
         channel = row.get('channel') or 'letter'
         user = row.get('content') if isinstance(row.get('content'), str) else ''
         reply = row.get('reply_text') if isinstance(row.get('reply_text'), str) else ''
-        if user.strip() or reply.strip():
+        inputs = [(stamp, user)]
+        if channel in {'qq', 'wechat'} and row.get('source_messages') and row.get('binding_id'):
+            source = f"reply:{row['letter_id']}:{row.get('reply_revision') or 1}"
+            inputs = [(o.occurred_at, o.user_message) for o in originals.get(source, [])]
+        parts = {}
+        for received, text in inputs:
+            if received is not None and start <= received < end and text.strip():
+                parts.setdefault(received, {'user': [], 'linli': ''})['user'].append(text.strip())
+        replied = _reply_at(row)
+        if replied is not None and start <= replied < end and reply.strip():
+            parts.setdefault(replied, {'user': [], 'linli': ''})['linli'] = reply.strip()
+        for stamp, part in parts.items():
             items.append({'time': stamp.astimezone(SHANGHAI).strftime('%H:%M'), 'channel': channel,
-                          'user': user.strip(), 'linli': reply.strip(), '_at': stamp})
+                          'user': '\n'.join(part['user']), 'linli': part['linli'], '_at': stamp})
     items.sort(key=lambda item: item['_at'])
     for item in items:
         item.pop('_at')
@@ -700,6 +726,8 @@ async def _write(store, gateway, day, rows, *, persona, life=None, now=None, tim
         now = now or datetime.now(timezone.utc)
         stage, work = store.work(day)
         memoir = len(day) == 7
+        if not memoir and work is not None and work.get('source_window_version') != 1:
+            stage, work = None, None  # Old drafts may already contain another day's material.
         prefix = 'diary-memoir' if memoir else 'diary'
         if work is None:
             messages = month_messages(rows, day) if memoir else day_messages(rows, day)
@@ -709,12 +737,12 @@ async def _write(store, gateway, day, rows, *, persona, life=None, now=None, tim
                 return 'empty'
             chars = sum(len(m['user']) for m in messages)
             short = not memoir and chars < SHORT_DAY_CHARS
-            recent = _optional(lambda: store.recent(day), [])
+            recent = _optional(lambda: store.recent(day), []) if memoir else []
             style = 'prose' if memoir else choose_style(day, recent, short)
             bounds = (400, 900) if memoir else length_range(chars, sent)
             start = datetime.fromisoformat(day + '-01' if memoir else day).replace(tzinfo=SHANGHAI)
             upcoming = _optional(lambda: [fact for offset in range(7)
-                for fact in due_facts(store, start + timedelta(days=offset)) if fact['noted_on'] < day], [])
+                for fact in due_facts(store, start + timedelta(days=offset)) if fact['noted_on'] < day], []) if memoir else []
             packet = fit_packet({'month' if memoir else 'date': day, 'short_day': short,
                 'messages': _fit(messages, MEMOIR_SOURCE_CHARS if memoir else MAX_SOURCE_CHARS),
                 'sent': sent, 'day_life': life or [], 'recent_entries': recent, 'due_facts': upcoming,
@@ -730,7 +758,7 @@ async def _write(store, gateway, day, rows, *, persona, life=None, now=None, tim
                                     packet, FORMAT, timeout_seconds, model=model)
             entry = validate(entry, packet['messages'])
             work = dict(entry=entry, packet=packet, short=short, style=style, photos=photos,
-                        model=model, base_url=base_url)
+                        model=model, base_url=base_url, source_window_version=1)
             try:
                 store.checkpoint(day, 'draft', work)
                 stage = 'draft'
@@ -779,7 +807,7 @@ async def _complete(gateway, request_id, system, packet, response_format, timeou
 
 
 def due_days(store, now):
-    """Yesterday after 03:00 local time, plus missed days of the last week."""
+    """Yesterday after 01:00 local time, plus missed days of the last week."""
     local = now.astimezone(SHANGHAI)
     latest = local.date() - timedelta(days=1 if local.hour >= WRITE_AFTER_HOUR else 2)
     days = [(latest - timedelta(days=offset)).isoformat() for offset in range(CATCH_UP_DAYS)]
@@ -794,9 +822,13 @@ def day_life(life_store, day, outfit=None):
     items = []
     try:
         with life_store._db() as db:
-            for stamp, payload in db.execute("SELECT occurred_at,payload FROM life_moments WHERE kind='daily' AND occurred_at>=? "
-                                         "AND occurred_at<? ORDER BY occurred_at",
-                                         (start.astimezone(timezone.utc).isoformat(), end.astimezone(timezone.utc).isoformat())):
+            for stamp, payload in db.execute("SELECT occurred_at,payload FROM life_moments WHERE kind='daily' "
+                                         "AND julianday(occurred_at)>=julianday(?) "
+                                         "AND julianday(occurred_at)<=julianday(?) ORDER BY julianday(occurred_at)",
+                                         (start.isoformat(), end.isoformat())):
+                occurred = _received_at({'life_received_at': stamp})
+                if occurred is None or not start <= occurred < end:
+                    continue
                 value = json.loads(payload)
                 meals = '；'.join(f"{meal.get('status', 'unknown')}:{meal['food']}" for meal in value.get('meals') or []
                                  if isinstance(meal, dict) and isinstance(meal.get('food'), str))
