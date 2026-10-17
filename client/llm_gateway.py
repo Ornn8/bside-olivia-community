@@ -36,7 +36,7 @@ _RELAY_HOST = urlsplit(API_ORIGIN).hostname
 
 def provider_request_headers(base_url: str, *, session_id: str | None = None) -> dict[str, str]:
     """Identify Olivia honestly to the relay."""
-    return {"User-Agent": PROVIDER_USER_AGENT}
+    return {"User-Agent": PROVIDER_USER_AGENT, "X-Olivia-Chat-Price": "account-20261017"}
 
 
 ALLOWED_ROLES = frozenset({"system", "user", "assistant"})

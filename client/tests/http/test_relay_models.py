@@ -6,8 +6,9 @@ from original_client_setup_api import LLMSetupService, mount_original_client_set
 
 
 @pytest.mark.parametrize('baseline_input,baseline_output,expected_default,expected_opus', [
-    ('4', '8', ('0.25000', '0.12500'), ('5.84000', '4.32500')),
-    ('2', '5', ('0.50000', '0.20000'), ('11.68000', '6.92000')),
+    ('4', '8', ('1.00000', '1.00000'), ('23.36000', '34.60000')),
+    ('2', '5', ('1.00000', '1.00000'), ('23.36000', '34.60000')),
+    ('0.575', '0.575', ('1.00000', '1.00000'), ('23.36000', '34.60000')),
     ('0', '8', None, None),
     (None, None, None, None),
 ])
@@ -53,9 +54,10 @@ def test_select_model_keeps_encrypted_key_and_runtime_choice_across_reconnect(
             rows = {row['id']: row for row in catalog['models']}
             assert 'actual_model' not in rows['qwen3.7-flash']
             assert rows['gpt-6.1-sol']['description'] == '事情有点绕也没关系，我陪你慢慢想。'
-            assert (rows['gemini-4-argon']['input_multiplier'], rows['gemini-4-argon']['output_multiplier']) == ('1.00000', '1.00000')
+            expected_baseline = (f'{float(baseline_input):.5f}', f'{float(baseline_output):.5f}')
+            assert (rows['gemini-4-argon']['input_multiplier'], rows['gemini-4-argon']['output_multiplier']) == expected_baseline
             for model, expected in [('qwen3.7-flash', expected_default),
-                    ('claude-opus-5-5', expected_opus), ('claude-sonnet-5-5', ('1.00000', '1.00000'))]:
+                    ('claude-opus-5-5', expected_opus), ('claude-sonnet-5-5', expected_baseline)]:
                 assert (rows[model]['input_multiplier'], rows[model]['output_multiplier']) == expected
             response = await client.post('/toy/relay/action', headers=headers, json={'action': 'connect'})
             assert response.status == 200
