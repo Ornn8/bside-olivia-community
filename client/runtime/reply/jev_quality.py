@@ -324,6 +324,43 @@ def _candidate_spans(candidate, *, with_text=False, limit=MAX_REVIEW_SPANS):
             for i, (start, end) in enumerate(sentences)}
 
 
+def _dedupe_review_request(state, questions):
+    """Compact detection only; retain the original confirmation packet."""
+    from copy import deepcopy
+    state, questions = deepcopy(state), deepcopy(questions)
+    del state['candidate']
+    state['reference_contract'] = (
+        'candidate指本层input_refs.candidate_reply解引用后的文本。'
+        '资料中由本协议生成的{catalog_ref,path}引用，按catalog[catalog_ref]中的path逐项定位并还原；'
+        '只能读取该路径的值，不能读取其父节点、相邻资料或其他层权限。')
+    catalog = state['catalog']
+    records = {}
+    for layer in state['layers'].values():
+        key = layer['input_refs'].get('relationship_history')
+        if key is None:
+            continue
+        for index, packet in enumerate(catalog[key]):
+            if isinstance(packet, dict) and packet.get('kind') == 'relationship_history' and 'records' in packet:
+                encoded = json.dumps(packet['records'], ensure_ascii=False, sort_keys=True)
+                records.setdefault(encoded, {'catalog_ref': key, 'path': [index, 'records']})
+    memory_keys = {layer['input_refs']['selected_memory'] for layer in state['layers'].values()
+                   if 'selected_memory' in layer['input_refs']}
+    for key in memory_keys:
+        for block in catalog[key]:
+            packet = block.get('value', {}).get('text')
+            if isinstance(packet, dict) and packet.get('kind') == 'relationship_history' and 'records' in packet:
+                encoded = json.dumps(packet['records'], ensure_ascii=False, sort_keys=True)
+                if encoded in records:
+                    packet['records'] = records[encoded]
+    for key, question in questions.items():
+        if ':fact:' in key:
+            layer_id, _, sid = key.split(':')
+            # The fixed suffix stays byte-for-byte identical to the original question.
+            state['fact_question_rules'] = question['instructions'].split('。', 1)[1]
+            question['instructions'] = f'{layer_id}：核对{sid}，按state.fact_question_rules判断。'
+    return state, questions
+
+
 async def review_layers_json(port, requests, candidate, evidence_bound, adjudication_contexts=None, *, max_spans=MAX_REVIEW_SPANS):
     """Detect in one request; confirm only the flagged spans in a second one.
 
@@ -397,7 +434,8 @@ async def review_layers_json(port, requests, candidate, evidence_bound, adjudica
         'candidate': candidate, 'spans': spans, 'catalog': catalog, 'layers': layers, 'layer_refs': layer_refs,
         'contact_tiers': {'n': 'none：没有声称完成接触，未来/假设/比喻均n', 'l': 'light_contact：完成轻微接触', 'c': 'close_contact：完成亲密接触'},
         'question_contract': 'lN:CODE题选该code最明确违规句段sN，先核对支持事实，不足选none。'}
-    answers = await _ask(port, state, detect, 'quality-review')
+    review_state, review_questions = _dedupe_review_request(state, detect)
+    answers = await _ask(port, review_state, review_questions, 'quality-review')
 
     def findings_for(layer):
         layer_id = layer_ids[layer.name]
