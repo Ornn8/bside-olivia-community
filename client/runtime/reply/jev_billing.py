@@ -179,7 +179,7 @@ def settle_receipt_sync(billing, expected_body_digest):
         if not verify(PUBLIC_KEY, encoded, bytes.fromhex(signed['signature'])):
             raise ValueError('JEV_BILLING_RESPONSE_INVALID')
         percent = tariff['percent']
-        tier_minimum = MINIMUM_CHARGE_UNITS * percent // 100 if tariff['minimum_enabled'] else 0
+        tier_minimum = MINIMUM_CHARGE_UNITS if tariff['minimum_enabled'] else 0
         version = CURRENT_PRICE_VERSION  # v6 keeps v5's purpose-dependent base rates.
     rates = settlement_rates(version,
                              receipt.get('purpose'))

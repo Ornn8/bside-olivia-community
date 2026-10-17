@@ -24,7 +24,7 @@ def test_signed_account_tariff_and_replay(monkeypatch, percent, tokens, minimum)
         operation_id=receipt['operation_id'],turn_id=receipt['turn_id'],percent=percent,minimum_enabled=minimum)
     signature = private.sign(json.dumps(tariff,sort_keys=True,separators=(',',':')).encode()).hex()
     exact = (tokens*101*percent+99)//100
-    amount = max(exact,1000000*percent//100) if exact and minimum else exact
+    amount = max(exact,1000000) if exact and minimum else exact
     answer = dict(status='settled',turn_id=receipt['turn_id'],operation_id=receipt['operation_id'],
         price_version=billing.TIER_PRICE_VERSION,input_tokens=tokens,charged_units=amount,
         debited_units=amount,replayed=False,account_tariff=dict(tariff=tariff,signature=signature))
@@ -33,6 +33,11 @@ def test_signed_account_tariff_and_replay(monkeypatch, percent, tokens, minimum)
         assert billing.settle_receipt_sync(dict(receipt=receipt,signature='a'*64),'b'*64)['charged_units']==amount
         answer.update(replayed=True,debited_units=0)
         assert billing.settle_receipt_sync(dict(receipt=receipt,signature='a'*64),'b'*64)['debited_units']==0
+        if minimum and 0 < exact < 1000000 and percent < 100:
+            answer.update(charged_units=max(exact,1000000*percent//100))
+            with pytest.raises(ValueError,match='JEV_BILLING_RESPONSE_INVALID'):
+                billing.settle_receipt_sync(dict(receipt=receipt,signature='a'*64),'b'*64)
+            answer.update(charged_units=amount)
         tariff['percent'] = 70 if percent==50 else 50
         with pytest.raises(ValueError,match='JEV_BILLING_RESPONSE_INVALID'):
             billing.settle_receipt_sync(dict(receipt=receipt,signature='a'*64),'b'*64)
