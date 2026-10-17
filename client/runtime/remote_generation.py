@@ -1,4 +1,4 @@
-"""Independent GPU task protocol with bounded retries for status reads only."""
+"""Independent GPU task protocol with bounded, idempotent restart recovery."""
 import json
 import re
 import asyncio
@@ -134,19 +134,7 @@ class RemoteGeneration:
         headers['Content-Type'] = 'application/json'
         try:
             planning = action == 'submit' and 'media_request' in data['input']
-            async with ClientSession(timeout=ClientTimeout(total=240 if planning else 20), trust_env=False, connector=TCPConnector(ssl=gpu_tls_context())) as session:
-                async with session.request(method, self.url + path, data=encoded, headers=headers, allow_redirects=False) as response:
-                    if response.status in (401, 403): raise CloudError('GPU_AUTH_FAILED', 502)
-                    if response.status == 402: raise CloudError('GPU_INSUFFICIENT_BALANCE', 402)
-                    if response.status == 428: raise CloudError('GPU_BILLING_CONSENT_REQUIRED', 428)
-                    if response.status == 429: raise CloudError('GPU_QUEUE_FULL', 429)
-                    if response.status not in (200, 201, 202):
-                        raise CloudError('GPU_REQUEST_FAILED', response.status)
-                    raw = bytearray()
-                    async for chunk in response.content.iter_chunked(16384):
-                        raw.extend(chunk)
-                        if len(raw) > (2097152 if action.startswith('wardrobe_') else 262144): raise CloudError('GPU_RESPONSE_INVALID', 502)
-                    result = json.loads(raw)
+            result = await self._request_json(action, method, path, encoded, headers, planning)
             if action in ('gifts_get', 'gifts_buy'):
                 from runtime.gifts import validate_gifts
                 return validate_gifts(result)
@@ -248,6 +236,61 @@ class RemoteGeneration:
             raise connection_error(exc) from None
         except (ValueError, TypeError, KeyError, AttributeError, UnicodeError):
             raise CloudError('GPU_RESPONSE_INVALID', 502) from None
+
+    async def _request_json(self, action, method, path, encoded, headers, planning):
+        retry = action in ('capabilities', 'submit')
+        deadline = time.monotonic() + 60
+        delay = 1
+        first = True
+        while True:
+            # Preserve slow first-submit planning; restart retries share one deadline.
+            timeout = 240 if planning and first else 20
+            if retry and not first:
+                timeout = min(timeout, max(.001, deadline - time.monotonic()))
+            first = False
+            try:
+                async with ClientSession(timeout=ClientTimeout(total=timeout), trust_env=False,
+                        connector=TCPConnector(ssl=gpu_tls_context())) as session:
+                    # Encoding and idempotency key are frozen before this loop.
+                    async with session.request(method, self.url + path, data=encoded,
+                            headers=headers, allow_redirects=False) as response:
+                        if response.status in (401, 403): raise CloudError('GPU_AUTH_FAILED', 502)
+                        if response.status == 402: raise CloudError('GPU_INSUFFICIENT_BALANCE', 402)
+                        if response.status == 428: raise CloudError('GPU_BILLING_CONSENT_REQUIRED', 428)
+                        if response.status == 429: raise CloudError('GPU_QUEUE_FULL', 429)
+                        if response.status not in (200, 201, 202):
+                            if retry and response.status in (502, 503, 504):
+                                raw = bytearray()
+                                async for chunk in response.content.iter_chunked(4096):
+                                    raw.extend(chunk)
+                                    if len(raw) > 4096: break
+                                try:
+                                    error = json.loads(raw) if len(raw) <= 4096 else {}
+                                    code = error.get('error', error.get('detail', error.get('code')))
+                                    if isinstance(code, dict): code = code.get('code')
+                                    if (isinstance(code, str) and re.fullmatch(r'GPU_[A-Z_]{1,76}', code)
+                                            and code != 'GPU_REQUEST_FAILED'):
+                                        raise CloudError(code, response.status)
+                                except (ValueError, AttributeError):
+                                    pass
+                            raise CloudError('GPU_REQUEST_FAILED', response.status)
+                        raw = bytearray()
+                        async for chunk in response.content.iter_chunked(16384):
+                            raw.extend(chunk)
+                            if len(raw) > (2097152 if action.startswith('wardrobe_') else 262144):
+                                raise CloudError('GPU_RESPONSE_INVALID', 502)
+                        return json.loads(raw)
+            except (ClientError, TimeoutError, CloudError) as exc:
+                error = connection_error(exc) if not isinstance(exc, CloudError) else exc
+                transient = error.code in ('GPU_CONNECT_FAILED', 'GPU_CONNECTION_TIMEOUT', 'GPU_CONNECTION_FAILED')
+                transient |= error.code == 'GPU_REQUEST_FAILED' and error.status in (502, 503, 504)
+                remaining = deadline - time.monotonic()
+                if not retry or not transient or remaining <= 0:
+                    raise error from None
+                await asyncio.sleep(min(delay, remaining))
+                if time.monotonic() >= deadline:
+                    raise error from None
+                delay = min(delay * 2, 8)
 
     async def _sings_covers(self):
         """True when the service prices YuE2 covers, i.e. it accepts cover_options.engine."""
