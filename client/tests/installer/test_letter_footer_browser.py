@@ -1,6 +1,8 @@
 from pathlib import Path
 
-from playwright.sync_api import sync_playwright
+import pytest
+
+sync_playwright = pytest.importorskip('playwright.sync_api').sync_playwright
 
 
 def test_reading_footer_follows_body_and_short_paper_keeps_bottom():
