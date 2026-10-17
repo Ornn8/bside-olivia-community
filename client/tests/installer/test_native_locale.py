@@ -314,22 +314,16 @@ def run_node(tmp_path, scenarios, english=None):
 
 
 @pytest.mark.parametrize('stored, nav, lang', [
-    ('en', 'zh-CN', 'en'),            # the stored choice wins over the browser language
+    ('en', 'zh-CN', 'en'),            # only an explicit stored choice selects English
+    ('en', 'en-US', 'en'),
     ('zh-cn', 'en-US', 'zh-cn'),
     (None, 'zh-CN', 'zh-cn'),
-    (None, 'zh', 'zh-cn'),
-    (None, 'ZH-TW', 'zh-cn'),
-    (None, 'zh-Hans-CN', 'zh-cn'),
-    (None, 'en-US', 'en'),
-    (None, 'en-GB', 'en'),
-    (None, 'ja-JP', 'en'),
-    (None, 'de', 'en'),
-    ('fr', 'zh-CN', 'zh-cn'),         # an unknown stored value is ignored
-    ('fr', 'en-US', 'en'),
-    ('', 'zh-CN', 'zh-cn'),
-    ('throw', 'zh-CN', 'zh-cn'),      # blocked storage falls through to the browser language
-    ('throw', 'en-US', 'en'),
-    (None, 'throw', 'zh-cn'),         # no usable browser language keeps today's Chinese
+    (None, 'en-US', 'zh-cn'),         # the browser language never switches existing users
+    (None, 'ja-JP', 'zh-cn'),
+    ('fr', 'en-US', 'zh-cn'),         # an unknown stored value is ignored
+    ('', 'en-US', 'zh-cn'),
+    ('throw', 'en-US', 'zh-cn'),      # blocked storage keeps today's Chinese
+    (None, 'throw', 'zh-cn'),
     ('en', 'throw', 'en'),
 ])
 def test_start_language_selection(tmp_path, stored, nav, lang):

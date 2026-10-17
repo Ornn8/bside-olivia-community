@@ -3,8 +3,8 @@
 The native bundle ships a small translator that only knows the zh-cn module. This patch
   * adds assets/en-olivia.js (the English module, same keys as zh-cn) to the archive,
   * registers it in the bundle's locale map,
-  * picks the start language from localStorage `olivia.ui.language` (zh-cn | en), then
-    from navigator.language (zh* -> zh-cn, otherwise en),
+  * picks the start language from localStorage `olivia.ui.language` (zh-cn | en); without a stored
+    choice it stays zh-cn (the embedded browser may report en-US on Chinese Windows),
   * wraps the few Chinese literals that live outside the locale module.
 
 In zh-cn mode every changed expression returns exactly what it returned before.
@@ -28,12 +28,12 @@ SOURCE = Path(__file__).resolve().parents[1] / 'runtime' / 'native_locale' / 'en
 
 STORAGE_KEY = 'olivia.ui.language'
 
-# Defined once at the very start of the bundle. localStorage first, then the browser language;
-# a failing storage falls through to the browser language, a failing navigator keeps zh-cn.
+# Defined once at the very start of the bundle. Only an explicit stored choice selects English;
+# anything else, including blocked storage, keeps today's zh-cn.
 PRELUDE = (
     'const oliviaNativeLang=(()=>{try{const e=localStorage.getItem("' + STORAGE_KEY + '");'
     'if(e==="en"||e==="zh-cn")return e}catch{}'
-    'try{return/^zh/i.test(navigator.language||"")?"zh-cn":"en"}catch{return"zh-cn"}})(),'
+    'return"zh-cn"})(),'
     'oliviaNativeText=(e,t)=>oliviaNativeLang==="en"?t:e,'
     'oliviaNativeMonth=e=>oliviaNativeLang==="en"?["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][e]:e+1;'
 )
