@@ -12,6 +12,22 @@ from runtime.relationship_growth import CHOICES, validate_signals
 from .relationship_contract import MODEL, PROMPT, validate_result
 
 
+_BATCH_ERROR_CODES = frozenset({
+    'invalid_api_key', 'invalid_request', 'request_too_large', 'idempotency_conflict',
+    'request_already_submitted', 'relationship_background_busy', 'rate_limited',
+    'pending_requests_limit', 'insufficient_quota', 'insufficient_balance',
+    'model_not_priced', 'model_requires_money_account', 'account_tiers_unavailable',
+    'relationship_upstream_unavailable', 'relationship_batch_unavailable',
+})
+
+
+class BatchRequestError(RuntimeError):
+    def __init__(self, http_status, error_code):
+        super().__init__('RELATIONSHIP_BATCH_UNAVAILABLE')
+        self.http_status = http_status
+        self.error_code = error_code if error_code in _BATCH_ERROR_CODES else 'RELATIONSHIP_BATCH_UNAVAILABLE'
+
+
 class BatchQueue:
     def __init__(self, path):
         self.path = Path(path)
@@ -94,7 +110,7 @@ class BatchQueue:
 async def request_batch(gateway, batch, chosen):
     """A dedicated relay endpoint rejects pre-installer servers; no supplier fallback."""
     import os
-    from aiohttp import ClientSession, ClientTimeout
+    from aiohttp import ClientSession, ClientTimeout, ClientError
     from original_client_relay_api import RELAY_BASE
     from runtime.tls import client_tls_context
     gateway = getattr(gateway, 'primary', gateway)
@@ -108,7 +124,21 @@ async def request_batch(gateway, batch, chosen):
             headers={'Authorization': 'Bearer ' + os.environ.get(config.api_key_env, '')},
             ssl=client_tls_context(), allow_redirects=False) as response:
             if response.status != 200:
-                raise RuntimeError('RELATIONSHIP_BATCH_UNAVAILABLE')
+                code = None
+                try:
+                    body = bytearray()
+                    async for chunk in response.content.iter_chunked(4096):
+                        body.extend(chunk)
+                        if len(body) > 4096:
+                            break
+                    if len(body) <= 4096:
+                        payload = json.loads(body)
+                        error = payload.get('error') if isinstance(payload, dict) else None
+                        if isinstance(error, dict) and isinstance(error.get('code'), str):
+                            code = error['code']
+                except (ValueError, ClientError, OSError, asyncio.TimeoutError):
+                    pass
+                raise BatchRequestError(response.status, code)
             raw = bytearray()
             async for chunk in response.content.iter_chunked(16384):
                 raw.extend(chunk)
@@ -159,7 +189,10 @@ async def tick(server, now=None, request=request_batch):
         await asyncio.to_thread(commit)
         await asyncio.to_thread(server._refresh_contact_relationship_projection)
         return 'updated'
-    except Exception:
+    except Exception as exc:
         queue.defer(now)
-        server._safe_log('relationship_batch_deferred')
+        status = exc.http_status if isinstance(exc, BatchRequestError) else 0
+        code = exc.error_code if isinstance(exc, BatchRequestError) else 'RELATIONSHIP_BATCH_UNAVAILABLE'
+        server._safe_log('relationship_batch_deferred', http_status=status,
+                         status=f'HTTP_{status}' if status else 'DEFERRED', error_code=code)
         return 'deferred'
