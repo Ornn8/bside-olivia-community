@@ -52,12 +52,14 @@ def mount(app, setup, stored_key, remote):
                     if current != destination:
                         collector.schema = 1
                         collector.policy_version_supported = False
+                        collector.decision_rejection_reason_supported = False
                         destination = current
                     async def send(events):
                         return await remote(key, {'schema': collector.schema, 'events': events})
                     await collector.upload(send)
                 except (LLMSetupError, OSError, ValueError, sqlite3.Error):
                     collector.schema = 1
+                    collector.decision_rejection_reason_supported = False
                     collector.last_error = 'TELEMETRY_UPLOAD_FAILED'
                 await asyncio.sleep(60)
         task = asyncio.create_task(run()) if collector else None
