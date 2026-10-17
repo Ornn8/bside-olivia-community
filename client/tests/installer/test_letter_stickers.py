@@ -11,13 +11,14 @@ from installer.patch_letter_stickers import patch_letter_stickers, patch_source
 def test_patch_preserves_unrelated_members_and_is_idempotent(tmp_path):
     source=('content:e.replyText??"",;__name:"MailBoxReplyContent",props:{;'
             'class:ae(["mail-box-reply-content faux-bold",o(E)]);'
-            'ref:p,value:l.modelValue,readonly:A.readonly,;'
+            '_(se,{key:2},[A.type==="text"?(r(),_("textarea",{key:0,ref:p,value:l.modelValue,readonly:A.readonly,;'
             'n("div",mw,v(o(I)),1);null,42,uw);],2)}}});const $s=;'
             '__name:"MailBoxContentBody";F(ks,{onVideoError:u},null,8,[]);F(ks,{onVideoError:u},null,8,[])]}),_:1},8,["disabled"])')
     path=tmp_path/'feapp.dat'
     with zipfile.ZipFile(path,'w') as z:
         z.writestr('assets/main-31595bd3.js',source)
         z.writestr('untouched.bin',b'preserve this')
+        z.writestr('assets/postcard_letter-d722fc17.webp',b'native paper fixture')
     assert patch_letter_stickers(path)=='PATCHED'
     with zipfile.ZipFile(path) as z:
         assert z.read('untouched.bin')==b'preserve this'
@@ -131,7 +132,7 @@ def test_stickered_client_without_photos_still_patches_after_failure_prop_was_ad
     from installer.patch_letter_stickers import _patch_with_failure_prop, patch_photos, FAILURE_PROP
     source=('content:e.replyText??"",;__name:"MailBoxReplyContent",props:{;'
             'class:ae(["mail-box-reply-content faux-bold",o(E)]);'
-            'ref:p,value:l.modelValue,readonly:A.readonly,;'
+            '_(se,{key:2},[A.type==="text"?(r(),_("textarea",{key:0,ref:p,value:l.modelValue,readonly:A.readonly,;'
             'n("div",mw,v(o(I)),1);null,42,uw);],2)}}});const $s=;'
             '__name:"MailBoxContentBody";F(ks,{onVideoError:u},null,8,[]);F(ks,{onVideoError:u},null,8,[])]}),_:1},8,["disabled"])')
     stickered=patch_source(source).replace('F(ks,{',FAILURE_PROP)
