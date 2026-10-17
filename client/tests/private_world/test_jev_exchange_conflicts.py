@@ -118,7 +118,7 @@ def test_every_other_fact_is_produced_when_no_updates_conflict():
     assert payload['relationship']['kind'] == 'meaningful_exchange'
     assert payload['routine'] == {'sleep_minute': 1410, 'utc_offset_minutes': 480, 'quote': USER_SENTENCE}
     assert payload['boundaries'] == [{'action': 'set', 'boundary_id': None, 'quote': BOUNDARY}]
-    assert payload['addressing'] == {'user_calls_linli': '小林，'}
+    assert payload['addressing'] == {'user_calls_linli': '小林'}
     assert payload['current_quote'] == RECORDED and payload['world_update'] == 'reconsider'
 
 

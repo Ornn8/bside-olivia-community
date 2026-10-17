@@ -1,6 +1,7 @@
 """Shared memories belong to canonical messages and disappear with their sources."""
 import hashlib
 import json
+from datetime import datetime, timezone
 
 KINDS = {
     'rel_disclosure:personal': 'disclosure_personal', 'rel_disclosure:vulnerable': 'disclosure_vulnerable',
@@ -56,11 +57,12 @@ def sync_messages(ledger, rows):
         db.execute('DELETE FROM relationship_message_sources WHERE ' + missing, (json.dumps(identities),))
 
 
-def plans(life_store):
+def plans(life_store, *, now=None):
     """Reuse the existing shared-project IDs, so completing one never closes another."""
     if life_store is None:
         return []
+    now = now or datetime.now(timezone.utc)
     with life_store._db() as db:
-        rows = db.execute("SELECT payload FROM life_projects WHERE json_extract(payload,'$.kind')='shared'")
-        return [item for (raw,) in rows if (item := json.loads(raw)).get('status')
-                in {'planned', 'ongoing', 'paused'}]
+        return [item for item in life_store._projects_at(db, now)
+                if item.get('kind') == 'shared' and item.get('status') in {'planned', 'ongoing', 'paused'}
+                and not item.get('deadline_expired')]

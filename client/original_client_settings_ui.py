@@ -1873,7 +1873,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         for (const item of items) {
           const el = document.createElement("details");
           el.style.cssText = "padding:8px 0;overflow-wrap:anywhere";
-          el.append(text("summary", `${said(item)} · ${item.time_scope === 'transient' ? '当时的活动记录' : item.deadline_expired ? (item.time_scope_pending ? '时限待确认（上次时限已过）' : '时限已过，进展未确认') : (labels[item.status] || "进展未知") + (item.time_scope_pending ? ' · 时限待确认' : '')}`, "text-text-title text-label-l"),
+          el.append(text("summary", `${said(item)} · ${item.time_scope === 'transient' ? '当时的活动记录' : item.expired_by_age ? '旧事项，进展未确认' : item.deadline_expired ? (item.time_scope_pending ? '时限待确认（上次时限已过）' : '时限已过，进展未确认') : (labels[item.status] || "进展未知") + (item.time_scope_pending ? ' · 时限待确认' : '')}`, "text-text-title text-label-l"),
             text("p", item.detail, "text-text-body text-body-m"),
             text("small", when(item.updated_at), "text-text-secondary text-caption-m"));
           if(item.deadline_at)el.append(text('small',`${item.time_scope_pending?'上次时限':'时限'}：${when(item.deadline_at)}`,'text-text-secondary text-caption-m'));

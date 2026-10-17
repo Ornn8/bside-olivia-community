@@ -723,9 +723,9 @@ def test_addressing_profile_keeps_latest_exact_quotes_per_side(tmp_path):
     store.record_addressing("reply:b:1", {"user_calls_linli": "离离，"}, occurred_at=now - timedelta(days=1))  # idempotent
     store.record_addressing("reply:c:1", {"user_calls_linli": "小离，", "bogus_kind": "x", "user_self": "长" * 81}, occurred_at=now)
     profile = store.addressing_profile(now=now)
-    assert [item["quote"] for item in profile["user_calls_linli"]] == ["小离，", "离离，"]  # latest first, distinct
-    assert [item["quote"] for item in profile["user_self"]] == ["你的老姜。"]
-    assert [item["quote"] for item in profile["linli_calls_user"]] == ["好呀老姜，"]
+    assert [item["quote"] for item in profile["user_calls_linli"]] == ["小离", "离离"]  # latest first, distinct
+    assert 'user_self' not in profile
+    assert 'linli_calls_user' not in profile
     assert store.addressing_profile(now=now - timedelta(days=3)) == {}
 
 
@@ -753,7 +753,7 @@ def test_exchange_commit_keeps_addressing_and_world_gate_from_one_request(tmp_pa
     now = datetime(2026, 9, 29, 4, tzinfo=timezone.utc)
     assert asyncio.run(runtime.consume_exchange('reply:x:1', '小离，今天项目返工了。', '辛苦了。', occurred_at=now))
     assert 'exchange-world-update' not in purposes and purposes.count('exchange-facts') == 1
-    assert [q['quote'] for q in store.addressing_profile(now=now)['user_calls_linli']] == ['小离，']
+    assert [q['quote'] for q in store.addressing_profile(now=now)['user_calls_linli']] == ['小离']
     with store._db() as db:
         assert db.execute('SELECT decision FROM life_exchange_world_gate WHERE source_id=?', ('reply:x:1',)).fetchone()[0] == 'none'
 
