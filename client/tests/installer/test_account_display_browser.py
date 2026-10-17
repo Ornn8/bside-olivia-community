@@ -2,7 +2,9 @@ import json
 import os
 from pathlib import Path
 from original_client_settings_ui import BOOTSTRAP_JAVASCRIPT
-from playwright.sync_api import sync_playwright
+import pytest
+
+sync_playwright = pytest.importorskip('playwright.sync_api').sync_playwright
 
 
 def test_account_display_render_without_normalizing(tmp_path):
