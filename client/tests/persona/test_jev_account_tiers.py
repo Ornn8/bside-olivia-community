@@ -11,10 +11,8 @@ KEY = 'olivia-synthetic-tier-key'
 @pytest.mark.parametrize('tokens', [0,17,17001])
 @pytest.mark.parametrize('minimum', [False,True])
 def test_signed_account_tariff_and_replay(monkeypatch, percent, tokens, minimum):
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
-    private = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
-    monkeypatch.setattr(jev_tier_trust, 'PUBLIC_KEY', private.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw))
+    seed = bytes(range(32))
+    monkeypatch.setattr(jev_tier_trust, 'PUBLIC_KEY', ed25519.public_key(seed))
     monkeypatch.setenv('OLIVIA_JEV_BILLING_ENABLED','1')
     monkeypatch.setattr(billing, '_account_key', lambda:KEY)
     receipt = dict(v=1, turn_id='test:turn', account_key_digest=hashlib.sha256(KEY.encode()).hexdigest(),
@@ -22,7 +20,7 @@ def test_signed_account_tariff_and_replay(monkeypatch, percent, tokens, minimum)
         operation_id='c'*64, purpose='character-emotion')
     tariff = dict(version=billing.TIER_PRICE_VERSION, account_key_digest=receipt['account_key_digest'],
         operation_id=receipt['operation_id'],turn_id=receipt['turn_id'],percent=percent,minimum_enabled=minimum)
-    signature = private.sign(json.dumps(tariff,sort_keys=True,separators=(',',':')).encode()).hex()
+    signature = ed25519.sign(seed, json.dumps(tariff,sort_keys=True,separators=(',',':')).encode()).hex()
     exact = (tokens*101*percent+99)//100
     amount = max(exact,1000000) if exact and minimum else exact
     answer = dict(status='settled',turn_id=receipt['turn_id'],operation_id=receipt['operation_id'],
