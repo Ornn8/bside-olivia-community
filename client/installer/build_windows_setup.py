@@ -163,6 +163,7 @@ RELEASE_INSTALLER_FILES = {
     "installer/olivia_launcher/Olivia.exe.sha256",
     "installer/patch_local_login.py",
     "installer/patch_letter_stickers.py",
+    "installer/patch_native_locale.py",
     "installer/__init__.py",
     "installer/__main__.py",
     "installer/bootstrap_install.py",

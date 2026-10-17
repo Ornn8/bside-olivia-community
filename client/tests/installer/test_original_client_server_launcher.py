@@ -110,6 +110,7 @@ def test_launcher_repairs_existing_0627_frontend_before_start(
 ) -> None:
     # The legacy fixture only contains the mailbox access fragment.
     monkeypatch.setattr("installer.patch_letter_stickers.patch_letter_stickers", lambda _path: "ALREADY_PATCHED")
+    monkeypatch.setattr("installer.patch_native_locale.patch_native_locale", lambda _path: "ALREADY_PATCHED")
     root = _installation(tmp_path, client_version="0.0.9.627")
     resources = root / "app" / "0.0.9.627" / "resources"
     index = """<!doctype html><html><head>
