@@ -97,7 +97,9 @@ def test_page_script_runs_from_head_before_the_body_exists(tmp_path):
     # The injected script tag sits in <head>; 2.3.4+call.1-3 appended to a null body and the
     # error stopped the settings page and the piano entry that follow in the same file.
     from original_client_settings_ui import BOOTSTRAP_JAVASCRIPT, _isolated
-    assert BOOTSTRAP_JAVASCRIPT.startswith(_isolated(JAVASCRIPT))
+    from runtime.ui_i18n import I18N_JAVASCRIPT
+    # The language helper comes first, then the call page, so the helper exists when the page script runs.
+    assert BOOTSTRAP_JAVASCRIPT.startswith(_isolated(I18N_JAVASCRIPT) + _isolated(JAVASCRIPT))
     script = tmp_path / 'page.js'
     script.write_text(PAGE % _isolated(JAVASCRIPT), encoding='utf-8')
     result = subprocess.run(['node', str(script)], capture_output=True, text=True, timeout=60)
