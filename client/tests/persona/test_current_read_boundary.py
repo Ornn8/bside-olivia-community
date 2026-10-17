@@ -30,7 +30,7 @@ def test_frozen_turn_keeps_unanswered_user_inputs_without_drafts_or_other_bindin
     assert 'mutated-after-freeze' not in recent and 'foreign' not in recent and 'future' not in recent
 
 
-def test_late_unanswered_message_precedes_newer_delivered_turn_and_projects_as_user_only():
+def test_skipped_old_message_is_not_a_pending_user_turn():
     from runtime.personal_chat.context import freeze_read_window, READ_WINDOW
     from runtime.reply.fact_attribution import prepare_dialogue_messages
     rows = [row('newer', 'DELIVERED', 20, user_sent_at='1970-01-01T00:00:20+00:00'),
@@ -41,12 +41,12 @@ def test_late_unanswered_message_precedes_newer_delivered_turn_and_projects_as_u
         recent, _ = conversation_context([], query='current', now=datetime.now(timezone.utc))
     finally:
         READ_WINDOW.reset(token)
-    assert [i['user_letter'] for i in json.loads(recent)['letters']] == ['late', 'newer']
+    assert [i['user_letter'] for i in json.loads(recent)['letters']] == ['newer']
     messages = ({'role': 'system', 'content': '<untrusted_history>' + json.dumps({'text': recent}) + '</untrusted_history>'},
                 {'role': 'user', 'content': 'current'})
     actual = prepare_dialogue_messages(messages, max_input_chars=20000)
     assert [(m['role'], m['content'].split('\n')[-1]) for m in actual if m['role'] != 'system'] == [
-        ('user', 'late'), ('user', 'newer'), ('assistant', 'draft-newer'), ('user', 'current')]
+        ('user', 'newer'), ('assistant', 'draft-newer'), ('user', 'current')]
     assert 'draft-late' not in str(actual)
 
 
@@ -139,4 +139,4 @@ def test_late_pending_merge_preserves_delivery_order_even_with_platform_clock_re
             row('last', 'DELIVERED', 6, user_sent_at='1970-01-01T00:00:40Z'),
             row('current', 'GENERATING', 7)]
     actual = freeze_read_window(rows, channel='qq', binding_id='same', current_id='current')
-    assert [r['letter_id'] for r in actual] == ['late-20', 'late-25', 'first', 'second', 'other-channel', 'last']
+    assert [r['letter_id'] for r in actual] == ['first', 'second', 'other-channel', 'last']

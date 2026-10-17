@@ -42,6 +42,59 @@ def test_generated_reply_resumes_without_regeneration():
     asyncio.run(scenario())
 
 
+def test_old_draft_is_not_sent_or_merged_into_new_pending_batch():
+    async def scenario():
+        old = PersonalMessage('qq', '100', '200', 'old', 'old synthetic input')
+        new = PersonalMessage('qq', '100', '200', 'new', 'current synthetic input')
+        generated, sent = [], []
+        async def generate(event, row):
+            generated.append(event.text)
+            return 'current reply'
+        async def commit(row):
+            pass
+        async def send(text):
+            sent.append(text)
+            return 'receipt'
+        service = PersonalChatService([], lambda: None, generate, commit, {'qq': ('100', '200')})
+        await service.ingest(old)
+        service.rows[0].update(created_at=1, delivery_status='GENERATED', reply_text='obsolete draft')
+        await service.ingest(new)
+        await service.handle(old, send)
+        assert service.rows[0]['delivery_status'] == 'SKIPPED'
+        assert not generated and not sent
+        await service.handle(new, send)
+        assert generated == ['current synthetic input']
+        assert sent == ['current reply']
+        await asyncio.gather(*service.consumer_tasks.values())
+    asyncio.run(scenario())
+
+
+def test_slow_generation_does_not_merge_a_later_conversation():
+    async def scenario():
+        old = PersonalMessage('qq', '100', '200', 'old', 'old synthetic input')
+        new = PersonalMessage('qq', '100', '200', 'new', 'current synthetic input')
+        generated, sent = [], []
+        async def generate(event, row):
+            generated.append(event.text)
+            if event.message_id == 'old':
+                await service.ingest(new)
+                row['created_at'] -= 600
+                return 'obsolete draft'
+            return 'current reply'
+        async def commit(row):
+            pass
+        async def send(text):
+            sent.append(text)
+            return 'receipt'
+        service = PersonalChatService([], lambda: None, generate, commit, {'qq': ('100', '200')})
+        await service.handle(old, send)
+        assert generated == ['old synthetic input', 'current synthetic input']
+        assert sent == ['current reply']
+        assert service.rows[0]['delivery_status'] == 'SKIPPED'
+        await asyncio.gather(*service.consumer_tasks.values())
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize('state,extra', [
     ('SENDING', {}), ('DELIVERY_UNCONFIRMED', {}), ('FAILED', {}),
     ('GENERATING', {}), ('DELIVERED', {}),

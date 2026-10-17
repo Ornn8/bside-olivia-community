@@ -205,6 +205,8 @@ _UPDATE_CONTRACT = (
     '生活事项需有可追踪的执行过程或现实履约；对话话语行为、理解与态度确认以及设置通信规则本身不是生活任务，'
     '由关系/边界/称呼/作息的专门字段记录。真实的未来现实行动或交付意向可有条件，不能把纯假设已完成当作意向。'
     '从action_anchors选择最短能区分该一个行动的引用；完整support及全部sources核对对象、条件、否定和更正。'
+    '已有等待事项本轮得到明确答复、交付确认或撤销时，必须更新原事项为completed或cancelled；'
+    '仅仅出现旧关键词不是重新承诺，已结束事项不得重开。新的独立承诺使用新身份。'
     '不要重复同一行动，不用包含多个行动的宽片段合并事项；没有第几个适用事项则none。')
 _DEPENDENT_CONTRACT = {
     'existing_match': (
@@ -830,8 +832,10 @@ async def _extract(port, data, instructions, request_id, level, update_slots, bo
                                      ('address_self_quote', 'user_self', user),
                                      ('address_user_quote', 'linli_calls_user', reply)):
             # Only a short span is a name; a whole sentence would reach the writer as her own words.
-            if answers.get(field, 'none') in catalog and len(catalog[answers[field]]) <= 16:
-                payload['addressing'][name] = catalog[answers[field]]
+            from .addressing import address_term
+            term = address_term(catalog.get(answers.get(field)))
+            if term:
+                payload['addressing'][name] = term
     if data.get('contact_invited') and not proactive:
         contact = answers['contact_choice']
         payload['contact_choice'] = {'choice': contact, 'quote': evidence('contact_quote', user)} if contact != 'none' else None

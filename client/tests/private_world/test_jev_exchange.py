@@ -411,7 +411,7 @@ def test_exchange_keeps_how_each_side_addresses_the_other_as_original_quotes():
             return next(k for k, v in text.items() if v == picks[key])
         return first(key, q, state)
     result = asyncio.run(extract(Port(choose), data, '', 'life:addr'))
-    assert result['addressing'] == {'user_calls_linli': '小离，', 'user_self': '你的老姜。', 'linli_calls_user': '好呀老姜，'}
+    assert result['addressing'] == {'user_calls_linli': '小离'}
 
     proactive = {**data, 'origin': 'proactive'}
     port = Port(first)

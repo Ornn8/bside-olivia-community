@@ -238,6 +238,14 @@ class PersonalChatService:
         if not pending:
             return None
         _clear_draft(row)
+        latest = max(pending, key=lambda item: item.get('received_sequence', 0))
+        gap = float(latest.get('created_at', 0)) - float(row.get('read_boundary_created_at', row.get('created_at', 0)))
+        before, after = _sent_time(row), _sent_time(latest)
+        if gap > 300 or before is not None and after is not None and (after - before).total_seconds() > 300:
+            row.update(delivery_status='SKIPPED', letter_status='SKIPPED',
+                       error_code='PERSONAL_CHAT_STALE_REPLY', skip_reason='STALE_REPLY')
+            await persist_state(self.persist)
+            return self._stored_event(latest, event.channel, event.account_id, event.owner_id)
         try:
             merged = self._combine_rows(event, [row, *pending])
         except ValueError:
@@ -397,8 +405,12 @@ class PersonalChatService:
                     return (float(item.get('read_boundary_created_at', item.get('created_at', 0))),
                             item.get('read_boundary_sequence', item.get('received_sequence', index)))
                 if row.get('delivery_status') in {'RECEIVED', 'GENERATED', 'FAILED', 'GENERATING'} and any(
-                    old is not row and old.get('delivery_status') == 'DELIVERED'
-                    and boundary(old, index) > boundary(row, position)
+                    old is not row
+                    and (old.get('delivery_status') == 'DELIVERED'
+                         and boundary(old, index) > boundary(row, position)
+                         or old.get('delivery_status') == 'RECEIVED'
+                         and old.get('binding_id') == row.get('binding_id')
+                         and boundary(old, index)[0] - boundary(row, position)[0] > 300)
                     for index, old in enumerate(self.rows)
                 ):
                     # Replays include failed or interrupted generation, not just
@@ -431,7 +443,7 @@ class PersonalChatService:
                 # Platform backlog can arrive for the first time after a newer
                 # turn was answered. Arrival/row order cannot detect that case.
                 for old in self.rows:
-                    if (old is row or old.get('delivery_status') != 'DELIVERED'
+                    if (old is row or old.get('delivery_status') not in {'DELIVERED', 'RECEIVED'}
                             or old.get('binding_id') != event.binding_id):
                         continue
                     try:
@@ -439,7 +451,8 @@ class PersonalChatService:
                         after = _sent_time(old)
                     except (KeyError, AttributeError, TypeError, ValueError):
                         continue
-                    if before is not None and after is not None and after > before:
+                    if (before is not None and after is not None and after > before
+                            and (old.get('delivery_status') == 'DELIVERED' or (after - before).total_seconds() > 300)):
                         row.update(delivery_status='SKIPPED', letter_status='SKIPPED',
                                    error_code='PERSONAL_CHAT_STALE_REPLY', skip_reason='STALE_REPLY')
                         await persist_state(self.persist)

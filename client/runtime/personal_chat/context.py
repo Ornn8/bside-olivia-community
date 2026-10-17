@@ -39,15 +39,19 @@ def freeze_read_window(rows, *, channel, binding_id, current_id):
         return row.get('channel') == channel and row.get('binding_id') == binding_id
     def timestamp(row):
         try:
-            stamp = datetime.fromisoformat(row['user_sent_at'].replace('Z', '+00:00'))
+            stamp = datetime.fromisoformat((row.get('read_boundary_sent_at') or row['user_sent_at']).replace('Z', '+00:00'))
             if stamp.tzinfo:
                 return stamp.timestamp()
         except (KeyError, AttributeError, TypeError, ValueError):
             pass
-        return float(row.get('created_at', 0))
+        return float(row.get('read_boundary_created_at', row.get('created_at', 0)))
     delivered, pending = [], []
     pending_states = {'RECEIVED', 'GENERATING', 'GENERATED', 'MEDIA_PENDING', 'FAILED',
-                      'SENDING', 'SKIPPED', 'DELIVERY_UNCONFIRMED'}
+                      'SENDING', 'DELIVERY_UNCONFIRMED'}
+    current_time = timestamp(current[1]) if current else float('-inf')
+    last_answered = max((timestamp(r) for i, r in enumerate(rows) if same(r)
+                         and receipt(i, r) <= cutoff
+                         and r.get('delivery_status') == 'DELIVERED'), default=float('-inf'))
     for index, row in enumerate(rows):
         if not isinstance(row.get('letter_id'), str) or row['letter_id'] == current_id or row.get('read_only'):
             continue
@@ -58,7 +62,9 @@ def freeze_read_window(rows, *, channel, binding_id, current_id):
                 else row.get('letter_status') == 'COMPLETED'):
             delivered.append({**_snapshot(row), '_receipt_order': order})
         elif (same(row) and row.get('origin') != 'proactive' and not row.get('superseded_by')
-              and row.get('delivery_status') in pending_states):
+              and row.get('delivery_status') in pending_states
+              and 0 <= current_time - timestamp(row) <= 300
+              and timestamp(row) >= last_answered):
             item = {key: deepcopy(row[key]) for key in ('letter_id', 'channel', 'binding_id', 'created_at',
                     'life_received_at', 'user_sent_at', 'content', 'source_messages',
                     'incoming_image_observations', 'incoming_media_observations') if key in row}
