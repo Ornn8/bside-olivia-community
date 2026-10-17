@@ -3208,72 +3208,180 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const dialog = document.createElement('dialog');
     dialog.setAttribute('data-letter-deletion', '');
     dialog.setAttribute('aria-label', '管理信件');
-    dialog.style.cssText = 'box-sizing:border-box;width:min(800px,calc(100vw - 48px));max-height:85vh;overflow:auto;background:#202124;color:#ede9e1;border:1px solid #666;border-radius:16px;padding:24px;font-family:inherit';
-    const header = actions(), body = stack(), notice = text('p', '', 'text-text-secondary');
-    notice.setAttribute('role', 'status');
-    let recent = false, busy = false, changed = false;
-    const dismiss = () => { dialog.close(); dialog.remove(); if (changed) window.location.reload(); };
-    const close = button('关闭', dismiss);
-    const tabs = button('最近删除', async () => { if (!busy) { recent = !recent; await load(); } });
-    header.append(text('h2', '管理信件'), tabs, close);
-    dialog.append(header, notice, body); document.body.append(dialog); dialog.showModal(); close.focus();
+    const style = text('style', `
+      [data-letter-deletion], [data-letter-confirm] {position:fixed;inset:0;margin:auto;box-sizing:border-box;color:#ede9e1;background:#202124;border:1px solid #48494c;border-radius:16px;padding:0;font:14px/1.6 system-ui,"Microsoft YaHei",sans-serif;color-scheme:dark;max-width:none;max-height:none}
+      [data-letter-deletion] {width:min(1000px,calc(100vw - 48px));height:min(740px,calc(100dvh - 64px))}
+      [data-letter-deletion]::backdrop, [data-letter-confirm]::backdrop {background:rgb(0 0 0 / 65%)}
+      [data-letter-deletion] * {box-sizing:border-box}
+      [data-letter-deletion] p, [data-letter-deletion] h2, [data-letter-deletion] h3 {margin:0}
+      [data-letter-deletion] h2 {font-size:22px;font-weight:600}
+      [data-letter-deletion] button, [data-letter-confirm] button {font:inherit;color:inherit;background:transparent;border:1px solid #66625c;border-radius:999px;padding:7px 16px;cursor:pointer}
+      [data-letter-deletion] button:hover, [data-letter-confirm] button:hover {background:#363638}
+      [data-letter-deletion] :focus-visible, [data-letter-confirm] :focus-visible {outline:2px solid #e5d6b8;outline-offset:3px}
+      [data-letter-deletion] button:disabled {opacity:.45;cursor:default}
+      [data-letter-deletion] .lm-shell {height:100%;display:flex;flex-direction:column;overflow:hidden;border-radius:inherit}
+      [data-letter-deletion] .lm-header {padding:24px 28px 12px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+      [data-letter-deletion] .lm-notice {padding:0 28px 18px;color:#c5c0b7;font-size:13px;min-height:40px}
+      [data-letter-deletion] .lm-workspace {display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);flex:1;min-height:0;border-top:1px solid #414143}
+      [data-letter-deletion] .lm-list, [data-letter-deletion] .lm-preview {overflow:auto;scrollbar-width:thin;scrollbar-color:#68645c transparent;min-height:0}
+      [data-letter-deletion] ::-webkit-scrollbar {width:6px}
+      [data-letter-deletion] ::-webkit-scrollbar-thumb {background:#68645c;border-radius:6px}
+      [data-letter-deletion] .lm-preview {padding:28px;border-left:1px solid #414143;background:#242527;white-space:pre-wrap;overflow-wrap:anywhere}
+      [data-letter-deletion] .lm-preview h3 {font-size:17px;margin-bottom:16px}
+      [data-letter-deletion] .lm-preview p {line-height:1.9}
+      [data-letter-deletion] .lm-row {display:flex;gap:12px;align-items:center;padding:12px 20px;border-bottom:1px solid #363739;min-height:78px}
+      [data-letter-deletion] .lm-row:has(input:checked) {background:#393931}
+      [data-letter-deletion] input {width:18px;height:18px;flex-shrink:0;accent-color:#d8c9ab;cursor:pointer}
+      [data-letter-deletion] button.lm-title {padding:0;border:0;border-radius:3px;text-align:left;flex:1;min-width:0}
+      [data-letter-deletion] .lm-title strong {display:block;font-weight:500;white-space:nowrap;text-overflow:ellipsis;overflow:hidden}
+      [data-letter-deletion] .lm-meta {display:block;color:#bcb7ad;font-size:12px;margin-top:4px}
+      [data-letter-deletion] .lm-footer {padding:16px 28px;display:flex;align-items:center;gap:10px;border-top:1px solid #414143;flex-wrap:wrap}
+      [data-letter-deletion] .lm-count {flex:1}
+      [data-letter-deletion] .lm-danger {color:#ffc5bc;border-color:#9b6f68}
+      [data-letter-deletion] .lm-empty {padding:48px 24px;text-align:center;color:#c5c0b7}
+      [data-letter-confirm] {width:min(460px,calc(100vw - 32px));padding:28px}
+      [data-letter-confirm] h3 {margin:0 0 12px;font-size:20px}
+      [data-letter-confirm] p {margin:0 0 24px;color:#d1cbc0}
+      @media(max-width:640px) {
+        [data-letter-deletion] {width:calc(100vw - 24px);height:calc(100dvh - 32px)}
+        [data-letter-deletion] .lm-header {padding:16px}
+        [data-letter-deletion] .lm-notice {padding:0 16px 12px}
+        [data-letter-deletion] .lm-workspace {grid-template-columns:1fr;grid-template-rows:minmax(120px,1fr) minmax(100px,.65fr)}
+        [data-letter-deletion] .lm-preview {border-left:0;border-top:1px solid #414143;padding:16px}
+        [data-letter-deletion] .lm-row {padding:10px 16px}
+        [data-letter-deletion] .lm-footer {padding:12px 16px}
+      }
+    `);
+    const shell = text('div', ''), header = actions(), body = text('div', ''), preview = text('section', ''), workspace = text('div', ''), footer = actions();
+    shell.className = 'lm-shell'; header.className = 'lm-header'; body.className = 'lm-list'; preview.className = 'lm-preview'; workspace.className = 'lm-workspace'; footer.className = 'lm-footer';
+    preview.setAttribute('aria-label', '信件预览');
+    const notice = text('p', ''), count = text('span', '已选 0 封');
+    notice.className = 'lm-notice'; count.className = 'lm-count'; notice.setAttribute('role', 'status'); count.setAttribute('aria-live', 'polite');
+    let recent = false, busy = false, changed = false, closed = false, generation = 0;
+    const selected = new Map();
+    const entry = document.activeElement;
+    const dismiss = () => { if (busy) return; closed = true; dialog.close(); dialog.remove(); entry?.focus(); if (changed) window.location.reload(); };
+    const close = button('关闭', dismiss), cancel = button('取消', dismiss);
+    const tabs = button('最近删除', async () => { if (busy) return; recent = !recent; await load(); });
+    const refresh = () => { count.textContent = `已选 ${selected.size} 封`; remove.disabled = busy || !selected.size || recent; };
+    // A nested native dialog stays above the parent's top layer and traps keyboard focus.
+    const confirmDeletion = (message) => new Promise(resolve => {
+      const prompt = document.createElement('dialog'); prompt.setAttribute('data-letter-confirm', ''); prompt.setAttribute('aria-label', '确认操作');
+      const previous = document.activeElement;
+      const finish = value => { prompt.close(); prompt.remove(); previous?.focus(); resolve(value); };
+      const controls = actions(), no = button('取消', () => finish(false)), yes = button('确定', () => finish(true));
+      controls.style.justifyContent = 'flex-end'; controls.append(no, yes);
+      prompt.append(text('h3', '确认操作'), text('p', message), controls); dialog.append(prompt);
+      prompt.addEventListener('cancel', event => { event.preventDefault(); event.stopPropagation(); finish(false); });
+      prompt.showModal(); no.focus();
+    });
+    const remove = button('删除所选', async () => {
+      if (busy || !selected.size) return;
+      const batch = [...selected.values()];
+      if (!await confirmDeletion(`删除所选 ${batch.length} 封信后，她关于这封信的记忆也会一并清理。删除你的信会保留未选中的回信；尚未回信的任务会取消。30 天内可在“最近删除”恢复。确定删除吗？`)) return;
+      await mutate('delete', batch);
+    });
+    remove.className += ' lm-danger';
+    const navigation = actions(); navigation.append(tabs, close); header.append(text('h2', '管理信件'), navigation);
+    footer.append(count, cancel, remove); workspace.append(body, preview); shell.append(header, notice, workspace, footer); dialog.append(style, shell);
+    document.body.append(dialog); dialog.showModal(); close.focus();
     dialog.addEventListener('cancel', event => { event.preventDefault(); if (!busy) dismiss(); });
-    const mutate = async (action, payload) => {
-      busy = true; tabs.disabled = close.disabled = true;
-      for (const control of body.querySelectorAll('button')) control.disabled = true;
-      notice.textContent = '正在处理，请稍候…';
+    const lock = value => { busy = value; for (const control of shell.querySelectorAll('button,input')) control.disabled = value; refresh(); };
+    const failure = error => ({
+      LETTER_DELETE_LEGACY_RELATIONSHIP_UNSUPPORTED: '这封旧信的关系记录缺少可重放来源，暂不能安全清理。信件未删除。',
+      LETTER_DELETE_UNATTRIBUTED_DIARY: '相关日记缺少逐封信的来源记录，暂不能安全清理这封信；整篇清除会影响其他信件。信件未删除。',
+      LETTER_DELETE_RELATIONSHIP_REPLAY_UNSUPPORTED: '相关关系记录含交错或重复证据，暂不能安全重算。信件未删除。',
+      LETTER_DELETE_RESTORE_CONFLICT: '关联记录在删除后发生了变化，已停止恢复以保护新记录。请保留最近删除中的备份。',
+      LETTER_DELETE_MEMORY_BUSY: '记忆正在写入，请稍后重试。',
+      LETTER_DELETE_MEMORY_UNAVAILABLE: '记忆存储暂不可用，请恢复连接后重试。',
+    }[error.message] || '操作未完成。请查看“最近删除”，重试清理或恢复；备份会保留。');
+    const mutate = async (action, batch) => {
+      if (busy) return;
+      lock(true); let completed = 0, problem = '';
       try {
-        await routeRequest('/toy/letter/deletion/' + action, payload, {confirmed:true});
-        changed = true; await load();
-        notice.textContent = action === 'restore' ? '信件和关联记忆已恢复。' : '已删除。30 天内可在“最近删除”恢复。';
-      } catch (error) {
-        const messages = {
-          LETTER_DELETE_LEGACY_RELATIONSHIP_UNSUPPORTED: '这封旧信的关系记录缺少可重放来源，暂不能安全清理。信件未删除。',
-          LETTER_DELETE_UNATTRIBUTED_DIARY: '相关日记缺少逐封信的来源记录，暂不能安全清理这封信；整篇清除会影响其他信件。信件未删除。',
-          LETTER_DELETE_RELATIONSHIP_REPLAY_UNSUPPORTED: '相关关系记录含交错或重复证据，暂不能安全重算。信件未删除。',
-          LETTER_DELETE_RESTORE_CONFLICT: '关联记录在删除后发生了变化，已停止恢复以保护新记录。请保留最近删除中的备份。',
-          LETTER_DELETE_MEMORY_BUSY: '记忆正在写入，请稍后重试。',
-          LETTER_DELETE_MEMORY_UNAVAILABLE: '记忆存储暂不可用，请恢复连接后重试。',
-        };
-        notice.textContent = messages[error.message] || '操作未完成。请查看“最近删除”，重试清理或恢复；备份会保留。';
-      } finally { busy = false; tabs.disabled = close.disabled = false; for (const control of body.querySelectorAll('button')) control.disabled = false; }
+        for (const payload of batch) {
+          notice.textContent = `正在处理 ${completed + 1} / ${batch.length}…`;
+          // A lost response may still have changed storage; refresh the inbox on exit.
+          changed = true;
+          await routeRequest('/toy/letter/deletion/' + action, payload, {confirmed:true});
+          completed++;
+        }
+      } catch (error) { problem = failure(error); }
+      lock(false);
+      await load();
+      notice.textContent = problem ? `已完成 ${completed} / ${batch.length}，后续操作已停止。${problem}` : action === 'restore' ? '信件和关联记忆已恢复。' : `已删除 ${completed} 封。30 天内可在“最近删除”恢复。`;
+    };
+    const date = value => {
+      if (value == null || value === '') return '日期未知';
+      const parsed = new Date(typeof value === 'number' ? value * 1000 : value);
+      return Number.isNaN(parsed.getTime()) ? '日期未知' : parsed.toLocaleDateString('zh-CN');
     };
     async function load() {
-      body.replaceChildren(); tabs.textContent = recent ? '返回信箱' : '最近删除';
-      notice.textContent = recent ? '保留 30 天。恢复会同时还原本次移除的记忆。' : '删除你的信会保留她已有的回信；她的信也可以单独删除。';
-      const payload = recent ? await routeRequest('/toy/letter/deletion/list', {}, {confirmed:true}) : await routeRequest('/toy/letter/list');
-      const rows = recent ? payload.items : payload.list;
-      if (!rows?.length) body.append(text('p', recent ? '最近没有删除的信件。' : '信箱里还没有信件。'));
-      for (const row of rows || []) {
-        const card = stack(); card.style.cssText = 'padding:16px 0;border-bottom:1px solid #48494c;white-space:pre-wrap;overflow-wrap:anywhere';
-        card.append(text('p', row.summary || '（空）'));
-        if (recent) {
-          card.append(text('p', `${row.part === 'user' ? '你的信' : '她的信'} · ${new Date(row.expires_at * 1000).toLocaleDateString('zh-CN')} 到期`));
-          card.append(button('恢复这轮信件和记忆', async () => {
-            if (busy || !await confirmAction('将恢复这轮往来中仍在保留期内的已删除信件和关联记忆。如果你的信和她的信都已删除，会一起恢复。确定恢复吗？')) return;
-            await mutate('restore', {id:row.id});
-          }));
-          if (row.status === 'prepared') card.append(button('继续清理', () => mutate('delete', {letter_id:row.letter_id, part:row.part})));
-        } else {
-          card.append(button('查看并删除', async () => {
+      const current = ++generation;
+      selected.clear(); refresh(); body.replaceChildren(); preview.replaceChildren(text('p', '选择一封信，在这里阅读。'));
+      tabs.textContent = recent ? '返回信箱' : '最近删除';
+      notice.textContent = '正在读取信件…';
+      try {
+        const payload = recent ? await routeRequest('/toy/letter/deletion/list', {}, {confirmed:true}) : await routeRequest('/toy/letter/list');
+        if (closed || current !== generation) return;
+        for (const row of (recent ? payload.items : payload.list) || []) {
+          if (closed) return;
+          const id = row.letter_id || row.letterId;
+          const appendParts = (detail, target) => {
+          const parts = recent ? [[row.part, row.summary || '（空）']] : [['user', detail.origin === 'proactive' ? '' : detail.content], ['reply', detail.reply_text || detail.replyText]];
+          for (const [part, value] of parts) {
+            if (!value) continue;
+            const label = part === 'user' ? '我的信' : '她的回信';
+            const card = text('div', ''); card.className = 'lm-row';
+            const title = button('', () => { preview.replaceChildren(text('h3', label), text('p', value)); }); title.className = 'lm-title';
+            title.append(text('strong', recent ? value : value.split('\n')[0] || row.summary || '（空）'), text('span', `${label} · ${date(recent ? row.expires_at : part === 'reply' ? detail.replied_at || detail.repliedAt || row.created_at || row.createdAt : row.created_at || row.createdAt)}${recent ? ' 到期' : ''}`, 'lm-meta'));
+            if (!recent) {
+              const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.disabled = busy;
+              checkbox.setAttribute('aria-label', `选择${label}：${value.slice(0, 50)}`);
+              const key = JSON.stringify([id, part]);
+              checkbox.addEventListener('change', () => { if (busy) return; if (checkbox.checked) selected.set(key, {letter_id:id, part}); else selected.delete(key); refresh(); });
+              card.append(checkbox, title);
+            } else {
+              const restore = button('恢复', async () => {
+                if (busy || !await confirmDeletion('将恢复这轮往来中仍在保留期内的已删除信件和关联记忆。如果你的信和她的信都已删除，会一起恢复。确定恢复吗？')) return;
+                await mutate('restore', [{id:row.id}]);
+              });
+              card.append(title, restore);
+              if (row.status === 'prepared') card.append(button('继续清理', async () => {
+                if (busy || !await confirmDeletion('继续清理这封信和关联记忆？30 天内可在“最近删除”恢复。')) return;
+                await mutate('delete', [{letter_id:id, part:row.part}]);
+              }));
+            }
+            target.append(card);
+          }
+          };
+          if (recent) { appendParts(row, body); continue; }
+          const group = text('div', ''), card = text('div', ''); card.className = 'lm-row';
+          const open = button('', async () => {
+            if (busy || open.disabled) return;
+            open.disabled = true;
             try {
-              const detail = await routeRequest('/toy/letter/detail?' + new URLSearchParams({letter_id:row.letter_id}));
-              card.replaceChildren();
-              for (const [part, label, value] of [['user','你的信',detail.content], ['reply','她的信',detail.reply_text]]) {
-                if (!value || part === 'user' && detail.origin === 'proactive') continue;
-                card.append(text('h3', label), text('p', value));
-                card.append(button('删除' + label, async () => {
-                  if (busy || !await confirmAction('删除这封信后，她关于这封信的记忆也会一并清理。30 天内可在“最近删除”恢复。确定删除吗？')) return;
-                  await mutate('delete', {letter_id:row.letter_id, part});
-                }));
-              }
-            } catch (_) { notice.textContent = '信件读取失败，请关闭后重试。'; }
-          }));
+              // Detail marks a reply read; fetch only after an explicit preview action.
+              const detail = await routeRequest('/toy/letter/detail?' + new URLSearchParams({letter_id:id}));
+              if (closed || current !== generation) return;
+              group.replaceChildren(); appendParts(detail, group);
+              const visible = detail.origin === 'proactive' ? detail.reply_text || detail.replyText : detail.content || detail.reply_text || detail.replyText;
+              preview.replaceChildren(text('h3', '信件预览'), text('p', visible || '这轮已没有可管理的信件。'));
+              if (!group.children.length) group.append(text('p', '这轮已没有可管理的信件。', 'lm-empty'));
+              group.querySelector('button')?.focus();
+            } catch (_) { if (!closed && current === generation) notice.textContent = '这轮信件读取失败，请点击标题重试。'; }
+            finally { open.disabled = false; }
+          });
+          open.className = 'lm-title';
+          open.append(text('strong', row.summary || '（空）'), text('span', `${row.origin === 'proactive' ? '她的来信' : '我的信 / 她的回信'} · ${date(row.created_at || row.createdAt)} · 查看并选择`, 'lm-meta'));
+          card.append(open); group.append(card); body.append(group);
         }
-        body.append(card);
-      }
+        if (!body.children.length) body.append(text('p', recent ? '最近没有删除的信件。' : '信箱里还没有信件。', 'lm-empty'));
+        notice.textContent = recent ? '保留 30 天。恢复时，同一轮已删除的信件和关联记忆会一起还原。' : '点击标题展开，分别勾选我的信或她的回信。删除我的信会保留未选中的回信。';
+      } catch (_) { if (!closed && current === generation) { body.replaceChildren(text('p', '信箱读取失败，请关闭后重试。', 'lm-empty')); notice.textContent = '暂时无法读取完整列表。'; } }
+      finally { if (!closed && current === generation) lock(false); }
     }
-    try { await load(); } catch (_) { notice.textContent = '信箱读取失败，请关闭后重试。'; }
+    await load();
   };
   const mountMainNavigation = () => {
     const route = window.location.hash.split("?")[0];
