@@ -16,6 +16,7 @@ import threading
 import time
 import uuid
 from .telemetry_codes import ERROR_CODES
+from .decision_reasons import decision_rejection_reason
 
 TRANSPORT_STATUSES = frozenset({'connecting', 'connected', 'reconnecting', 'closed', 'auth_required'})
 TRANSPORT_ERRORS = frozenset({'NONE', 'TIMEOUT', 'CONNECTION', 'CLIENT', 'OTHER'})
@@ -95,6 +96,7 @@ class Collector:
         self.last_error = None
         self.schema = 1
         self.policy_version_supported = False
+        self.decision_rejection_reason_supported = False
         self.model = lambda: 'unknown'
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._db() as db:
@@ -146,6 +148,7 @@ class Collector:
             self.owner, self.since, self.salt = digest, since, salt
             self.schema = 1
             self.policy_version_supported = False
+            self.decision_rejection_reason_supported = False
             if digest: self.emit('app', 'ok')
             return True
 
@@ -265,12 +268,16 @@ class Collector:
                         detail = context.get('failure_detail')
                         if context.get('failure_stage') == 'decision_context' and isinstance(detail, str):
                             error = CONTEXT_ERROR_CODES.get(detail, error)
-                    current = dict(state=state, attempt=attempt, status=status)
+                    reason = (decision_rejection_reason(row.get('decision_rejection_reason'))
+                              if status == 'failed' and error == 'PERSONAL_CHAT_DECISION_INVALID' else None)
+                    current = dict(state=state, attempt=attempt, status=status, decision_rejection_reason=reason)
                     if not previous:
                         self._insert(db, self._event('received', 'ok', **fields))
                     if any(previous.get(k) != v for k, v in current.items()):
                         current['changed_at'] = self.clock()
                         event = self._event('reply', status, error=error, **fields)
+                        if event and reason is not None:
+                            event['decision_rejection_reason'] = reason
                         current['timing_recorded'] = previous.get('timing_recorded', False)
                         terminal = (state in {'DELIVERED', 'COMPLETED', 'DELIVERY_UNCONFIRMED', 'SKIPPED'}
                             or state == 'SENDING' and bool(row.get('error_code'))
@@ -323,6 +330,12 @@ class Collector:
             events = [dict(json.loads(row[1]), seq=row[0]) for row in
                     db.execute('SELECT seq,payload FROM queue ORDER BY seq LIMIT 100')] if self.enabled else []
             for event in events:
+                if (schema != 3 or not self.decision_rejection_reason_supported
+                        or event.get('stage') != 'reply' or event.get('status') != 'failed'
+                        or event.get('error_code') != 'PERSONAL_CHAT_DECISION_INVALID'):
+                    event.pop('decision_rejection_reason', None)
+                elif 'decision_rejection_reason' in event:
+                    event['decision_rejection_reason'] = decision_rejection_reason(event['decision_rejection_reason'])
                 if schema not in (2, 3) or event.get('stage') != 'media':
                     event.pop('daily_video_result', None)
                 elif 'daily_video_result' in event and (not isinstance(event['daily_video_result'], str)
@@ -355,22 +368,26 @@ class Collector:
             if not events: return
             result = await send(events)
             expected = [e['event_id'] for e in events]
-            if (not isinstance(result, dict) or set(result) not in ({'accepted'}, {'accepted', 'supported_schemas'},
-                    {'accepted', 'supported_schemas', 'policy_version_supported'})
+            if (not isinstance(result, dict) or not {'accepted'} <= set(result) <= {
+                    'accepted', 'supported_schemas', 'policy_version_supported', 'decision_rejection_reason_supported'}
                     or result.get('accepted') != expected):
                 raise ValueError('bad acknowledgment')
             supported = result.get('supported_schemas', [])
             if 'policy_version_supported' in result and type(result['policy_version_supported']) is not bool:
                 raise ValueError('bad capabilities')
+            if 'decision_rejection_reason_supported' in result and type(result['decision_rejection_reason_supported']) is not bool:
+                raise ValueError('bad capabilities')
             if (not isinstance(supported, list) or any(type(value) is not int for value in supported)):
                 raise ValueError('bad capabilities')
             self.ack(expected)
             self.policy_version_supported = result.get('policy_version_supported') is True
+            self.decision_rejection_reason_supported = result.get('decision_rejection_reason_supported') is True
             self.schema = 3 if 3 in supported else 2 if 2 in supported else 1
             self.last_error = None
         except (OSError, sqlite3.Error, ValueError, RuntimeError, TimeoutError):
             self.schema = 1
             self.policy_version_supported = False
+            self.decision_rejection_reason_supported = False
             self.last_error = 'TELEMETRY_UPLOAD_FAILED'
 
 
