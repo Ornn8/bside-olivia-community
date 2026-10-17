@@ -193,7 +193,9 @@ def test_backend_generate_uses_real_pipeline_persona_memory_and_world(tmp_path, 
         return
     async def scenario(row=None):
         row = row if row is not None else {"life_received_at": datetime.now(timezone.utc).isoformat()}
+        row['decision_rejection_reason'] = 'JSON_SYNTAX'
         result = await backend.generate(server, event, row)
+        assert 'decision_rejection_reason' not in row
         if envelope_variant in ('missing_sticker', 'numeric_sticker', 'text_only', 'daily_video_explicit'):
             assert 'sticker_id' not in row
         else:

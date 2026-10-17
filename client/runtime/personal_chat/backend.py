@@ -635,6 +635,8 @@ async def _generate_billed(server, event, row):
         if shadow is not None:
             _start_semantic_shadow_recorder(server, row, shadow)
         from runtime.diagnostics.support_bundle import project_chat_task
+        # The previous reason has already informed this retry; only retain its new result.
+        row.pop('decision_rejection_reason', None)
         quality_fields = ('quality_status', 'reviewer_calls', 'rewrite_calls', 'decision_rejection_reason',
                           'decision_dropped_media',
                           'quality_error_code', 'quality_failure_stage', 'quality_violation_codes',

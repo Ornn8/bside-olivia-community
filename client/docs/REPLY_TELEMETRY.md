@@ -34,6 +34,18 @@
 服务端模块在私有 cloud 仓库 `relay/client_telemetry*`，保留 30 天，按账户每天最多接收 20000 个新事件。
 服务端未部署、离线、限流或本机统计文件异常不会阻止回信或充值。旧客户端无需提供统计字段。
 
+## 2.4.5 待发布：正文决策拒绝原因
+
+schema 3 的 `reply/failed` 且 `error_code=PERSONAL_CHAT_DECISION_INVALID` 可携带
+`decision_rejection_reason`。固定枚举见 `runtime/diagnostics/decision_reasons.py`；
+覆盖 JSON、正文、静默权限、无计划恢复动作和主动重复回复等分支，未知值映射为 `UNKNOWN`。
+不上传模型正文、用户证据、异常原文或任意字段名；成功和重试开始事件不携带旧拒绝原因。
+
+请求增加 `decision_rejection_reason=1`，服务端仅对显式请求返回
+`decision_rejection_reason_supported: true`。收到能力确认前、服务器不支持、切换账号或地址、
+降级至 schema 1/2 或上传失败后，都从发送批次移除该字段；本地队列仍保留固定枚举。
+服务端须先部署对应白名单校验与 ACK 协商；此分支不构成客户端发布或线上验收。
+
 ## 充值口径
 
 账户列表将观察到的使用天数、回信成功、充值页访问与服务端现有订单、余额并列。

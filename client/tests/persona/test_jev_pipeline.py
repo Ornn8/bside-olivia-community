@@ -329,19 +329,21 @@ def test_actual_projection_overflow_does_not_trim_core_or_call_writer():
 def test_daily_video_candidates_that_do_not_fit_are_dropped_not_fatal():
     """A long chat fits the budget; the optional video offer must not push the reply over it."""
     from tests.http.test_daily_video import payload
-    candidate = {**payload(), 'detail': '刚整理好桌面。' * 40, 'location': '住处'}
-    history = (dict(role='assistant', content='x' * 4000),)
+    candidate = {**payload(), 'detail': '刚整理好桌面。' * 400, 'location': '住处'}
+    # Current input cannot be trimmed to make room for the optional candidate.
+    current = '本轮刚收到的消息' * 400
     _, baseline = run(Port(plan(kind='video_speech')), mode=ReplyMode.FUTURE_IM,
-        history=history, kinds=['text', 'audio_speech', 'image', 'video_speech'])
+        raw=current, kinds=['text', 'audio_speech', 'image', 'video_speech'])
     # Size the boundary from the actual envelope so shorter prompts still test overflow.
     budget = sum(len(str(m.get('content', ''))) for m in baseline.requests[0].messages) + 128
     result, engine = run(Port(plan(kind='video_speech')), mode=ReplyMode.FUTURE_IM, daily=[candidate],
-        history=history, budget=budget,
+        raw=current, budget=budget,
         daily_selection=dict(event_id=candidate['event_id'], spoken_text='整理好了。'),
         kinds=['text', 'audio_speech', 'image', 'video_speech'])
     assert result.state is ReplyState.COMPLETED, result.error_code
     assert '<daily_video_candidates>' not in str(engine.requests[0].messages)
     assert sum(len(str(m.get('content', ''))) for m in engine.requests[0].messages) <= budget
+    assert engine.requests[0].messages[-1] == dict(role='user', content=current)
 
 
 def test_selected_instant_video_keeps_candidate_by_trimming_old_dialogue():

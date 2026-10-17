@@ -97,7 +97,7 @@ def details(server, now=None):
                    '你们的关系，藏在每一次认真回应里。')
     if state.tension >= 35:
         dynamic = '有些小别扭还没说开，可以慢慢聊。'
-    pending = plans(life)
+    pending = plans(life, now=now)
     hint = ('聊聊那个还没完成的约定吧。' if pending else
             '分享一件今天真正触动你的小事，不必刻意找话题。')
     return {'status': 'READY', 'version': state.version, 'route': route(state), 'routes': ROUTES,

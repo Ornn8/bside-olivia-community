@@ -27,7 +27,8 @@ CURRENT = ContextVar('jev_billing_turn', default=None)
 # This header tells the relay the client verifies it; older clients are billed
 # exact usage because they reject any other amount.
 MINIMUM_CHARGE_UNITS = 1_000_000
-MINIMUM_HEADER = {'X-Olivia-Billing-Minimum': '1', 'X-Olivia-JEV-Price': CURRENT_PRICE_VERSION}
+TIER_PRICE_VERSION = 'jev-input-cny-20261017-v6'
+MINIMUM_HEADER = {'X-Olivia-Billing-Minimum': '1', 'X-Olivia-JEV-Price': TIER_PRICE_VERSION}
 _account_key = None
 
 
@@ -156,15 +157,42 @@ def settle_receipt_sync(billing, expected_body_digest):
     except Exception:
         # Do not expose provider bodies, tokens or signed receipt contents.
         raise ValueError('JEV_BILLING_UNAVAILABLE') from None
-    rates = settlement_rates(result.get('price_version') if isinstance(result, dict) else None,
+    version = result.get('price_version') if isinstance(result, dict) else None
+    percent, tier_minimum = 100, None
+    if version == TIER_PRICE_VERSION:
+        # Bind the signed tier receipt to this exact operation before accepting it.
+        signed = result.get('account_tariff')
+        tariff = signed.get('tariff') if isinstance(signed, dict) else None
+        if (not isinstance(tariff, dict)
+                or tariff.get('version') != TIER_PRICE_VERSION
+                or tariff.get('account_key_digest') != receipt['account_key_digest']
+                or tariff.get('turn_id') != turn.turn_id
+                or tariff.get('operation_id') != receipt['operation_id']
+                or type(tariff.get('percent')) is not int or tariff['percent'] not in (50,70,85,100)
+                or type(tariff.get('minimum_enabled')) is not bool
+                or not isinstance(signed.get('signature'), str)
+                or not re.fullmatch('[a-f0-9]{128}', signed['signature'])):
+            raise ValueError('JEV_BILLING_RESPONSE_INVALID')
+        from runtime.ed25519 import verify
+        from .jev_tier_trust import PUBLIC_KEY
+        encoded = json.dumps(tariff, sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False).encode('utf-8')
+        if not verify(PUBLIC_KEY, encoded, bytes.fromhex(signed['signature'])):
+            raise ValueError('JEV_BILLING_RESPONSE_INVALID')
+        percent = tariff['percent']
+        tier_minimum = MINIMUM_CHARGE_UNITS if tariff['minimum_enabled'] else 0
+        version = CURRENT_PRICE_VERSION  # v6 keeps v5's purpose-dependent base rates.
+    rates = settlement_rates(version,
                              receipt.get('purpose'))
     # Exact usage at a rate the settled version allows for this purpose, or the
     # published minimum when that usage is below it. A charge that is neither is
     # a real mismatch, reported as such (not "unavailable").
     allowed = set()
     for rate in rates:
-        amount = receipt['input_tokens'] * rate
-        allowed |= {amount} | ({MINIMUM_CHARGE_UNITS} if 0 < amount < MINIMUM_CHARGE_UNITS else set())
+        amount = (receipt['input_tokens'] * rate * percent + 99) // 100
+        if tier_minimum is not None:
+            allowed.add(max(amount, tier_minimum) if amount else 0)
+        else:
+            allowed |= {amount} | ({MINIMUM_CHARGE_UNITS} if 0 < amount < MINIMUM_CHARGE_UNITS else set())
     if (not isinstance(result, dict) or result.get('status') != 'settled'
             or result.get('turn_id') != turn.turn_id
             or result.get('operation_id') != receipt['operation_id']

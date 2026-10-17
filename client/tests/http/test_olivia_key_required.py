@@ -136,5 +136,5 @@ def test_reply_world_fragments_carry_the_addressing_profile(monkeypatch, tmp_pat
     fragments = asyncio.run(local_server.letters_adapter.prepare_daily_life_fragments('你还记得吗', now=now))
     addressing = next(f for f in fragments if f.fragment_id == 'linli.addressing')
     value = json.loads(addressing.text)
-    assert [q['quote'] for q in value['quotes']['user_calls_linli']] == ['小离，']
+    assert [q['quote'] for q in value['quotes']['user_calls_linli']] == ['小离']
     assert '不要称对方为“用户”' in value['meaning']

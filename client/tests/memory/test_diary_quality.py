@@ -307,7 +307,7 @@ def test_gifts_and_upcoming_facts_have_date_boundaries(tmp_path):
     writer = Writer({})
     asyncio.run(write_day(store, writer, '2026-10-07', ROWS, persona='p', now=NOW))
     packet = json.loads(writer.calls[0][0][1]['content'])
-    assert [fact['text'] for fact in packet['due_facts']] == ['明天见']
+    assert packet['due_facts'] == []  # Daily entries use only that day's material.
 
 
 def test_outfit_remains_available_for_yesterdays_diary(tmp_path):

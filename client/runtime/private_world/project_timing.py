@@ -29,7 +29,15 @@ def project_at(db, project, now):
             "AND json_extract(payload,'$.source_at')<=? ORDER BY json_extract(payload,'$.source_at') DESC LIMIT 1",
             (project['id'], project.get('updated_at', ''))).fetchone()
         if not prior:
-            return {**project, 'time_scope_pending': project.get('status') not in {'completed', 'cancelled'}}
+            active = project.get('status') not in {'completed', 'cancelled'}
+            # Unknown timing must not create an indefinite obligation. Preserve
+            # the source/status: expiry is not evidence that it was fulfilled.
+            stamp = datetime.fromisoformat(project['updated_at'])
+            deadline = stamp + timedelta(days=7)
+            if not active or now < deadline:
+                return {**project, 'time_scope_pending': active}
+            return {**project, 'time_scope_pending': active,
+                    'expired_by_age': True, 'deadline_expired': True}
         timing = json.loads(prior[0])
         # V4 distinguishes old unbounded activities from durable commitments.
         # Already resolved absolute deadlines remain authoritative.

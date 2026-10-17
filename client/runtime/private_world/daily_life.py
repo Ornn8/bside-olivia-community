@@ -632,8 +632,9 @@ class DailyLifeStore:
     def record_addressing(self, source_id: str, addressing: dict, *, occurred_at: datetime) -> None:
         """Keep exact addressing quotes from one delivered exchange (idempotent per exchange)."""
         _identifier(source_id)
-        rows = [(source_id, kind, quote, _time(occurred_at)) for kind, quote in (addressing or {}).items()
-                if kind in self.ADDRESSING_KINDS and isinstance(quote, str) and 0 < len(quote) <= self.ADDRESSING_QUOTE_MAX]
+        from .addressing import address_term
+        rows = [(source_id, kind, term, _time(occurred_at)) for kind, quote in (addressing or {}).items()
+                if kind in self.ADDRESSING_KINDS and (term := address_term(quote))]
         if not rows:
             return
         with self._db() as db:
@@ -641,6 +642,7 @@ class DailyLifeStore:
 
     def addressing_profile(self, *, now: datetime, per_kind: int = 2) -> dict:
         """Most recent distinct quotes per kind; a later explicit change naturally wins."""
+        from .addressing import address_term
         profile = {}
         with self._db() as db:
             for kind in self.ADDRESSING_KINDS:
@@ -649,8 +651,9 @@ class DailyLifeStore:
                         'SELECT quote, occurred_at FROM life_addressing WHERE kind=? AND occurred_at<=? '
                         'AND length(quote)<=? ORDER BY occurred_at DESC, source_id DESC',
                         (kind, _time(now), self.ADDRESSING_QUOTE_MAX)):
-                    if quote not in (item['quote'] for item in seen):
-                        seen.append({'quote': quote, 'occurred_at': stamp})
+                    term = address_term(quote)
+                    if term and term not in (item['quote'] for item in seen):
+                        seen.append({'quote': term, 'occurred_at': stamp})
                     if len(seen) == per_kind:
                         break
                 if seen:
@@ -704,6 +707,10 @@ class DailyLifeStore:
                 if json.loads(old[0]).get("digest") != digest:
                     raise ValueError("DAILY_LIFE_SOURCE_CONFLICT")
                 return False
+            # A closed identity stays closed. A genuinely new promise needs a new ID.
+            closed = {p['id'] for p in self._projects_at(db, occurred_at)
+                      if p['status'] in {'completed', 'cancelled'}}
+            checked = [p for p in checked if p['id'] not in closed or p['status'] in {'completed', 'cancelled'}]
             from .character_development import record_exchange as record_development
             record_development(db, source_id, digest, user_text, reply_text, development, relationship, stamp, origin, checked, received)
             for item in checked:
@@ -1076,12 +1083,13 @@ class DailyLifeStore:
         return self._project_changes_at(db, now, per_project=1)
 
     def _project_changes_at(self, db, now: datetime, *, per_project: int) -> list[dict]:
-        """Last changes per identity, oldest first; ties follow journal insertion."""
+        """Changes per identity with terminal state authoritative, including legacy reopenings."""
         rows = db.execute("""
             SELECT item, position FROM (
                 SELECT j.value AS item, ROW_NUMBER() OVER (
                     PARTITION BY json_extract(j.value, '$.id')
-                    ORDER BY m.occurred_at DESC, m.rowid DESC) AS position
+                    ORDER BY CASE WHEN json_extract(j.value, '$.status') IN ('completed','cancelled')
+                                  THEN 0 ELSE 1 END, m.occurred_at DESC, m.rowid DESC) AS position
                 FROM life_moments m, json_each(CASE m.kind
                     WHEN 'daily' THEN json_extract(m.payload, '$.progress')
                     WHEN 'phase_seed' THEN json_extract(m.payload, '$.updates')

@@ -9,6 +9,9 @@ import zipfile
 
 MAIN='assets/main-31595bd3.js'
 MARKER='/*olivia-letter-stickers-v5*/'
+FLOW_MARKER='/*olivia-letter-stickers-v6*/'
+PAPER_MARKER='/*olivia-letter-paper-v1*/'
+SCROLL_MARKER='/*olivia-letter-scroll-v1*/'
 PREVIOUS_MARKER='/*olivia-letter-stickers-v4*/'
 PHOTO_MARKER='/*olivia-letter-photos-v2*/'
 LEGACY_PHOTO_MARKER='/*olivia-letter-photos-v1*/'
@@ -43,6 +46,30 @@ def _patch_layout(source: str) -> str:
 
 
 def patch_source(source: str) -> str:
+    source = _patch_flow(_patch_stickers(source))
+    if SCROLL_MARKER in source:
+        return source
+    if PAPER_MARKER in source:
+        for anchor in [PAPER_MARKER,
+                       'import{oliviaLetterPaperMounted,oliviaLetterPaperUnmounted}from"./letter-stickers/select.js";',
+                       'onVnodeMounted:oliviaLetterPaperMounted,onVnodeUnmounted:oliviaLetterPaperUnmounted,']:
+            if source.count(anchor) != 1:
+                raise ValueError('STICKER_PAPER_UPGRADE_INVALID')
+            source = source.replace(anchor, '', 1)
+    anchors = {
+        '{"olivia-letter-flow":A.type==="text"&&A.modelValue&&A.readonly}':
+        '{"olivia-letter-flow":A.type==="text"&&A.modelValue&&A.readonly,"olivia-letter-capture":o(g)}',
+        '_(se,{key:2},[A.type==="text"&&A.readonly?':
+        '_(A.type==="text"&&A.readonly?"div":se,{key:2,class:A.type==="text"&&A.readonly?"olivia-letter-scroll":null},[A.type==="text"&&A.readonly?',
+    }
+    for before, after in anchors.items():
+        if source.count(before) != 1:
+            raise ValueError('STICKER_SCROLL_ANCHOR_INVALID')
+        source = source.replace(before, after, 1)
+    return SCROLL_MARKER + source
+
+
+def _patch_stickers(source: str) -> str:
     if MARKER in source:
         return source
     if PREVIOUS_MARKER in source:
@@ -63,6 +90,25 @@ def patch_source(source: str) -> str:
     source=source.replace('F(ks,{','F(ks,{stickerId:i.mail.received?.stickerId,')
     source=source.replace('onVideoError:u},null,8,[','onVideoError:u},null,8,["stickerId",')
     return _upgrade_assets(_patch_presentation(source.replace(LAYOUT_MARKER,METADATA_MARKER,1)))
+
+
+def _patch_flow(source: str) -> str:
+    if FLOW_MARKER in source:
+        return source
+    anchors = {
+        'class:ae(["mail-box-reply-content faux-bold",o(E)])':
+        'class:ae(["mail-box-reply-content faux-bold",o(E),{"olivia-letter-flow":A.type==="text"&&A.modelValue&&A.readonly}])',
+        'A.type==="text"?(r(),_("textarea",{key:0,':
+        'A.type==="text"&&A.readonly?n("div",{class:"olivia-letter-body"},v(A.signature&&typeof A.bodyText==="string"?A.bodyText:l.modelValue),1):A.type==="text"?(r(),_("textarea",{key:0,',
+        'A.type==="text"&&A.modelValue?n("img",{class:"olivia-letter-sticker",':
+        'n("div",{class:A.type==="text"?"olivia-letter-footer":null},[A.type==="text"&&A.modelValue?n("img",{class:"olivia-letter-sticker",',
+        'n("div",mw,v(o(I)),1)': 'n("div",mw,v(o(I)),1)],2)',
+    }
+    for before, after in anchors.items():
+        if source.count(before) != 1:
+            raise ValueError('STICKER_FLOW_ANCHOR_INVALID')
+        source = source.replace(before, after, 1)
+    return FLOW_MARKER + source
 
 
 def _upgrade_assets(source: str) -> str:
@@ -166,6 +212,8 @@ def patch_letter_stickers(path: Path | str) -> str:
             raise ValueError('STICKER_ASSETS_INCOMPLETE')
         obsolete={name for name in archive.namelist() if name.startswith('assets/letter-stickers/')
                   and name.endswith(('.png','.gif')) and name not in expected}
+        obsolete.update(f'assets/letter-stickers/paper-{part}.svg' for part in ('top','middle','bottom')
+                        if f'assets/letter-stickers/paper-{part}.svg' in archive.namelist())
         changed=_patch_with_failure_prop(source).encode('utf-8')
         if not obsolete and changed==source.encode('utf-8') and all(n in archive.namelist() and archive.read(n)==data for n,data in assets.items()):
             return 'ALREADY_PATCHED'

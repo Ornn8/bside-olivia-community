@@ -119,14 +119,30 @@ def test_pipeline_saves_new_decision_after_abandoning_unavailable_evidence():
         READ_WINDOW.reset(token)
 
 
-@pytest.mark.parametrize('state', ['FAILED', 'SKIPPED', 'GENERATED', 'DELIVERY_UNCONFIRMED'])
+@pytest.mark.parametrize('state', ['FAILED', 'GENERATED', 'DELIVERY_UNCONFIRMED'])
 def test_pending_user_original_is_retained_from_received_only_row(state):
     rows = [row('old', delivery_status=state),
-            row('latest', delivery_status='DELIVERED', companion_decision=pending('reply:old:user'))]
+            row('latest', delivery_status='DELIVERED', companion_decision=pending('reply:old:user')),
+            {**row('new', delivery_status='GENERATING'), 'created_at': 2}]
     token = READ_WINDOW.set(freeze_read_window(rows, channel='qq', binding_id='owner', current_id='new'))
     try:
         context = runtime._decision_context([])
         assert context[0]['text'] == 'original user input' and context[0]['required']
         assert all(r['role'] == 'user' for r in context)
+    finally:
+        READ_WINDOW.reset(token)
+
+
+@pytest.mark.parametrize('state', ['FAILED', 'SKIPPED', 'GENERATED', 'DELIVERY_UNCONFIRMED'])
+def test_old_pending_requirement_cannot_revive_outside_current_read_window(state):
+    rows = [row('old', delivery_status=state),
+            {**row('latest', delivery_status='DELIVERED', companion_decision=pending('reply:old:user')),
+             'created_at': 500},
+            {**row('new', delivery_status='GENERATING'), 'created_at': 600}]
+    window = freeze_read_window(rows, channel='qq', binding_id='owner', current_id='new')
+    assert [item['letter_id'] for item in window] == ['latest']
+    token = READ_WINDOW.set(window)
+    try:
+        assert runtime._decision_context([]) == []
     finally:
         READ_WINDOW.reset(token)
