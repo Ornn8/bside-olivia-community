@@ -106,9 +106,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   // the English wording both identify it; the English patterns apply in English mode only.
   const nativeEnglish = () => Boolean(window.oliviaI18n) && window.oliviaI18n.lang() === "en";
   const isComposerTitle = (label) => label === LETTER_COMPOSER_TITLE
-    || (nativeEnglish() && /\bfeel/i.test(label));
+    || (nativeEnglish() && (label === "Write down how you feel" || /\bfeel/i.test(label)));
   const isSubmitLabel = (label) => label === LETTER_SUBMIT_LABEL
-    || (nativeEnglish() && /^(send|mail|post)\b/i.test(label));
+    || (nativeEnglish() && (label === "Send letter" || /^(send|mail|post)\b/i.test(label)));
   const parseApiBase = (value) => {
     let url;
     try {
@@ -3430,10 +3430,19 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     if (route === '#/collection' && !deletion) {
       deletion = button(t('管理信件'), openLetterDeletion); deletion.setAttribute('data-letter-deletion-entry', ''); nav.append(deletion);
     } else if (route !== '#/collection') deletion?.remove();
-    // A longer sub-page title (拍摄设备) would sit under the fixed navigation.
-    const title=world&&route!==WORLD_ROUTE?document.querySelector('main header h1'):null;
+    // A longer sub-page title (拍摄设备) would sit under the fixed navigation. The native mailbox and music pages
+    // have a title in the same place; in English it is wider ("Mailbox"), so it is measured as well.
+    const nativeTitle=()=>{
+      if(world||typeof document.elementsFromPoint!=='function'||typeof document.createRange!=='function')return null;
+      try{
+        return document.elementsFromPoint(24,78).find(node=>!node.closest('[data-olivia-main-navigation]')
+          &&node.textContent.trim().length>0&&node.textContent.trim().length<=40&&node.getBoundingClientRect().height<=80)||null;
+      }catch(_){return null}
+    };
+    const title=world&&route!==WORLD_ROUTE?document.querySelector('main header h1'):nativeTitle();
     const titleText=title&&document.createRange();titleText?.selectNodeContents(title);
-    const titleEnd=titleText?Math.ceil(titleText.getBoundingClientRect().right)+16:0;
+    const measured=titleText?Math.ceil(titleText.getBoundingClientRect().right)+16:0;
+    const titleEnd=measured<=480?measured:0;
     nav.style.left=Math.max(120,titleEnd)+'px';
     if(world)void refreshDiaryBadge();
     for (const link of nav.querySelectorAll("a")) {

@@ -6,8 +6,7 @@ falls back to the Chinese source for anything that has no entry. ``{name}`` plac
 argument in both languages, so a sentence with numbers or names is one entry, not several fragments.
 
 The language is read from localStorage ``olivia.ui.language`` (``zh-cn`` or ``en``); without a stored value it is
-Chinese when the system language starts with ``zh`` and English otherwise (a host that reports no language keeps
-Chinese). The native bundle reads the same key.
+always Chinese, and English only after the user picks it in the language switch. The native bundle reads the same key.
 """
 
 from __future__ import annotations
@@ -186,7 +185,7 @@ EN: dict[str, str] = {
     "打算做": "Planned",
     "进行中": "In progress",
     "暂时搁下": "Set aside",
-    "已完成": "Done",
+    "已完成": "Completed",
     "已取消": "Cancelled",
     "等你说说后续": "Waiting to hear from you",
     "写信开头，可复制到信箱": "Letter opening you can copy to the mailbox",
@@ -1464,11 +1463,8 @@ _PRELUDE = r'''
       const stored = known(window.localStorage.getItem(STORAGE_KEY));
       if (stored) return stored;
     } catch (_) {}
-    let system = "";
-    try { system = (window.navigator && window.navigator.language) || ""; } catch (_) {}
-    // A host that reports no language at all keeps the product default.
-    if (typeof system !== "string" || !system) return "zh-cn";
-    return /^zh/i.test(system) ? "zh-cn" : "en";
+    // Chinese until English is chosen with the language switch (the browser language is not consulted).
+    return "zh-cn";
   };
   const set = (value) => {
     const next = known(String(value).toLowerCase());

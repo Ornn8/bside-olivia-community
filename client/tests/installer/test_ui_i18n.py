@@ -348,12 +348,11 @@ def run_helper(code: str, tmp_path: Path, data=None, **spec) -> dict:
 
 
 @needs_node
-@pytest.mark.parametrize("language,expected", [
-    ("zh-CN", "zh-cn"), ("zh-TW", "zh-cn"), ("zh", "zh-cn"), ("ZH-hans", "zh-cn"),
-    ("en-US", "en"), ("en-GB", "en"), ("de-DE", "en"), ("ja", "en"),
-])
-def test_language_follows_the_system_language_without_a_stored_choice(tmp_path, language, expected):
-    assert run_helper("return api.lang()", tmp_path, language=language)["out"] == expected
+@pytest.mark.parametrize("language", ["zh-CN", "zh-TW", "en-US", "en-GB", "de-DE", "ja", "", None])
+def test_the_default_is_chinese_whatever_the_browser_language_is(tmp_path, language):
+    # The embedded browser may report an English language on a Chinese system: only the switch can select English.
+    spec = {} if language is None else {"language": language}
+    assert run_helper("return api.lang()", tmp_path, **spec)["out"] == "zh-cn"
 
 
 @needs_node
@@ -363,18 +362,20 @@ def test_a_stored_choice_wins_and_bad_values_are_ignored(tmp_path):
     stored = {"olivia.ui.language": "zh-cn"}
     assert run_helper("return api.lang()", tmp_path, language="en-US", stored=stored)["out"] == "zh-cn"
     stored = {"olivia.ui.language": "fr"}
-    assert run_helper("return api.lang()", tmp_path, language="en-US", stored=stored)["out"] == "en"
+    assert run_helper("return api.lang()", tmp_path, language="en-US", stored=stored)["out"] == "zh-cn"
+    assert run_helper("return api.lang()", tmp_path, language="zh-CN", stored=stored)["out"] == "zh-cn"
+    stored = {"olivia.ui.language": "EN"}
     assert run_helper("return api.lang()", tmp_path, language="zh-CN", stored=stored)["out"] == "zh-cn"
 
 
 @needs_node
 def test_blocked_or_missing_storage_and_navigator_never_throw(tmp_path):
-    assert run_helper("return api.lang()", tmp_path, language="en-US", brokenStorage=True)["out"] == "en"
-    assert run_helper("return api.lang()", tmp_path, language="zh-CN", noStorage=True)["out"] == "zh-cn"
-    # a host that reports no language at all keeps the product default
+    assert run_helper("return api.lang()", tmp_path, language="en-US", brokenStorage=True)["out"] == "zh-cn"
+    assert run_helper("return api.lang()", tmp_path, language="en-US", noStorage=True)["out"] == "zh-cn"
     assert run_helper("return api.lang()", tmp_path)["out"] == "zh-cn"
+    # a choice that cannot be stored cannot take effect either: the page reloads and stays Chinese
     done = run_helper("api.set('en'); return api.t('取消')", tmp_path, language="en-US", brokenStorage=True)
-    assert done["out"] == "Cancel" and done["log"]["reloads"] == 1
+    assert done["out"] == "取消" and done["log"]["reloads"] == 1
 
 
 @needs_node
@@ -383,7 +384,7 @@ def test_set_stores_the_choice_and_reloads_once(tmp_path):
     assert result["out"] == "en"
     assert result["store"] == {"olivia.ui.language": "en"}
     assert result["log"]["reloads"] == 1
-    result = run_helper("api.set('zh-CN'); return api.lang()", tmp_path, language="en-US")
+    result = run_helper("api.set('zh-CN'); return api.lang()", tmp_path, language="en-US", stored={"olivia.ui.language": "en"})
     assert result["out"] == "zh-cn" and result["store"] == {"olivia.ui.language": "zh-cn"}
     result = run_helper("api.set('fr'); api.set(undefined); return api.lang()", tmp_path, language="en-US")
     assert result["store"] == {} and result["log"]["reloads"] == 0
@@ -562,8 +563,8 @@ def test_language_switch_follows_the_choice_and_survives_a_reload():
     sync_playwright = pytest.importorskip("playwright.sync_api").sync_playwright
     with sync_playwright() as p:
         browser = _launch(p)
-        # the browser speaks Chinese: Chinese first, no stored choice yet
-        page = _boot(browser, locale="zh-CN")
+        # no stored choice yet: Chinese
+        page = _boot(browser, locale="en-US")
         assert page.get_by_text("林离怎么回复").is_visible()
         page.evaluate("document.querySelector('[data-olivia-group=language]').open = true")
         group = page.locator("[data-olivia-group=language]")
@@ -585,11 +586,15 @@ def test_language_switch_follows_the_choice_and_survives_a_reload():
         browser.close()
 
 
-def test_a_browser_in_english_defaults_to_english_and_chinese_stays_chinese():
+def test_english_needs_a_choice_and_chinese_is_the_default_in_any_browser_language():
     sync_playwright = pytest.importorskip("playwright.sync_api").sync_playwright
     with sync_playwright() as p:
         browser = _launch(p)
-        english = _boot(browser, locale="en-US")
+        # an English browser without a stored choice still shows Chinese
+        default = _boot(browser, locale="en-US")
+        assert default.get_by_text("林离怎么回复").is_visible()
+        assert default.get_by_text("How she replies").count() == 0
+        english = _boot(browser, language="en", locale="zh-CN")
         assert english.get_by_text("How she replies").is_visible()
         assert english.get_by_text("Update ready").is_visible()
         assert english.get_by_role("button", name="Call").is_visible()
@@ -686,13 +691,34 @@ def test_native_composer_is_found_by_its_chinese_or_english_labels(language, tit
         browser.close()
 
 
+@pytest.mark.parametrize("language,title", [("zh-cn", "信箱"), ("en", "Mailbox"), ("en", "Music Desktop")])
+def test_main_navigation_clears_the_native_page_title(language, title):
+    sync_playwright = pytest.importorskip("playwright.sync_api").sync_playwright
+    html = ('<h1 id="native-title" style="position:absolute;left:20px;top:56px;margin:0;font:700 30px/44px sans-serif">'
+            + title + "</h1>")
+    with sync_playwright() as p:
+        browser = _launch(p)
+        page = _boot(browser, language=language)
+        page.evaluate("(html) => { document.body.insertAdjacentHTML('afterbegin', html); location.hash = '#/collection'; }", html)
+        page.wait_for_selector("[data-olivia-main-navigation] a")
+        page.wait_for_timeout(500)
+        title_right = page.evaluate("document.querySelector('#native-title').getBoundingClientRect().width") + 20
+        first_pill = page.evaluate("document.querySelector('[data-olivia-main-navigation] a').getBoundingClientRect().left")
+        assert first_pill >= title_right, (first_pill, title_right)
+        if language == "zh-cn":
+            assert first_pill == 120  # unchanged: the Chinese title is narrower than the fixed position
+        browser.close()
+
+
 def _sliced_page(browser, language: str, body: str, html: str, viewport=None):
-    page = browser.new_page(viewport=viewport or {"width": 1000, "height": 850}, locale="en-US")
+    page = browser.new_page(viewport=viewport or {"width": 1000, "height": 850})
+    # a real origin, so that the chosen language can be stored the way the switch stores it
     page.add_init_script(f"try{{localStorage.setItem('olivia.ui.language','{language}')}}catch(_){{}}")
     errors = []
     page.on("pageerror", lambda error: errors.append(str(error)))
     page.errors = errors
-    page.set_content(html)
+    page.route("http://slice.test/", lambda route: route.fulfill(content_type="text/html", body=html))
+    page.goto("http://slice.test/")
     page.add_script_tag(content=I18N_JAVASCRIPT)
     page.add_script_tag(content="window.t = window.oliviaI18n.t;" + body)
     return page
@@ -783,7 +809,7 @@ def test_english_relationship_panel_fits_its_labels():
       const requestJson = """ + reader + "\nwindow.makePanel = " + renderer
     with sync_playwright() as p:
         browser = _launch(p)
-        page = browser.new_page(viewport={"width": 860, "height": 1000}, locale="en-US")
+        page = browser.new_page(viewport={"width": 860, "height": 1000})
         page.add_init_script("try{localStorage.setItem('olivia.ui.language','en')}catch(_){}")
         page.route("http://relationship.test/", lambda r: r.fulfill(content_type="text/html", body="<main id='panel'></main>"))
         page.route("http://relationship.test/toy/relationship**", lambda r: r.fulfill(content_type="application/json", body=json.dumps({"code": 0, "data": data})))

@@ -17,10 +17,9 @@ def immediate_reply_rhythm(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def chinese_browser_language(monkeypatch):
-    # The injected UI follows the browser language when no choice is stored; the browser tests assert the Chinese
-    # text, so their pages default to a Chinese locale (a test can still pass its own locale). Tests that run a
-    # slice of a script also get the Chinese-mode t() helper as a page global (tests/js_shim).
+def chinese_mode_helper_in_browser_pages(monkeypatch):
+    # Tests that run a slice of an injected script in a browser page need the Chinese-mode t() helper as a page
+    # global (tests/js_shim); the full script defines its own.
     try:
         from playwright.sync_api import Browser
     except ImportError:
@@ -30,7 +29,6 @@ def chinese_browser_language(monkeypatch):
         original = getattr(Browser, name)
 
         def patched(self, *args, _original=original, **kwargs):
-            kwargs.setdefault("locale", "zh-CN")
             result = _original(self, *args, **kwargs)
             result.add_init_script(path=str(_SHIM))
             if hasattr(result, "evaluate"):
