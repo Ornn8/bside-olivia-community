@@ -4,6 +4,8 @@ from pathlib import Path
 import pytest
 from original_client_settings_ui import BOOTSTRAP_JAVASCRIPT
 
+SHIM = Path(__file__).resolve().parents[1].joinpath("js_shim", "olivia_i18n_shim.js").read_text(encoding="utf-8")
+
 
 def test_pending_claim_hides_key_and_only_mounts_billing_after_success(tmp_path):
     browser=Path('C:/Program Files/Google/Chrome/Application/chrome.exe')
@@ -14,7 +16,7 @@ def test_pending_claim_hides_key_and_only_mounts_billing_after_success(tmp_path)
     page=tmp_path/'claim.html'
     page.write_text('''<!doctype html><meta charset="utf-8"><style>'''+css+'''</style>
 <div data-olivia-companion-settings-dialog><div data-olivia-relay-dialog><div id="panel"></div></div></div><pre id="result"></pre>
-<script>
+<script>'''+SHIM+'''</script><script>
 const text=(tag,value)=>{const el=document.createElement(tag);el.textContent=value;return el};
 const actions=()=>document.createElement('div');
 const button=(label,fn)=>{const el=text('button',label);el.onclick=fn;return el};

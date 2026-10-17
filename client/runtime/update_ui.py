@@ -8,6 +8,7 @@ JAVASCRIPT = r'''
 (() => {
   if (typeof document === 'undefined' || !document.head || typeof window === 'undefined' || window.__oliviaUpdateUi) return;
   window.__oliviaUpdateUi = true;
+  const t = (zh, vars) => window.oliviaI18n ? window.oliviaI18n.t(zh, vars) : String(zh).replace(/\{(\w+)\}/g, (m, k) => vars && k in vars ? vars[k] : m);
   const css = document.createElement('style');
   css.textContent = `
   .olivia-update-entry{display:inline-flex;align-items:center;gap:7px;height:32px;padding:0 14px 0 12px;border:1px solid #6f8a5c;
@@ -45,8 +46,8 @@ JAVASCRIPT = r'''
     return value.data;
   }
 
-  const entry = node('button', 'olivia-update-entry', '新版本已准备好');
-  entry.type = 'button'; entry.hidden = true; entry.title = '查看这次更新的内容';
+  const entry = node('button', 'olivia-update-entry', t('新版本已准备好'));
+  entry.type = 'button'; entry.hidden = true; entry.title = t('查看这次更新的内容');
   entry.onclick = () => show();
   let placing = false;
   function place() {
@@ -59,9 +60,9 @@ JAVASCRIPT = r'''
     if (dialog || !state || !['ready', 'updated'].includes(state.state)) return;
     const ready = state.state === 'ready';
     dialog = node('div', 'olivia-update', null, document.body);
-    dialog.setAttribute('role', 'dialog'); dialog.setAttribute('aria-modal', 'true'); dialog.setAttribute('aria-label', '更新内容');
+    dialog.setAttribute('role', 'dialog'); dialog.setAttribute('aria-modal', 'true'); dialog.setAttribute('aria-label', t('更新内容'));
     const card = node('div', 'olivia-update-card', null, dialog);
-    node('h2', null, ready ? `新版本 ${state.version}` : `已更新到 ${state.version}`, card);
+    node('h2', null, ready ? t('新版本 {version}', {version: state.version}) : t('已更新到 {version}', {version: state.version}), card);
     const notes = state.notes || {};
     if (notes.title) node('p', 'olivia-update-sub', notes.title, card);
     if (notes.items?.length) {
@@ -69,23 +70,23 @@ JAVASCRIPT = r'''
       for (const item of notes.items) {
         const li = node('li', null, null, list);
         if (item.title) node('b', null, item.title, li);
-        if (item.title && item.text) li.append('：');
+        if (item.title && item.text) li.append(t('：'));
         if (item.text) li.append(item.text);
       }
     }
-    if (ready) node('p', 'olivia-update-note', '更新时 Olivia 会重启，大约半分钟，聊天记录、记忆和设置都会保留。选「稍后」的话，下次打开 Olivia 时生效，或在夜里空闲时自动完成。', card);
+    if (ready) node('p', 'olivia-update-note', t('更新时 Olivia 会重启，大约半分钟，聊天记录、记忆和设置都会保留。选「稍后」的话，下次打开 Olivia 时生效，或在夜里空闲时自动完成。'), card);
     const actions = node('div', 'olivia-update-actions', null, card);
     if (ready) {
-      const later = node('button', null, '稍后', actions); later.type = 'button'; later.onclick = close;
-      const now = node('button', null, '现在重启更新', actions); now.type = 'button'; now.dataset.primary = '';
+      const later = node('button', null, t('稍后'), actions); later.type = 'button'; later.onclick = close;
+      const now = node('button', null, t('现在重启更新'), actions); now.type = 'button'; now.dataset.primary = '';
       now.onclick = async () => {
-        now.disabled = later.disabled = true; now.textContent = '正在重启…';
+        now.disabled = later.disabled = true; now.textContent = t('正在重启…');
         try { await local('/toy/autoupdate/restart', {}); }
-        catch (_) { now.disabled = later.disabled = false; now.textContent = '没能重启，再试一次'; }
+        catch (_) { now.disabled = later.disabled = false; now.textContent = t('没能重启，再试一次'); }
       };
       now.focus();
     } else {
-      const ok = node('button', null, '知道了', actions); ok.type = 'button'; ok.dataset.primary = '';
+      const ok = node('button', null, t('知道了'), actions); ok.type = 'button'; ok.dataset.primary = '';
       ok.onclick = () => { close(); state = null; local('/toy/autoupdate/seen', {}).catch(() => {}); };
       ok.focus();
     }
@@ -96,7 +97,7 @@ JAVASCRIPT = r'''
   async function refresh() {
     try { state = await local('/toy/autoupdate/state'); } catch (_) { return; }
     entry.hidden = state.state !== 'ready';
-    if (state.state === 'ready') { entry.textContent = '新版本已准备好'; place(); }
+    if (state.state === 'ready') { entry.textContent = t('新版本已准备好'); place(); }
     if (state.state === 'updated' && !shownUpdated) { shownUpdated = true; show(); }
   }
 
