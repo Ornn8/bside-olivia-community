@@ -4,15 +4,15 @@ The live projection (``SQLitePrivateWorldLedger._project``) does not reduce
 events in the order they were written. It replays every stored input that
 follows the last checkpoint sorted by event time, de-duplicates equivalent
 evidence against what was applied earlier in that order, and only then compares
-the result with the previous snapshot. Letters are committed late, retried and
+the result with the previously stored state. Letters are committed late, retried and
 imported with their original time, so event time is routinely out of write
 order, and the same user sentence repeats across days.
 
 This module repeats those rules over the stored inputs, so the state it
 returns is the one the live projection would have produced had the removed
 events never been written. Before a rebuild is used, the same code must first
-reproduce the stored state at every checkpoint and at the end of the history
-without any removal; otherwise the history is refused rather than guessed.
+reproduce the stored state at every checkpoint and at the end of the records
+without any removal; otherwise the records are refused rather than guessed.
 """
 from bisect import bisect_left, bisect_right
 from dataclasses import dataclass, replace
@@ -26,7 +26,7 @@ TOMBSTONE = 'letter_source_removed'
 _INITIALIZED = 'initialize_historical_relationship'
 _CHOICES = ('relationship_route', 'relationship_route_ask')
 _SCORES = ('familiarity', 'trust', 'comfort', 'closeness')
-_STEP_LIMIT = 300_000  # a history this tangled would also stall the live projection
+_STEP_LIMIT = 300_000  # a record set this tangled would also stall the live projection
 _log = logging.getLogger(__name__)
 
 
@@ -192,7 +192,7 @@ class _Trace:
 
 @dataclass
 class Run:
-    rows: dict      # event_id -> rebuilt snapshot, for every event that stores one
+    rows: dict      # event_id -> rebuilt stored state, for every event that stores one
     steps: dict     # event_id -> (state after, applied, reason, skipped), for replayed inputs
     final: object
 
@@ -332,7 +332,7 @@ class Replay:
         """Replay events[start:] from the stored checkpoint before them.
 
         With `verify`, every point where a stored checkpoint closes a journal,
-        and the end of the history, must already hold the state that was
+        and the end of the records, must already hold the state that was
         stored there: the replay has to reproduce the live projection first.
         """
         events = self.events
@@ -373,8 +373,8 @@ class Replay:
                 rows[event_id] = state
                 before = row
         close()
-        # The newest stored snapshot carries the final state, even when the
-        # rebuilt history changes an event that stores no snapshot of its own.
+        # The newest stored state carries the final result, even when the
+        # rebuilt records change an event that stores no state of its own.
         if self.stored:
             newest = max(self.stored, key=lambda name: self.version[name])
             if verify and not _same(state, self.stored[newest]):
@@ -417,7 +417,7 @@ class Replay:
 
 @dataclass
 class Rebuilt:
-    rows: dict        # event_id -> snapshot whose stored state changes
+    rows: dict        # event_id -> stored row whose state changes
     outcomes: dict    # event_id -> replacement derived fields for a surviving input
     final: object
 

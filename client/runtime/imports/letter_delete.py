@@ -241,7 +241,7 @@ def world_plan(ledger, sources):
     de-duplicates repeated evidence, so write order and repeated wording are
     normal. The same rules are replayed here, which yields the state the ledger
     would hold had the removed events never been written; nothing is asked of a
-    model and no unrelated record is reset. A history the replay cannot first
+    model and no unrelated record is reset. A set of records the replay cannot first
     reproduce exactly, or an unexplained stored change after a removed event,
     is rejected before any deletion rather than guessed.
     """
