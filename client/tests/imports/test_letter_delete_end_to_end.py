@@ -1,7 +1,7 @@
 """Deleting letters end to end: the real local backend, synthetic letters, the calls the window makes.
 
 Every test starts a real backend process (``letter_delete_e2e_backend.py``: the product's ``local_server`` and its
-original-client application on a free loopback port, a fresh data directory, the real Mem0 store with a stand-in
+original-client application on an unused loopback port, a fresh data directory, the real Mem0 store with a stand-in
 embedder). The letters are sent through ``/toy/letter/send``; the memories, the original-text index, daily life
 records, relationship events and the semantic vectors are written by the product's own background writers. Then the
 tests call the same deletion, restore and memory-browser routes as the letters-and-memories window, and read every

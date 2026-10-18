@@ -1,6 +1,6 @@
 """Shared pieces of the letter deletion end-to-end tests. Synthetic data only.
 
-``Backend`` starts the real local backend (``letter_delete_e2e_backend.py``) on free loopback ports with a fresh data
+``Backend`` starts the real local backend (``letter_delete_e2e_backend.py``) on unused loopback ports with a fresh data
 directory. ``Api`` calls it over HTTP exactly as the letters-and-memories window does. ``SYNTHETIC`` is the made-up
 conversation the tests seed, and ``comparable`` / ``where`` / ``counts`` turn the stores read back from the backend
 into the normalized rows the assertions and the evidence file use.

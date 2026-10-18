@@ -958,7 +958,7 @@ class PersonalChatService:
             return False
 
     def _requeue(self, row, now):
-        """Queue the message for a fresh generation, once: the normal path generates, bills, sends and records it."""
+        """Queue the message for a fresh generation, once: the normal path generates, sends and records it."""
         _clear_draft(row)
         row.update(delivery_status='RECEIVED', letter_status='PROCESSING', generation_attempts=0,
                    input_revision=row.get('input_revision', 0) + 1, generation_resumed_at=now)
