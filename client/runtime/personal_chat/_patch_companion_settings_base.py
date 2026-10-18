@@ -26,6 +26,7 @@ from original_client_settings_ui import (
 )
 from patch_feapp import (
     MAILBOX_WRITE_ANCHOR_0627,
+    MAILBOX_WRITE_PREVIOUS_REPLACEMENT_0627,
     MAILBOX_WRITE_REPLACEMENT_0627,
     MAIN_JS_0627,
     _repair_mailbox_waiting_footer,
@@ -429,6 +430,22 @@ def _repair_native_silent_reply(source: str) -> str:
     return source
 
 
+def _repair_native_media_only_wait(source: str) -> str:
+    """Carry the media-only wait flag into the list rows and into the poll's change check.
+
+    A letter that only waits for its generated voice or song must not keep the compose card
+    closed (see MAILBOX_WRITE_REPLACEMENT_0627). Each anchor disappears once patched, so a
+    rerun leaves the source unchanged.
+    """
+    return source.replace(
+        'videoPending:e.videoPending===true,auditStatus:e.auditStatus,',
+        'videoPending:e.videoPending===true,mediaWaitOnly:e.mediaWaitOnly===true,auditStatus:e.auditStatus,',
+    ).replace(
+        're.videoPending!==Ee.videoPending||re.letterStatus!==Ee.letterStatus)',
+        're.videoPending!==Ee.videoPending||re.mediaWaitOnly!==Ee.mediaWaitOnly||re.letterStatus!==Ee.letterStatus)',
+    )
+
+
 def _repair_mailbox_write_access(root: Path) -> str:
     from runtime.personal_chat._patch_desktop_mail import patch_desktop_mail
     from runtime.personal_chat._patch_music_playback import patch_music_playback
@@ -496,6 +513,7 @@ def _repair_mailbox_write_access(root: Path) -> str:
         're.isUnread!==Ee.isUnread||re.letterStatus!==Ee.letterStatus)',
         're.isUnread!==Ee.isUnread||re.videoPending!==Ee.videoPending||re.letterStatus!==Ee.letterStatus)',
     )
+    source = _repair_native_media_only_wait(source)
     offline_guard = 'Te.interceptors.request.use(e=>{const t=Ie();if(t.isOfflineMode)throw new Ol(e);'
     if offline_guard in source:
         source = source.replace(
@@ -545,6 +563,8 @@ def _repair_mailbox_write_access(root: Path) -> str:
     # Migrate the old always-visible offline patch and refresh terminal status
     # even when unread/media fields are unchanged (notably pending -> failed).
     source = source.replace('"hide-write":!1', MAILBOX_WRITE_ANCHOR_0627)
+    # Same for bundles patched before a reply could wait on generated audio alone.
+    source = source.replace(MAILBOX_WRITE_PREVIOUS_REPLACEMENT_0627, MAILBOX_WRITE_ANCHOR_0627)
     source = source.replace(
         're.isUnread!==Ee.isUnread)&&',
         're.isUnread!==Ee.isUnread||re.letterStatus!==Ee.letterStatus)&&',

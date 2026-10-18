@@ -443,6 +443,9 @@ class SQLitePrivateWorldLedger:
         No schema migration/rewrite of prior user records is required. Existing
         saved states supply the first baseline; subsequent typed inputs are ordered
         by UTC event time and stable event identity, independent of completion.
+
+        Letter deletion repeats this ordering, de-duplication and checkpoint
+        handling in runtime/imports/letter_delete_replay.py; change both together.
         """
         from .commands import ApplyHistoricalRelationshipEvidence, ConfirmRelationshipStage, command_from_record
         from .reducer import (_DEDUPLICATION_WINDOW, ReducerEventKind, reduce_private_world,

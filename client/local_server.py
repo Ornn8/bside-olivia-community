@@ -3283,6 +3283,8 @@ def _recent_active_duplicate(
     *,
     now: float | None = None,
 ) -> dict | None:
+    from original_client_letter_contract import _audio_pending, _photo_pending
+
     current_time = time.time() if now is None else now
     for letter in store.letters:
         created_at = letter.get("created_at")
@@ -3297,6 +3299,11 @@ def _recent_active_duplicate(
         if (
             status == "COMPLETED"
             and letter.get("reply_not_before", 0.0) <= current_time
+            # A voice, song or photo still being made is not delivered yet, and the
+            # writer may send again meanwhile: a retry of the same request must
+            # not start a second generation.
+            and not _audio_pending(letter)
+            and not _photo_pending(letter)
         ):
             continue
         if letter.get("content") == content and letter.get("material", {}) == material:
@@ -3979,7 +3986,7 @@ def _diary_public_entry(entry):
 
 
 async def _diary_tick(now=None) -> None:
-    from runtime.diary.diary import due_days, write_day, day_life
+    from runtime.diary.diary import due_days, write_day, day_life, unserved
     from runtime.private_world.daily_life_runtime import life_persona
     if diary_store is None or not diary_store.enabled():
         return
@@ -3993,8 +4000,11 @@ async def _diary_tick(now=None) -> None:
                 persona=life_persona(letters_adapter.persona_v2_path),
                 life=day_life(getattr(daily_life_runtime, 'store', None), day, outfit), now=now,
                 relationship_stage=stage, videos=videos, visits=_diary_visits(day))
-        except (GatewayError, asyncio.TimeoutError, OSError, RuntimeError, ValueError, TypeError, KeyError, sqlite3.Error) as exc:
-            diary_store.failed(day, type(exc).__name__)
+        except Exception as exc:
+            # A request that never reached a service keeps its attempt; any other failure uses one up. Nothing
+            # escapes this loop: an unexpected error must not stop the diary until the next start.
+            record = diary_store.deferred if unserved(exc) else diary_store.failed
+            record(day, type(exc).__name__)
             _safe_log('diary_write_failed', error_code=getattr(exc, 'code', None) or type(exc).__name__)
             continue
         if outcome == 'empty':
@@ -4012,7 +4022,7 @@ async def _write_memoirs(months) -> None:
 
 
 async def _write_memoirs_once(months) -> None:
-    from runtime.diary.diary import write_month
+    from runtime.diary.diary import write_month, unserved
     from runtime.private_world.daily_life_runtime import life_persona
     _memoir_state.update(running=True, done=0, failed=0, total=len(months))
     try:
@@ -4025,9 +4035,10 @@ async def _write_memoirs_once(months) -> None:
                                   persona=life_persona(letters_adapter.persona_v2_path),
                                   relationship_stage=stage, videos=videos, visits=_diary_visits(month))
                 _memoir_state['done' if outcome == 'written' or diary_store.entry(month) else 'failed'] += 1
-            except (GatewayError, asyncio.TimeoutError, OSError, RuntimeError, ValueError, TypeError, KeyError, sqlite3.Error) as exc:
+            except Exception as exc:
                 _memoir_state['failed'] += 1
-                diary_store.failed(month, type(exc).__name__)
+                record = diary_store.deferred if unserved(exc) else diary_store.failed
+                record(month, type(exc).__name__)
                 _safe_log('diary_memoir_failed', error_code=getattr(exc, 'code', None) or type(exc).__name__)
     finally:
         _memoir_state['running'] = False
@@ -4160,7 +4171,27 @@ async def _proactive_loop() -> None:
         await asyncio.sleep(300)
 
 
-def _active_undelivered_letter(*, now: float | None = None, exclude_letter=None) -> dict | None:
+def _generation_pending_duplicate(content: str, material: dict, *, now: float | None = None) -> dict | None:
+    """A recent letter with this exact request whose voice, song or photo is still being made."""
+    from original_client_letter_contract import _audio_pending, _photo_pending
+    from runtime.personal_chat.contact_activity import recent, LETTER_PENDING_SECONDS
+
+    current_time = time.time() if now is None else now
+    for letter in store.letters:
+        if (letter.get("content") == content and letter.get("material", {}) == material
+                and letter.get("origin") != "proactive"
+                and recent(letter, current_time, LETTER_PENDING_SECONDS)
+                and (_audio_pending(letter) or _photo_pending(letter))):
+            return letter
+    return None
+
+
+def _active_undelivered_letter(*, now: float | None = None, exclude_letter=None, sending: bool = False) -> dict | None:
+    """The letter that still holds the line, or None.
+
+    Her own initiative keeps waiting for a requested photo. A person writing does not:
+    the photo job runs on its own, queued behind any other media job, and lands on its letter.
+    """
     from original_client_letter_contract import _photo_pending
     from runtime.personal_chat.contact_activity import recent, LETTER_PENDING_SECONDS
 
@@ -4173,7 +4204,7 @@ def _active_undelivered_letter(*, now: float | None = None, exclude_letter=None)
             return letter
         if not recent(letter, current_time, LETTER_PENDING_SECONDS):
             continue
-        if _photo_pending(letter):
+        if _photo_pending(letter) and not sending:
             return letter
         if letter.get("letter_status") in {"PENDING", "PROCESSING"}:
             return letter
@@ -5614,7 +5645,11 @@ async def route(
             previous = _recent_active_duplicate(content, material)
             if previous is not None:
                 return _send_result_for_letter(previous)
-        active_letter = _active_undelivered_letter()
+        active_letter = _active_undelivered_letter(sending=True)
+        if active_letter is None:
+            # The same request again while its voice, song or photo is still being made would
+            # start a second generation; say that it is already under way.
+            active_letter = _generation_pending_duplicate(content, material)
         if active_letter is not None and active_letter.get('origin') != 'proactive':
             return err(409, "LETTER_IN_PROGRESS", {
                 "status": "FAILED",

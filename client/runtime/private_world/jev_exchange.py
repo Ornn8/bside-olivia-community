@@ -2,6 +2,8 @@
 import hashlib
 import re
 
+from . import project_title
+
 
 # Phase name of the counters that report how updates in conflict were handled (see _resolve_updates).
 CONFLICT_PHASE = 'exchange-conflict'
@@ -392,6 +394,13 @@ def _writable(anchor, kind, status, proactive):
                 or proactive and kind == 'shared' and status != 'awaiting_user')
 
 
+def _nameable(candidate, old):
+    """A new item is named after the span of the reply that locates its action. When that span is
+    only a piece of the conversation (the tail of a sentence, a whole remark) it names nothing she
+    does, so the item is not recorded. Items that already exist keep the name they have."""
+    return old is not None or project_title.usable(candidate['anchor']['text'])
+
+
 def _update_item(candidate, kind, old, request_id):
     anchor = candidate['anchor']
     item_id = old['id'] if old else 'jev.' + hashlib.sha256(
@@ -446,7 +455,7 @@ def _assemble_updates(candidates, request_id, proactive):
     for position, candidate in enumerate(candidates):
         old = candidate['old']
         kind = old.get('kind', 'linli') if old else candidate['applicability']
-        if _writable(candidate['anchor'], kind, candidate['status'], proactive):
+        if _writable(candidate['anchor'], kind, candidate['status'], proactive) and _nameable(candidate, old):
             item = _update_item(candidate, kind, old, request_id)
             groups.setdefault(item['id'], []).append(entry(position, candidate, item))
     first = {item_id: entries[0]['position'] for item_id, entries in groups.items()}
@@ -458,7 +467,8 @@ def _assemble_updates(candidates, request_id, proactive):
         for moving in (e for e in entries if leaves(e['candidate'])):
             detached += 1
             candidate = {**moving['candidate'], 'old': None}
-            if _writable(candidate['anchor'], candidate['applicability'], candidate['status'], proactive):
+            if (_writable(candidate['anchor'], candidate['applicability'], candidate['status'], proactive)
+                    and _nameable(candidate, None)):
                 item = _update_item(candidate, candidate['applicability'], None, request_id)
                 groups.setdefault(item['id'], []).append(entry(moving['position'], candidate, item))
                 first[item['id']] = min(first.get(item['id'], moving['position']), moving['position'])

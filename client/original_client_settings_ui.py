@@ -1526,6 +1526,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const requestToken = {};
     panel._lifeRequest = requestToken;
     const alive = () => panel.isConnected !== false && panel._lifeRequest === requestToken;
+    // The wide gap that separates a time from its title in Chinese is an ordinary space in English.
+    const gap = () => window.oliviaI18n && window.oliviaI18n.lang() === "en" ? " " : "　";
     const labels = { planned: t("打算做"), ongoing: t("进行中"), paused: t("暂时搁下"), completed: t("已完成"), cancelled: t("已取消"), awaiting_user: t("等你说说后续") };
     const when = (value) => {
       const date = new Date(value);
@@ -1747,7 +1749,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         const day=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(at));
         if(day!==date || seenActivities.has(item.source_id))continue;
         seenActivities.add(item.source_id);
-        rows.push({kind:'clock',at,label:`${span(item.occurred_at,item.last_recorded_at)}　${item.activity} · ${item.record_count > 1 ? t('同状态记录') : t('生活记录')}`,note:typeof item.note==='string'?item.note:''});
+        rows.push({kind:'clock',at,label:`${span(item.occurred_at,item.last_recorded_at)}${gap()}${item.activity} · ${item.record_count > 1 ? t('同状态记录') : t('生活记录')}`,note:typeof item.note==='string'?item.note:''});
       }
       const names={breakfast:t('早餐'),lunch:t('午餐'),dinner:t('晚餐'),snack:t('加餐')};
       const slots=['breakfast','lunch','dinner'];
@@ -1769,7 +1771,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           const food=typeof item.food==='string' ? item.food : '';
           const states={planned:t('计划吃{food}', {food}),eating:t('正在吃{food}', {food}),eaten:t('已吃{food}', {food}),skipped:t('这餐没吃')};
           const state=states[item.status] || t('用餐记录待更新');
-          label=`${planned ? t('计划 ') : ''}${span(start,item.status==='eaten' ? item.finished_at : null)}　${names[slot]} · ${item.stale ? t('上次记录：{state}；当前状态待更新', {state}) : state}`;
+          label=`${planned ? t('计划 ') : ''}${span(start,item.status==='eaten' ? item.finished_at : null)}${gap()}${names[slot]} · ${item.stale ? t('上次记录：{state}；当前状态待更新', {state}) : state}`;
           if(item.stale && failure)label+=` · ${failure}`;
           if(item.recovered)label+=` · ${clock(item.recorded_at) ? t('补记于 {time}', {time: clock(item.recorded_at)}) : t('补记')}`;
         }
@@ -2026,7 +2028,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         }
         agenda.append(text('small',t('课表和打算不证明已经发生，以后续生活记录为准。'),'olivia-world-muted'));
         const next=section(t('接下来'),'');next.className='olivia-world-aside';
-        if(schedule.next_class)next.append(line('calendar',`${when(schedule.next_class.start)}　${schedule.next_class.title}`,'olivia-world-agenda'));
+        if(schedule.next_class)next.append(line('calendar',`${when(schedule.next_class.start)}${gap()}${schedule.next_class.title}`,'olivia-world-agenda'));
         else next.append(text('p',t('暂无下一节课的安排。'),'olivia-world-muted'));
         const promise=payload.shared.find(item=>item.time_scope !== 'transient' && !item.deadline_expired && !['completed','cancelled'].includes(item.status));
         if(promise){next.append(line('link',t('与你的约定'),'olivia-world-agenda'),text('p',said(promise)),text('small',labels[promise.status] || t('状态待确认'),'olivia-world-muted'))}
@@ -2143,7 +2145,6 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     if(items.length){show(10);target.append(more);}else target.append(text('p',t('还没有消费记录。'),'text-text-secondary text-body-m'));
     // Account tiers apply to tokens only; the enabled judgment floor is fixed.
     const judgment=typeof account.jev_minimum_charge_yuan==='string'?(Number(account.jev_minimum_charge_yuan)>0?t('JEV 判断每次最低 {amount}', {amount: money('0.01')}):t('JEV 判断按实际用量计费')):null;
-    if(account.jev_pricing){const p=account.jev_pricing;target.append(text('p',t('JEV 判断输入 {multiplier}× · ¥{input}/百万 token；优惠判断类别 ¥{own}/百万 token', {multiplier: p.input_multiplier, input: p.input_per_million_yuan, own: p.own_model_input_per_million_yuan}),'text-text-secondary text-body-m'));}
     const minimum=!account.minimum_charge_yuan?'':judgment===null?t('回信中转与 JEV 判断按用量计费，每次最低 {amount}，未产生费用的调用不收费。', {amount: money(account.minimum_charge_yuan)}):t('回信中转与 JEV 判断按用量计费：回信中转每次最低 {amount}，{judgment}，未产生费用的调用不收费。', {amount: money(account.minimum_charge_yuan), judgment});
     target.append(text('p',minimum+t('中转和 GPU 共用同一余额；释放预留不是额外扣款或充值。')+(account.has_more?t('这里显示最近 50 笔。'):''),'text-text-secondary text-caption-m'));
   };
@@ -2244,7 +2245,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     box.setAttribute("data-olivia-relay-models", "");
     box.style.cssText = "display:grid;gap:12px;margin:24px 0;min-width:0";
     const title = text("h3", t("回信模型"), "text-text-title text-title-m");
-    const description = text("p", t("以下为当前账户价格。倍率以原 Sonnet 基准价为 1 倍；输入和输出分别计费，短请求可能受最低计费规则影响。"), "text-text-secondary text-caption-m");
+    const description = text("p", t("以 Claude Sonnet 5.5 为 1 倍。输入和输出分别计费，实际消费取决于用量；短请求可能受最低计费规则影响。"), "text-text-secondary text-caption-m");
     const about = text("p", "", "text-text-secondary text-body-m");
     about.className += " olivia-model-about";
     const list = document.createElement("fieldset");
@@ -2294,9 +2295,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         const detail = document.createElement("span");
         detail.style.cssText = "display:grid;gap:4px;min-width:0";
         detail.append(name);
-        if(item.pricing)detail.append(text('span',t('每百万 token：输入 ¥{input} · 输出 ¥{output}', {input: item.pricing.input_per_million_yuan, output: item.pricing.output_per_million_yuan}),'text-text-secondary text-caption-m'));
         if (item.description) row.title = item.description;
-        const ratio = value => Number(value).toLocaleString("zh-CN", {maximumFractionDigits:5});
+        const ratio = value => Number(value).toLocaleString("zh-CN", {maximumFractionDigits:2});
         const ratios = text("span", t('输入 {input}× · 输出 {output}×', {input: ratio(item.input_multiplier), output: ratio(item.output_multiplier)}), "text-text-secondary text-body-m");
         ratios.className += " olivia-model-multipliers";
         ratios.style.cssText = "font-variant-numeric:tabular-nums;font-size:13px;line-height:1.5";
@@ -3307,7 +3307,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const failure = error => ({
       LETTER_DELETE_LEGACY_RELATIONSHIP_UNSUPPORTED: t('这封旧信的关系记录缺少可重放来源，暂不能安全清理。信件未删除。'),
       LETTER_DELETE_UNATTRIBUTED_DIARY: t('相关日记缺少逐封信的来源记录，暂不能安全清理这封信；整篇清除会影响其他信件。信件未删除。'),
-      LETTER_DELETE_RELATIONSHIP_REPLAY_UNSUPPORTED: t('相关关系记录含交错或重复证据，暂不能安全重算。信件未删除。'),
+      LETTER_DELETE_RELATIONSHIP_REPLAY_UNSUPPORTED: t('相关关系记录无法精确重放，暂不能安全重算。信件未删除。'),
       LETTER_DELETE_RESTORE_CONFLICT: t('关联记录在删除后发生了变化，已停止恢复以保护新记录。请保留最近删除中的备份。'),
       LETTER_DELETE_MEMORY_BUSY: t('记忆正在写入，请稍后重试。'),
       LETTER_DELETE_MEMORY_UNAVAILABLE: t('记忆存储暂不可用，请恢复连接后重试。'),

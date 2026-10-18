@@ -189,6 +189,20 @@ def test_fatigue_during_class_allows_rest_without_claiming_class_was_cancelled()
     assert data['world']['schedule']['current_class'] == schedule['current_class']
 
 
+
+def test_due_nap_is_ended_and_not_renewed(tmp_path):
+    store = DailyLifeStore(tmp_path / 'world.db')
+    publish_rest(store, 'nap:start', at(29, 14), 'nap_30')
+    state = store.snapshot(at(29, 14, 31))
+    assert state['rhythm']['authored_sleep']['status'] == 'due'
+    port = Port(path='nap_tired')
+    value = asyncio.run(create(port, 'nap:end', at(29, 14, 31), 'rest', state))
+    paths = port.calls[0][1]['paths']
+    assert {'nap_refreshed', 'nap_tired'} <= set(paths)
+    assert not {'nap_30', 'nap_60', 'nap_90'} & set(paths)
+    assert value['effects']['sleep_resolution'] == {'source_id': 'nap:start'}
+    assert 'sleep_plan' not in value['effects']
+
 def test_correspondence_overlapping_nap_start_interrupts_it_and_does_not_offer_completed_nap(tmp_path):
     store = DailyLifeStore(tmp_path / 'world.db')
     publish_rest(store, 'nap:start', at(29, 11), 'nap_60')

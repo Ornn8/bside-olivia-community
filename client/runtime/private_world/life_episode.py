@@ -166,7 +166,31 @@ def _path(obstacle,response,status,detail):
                 result=dict(status=status,detail=detail))
 
 
-async def create(port, source_id, now, kind, context, *, meal=None):
+def _neutral_outcome(kind, paths, triggers, interpretations, effects):
+    """The answer that changes no fact: she stops for now. Used only when an answer that was asked for could not be applied.
+
+    Returns the (trigger, experience) pair, or None when this activity has no way to stop that is
+    neutral by itself (rest carries recovery and sleep effects, which only a real answer may set).
+    """
+    if kind in {'rest', 'meal'}:
+        return None
+    if 'pause' in paths:
+        path = 'pause'
+    else:
+        stops = [key for key, value in paths.items() if value['result']['status'] == 'paused']
+        # A bath has no way to stop: the decision already says it began or ended, and its paths
+        # only differ in wording.
+        bath = list(paths)[:1] if kind in {'bath_started', 'bath_finished'} else []
+        path = (stops or bath or [None])[0]
+    if path is None or 'ordinary' not in interpretations or 'none' not in effects:
+        return None
+    trigger = 'continuation' if 'continuation' in triggers else next(iter(triggers))
+    return trigger, f'{path}:ordinary:none'
+
+
+async def create(port, source_id, now, kind, context, *, meal=None, fallback=False):
+    """Author one life episode. ``fallback`` skips the request and uses the neutral stop instead
+    (None when the activity has none), so a world whose answers cannot be applied still moves on."""
     if kind not in KINDS:
         return None
     if kind == 'class' and not (context.get('world') or {}).get('schedule', {}).get('current_class'):
@@ -211,7 +235,12 @@ async def create(port, source_id, now, kind, context, *, meal=None):
             'completed','这段休息后精力有所恢复，可以按自己的意愿接回轻活动。')
         now_local = now.astimezone(timezone(timedelta(hours=8)))
         next_class = (context.get('world') or {}).get('schedule', {}).get('next_class')
-        for duration in (30, 60, 90):
+        authored = (context.get('rhythm') or {}).get('authored_sleep')
+        # A due, uninterrupted nap is ended (nap_refreshed / nap_tired); offering a new nap here let her
+        # renew a 30-minute nap every 30 minutes for hours.
+        nap_due = bool(authored and authored['status'] == 'due' and authored.get('kind') != 'overnight'
+                       and not authored.get('interrupted'))
+        for duration in (() if nap_due else (30, 60, 90)):
             end = now + timedelta(minutes=duration)
             if next_class and end > datetime.fromisoformat(next_class['start']):
                 continue
@@ -330,11 +359,17 @@ async def create(port, source_id, now, kind, context, *, meal=None):
     if kind == 'shopping':
         experience_instructions += ('shopping路径只创作她自己本次真实购物经过；completed须已选好并结账，'
             '只挑选、出门准备或购物计划不能当购买完成。不添品牌或未给出的具体商品；未知时只保留日常用品与袋子。')
-    answers=await port.ask({'new_activity':kind,'context':projected,'meal':meal,
-                           'paths':paths,'interpretations':interpretations,'effects':effects}, {
-        'trigger':dict(instructions='为本次新发生的角色自身行动选择动机。不要替真实用户或他人编动作、对话或私事；不得补写旧事件的原因。',criteria=triggers),
-        'experience':dict(instructions=experience_instructions, criteria=combinations)},
-        purpose='world-life-episode')
+    if fallback:
+        neutral = _neutral_outcome(kind, paths, triggers, interpretations, effects)
+        if neutral is None:
+            return None
+        answers = {'trigger': neutral[0], 'experience': neutral[1]}
+    else:
+        answers=await port.ask({'new_activity':kind,'context':projected,'meal':meal,
+                               'paths':paths,'interpretations':interpretations,'effects':effects}, {
+            'trigger':dict(instructions='为本次新发生的角色自身行动选择动机。不要替真实用户或他人编动作、对话或私事；不得补写旧事件的原因。',criteria=triggers),
+            'experience':dict(instructions=experience_instructions, criteria=combinations)},
+            purpose='world-life-episode')
     if (not isinstance(answers,dict) or set(answers)!={'trigger','experience'}
             or answers.get('trigger') not in triggers or answers.get('experience') not in combinations):
         raise ValueError('LIFE_EPISODE_DECISION_INVALID')

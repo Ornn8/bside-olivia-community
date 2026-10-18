@@ -145,20 +145,14 @@ def mount_relay_api(app, setup):
                         raise LLMSetupError('RELAY_RESPONSE_INVALID', status=503)
                     rows.append({'id': item['id'], 'display_name': name, 'description': description,
                         'input_multiplier': ratios[0], 'output_multiplier': ratios[1]})
-                    prices = item.get('pricing')
-                    if isinstance(prices, dict):
-                        fields = ('input_per_million_yuan', 'output_per_million_yuan')
-                        if any(not isinstance(prices.get(field), str) or not re.fullmatch(r'[0-9]+(?:\.[0-9]+)?', prices[field]) for field in fields):
-                            raise LLMSetupError('RELAY_RESPONSE_INVALID', status=503)
-                        rows[-1]['pricing'] = {field: prices[field] for field in fields}
                 baseline = next((row for row in rows if row['id'] == RELAY_MULTIPLIER_BASELINE), None)
                 fields = ('input_multiplier', 'output_multiplier')
                 if baseline is None or any(Decimal(baseline[field]) <= 0 for field in fields):
                     raise LLMSetupError('RELAY_RESPONSE_INVALID', status=503)
+                divisors = {field: Decimal(baseline[field]) for field in fields}
                 for row in rows:
                     for field in fields:
-                        # Server multipliers already reflect this account's settlement terms.
-                        row[field] = format(Decimal(row[field]), '.5f')
+                        row[field] = format(Decimal(row[field]) / divisors[field], '.5f')
                 config = setup._config()
                 selected = config.model if config.base_url.rstrip('/') == RELAY_BASE and config.model in RELAY_MODELS else RELAY_MODEL
                 return web.json_response({'models': rows, 'selected_model': selected,

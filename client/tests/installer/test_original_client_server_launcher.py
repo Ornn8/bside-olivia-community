@@ -141,7 +141,7 @@ def test_launcher_repairs_existing_0627_frontend_before_start(
         bootstrap = archive.read("assets/olivia-companion-settings.js").decode()
         main = archive.read("assets/main-31595bd3.js").decode()
     assert bootstrap == BOOTSTRAP_JAVASCRIPT
-    assert '"hide-write":o(h).some(e=>[1,2,3].includes(e.letterStatus))' in main
+    assert '"hide-write":o(h).some(e=>[1,2,3].includes(e.letterStatus)&&!e.mediaWaitOnly)' in main
 
 
 def test_launcher_rejects_missing_frontend_archive(tmp_path: Path) -> None:

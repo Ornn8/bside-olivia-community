@@ -235,15 +235,18 @@ def legacy_plan(path, sources):
 
 
 def world_plan(ledger, sources):
-    """Replay stored reducer inputs, without asking a model to reconstruct facts.
+    """Rebuild stored relationship state without the removed evidence.
 
-    A pre-replay ledger with affected opaque state cannot be safely inverted;
-    reject it before any deletion rather than clear unrelated relationships.
+    The live projection replays stored reducer inputs in event-time order and
+    de-duplicates repeated evidence, so write order and repeated wording are
+    normal. The same rules are replayed here, which yields the state the ledger
+    would hold had the removed events never been written; nothing is asked of a
+    model and no unrelated record is reset. A set of records the replay cannot first
+    reproduce exactly, or an unexplained stored change after a removed event,
+    is rejected before any deletion rather than guessed.
     """
     from dataclasses import replace
-    from runtime.private_world.port import PrivateWorldSnapshot
-    from runtime.private_world.reducer import reducer_event_from_record, reduce_private_world, reduce_private_world_command
-    from runtime.private_world.commands import command_from_record
+    from .letter_delete_replay import TOMBSTONE, Replay
     patches = sql_plan(ledger._database_path, sources)
     with ledger._connection() as db:
         db.row_factory = sqlite3.Row
@@ -256,72 +259,42 @@ def world_plan(ledger, sources):
         # Derived relationship events explicitly bind to the canonical delivery.
         sources.exact.update(removed)
         removed |= {row['event_id'] for row in events if prune(json.loads(row['payload_json']), sources) is None}
+        # An earlier deletion leaves an inert identity tombstone; it is not removed again.
+        removed -= {row['event_id'] for row in events if row['event_type'] == TOMBSTONE}
         has_inputs = db.execute("SELECT 1 FROM sqlite_master WHERE name='private_world_projection_inputs'").fetchone()
         inputs = {row['event_id']: dict(row) for row in db.execute('SELECT rowid AS _rowid_,* FROM private_world_projection_inputs')} if has_inputs else {}
-        from datetime import datetime
-        replayable = [event for event in events if event['event_id'] in inputs]
-        times = [datetime.fromisoformat(event['occurred_at'].replace('Z', '+00:00')) for event in replayable]
-        semantics = [json.loads(event['payload_json']).get('semantic_key') for event in replayable]
-        semantics = [key for key in semantics if key is not None]
-        if times != sorted(times) or len(semantics) != len(set(semantics)):
-            raise ValueError('LETTER_DELETE_RELATIONSHIP_REPLAY_UNSUPPORTED')
         snapshots = {row['event_id']: dict(row) for row in db.execute('SELECT rowid AS _rowid_,* FROM private_world_snapshots ORDER BY version')}
-        state = PrivateWorldSnapshot()
-        previous = PrivateWorldSnapshot()
-        for event in events:
-            snapshot = snapshots.get(event['event_id'])
-            original = ledger._strict_stored_snapshot(snapshot['version'], snapshot['payload_json']) if snapshot else previous
-            frozen = inputs.get(event['event_id'])
-            if event['event_id'] in removed:
-                if frozen is None and original != previous:
-                    raise ValueError('LETTER_DELETE_LEGACY_RELATIONSHIP_UNSUPPORTED')
-                # Keep an inert identity tombstone for state-record foreign keys and
-                # late delivery deduplication, without retaining its evidence.
-                patches.append({'table': 'private_world_events', 'before': event,
-                    'after': {**event, 'event_type': 'letter_source_removed', 'payload_json': '{}'}})
-                if frozen:
-                    patches.append({'table': 'private_world_projection_inputs', 'before': frozen, 'after': None})
-            elif frozen:
-                command = json.loads(frozen['payload_json'])
-                if json.loads(event['payload_json']).get('reason_code') == 'INTIMACY_EXCEEDS_STAGE':
-                    previous = original
-                    continue
-                if command['kind'] == 'event':
-                    result = reduce_private_world(state, reducer_event_from_record(command['value']))
-                else:
-                    result = reduce_private_world_command(state, command_from_record(command['value']))
-                state = result.snapshot
-                if 'result_json' in frozen:
-                    from runtime.personal_chat.initiative_profile import profile_from_snapshot
-                    profile = profile_from_snapshot(state)
-                    outcome = json.loads(frozen['result_json'] or '{}')
-                    outcome.update(applied=result.delta.applied, reason_code=result.delta.reason_code,
-                        contact_qualification=sum(getattr(state, key) >= 70 for key in ('familiarity', 'trust', 'comfort', 'closeness')) >= 3,
-                        initiative_tier=profile.tier, initiative_caution=profile.caution)
-                    after = {**frozen, 'result_json': json.dumps(outcome, sort_keys=True)}
-                    if after != frozen:
-                        patches.append({'table': 'private_world_projection_inputs', 'before': frozen, 'after': after})
-            else:
-                # An unrelated compatibility checkpoint is usable only before
-                # the first removed transition. Later opaque changes need evidence.
-                if original != previous:
-                    if any(e['event_id'] in removed for e in events[:events.index(event)]):
-                        raise ValueError('LETTER_DELETE_LEGACY_RELATIONSHIP_UNSUPPORTED')
-                    state = original
-            if snapshot:
-                projected = replace(state, version=snapshot['version'])
-                after = {**snapshot, 'payload_json': ledger._snapshot_json(projected)}
-                if after != snapshot:
-                    patches.append({'table': 'private_world_snapshots', 'before': snapshot, 'after': after})
-            previous = original
-        # Future ordered projections start at the rebuilt checkpoint; otherwise
-        # their old checkpoint would silently reintroduce the removed evidence.
-        row = db.execute("SELECT rowid AS _rowid_,* FROM private_world_metadata WHERE key='ordered_projection_v1'").fetchone()
-        if row:
-            before = dict(row)
-            latest_version = max((r['version'] for r in snapshots.values()), default=1)
-            base = {'cursor': max((e['_rowid_'] for e in events), default=0),
-                    'snapshot': ledger._snapshot_json(replace(state, version=latest_version))}
-            patches.append({'table': 'private_world_metadata', 'before': before,
-                            'after': {**before, 'value': json.dumps(base, sort_keys=True)}})
+        metadata = db.execute("SELECT rowid AS _rowid_,* FROM private_world_metadata WHERE key='ordered_projection_v1'").fetchone()
+    replay = Replay(ledger, events, inputs, snapshots)
+    replay.check_removed_opaque(removed)
+    rebuilt = replay.rebuild(removed)
+    for event in events:
+        event_id = event['event_id']
+        frozen = inputs.get(event_id)
+        if event_id in removed:
+            # Keep an inert identity tombstone for state-record foreign keys and
+            # late delivery deduplication, without retaining its evidence.
+            patches.append({'table': 'private_world_events', 'before': event,
+                'after': {**event, 'event_type': TOMBSTONE, 'payload_json': '{}'}})
+            if frozen:
+                patches.append({'table': 'private_world_projection_inputs', 'before': frozen, 'after': None})
+        elif rebuilt is not None and event_id in rebuilt.outcomes and 'result_json' in frozen:
+            outcome = {**json.loads(frozen['result_json'] or '{}'), **rebuilt.outcomes[event_id]}
+            after = {**frozen, 'result_json': json.dumps(outcome, sort_keys=True)}
+            if after != frozen:
+                patches.append({'table': 'private_world_projection_inputs', 'before': frozen, 'after': after})
+        if rebuilt is not None and event_id in rebuilt.rows:
+            row = snapshots[event_id]
+            projected = replace(rebuilt.rows[event_id], version=row['version'])
+            patches.append({'table': 'private_world_snapshots', 'before': row,
+                            'after': {**row, 'payload_json': ledger._snapshot_json(projected)}})
+    # Future ordered projections start at the rebuilt checkpoint; otherwise
+    # their old checkpoint would silently reintroduce the removed evidence.
+    if rebuilt is not None and metadata:
+        before = dict(metadata)
+        latest_version = max((row['version'] for row in snapshots.values()), default=1)
+        base = {'cursor': max((e['_rowid_'] for e in events), default=0),
+                'snapshot': ledger._snapshot_json(replace(rebuilt.final, version=latest_version))}
+        patches.append({'table': 'private_world_metadata', 'before': before,
+                        'after': {**before, 'value': json.dumps(base, sort_keys=True)}})
     return patches

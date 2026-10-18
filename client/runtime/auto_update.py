@@ -34,6 +34,8 @@ import time
 import zipfile
 from pathlib import Path
 
+from runtime import ui_language
+
 PUBLIC_KEY = bytes.fromhex('9dd7cb44967b4ba21df761029b76ee50104855e702d3de36b8daafa7617839bb')
 BASE = 'https://bside-moon.cn/'
 FIRST_CHECK_SECONDS = 120
@@ -50,7 +52,8 @@ _VERSION = re.compile(r'\d+(?:\.\d+){1,3}')
 _SHA256 = re.compile(r'[0-9a-f]{64}')
 log = logging.getLogger('olivia.auto_update')
 
-_state = {'state': 'idle', 'version': None, 'notes': None, 'checked_at': 0.0, 'failures': {}, 'restarting': False}
+_state = {'state': 'idle', 'version': None, 'notes': None, 'notes_en': None, 'checked_at': 0.0, 'failures': {},
+          'restarting': False}
 
 
 def version_key(text):
@@ -79,7 +82,17 @@ def parse_manifest(raw, signature):
             or not _SHA256.fullmatch(str(value.get('sha256'))) or not _SHA256.fullmatch(str(value.get('manifest_sha256')))):
         raise ValueError('UPDATE_MANIFEST_INVALID')
     value['notes'] = clean_notes(value.get('notes'))
+    # Optional English wording of the same notes; a release without it shows the notes as written.
+    value['notes_en'] = clean_notes(value.get('notes_en'))
     return value
+
+
+def shown_notes():
+    """The notes in the interface language: the English wording when English is chosen and the release carries it."""
+    english = _state.get('notes_en')
+    if ui_language.is_english() and isinstance(english, dict) and (english.get('title') or english.get('items')):
+        return english
+    return _state['notes']
 
 
 def clean_notes(notes):
@@ -199,8 +212,9 @@ async def check(root, *, session_factory=None):
             raise
         finally:
             bundle.unlink(missing_ok=True)
-    _write_json(updates / 'notes.json', {'version': version, 'notes': manifest['notes'], 'seen': False})
-    _state.update(state='ready', version=version, notes=manifest['notes'])
+    _write_json(updates / 'notes.json', {'version': version, 'notes': manifest['notes'],
+                                         'notes_en': manifest['notes_en'], 'seen': False})
+    _state.update(state='ready', version=version, notes=manifest['notes'], notes_en=manifest['notes_en'])
     log.info('auto update %s installed; restart pending', version)
     return _state
 
@@ -237,7 +251,8 @@ def _settle_probation(root, current):
     """The installed update started here: show its notes once, and lift the probation after a while."""
     notes = _read_json(root / 'data' / 'updates' / 'notes.json')
     if notes and notes.get('version') == current and not notes.get('seen'):
-        _state.update(state='updated', version=current, notes=clean_notes(notes.get('notes')))
+        _state.update(state='updated', version=current, notes=clean_notes(notes.get('notes')),
+                      notes_en=clean_notes(notes.get('notes_en')))
     mark = _read_json(root / PROBATION_NAME)
     if mark and mark.get('version') == current and not mark.get('rejected'):
         async def lift():
@@ -294,7 +309,7 @@ async def autoupdate_http(server, request):
                                  status=status, headers=headers)
     root = _root()
     if path == '/toy/autoupdate/state' and method == 'GET':
-        return reply({'state': _state['state'], 'version': _state['version'], 'notes': _state['notes'],
+        return reply({'state': _state['state'], 'version': _state['version'], 'notes': shown_notes(),
                       'current': running_version(), 'enabled': root is not None})
     if method == 'POST' and request.headers.get('X-Olivia-Companion-Action') != 'confirmed':
         return reply('COMPANION_CONFIRMATION_REQUIRED', 403)
@@ -310,6 +325,6 @@ async def autoupdate_http(server, request):
         if root is not None and _state['state'] == 'updated':
             notes = _read_json(root / 'data' / 'updates' / 'notes.json') or {}
             _write_json(root / 'data' / 'updates' / 'notes.json', {**notes, 'seen': True})
-            _state.update(state='idle', version=None, notes=None)
+            _state.update(state='idle', version=None, notes=None, notes_en=None)
         return reply({'seen': True})
     return reply('NOT_FOUND', 404)
