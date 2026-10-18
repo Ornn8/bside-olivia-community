@@ -3329,10 +3329,12 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       if (diary) {
         const row = document.createElement('label'), box = document.createElement('input');
         row.className = 'lm-diary'; box.type = 'checkbox'; box.checked = false; diary.checked = false;
-        box.addEventListener('change', () => { diary.checked = box.checked; });
+        const kept = t('日记是她自己写的，不会因删信自动改动。'), rewritten = t('当天的日记会删除，并按删信后剩下的内容重新写一篇。');
+        const note = text('p', kept, 'lm-diary-note');
+        box.addEventListener('change', () => { diary.checked = box.checked; note.textContent = box.checked ? rewritten : kept; });
         row.append(box, text('span', diary.label));
         body.style.marginBottom = '16px';
-        choice.push(row, text('p', t('日记是她自己写的，不会因删信自动改动。'), 'lm-diary-note'));
+        choice.push(row, note);
       }
       prompt.append(text('h3', t('确认操作')), body, ...choice, controls); dialog.append(prompt);
       prompt.addEventListener('cancel', event => { event.preventDefault(); event.stopPropagation(); finish(false); });

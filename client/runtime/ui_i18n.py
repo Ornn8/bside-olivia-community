@@ -657,6 +657,7 @@ EN: dict[str, str] = {
     "关联记录在删除后发生了变化，已停止恢复以保护新记录。请保留最近删除中的备份。": "The linked records changed after deletion, so restoring was stopped to protect the new records. Please keep the backup in Recently deleted.",
     "删除当天日记并重新生成": "Delete that day's diary and write it again",
     "日记是她自己写的，不会因删信自动改动。": "The diary is her own writing and is not changed when letters are deleted.",
+    "当天的日记会删除，并按删信后剩下的内容重新写一篇。": "That day's diary will be deleted and written again from what remains.",
     "记忆正在写入，请稍后重试。": "Memory is being written. Please try again shortly.",
     "记忆存储暂不可用，请恢复连接后重试。": "Memory storage isn't available right now. Reconnect and try again.",
     "操作未完成。请查看“最近删除”，重试清理或恢复；备份会保留。": "The action didn't finish. Check “Recently deleted”, then retry the cleanup or restore. The backup is kept.",
