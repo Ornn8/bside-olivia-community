@@ -235,7 +235,12 @@ async def create(port, source_id, now, kind, context, *, meal=None, fallback=Fal
             'completed','这段休息后精力有所恢复，可以按自己的意愿接回轻活动。')
         now_local = now.astimezone(timezone(timedelta(hours=8)))
         next_class = (context.get('world') or {}).get('schedule', {}).get('next_class')
-        for duration in (30, 60, 90):
+        authored = (context.get('rhythm') or {}).get('authored_sleep')
+        # A due, uninterrupted nap is ended (nap_refreshed / nap_tired); offering a new nap here let her
+        # renew a 30-minute nap every 30 minutes for hours.
+        nap_due = bool(authored and authored['status'] == 'due' and authored.get('kind') != 'overnight'
+                       and not authored.get('interrupted'))
+        for duration in (() if nap_due else (30, 60, 90)):
             end = now + timedelta(minutes=duration)
             if next_class and end > datetime.fromisoformat(next_class['start']):
                 continue
