@@ -313,7 +313,7 @@ def test_two_photo_letters_queue_on_the_lane_and_each_photo_lands_on_its_own_let
         jobs.append(asyncio.create_task(image_reply.prepare(server, second, "two", "There")))
         await _until(lambda: second.get("image_status") == "GENERATING")
         await asyncio.sleep(0.05)
-        # The second photo waits for the lane: nothing is submitted (or paid) for it yet.
+        # The second photo waits for the lane: nothing is submitted for it yet.
         assert len(calls["submits"]) == 1 and started == [_photo_name("photo-a")]
         assert "reply_image_url" not in second
         release.set()
