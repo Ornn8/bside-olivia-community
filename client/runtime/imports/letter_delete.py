@@ -261,7 +261,7 @@ def apply_diary(path, plan, *, restore=False):
 
 
 def history_plan(path, memory_ids):
-    """Mem0 writes the text of every memory into its own change history; a removed memory leaves it there too."""
+    """Mem0 keeps the text of every memory in its own change log; a removed memory leaves it there too."""
     patches = []
     if not memory_ids or not path or not Path(path).exists():
         return patches
