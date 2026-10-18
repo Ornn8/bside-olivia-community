@@ -5,7 +5,9 @@ import asyncio
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import hashlib
+import http.client
 import json
+import logging
 from pathlib import Path
 import sqlite3
 import aiohttp
@@ -17,6 +19,7 @@ from runtime.memory.private_world_relationship import validate_boundary_changes,
 from runtime.private_world.world_decision import PROMPT as _DAILY_PROMPT, FORMAT as _DAILY_FORMAT, LIFE_PROMPT, LIFE_FORMAT, decision_context, compile_decision
 from runtime.reply.companion_duties import configured_duties
 from .character_development import declarations, project_persona, digest as development_digest
+from . import project_title
 from .phase_settings import ensure_phase_projects
 
 
@@ -24,6 +27,20 @@ _REFRESH_RETRY_TABLE = "daily_life_refresh_retry"
 _REFRESH_RETRY_INITIAL = timedelta(minutes=2)
 _REFRESH_RETRY_MAX = timedelta(hours=1)
 _REFRESH_FAILURE_LIMIT = 6
+# A failure after the world decision was accepted repeats both the decision and the episode on
+# the next try, so it waits at least this long; after this many such failures the next attempt
+# takes the neutral way out instead of asking for the same answer again.
+_REFRESH_LATE_RETRY_MIN = timedelta(minutes=5)
+_SAFE_AFTER_LATE_FAILURES = 2
+# After the neutral way out was taken, the next hour does the same instead of starting the
+# same two failing attempts over; then one ordinary attempt is made again.
+_NEUTRAL_HOLD = timedelta(hours=1)
+_NEUTRAL_HOLD_KEY = 'refresh_neutral_until'
+_TRANSPORT_CODES = frozenset({'JEV_TIMEOUT', 'JEV_UNAVAILABLE', 'JEV_BALANCE_INSUFFICIENT'})
+# Every ordinary way a refresh can fail. An error outside this list used to leave the run
+# unrecorded, so the next tick repeated the whole chain.
+_REFRESH_ERRORS = (ValueError, RuntimeError, OSError, TypeError, KeyError, LookupError, AttributeError,
+                   ArithmeticError, sqlite3.Error, aiohttp.ClientError, http.client.HTTPException)
 _SHANGHAI = timezone(timedelta(hours=8))
 _EXCHANGE_WORLD_GATE_VERSION = 2
 
@@ -176,6 +193,8 @@ class DailyLifeRuntime:
                     retry_after TEXT NOT NULL
                 )
             """)
+            if 'late_failures' not in {row[1] for row in db.execute(f"PRAGMA table_info({_REFRESH_RETRY_TABLE})")}:
+                db.execute(f"ALTER TABLE {_REFRESH_RETRY_TABLE} ADD COLUMN late_failures INTEGER NOT NULL DEFAULT 0")
 
     @property
     def last_exchange_diagnostics(self) -> list[dict]:
@@ -257,38 +276,82 @@ class DailyLifeRuntime:
         self._memory_retry_source_id = None
         self._memory_retry_after = None
 
-    def _record_refresh_failure(self, source_id: str, now: datetime, *, circuit_break: bool = False) -> datetime:
+    @staticmethod
+    def _refresh_delay_after(count: int) -> timedelta:
+        return min(_REFRESH_RETRY_INITIAL * (2 ** (count - 1)), _REFRESH_RETRY_MAX)
+
+    def _refresh_late_failures(self, source_id: str) -> int:
+        with self.store._db() as db:
+            row = db.execute(
+                f"SELECT late_failures FROM {_REFRESH_RETRY_TABLE} WHERE source_id=?",
+                (source_id,),
+            ).fetchone()
+        try:
+            return max(0, int(row[0])) if row is not None else 0
+        except (TypeError, ValueError):
+            return _SAFE_AFTER_LATE_FAILURES
+
+    def _write_refresh_attempt(self, source_id: str, now: datetime, *, circuit_break: bool = False,
+                               min_delay: timedelta | None = None, late: int = 0, begin: bool = False) -> datetime:
         with self.store._db() as db:
             db.execute(
                 f"DELETE FROM {_REFRESH_RETRY_TABLE} WHERE source_id<>?",
                 (source_id,),
             )
             row = db.execute(
-                f"SELECT failure_count FROM {_REFRESH_RETRY_TABLE} WHERE source_id=?",
+                f"SELECT failure_count, late_failures FROM {_REFRESH_RETRY_TABLE} WHERE source_id=?",
                 (source_id,),
             ).fetchone()
             try:
                 previous_count = max(0, int(row[0])) if row is not None else 0
+                previous_late = max(0, int(row[1])) if row is not None else 0
             except (TypeError, ValueError):
-                previous_count = _REFRESH_FAILURE_LIMIT - 1
-            failure_count = _REFRESH_FAILURE_LIMIT if circuit_break else min(previous_count + 1, _REFRESH_FAILURE_LIMIT)
-            if circuit_break or failure_count >= _REFRESH_FAILURE_LIMIT:
+                previous_count, previous_late = _REFRESH_FAILURE_LIMIT - 1, _SAFE_AFTER_LATE_FAILURES
+            # An attempt is counted when it starts; the failure that follows only escalates
+            # that same attempt, so one try is never counted twice.
+            if begin or row is None:
+                failure_count = min(previous_count + 1, _REFRESH_FAILURE_LIMIT)
+            else:
+                failure_count = previous_count
+            if circuit_break:
+                failure_count = _REFRESH_FAILURE_LIMIT
+            if failure_count >= _REFRESH_FAILURE_LIMIT:
                 retry_after = self._refresh_block_end(now)
             else:
-                delay = min(
-                    _REFRESH_RETRY_INITIAL * (2 ** (failure_count - 1)),
-                    _REFRESH_RETRY_MAX,
-                )
-                retry_after = now + delay
+                retry_after = now + self._refresh_delay_after(failure_count)
+            if min_delay is not None:
+                retry_after = max(retry_after, now + min_delay)
             db.execute(
                 f"""INSERT INTO {_REFRESH_RETRY_TABLE}
-                    (source_id, failure_count, retry_after) VALUES (?, ?, ?)
+                    (source_id, failure_count, retry_after, late_failures) VALUES (?, ?, ?, ?)
                     ON CONFLICT(source_id) DO UPDATE SET
                         failure_count=excluded.failure_count,
-                        retry_after=excluded.retry_after""",
-                (source_id, failure_count, retry_after.isoformat()),
+                        retry_after=excluded.retry_after,
+                        late_failures=excluded.late_failures""",
+                (source_id, failure_count, retry_after.isoformat(), previous_late + late),
             )
         return retry_after
+
+    def _neutral_hold_active(self, now: datetime) -> bool:
+        with self.store._db() as db:
+            row = db.execute("SELECT value FROM life_settings WHERE key=?", (_NEUTRAL_HOLD_KEY,)).fetchone()
+        try:
+            return row is not None and now < datetime.fromisoformat(row[0])
+        except (TypeError, ValueError):
+            return False
+
+    def _hold_neutral(self, until: datetime) -> None:
+        with self.store._db() as db:
+            db.execute("INSERT OR REPLACE INTO life_settings VALUES (?,?)", (_NEUTRAL_HOLD_KEY, until.isoformat()))
+
+    def _begin_refresh_attempt(self, source_id: str, now: datetime) -> datetime:
+        """Count the attempt before any request goes out. Only a published moment clears it, so a try that
+        ends in any other way (an unexpected error, a stop, a restart) still waits before the next."""
+        return self._write_refresh_attempt(source_id, now, begin=True)
+
+    def _record_refresh_failure(self, source_id: str, now: datetime, *, circuit_break: bool = False,
+                                min_delay: timedelta | None = None, late: int = 0) -> datetime:
+        return self._write_refresh_attempt(source_id, now, circuit_break=circuit_break, min_delay=min_delay, late=late)
 
     def _clear_refresh_failure(self, source_id: str) -> None:
         with self.store._db() as db:
@@ -376,6 +439,10 @@ class DailyLifeRuntime:
         async with self._lock:
             local_time = now.astimezone(_SHANGHAI)
             source_id = f"day:{local_time:%Y%m%d}:{local_time.hour // 6}"
+            # Failures are counted per situation (time block and the moment she is in), not per
+            # new letter: a fresh letter must not make a failing attempt look like a first one.
+            ledger = source_id
+            applying = False
             try:
                 if self.relationship is not None:
                     relation = self.relationship()
@@ -414,9 +481,10 @@ class DailyLifeRuntime:
                 previous = state["current"]
                 exchange_actions = self.store.pending_exchange_actions(now,
                     datetime.fromisoformat(previous['occurred_at']) if previous else None)
+                # Projects the world never offers (see world_projects) cannot have their time read here.
                 timing_pending = recheck_projects and any(
                     project.get('time_scope_pending') for project in state.get('projects', [])
-                    if project.get('status') not in {'completed', 'cancelled'})
+                    if project.get('status') not in {'completed', 'cancelled'} and project_title.usable(project.get('title')))
                 if not state["stale"] and not exchange_actions and not timing_pending:
                     return
                 if previous is not None:
@@ -427,19 +495,24 @@ class DailyLifeRuntime:
                     if (not sleep_due and not state['rhythm'].get('authored_bath')
                             and state["rhythm"]["phase"] in {"sleep", "interrupted_rest"}):
                         return
+                ledger = source_id
                 if exchange_actions:
                     source_id += ':exchange:' + hashlib.sha256(exchange_actions[0]['source_id'].encode()).hexdigest()[:12]
                 if self._memory_retry_source_id is not None:
-                    if self._memory_retry_source_id == source_id and self._memory_retry_after and now < self._memory_retry_after:
+                    if self._memory_retry_source_id == ledger and self._memory_retry_after and now < self._memory_retry_after:
                         self._retry_after = self._memory_retry_after
                         return
                     self._clear_memory_refresh_failure()
                 if self.store.has_source(source_id):
                     return
-                failure_count, retry_after = self._refresh_retry_state(source_id)
+                failure_count, retry_after = self._refresh_retry_state(ledger)
                 self._retry_after = retry_after
                 if (retry_after and now < retry_after) or failure_count >= _REFRESH_FAILURE_LIMIT:
                     return
+                unapplied = self._refresh_late_failures(ledger)
+                if self._neutral_hold_active(now):
+                    unapplied = max(unapplied, _SAFE_AFTER_LATE_FAILURES)
+                self._begin_refresh_attempt(ledger, now)
                 world = state['world']
                 development = self.store.development_view(now)
                 development_basis = self.store.development_world_assessment(now)
@@ -475,19 +548,28 @@ class DailyLifeRuntime:
                         if duties is not None and 'development' in result:
                             raise ValueError('DAILY_LIFE_RESPONSE_INVALID')
                         current, projects, meals = compile_decision(result, data)
+                        applying = True
                         episode = None
+                        timing = result.get('project_timing', [])
                         # Same activity again with nothing new from the user:
                         # publish the decision without the paid episode and
                         # development steps. Rest keeps its episode, the only
                         # evidence from which her energy can recover.
                         repeated = (previous is not None and not exchange_actions and not timing_pending
                                     and result['activity']['kind'] == previous.get('activity_kind'))
+                        # Answers that were received but could not be applied twice in a row are not
+                        # asked for a third time: she stops for now, nothing else about the world changes.
+                        neutral = unapplied >= _SAFE_AFTER_LATE_FAILURES and result['activity']['kind'] != 'rest'
+                        if neutral:
+                            projects, timing = [], []
                         if (meal_port is not None and result['activity']['kind'] != 'meal'
                                 and not (repeated and result['activity']['kind'] not in {'rest', 'bath_finished', 'shopping'})):
                             from .life_episode import create as create_episode
                             episode = await create_episode(meal_port, source_id, now, result['activity']['kind'],
                                                            {**data, 'selected_activity': result['activity'],
-                                                            'selected_project': result.get('project')})
+                                                            'selected_project': result.get('project')},
+                                                           fallback=neutral)
+                        if episode is not None:
                             # The final authored outcome drives the published
                             # activity and project, rather than decorating an
                             # already-completed event with a contradictory story.
@@ -496,18 +578,23 @@ class DailyLifeRuntime:
                             projects = [p if p['status']=='cancelled' else {**p, 'status': ('paused' if status in {'failed','paused'} else p['status']
                                 if status == 'completed' else 'ongoing'),
                                 'detail': episode['result']['detail']} for p in projects]
-                        candidates = (None if repeated and duties is not None else
+                        candidates = (None if neutral or (repeated and duties is not None) else
                                       await _development_candidates(duties, 'world', _world_development_packet(development_topics, development_basis))
                                       if duties is not None else result.get('development'))
                         try:
                             self.store.publish_day(source_id, current, projects, occurred_at=now, meals=meals,
                                                     activity_kind=result['activity']['kind'], development=candidates,
                                                     development_basis=development_basis, episode=episode,
-                                                    project_timing=result.get('project_timing', []))
+                                                    project_timing=timing)
                         except ValueError as exc:
                             if duties is not None and str(exc).startswith('DAILY_LIFE_DEVELOPMENT_'):
                                 raise RuntimeError('JEV_RESPONSE_INVALID') from None
                             raise
+                        if neutral:
+                            try:
+                                self._hold_neutral(now + _NEUTRAL_HOLD)
+                            except sqlite3.Error:
+                                pass  # The hold only saves asks; the moment is already published.
                         if sleep_due and meal_port is not None:
                             from .meal_lifecycle import advance as advance_meals
                             await advance_meals(self.store, meal_port, now)
@@ -527,12 +614,14 @@ class DailyLifeRuntime:
                         data = {**data, 'rejected_decision': result,
                                 'validation_error': code if code.startswith('DAILY_LIFE_') else 'DAILY_LIFE_DECISION_INVALID',
                                 'correction': '候选未发布。只修正违反契约、当前课程/身体状态、既有用餐或事项状态的选择；重新返回完整决策，不能改写只读事实，不输出散文current。'}
+                if not self.store.has_source(source_id):
+                    raise RuntimeError('DAILY_LIFE_NOT_APPLIED')
                 self.error_code = None
                 self._last_failure_code = None
                 self._retry_after = None
                 self._clear_memory_refresh_failure()
-                self._clear_refresh_failure(source_id)
-            except (ValueError, RuntimeError, OSError, TypeError, KeyError, sqlite3.Error) as exc:
+                self._clear_refresh_failure(ledger)
+            except _REFRESH_ERRORS as exc:
                 self.error_code = "DAILY_LIFE_GENERATION_UNAVAILABLE"
                 safe_codes = {'DAILY_LIFE_PROJECT_TIMING_INVALID', 'DAILY_LIFE_RESPONSE_INVALID',
                     'DAILY_LIFE_DECISION_INVALID', 'JEV_INPUT_TOO_LARGE', 'JEV_RESPONSE_INVALID',
@@ -540,19 +629,29 @@ class DailyLifeRuntime:
                     'LIFE_EPISODE_CONTEXT_TOO_LARGE', 'LIFE_EPISODE_DECISION_INVALID',
                     'LIFE_EPISODE_INVALID', 'LIFE_EPISODE_SOURCE_UNAVAILABLE', 'LIFE_EPISODE_TOO_LARGE',
                     'LIFE_EPISODE_REWRITE', 'LIFE_EPISODE_CLASS_NOT_CURRENT', 'LIFE_EPISODE_RECOVERY_INVALID',
-                    'LIFE_EPISODE_SLEEP_INVALID'}
+                    'LIFE_EPISODE_SLEEP_INVALID', 'DAILY_LIFE_NOT_APPLIED'}
                 from runtime.reply.companion_decision import ERROR_CODES
                 safe_codes.update(ERROR_CODES)
-                self._last_failure_code = str(exc) if str(exc) in safe_codes else 'DAILY_LIFE_EVALUATION_FAILED'
+                code = str(exc)
+                if not isinstance(exc, (ValueError, RuntimeError, OSError, TypeError, KeyError, sqlite3.Error)):
+                    logging.getLogger(__name__).warning('daily life refresh failed unexpectedly: %s', type(exc).__name__)
+                self._last_failure_code = code if code in safe_codes else 'DAILY_LIFE_EVALUATION_FAILED'
+                # The server refusing a repeated episode ask settles it: the answer was already given and
+                # could not be applied. Provider or network trouble says nothing about the answer.
+                refused = code == 'JEV_LIFE_EPISODE_REPEATED'
+                unapplied_now = refused or (applying and code not in _TRANSPORT_CODES
+                                            and not code.startswith(('JEV_HTTP_', 'JEV_BILLING_', 'JEV_PROVIDER_')))
                 try:
                     self._retry_after = self._record_refresh_failure(
-                        source_id,
+                        ledger,
                         now,
                         circuit_break=self._refresh_failure_stops_block(exc),
+                        min_delay=_REFRESH_LATE_RETRY_MIN if unapplied_now else None,
+                        late=_SAFE_AFTER_LATE_FAILURES if refused else int(unapplied_now),
                     )
                     self._clear_memory_refresh_failure()
                 except Exception:
-                    self._set_memory_refresh_failure(source_id, now)
+                    self._set_memory_refresh_failure(ledger, now)
             # Her emotional reading of these moments is paid for only when the
             # user writes: evaluate_received picks up the moments published here.
 

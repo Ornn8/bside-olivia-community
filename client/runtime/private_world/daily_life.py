@@ -20,6 +20,7 @@ from runtime.reply.media_delivery import validate_delivery, grouped_delivery_evi
 # A reply can change several independent promises; autonomous day planning
 # retains its separate three-project limit.
 MAX_EXCHANGE_UPDATES = 12
+from runtime.private_world import project_title
 from runtime.private_world.life_rhythm import bath_window, rhythm, LOCAL
 from statistics import median
 from runtime.private_world.student_world import student_schedule, weather_view
@@ -1150,7 +1151,10 @@ class DailyLifeStore:
             changes = {}
             for item in self._project_changes_at(db, now, per_project=3):
                 changes.setdefault(item["id"], []).append(item)
-        latest = [history[-1] for history in changes.values() if history[-1]["kind"] == "linli"]
+        # A name that is only a piece of conversation (stored before names were checked) cannot be
+        # picked as the project an activity advances, and is not asked about again.
+        latest = [history[-1] for history in changes.values()
+                  if history[-1]["kind"] == "linli" and project_title.usable(history[-1].get("title"))]
         opened = [p for p in latest if p["status"] not in finished]
         closed = [p for p in latest if p["status"] in finished]
 
