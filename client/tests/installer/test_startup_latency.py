@@ -167,6 +167,7 @@ def test_unchanged_frontend_skips_repairs_but_archive_or_code_changes_invalidate
     monkeypatch.setattr(launcher, 'repair_web_player_event_ids', lambda *a, **k: repairs.append('events'))
     monkeypatch.setattr(launcher, 'patch_companion_settings', lambda *a, **k: {'status': 'ALREADY_PATCHED'})
     monkeypatch.setattr('installer.patch_letter_stickers.patch_letter_stickers', lambda _: 'ALREADY_PATCHED')
+    monkeypatch.setattr('installer.patch_native_locale.patch_native_locale', lambda _: 'ALREADY_PATCHED')
 
     assert launcher._repair_client_frontend(tmp_path, 8899) == 'ALREADY_PATCHED'
     launcher._repair_client_frontend(tmp_path, 8899)

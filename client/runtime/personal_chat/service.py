@@ -12,6 +12,8 @@ from .events import PersonalMessage
 from runtime.reply.character_emotion_context import rebind_expression_context
 from runtime.reply.companion_decision import ERROR_CODES as _JEV_PORT_ERRORS
 from runtime.cloud_policy import get_policy
+from runtime import ui_language
+from runtime.ui_i18n_backend import tr
 from runtime.reply.proactive_runtime import unprompted
 JEV_ERROR_CODES = _JEV_PORT_ERRORS | {
     'JEV_PLAN_UNSUPPORTED', 'JEV_CONTEXT_UNAVAILABLE', 'JEV_STORED_DECISION_INVALID',
@@ -32,6 +34,15 @@ def _sent_time(row):
         return value if value.utcoffset() is not None else None
     except (KeyError, TypeError, ValueError, AttributeError):
         return None
+
+
+def chat_text(reply_text):
+    """The reply as it is sent and stored: a Chinese full stop becomes a line break, and Chinese chat does not end a
+    sentence with a stray ASCII period (English sentences keep theirs)."""
+    text = re.sub(r'。+[ \t]*', '\n', reply_text)
+    if not ui_language.is_english():
+        text = re.sub(r'(?<!\.)\.(?!\.)(?=\s|$)', '', text)
+    return text.strip()
 
 
 def _clear_draft(row):
@@ -68,8 +79,8 @@ async def photo_notice(row, send, persist, kind, text):
 def photo_failure_text(row):
     """A refused balance needs a top-up, not a "try again later" hint."""
     if row.get('image_error_code') == 'GPU_INSUFFICIENT_BALANCE':
-        return '照片这次没生成成功，没能发给你。Olivia 可用余额不足，请充值后重试。'
-    return '照片这次没生成成功，没能发给你。稍后再试一下。'
+        return tr('照片这次没生成成功，没能发给你。Olivia 可用余额不足，请充值后重试。')
+    return tr('照片这次没生成成功，没能发给你。稍后再试一下。')
 
 
 async def delivery_notice(row, send, persist, key, text):
@@ -306,7 +317,7 @@ class PersonalChatService:
             correlated = send.for_exchange(event) if callable(getattr(send, 'for_exchange', None)) else send
             code = row.get('generation_notice_code') or row.get('error_code')
             notices = get_policy('notices')
-            text = notices.get(code, notices['DEFAULT'])
+            text = tr(notices.get(code, notices['DEFAULT']))
             await delivery_notice(row, correlated, self.persist, 'generation_failure_notice', text)
             return
 
@@ -581,8 +592,7 @@ class PersonalChatService:
                 self._schedule_photo(row, send)
                 return
             # Keep the stored canonical text identical to the displayed IM text.
-            text = re.sub(r'。+[ \t]*', '\n', row['reply_text'])
-            text = re.sub(r'(?<!\.)\.(?!\.)(?=\s|$)', '', text).strip()
+            text = chat_text(row['reply_text'])
             if not text:
                 raise ValueError('PERSONAL_CHAT_REPLY_INVALID')
             if proactive:
@@ -807,7 +817,7 @@ class PersonalChatService:
                 await persist_state(self.persist)
                 if primary_image and row.get('image_delivery_status') != 'DELIVERED':
                     await photo_notice(row, send, self.persist, 'failure',
-                        '照片没能确认发送成功，先告诉你一声。')
+                        tr('照片没能确认发送成功，先告诉你一声。'))
         async def scheduled():
             try:
                 async with self.photo_slots:
@@ -864,7 +874,7 @@ class PersonalChatService:
                         row['piano_status'] = 'FAILED'
                         await persist_state(self.persist)
                         await delivery_notice(row, send, self.persist, 'piano_failure_notice',
-                                              '这次钢琴录音暂时没能完成，请稍后再试。')
+                                              tr('这次钢琴录音暂时没能完成，请稍后再试。'))
                 finally:
                     self.speech_tasks.pop(key, None)
             self.speech_tasks[key] = asyncio.create_task(play())
@@ -899,7 +909,7 @@ class PersonalChatService:
                     row['speech_status']='FAILED'
                     await persist_state(self.persist)
                     await delivery_notice(row,send,self.persist,'speech_failure_notice',
-                        '这段音频暂时没能生成成功，稿子已经保留，稍后可以重试。')
+                        tr('这段音频暂时没能生成成功，稿子已经保留，稍后可以重试。'))
             finally:
                 self.speech_tasks.pop(key,None)
         self.speech_tasks[key]=asyncio.create_task(deliver())

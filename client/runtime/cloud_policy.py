@@ -1,9 +1,11 @@
 """Bounded server behavior controls with a last-valid local cache."""
 import asyncio
+from asyncio import ensure_future as _ensure_future, get_running_loop as _get_running_loop
 from copy import deepcopy
 import json
 from pathlib import Path
 import re
+from runtime import ui_language
 from runtime.relationship_growth import DEFAULTS as RELATIONSHIP_GROWTH_DEFAULTS
 from runtime.relationship_growth import CRITERIA as RELATIONSHIP_CRITERIA_DEFAULTS
 from runtime.relationship_policy import DEFAULTS as RELATIONSHIP_TEXTS
@@ -151,7 +153,9 @@ class CloudPolicy:
         self.version, self.policy = 'builtin-2.2.15', deepcopy(DEFAULTS)
         try:
             cached = json.loads(self.path.read_text('utf-8'))
-            if cached.get('client_version') == client_version:
+            # The service may word the texts in the interface language, so a cache written for the other one is not used.
+            if (cached.get('client_version') == client_version
+                    and cached.get('ui_language', ui_language.CHINESE) == ui_language.current()):
                 self.version, self.policy = validate_envelope(cached)
         except (OSError, ValueError, AttributeError):
             pass
@@ -165,8 +169,10 @@ class CloudPolicy:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             staging = self.path.with_suffix('.tmp')
-            staging.write_text(json.dumps({'version': version, 'policy': policy,
-                'client_version': self.client_version}, ensure_ascii=False), encoding='utf-8')
+            envelope = {'version': version, 'policy': policy, 'client_version': self.client_version}
+            if ui_language.is_english():
+                envelope['ui_language'] = ui_language.current()
+            staging.write_text(json.dumps(envelope, ensure_ascii=False), encoding='utf-8')
             staging.replace(self.path)
         except OSError:
             pass
@@ -186,13 +192,14 @@ def policy_version():
 
 async def fetch_policy(key, client_version):
     from aiohttp import ClientSession, ClientTimeout
+    from runtime import ui_language
     from runtime.official_endpoints import API_BASE
     from runtime.remote_generation import gpu_tls_context
     if not key:
         raise ValueError('CLIENT_POLICY_NO_ACCOUNT')
     async with ClientSession(timeout=ClientTimeout(total=3)) as session:
         async with session.get(API_BASE.rstrip('/') + '/client-policy',
-                headers={'Authorization': 'Bearer ' + key, 'X-Olivia-Client-Version': client_version},
+                headers={'Authorization': 'Bearer ' + key, 'X-Olivia-Client-Version': client_version, **ui_language.headers()},
                 allow_redirects=False, ssl=gpu_tls_context()) as response:
             response.raise_for_status()
             raw = bytearray()
@@ -219,9 +226,23 @@ def mount(app, root, stored_key):
                 await manager.refresh(fetch)
                 await asyncio.sleep(600)
         task = asyncio.create_task(run())
+        loop = _get_running_loop()
+        refreshing = set()
+
+        def language_changed(_language):
+            # A switch of interface language fetches the policy again right away instead of in up to 10 minutes.
+            def start():
+                job = _ensure_future(manager.refresh(fetch))
+                refreshing.add(job)
+                job.add_done_callback(refreshing.discard)
+            loop.call_soon_threadsafe(start)
+        ui_language.add_listener(language_changed)
         try:
             yield
         finally:
+            ui_language.remove_listener(language_changed)
+            for job in list(refreshing):
+                job.cancel()
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
             if _active is manager:

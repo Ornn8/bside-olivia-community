@@ -8,6 +8,8 @@ from pathlib import Path
 import re
 import time
 
+from runtime.ui_i18n_backend import tr
+
 _cache = {}
 
 
@@ -114,7 +116,7 @@ def task_input(intent, caps, midi=None, pieces=()):
     source, hint = intent['source'], intent['piece_hint'].strip()
     result = dict(source=source, seconds=intent['seconds'], section=intent['section'])
     if source == 'original' and caps.get('original'):
-        result.update(mood=(hint or '平静')[:40], title=hint or '钢琴小样')
+        result.update(mood=(hint or '平静')[:40], title=hint or tr('钢琴小样'))
     elif source == 'midi':
         selected = select_midi(intent, midi, pieces)
         result.update(midi_asset=selected['asset'], title=selected['title'])
@@ -154,9 +156,11 @@ def validate_meta(value, *, source='midi', original_max_seconds=480):
 
 def completion_text(meta, *, source='midi', original_max_seconds=480):
     meta = validate_meta(meta, source=source, original_max_seconds=original_max_seconds)
+    seconds = format(meta['seconds'], 'g')
     if source == 'original' and meta['section'] == '完整一曲':
-        return f"给你弹了一整首我自己写的《{meta['title']}》，完整的，录了 {meta['seconds']:g} 秒。"
-    return f"给你弹了《{meta['title']}》的{meta['section']}，录了 {meta['seconds']:g} 秒。"
+        return tr("给你弹了一整首我自己写的《{title}》，完整的，录了 {seconds} 秒。", title=meta['title'], seconds=seconds)
+    return tr("给你弹了《{title}》的{section}，录了 {seconds} 秒。",
+              title=meta['title'], section=tr(meta['section']), seconds=seconds)
 
 
 async def remember(server, key, meta, channel='client'):

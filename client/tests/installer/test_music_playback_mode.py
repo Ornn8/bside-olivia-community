@@ -8,6 +8,8 @@ from original_client_settings_ui import BOOTSTRAP_JAVASCRIPT
 
 from runtime.personal_chat._patch_music_playback import patch_music_playback
 
+SHIM = Path(__file__).resolve().parents[1].joinpath("js_shim", "olivia_i18n_shim.js").read_text(encoding="utf-8")
+
 
 def test_native_music_modes_and_library_end(tmp_path):
     # A small native-store fixture: keep the production anchors and execute the
@@ -64,7 +66,7 @@ def test_local_music_entry_clicks_and_route_lifecycle(tmp_path):
     ui = source[source.index('  const mountLocalSongEntry ='):source.index('  const isSettingsRoute =')]
     page = tmp_path / 'music.html'
     page.write_text('''<!doctype html><meta charset="utf-8">
-<nav data-olivia-main-navigation></nav><pre id="result"></pre><script>
+<nav data-olivia-main-navigation></nav><pre id="result"></pre><script>'''+SHIM+'''</script><script>
 const button=(label,fn)=>{const b=document.createElement('button');b.textContent=label;b.onclick=fn;return b};
 let opened=0;const openLocalSongs=()=>{opened++};
 ''' + ui + '''

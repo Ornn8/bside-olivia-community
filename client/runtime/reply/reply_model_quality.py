@@ -25,6 +25,7 @@ from llm_gateway import (
     create_gateway,
 )
 from persona_loader import PersonaDeclaration, PersonaSnapshot, load_persona
+from runtime import output_language
 from runtime.persona.persona_assembly import runtime_reply_rules
 
 
@@ -1036,6 +1037,8 @@ class GatewayPersonaRewriter:
         limit = min(limit, _REWRITE_INPUT_CHARACTER_LIMIT)
         if sum(len(str(item.get("content", ""))) for item in messages) > limit:
             raise RuntimeError("REWRITE_INPUT_TOO_LARGE")
+        # The rewrite replaces what the user reads. It shares the reviewer's request id, so it asks for English itself.
+        messages = output_language.for_user_text(messages)
         reasoning_scope = (
             GatewayRequestScope.TEXT_LETTER_MAX_REASONING
             if context.mode is ReplyMode.TEXT_LETTER

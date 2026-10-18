@@ -10,6 +10,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Callable, Iterable
 
+from runtime.ui_i18n_backend import tr
+
 
 NOTICE_TEXT = "对了，我之前往信箱里放了封信，你有空的时候再看看就好。"
 
@@ -58,13 +60,13 @@ def attach_notice(letters: Iterable[dict], chat_row: dict, text: str) -> str:
     if isinstance(existing, str) and existing:
         letter = next((row for row in rows if row.get("letter_id") == existing), None)
         if letter is not None and _eligible(letter):
-            return text.rstrip() + "\n\n" + NOTICE_TEXT
+            return text.rstrip() + "\n\n" + tr(NOTICE_TEXT)
         chat_row.pop("mailbox_notice_letter_id", None)
     letter = pending_letter(rows)
     if letter is None:
         return text
     chat_row["mailbox_notice_letter_id"] = letter["letter_id"]
-    return text.rstrip() + "\n\n" + NOTICE_TEXT
+    return text.rstrip() + "\n\n" + tr(NOTICE_TEXT)
 
 
 def commit_notice(

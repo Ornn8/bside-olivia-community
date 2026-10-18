@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 from aiohttp import ClientSession, ClientTimeout, ClientError, ClientSSLError, ClientConnectorError, TCPConnector
 from runtime.cloud_service import endpoint, CloudError
 from runtime.official_endpoints import canonical_api_origin
+from runtime import ui_language
 
 
 def connection_error(exc):
@@ -40,6 +41,7 @@ class RemoteGeneration:
         # video, so the service announces moment videos only to clients that say they can take one.
         headers['X-Olivia-Daily-Video-Moment'] = '1'
         headers['X-Olivia-Piano'] = '1'
+        headers.update(ui_language.headers())
         payload = None
         if action == 'submit':
             if set(data) != {'request_id', 'kind', 'input'} or data['kind'] not in ('tts', 'cover', 'image', 'video', 'original', 'lipsync', 'separate', 'cover_video', 'original_video', 'daily_video', 'piano') or not isinstance(data['input'], dict):
@@ -310,7 +312,7 @@ class RemoteGeneration:
         try:
             async with ClientSession(timeout=ClientTimeout(total=30),trust_env=False,connector=TCPConnector(ssl=gpu_tls_context())) as session:
                 async with session.get(self.url+'/v1/wardrobe/images/'+look_id,
-                        headers={'Authorization':'Bearer '+self.token, 'X-Olivia-Wardrobe-Protocol':'daily-v2'},allow_redirects=False) as response:
+                        headers={'Authorization':'Bearer '+self.token, 'X-Olivia-Wardrobe-Protocol':'daily-v2', **ui_language.headers()},allow_redirects=False) as response:
                     if response.status!=200:
                         raise CloudError('WARDROBE_IMAGE_UNAVAILABLE',502)
                     raw=bytearray()
@@ -344,7 +346,7 @@ class RemoteGeneration:
             async with ClientSession(timeout=ClientTimeout(total=600), trust_env=False, connector=TCPConnector(ssl=gpu_tls_context())) as session:
                 with path.open('rb') as source:
                     async with session.post(self.url + '/v1/assets', data=source,
-                        headers={'Authorization': 'Bearer ' + self.token, 'X-Asset-Suffix': path.suffix.lower()},
+                        headers={'Authorization': 'Bearer ' + self.token, 'X-Asset-Suffix': path.suffix.lower(), **ui_language.headers()},
                         allow_redirects=False) as response:
                         if response.status != 201: raise CloudError('GPU_UPLOAD_FAILED', 502)
                         raw = await response.content.read(4097)

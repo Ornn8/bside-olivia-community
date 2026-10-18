@@ -16,6 +16,7 @@ from persona_assembly import assemble_persona
 from persona_loader import load_persona
 from persona_provider import FilePersonaProvider
 from reply_context import ReplyContext, ReplyMode, TrustedTime
+from runtime import ui_language
 from runtime.media.music_duration import normalize_music_duration
 
 
@@ -130,6 +131,9 @@ _SEMANTIC_PLAN_FIELDS = frozenset(
 _SONG_TAGS = ("[Intro]", "[Verse]", "[Chorus]", "[Outro]")
 _TAG_LINE = re.compile(r"^\[[A-Za-z][A-Za-z0-9_-]{0,31}\]$")
 _CJK = re.compile(r"[\u3400-\u9fff]")
+# English lyrics: any letter will do (a saved Chinese plan stays valid), and a line may run longer.
+_LETTER = re.compile(r"[A-Za-z\u3400-\u9fff]")
+_ENGLISH_LINE_MAX = 48
 
 
 def _semantic_json_object(text: str) -> Mapping[str, object]:
@@ -197,11 +201,12 @@ def _validate_semantic_lyrics(lyrics: str, duration_seconds: int) -> str:
     if (len(verse_lines), len(chorus_lines)) != (expected_verse, expected_chorus):
         raise ValueError("SONG_SEMANTIC_PLAN_LYRICS_LINE_COUNT_INVALID")
 
+    english = ui_language.is_english()
     for line in (*verse_lines, *chorus_lines):
         compact = "".join(line.split())
-        if not 4 <= len(compact) <= 24:
+        if not 4 <= len(compact) <= (_ENGLISH_LINE_MAX if english else 24):
             raise ValueError("SONG_SEMANTIC_PLAN_LYRIC_LINE_LENGTH_INVALID")
-        if _CJK.search(line) is None:
+        if (_LETTER if english else _CJK).search(line) is None:
             raise ValueError("SONG_SEMANTIC_PLAN_LYRIC_LINE_LANGUAGE_INVALID")
         if "[" in line or "]" in line:
             raise ValueError("SONG_SEMANTIC_PLAN_LYRIC_LINE_INVALID")
@@ -280,6 +285,9 @@ def _planner_contract(duration_seconds: int, *, style_max_chars=1000) -> str:
         raise ValueError('SONG_STYLE_INVALID')
     line_count = _LINE_COUNTS[duration_seconds]
     verse_count, chorus_count = _SECTION_LINE_COUNTS[duration_seconds]
+    english = ui_language.is_english()
+    lyric_language = "English" if english else "Simplified Chinese"
+    longest_line = "forty-eight" if english else "twenty-four"
     contract = f"""You write only the lyrics for Lin Li's original song reply.
 Return one JSON object only, containing exactly two keys: verse and chorus.
 Each value is an array of lyric strings, one sung line per array item.
@@ -293,8 +301,8 @@ Lyrics contract:
 - Write only the sung Verse and Chorus lines in the two arrays.
 - Do not write section tags, Intro, Outro, or instrumental directions.
 - The application inserts all section tags and the empty instrumental Intro and Outro.
-- Write exactly {line_count} original Simplified Chinese lyric lines: {verse_count} in Verse and {chorus_count} in Chorus.
-- Each lyric line must contain four to twenty-four non-whitespace characters.
+- Write exactly {line_count} original {lyric_language} lyric lines: {verse_count} in Verse and {chorus_count} in Chorus.
+- Each lyric line must contain four to {longest_line} non-whitespace characters.
 - Keep the lines concise, naturally singable, and mostly syllabic.
 - Respond as Lin Li; recognize the listener's actual concern before any reassurance.
 - Preserve facts from the current exchange without copying it line by line.

@@ -101,6 +101,9 @@ def letter_server(monkeypatch, tmp_path):
     monkeypatch.delenv('OLIVIA_JEV_DECISION_URL', raising=False)
     monkeypatch.setattr(server, 'store', SimpleNamespace(letters=[], personal_chats=[]))
     monkeypatch.setattr(server, 'time', SimpleNamespace(time=lambda: NOW.timestamp()))
+    # scan_pending reads its own clock; keep it on NOW so the 7-day opportunity window does not expire.
+    import runtime.reply.proactive_letters as proactive_letters
+    monkeypatch.setattr(proactive_letters, 'time', SimpleNamespace(time=lambda: NOW.timestamp()))
     monkeypatch.setattr(server, '_state_root', lambda: tmp_path)
     monkeypatch.setattr(server, '_proactive_settings', lambda: {'enabled': True})
     monkeypatch.setattr(server, '_conversation_memory_ready_for_reply', lambda: True)

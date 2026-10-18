@@ -5,12 +5,14 @@ import pytest
 
 from original_client_settings_ui import BOOTSTRAP_JAVASCRIPT
 
+SHIM = Path(__file__).resolve().parents[1].joinpath("js_shim", "olivia_i18n_shim.js").read_text(encoding="utf-8")
+
 
 def music_limits_document():
     component = BOOTSTRAP_JAVASCRIPT[BOOTSTRAP_JAVASCRIPT.index('  const mountMusicSettings ='):BOOTSTRAP_JAVASCRIPT.index('  const mountDiagnosticExport =')]
     return '''<!doctype html><meta charset="utf-8"><style>
 body{margin:32px;background:#141516;color:#edece9;font:15px/1.6 "Segoe UI",sans-serif}main{max-width:640px;margin:auto}button{padding:9px 16px;border:1px solid #8886;border-radius:9px;background:#242528;color:inherit;cursor:pointer}button:disabled{opacity:.5}small,p{color:#b9bdc6}details{border:1px solid #8884;padding:16px;border-radius:12px}h3{margin:0}label{margin-top:12px}
-</style><main id="settings"></main><pre id="acceptance"></pre><script>
+</style><main id="settings"></main><pre id="acceptance"></pre><script>'''+SHIM+'''</script><script>
 const native=new URL(location.href).searchParams.get('provider')==='native';
 const text=(tag,copy,cls)=>{const el=document.createElement(tag);el.textContent=copy;el.className=cls||'';return el};
 const button=(copy,fn)=>{const el=text('button',copy);el.type='button';el.addEventListener('click',fn);return el};

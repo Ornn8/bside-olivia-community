@@ -7,13 +7,15 @@ import pytest
 
 from original_client_settings_ui import BOOTSTRAP_JAVASCRIPT
 
+SHIM = Path(__file__).resolve().parents[1].joinpath("js_shim", "olivia_i18n_shim.js").read_text(encoding="utf-8")
+
 
 def composer_document():
     source=BOOTSTRAP_JAVASCRIPT
     composer='const proactiveState={busy:false};\n'+source[source.index('  const composerCovers ='):source.index('  const mountVideoReplySetting')]
     composer+=source[source.index('  const mountMusicSettings ='):source.index('  const mountDiagnosticExport =')]
     wave=source[source.index('  function letterWave('):source.index('  const coverApi=')]
-    return (Path(__file__).parents[1]/'fixtures/cover_composer.html').read_text(encoding='utf-8').replace('/* COMPOSER */',composer).replace('/* WAVE */',wave)
+    return (Path(__file__).parents[1]/'fixtures/cover_composer.html').read_text(encoding='utf-8').replace('/* COMPOSER */',composer).replace('/* WAVE */',wave).replace('<script>','<script data-shim>'+SHIM+'</script><script>',1)
 
 
 @pytest.mark.parametrize('asr,width,provider', [('ready',1200,'suno'),('missing',700,'suno'),('failed',1200,'suno'),('ready',1200,'legacy')])
@@ -100,7 +102,7 @@ def test_world_main_navigation_lifecycle(tmp_path):
     source=BOOTSTRAP_JAVASCRIPT
     nav=source[source.index('  const WORLD_ROUTE ='):source.index('  const finishInitialSetup =')]
     page=tmp_path/'world.html'
-    page.write_text('''<!doctype html><meta charset="utf-8"><pre id="acceptance"></pre><script>
+    page.write_text('''<!doctype html><meta charset="utf-8"><pre id="acceptance"></pre><script>'''+SHIM+'''</script><script>
 const text=(tag,copy)=>{const n=document.createElement(tag);n.textContent=copy;return n};
 const button=(copy,fn)=>{const n=text('button',copy);n.onclick=fn;return n};
 const STATUS_PATH='/status';let reads=0;

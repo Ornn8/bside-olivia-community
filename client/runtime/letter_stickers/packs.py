@@ -15,6 +15,8 @@ import threading
 from functools import lru_cache
 from pathlib import Path
 
+from runtime.ui_i18n_backend import tr
+
 FOLDER = 'sticker-packs'
 # style -> (display name, first id, last id); the ids are the catalog's stable ids.
 PACKS = {
@@ -91,7 +93,7 @@ def installed(data_root) -> dict[str, Path]:
 
 def status(data_root) -> list[dict[str, object]]:
     present = installed(data_root)
-    return [{'pack': style, 'name': name, 'total': last - first + 1,
+    return [{'pack': style, 'name': tr(name), 'total': last - first + 1,
              'installed': sum(f'linli-{i:03d}' in present for i in range(first, last + 1))}
             for style, (name, first, last) in PACKS.items()]
 

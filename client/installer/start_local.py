@@ -19,6 +19,7 @@ from threading import Event, Thread
 import time
 from urllib.error import HTTPError, URLError
 from urllib.request import ProxyHandler, build_opener
+import zipfile
 
 # These requests target our loopback backend, never the user's system proxy.
 # Keep the callable alias so tests can substitute HTTP responses without a server.
@@ -542,13 +543,15 @@ def _frontend_patcher_files(source: Path) -> list[Path]:
     files = [source / name for name in (
         "installer/start_local.py", "patch_feapp.py", "patch_webplayer.py",
         "patch_companion_settings.py", "original_client_settings_ui.py",
-        "installer/patch_letter_stickers.py",
+        "installer/patch_letter_stickers.py", "installer/patch_native_locale.py",
     )]
     files.extend((source / "runtime/personal_chat").glob("*.py"))
     files.extend((source / "runtime").glob("*_ui.py"))
     files.append(source / "runtime/call/qr.py")   # pulled into the call page script
     files.extend(path for path in (source / "runtime/letter_stickers").iterdir()
                  if path.suffix in {".json", ".js"})
+    files.extend(path for path in (source / "runtime/native_locale").iterdir()
+                 if path.suffix == ".js")   # the English interface module
     return files
 
 
@@ -584,7 +587,8 @@ def _repair_client_frontend(root: Path, port: int) -> str:
     if not feapp.is_file():
         raise CompanionSettingsPatchError("COMPANION_ARCHIVE_NOT_FOUND")
     from installer.user_data_root import resolve_user_data_root
-    receipt_path = resolve_user_data_root(root) / "logs/frontend-patch.json"
+    data_root = resolve_user_data_root(root)
+    receipt_path = data_root / "logs/frontend-patch.json"
     patcher_digest = None
     try:
         patcher_digest = _frontend_patcher_digest()
@@ -607,9 +611,10 @@ def _repair_client_frontend(root: Path, port: int) -> str:
             raise CompanionSettingsPatchError("COMPANION_PLAYER_PATCH_FAILED") from exc
     from installer.patch_letter_stickers import patch_letter_stickers
     sticker_status = patch_letter_stickers(feapp)
+    locale_status = _patch_interface_language(feapp, data_root)
     # Record only a fully successful repair; failures keep taking the normal path.
     try:
-        if patcher_digest is not None:
+        if patcher_digest is not None and locale_status != "NATIVE_LOCALE_SKIPPED":
             receipt = _frontend_receipt(feapp.parent, port, patcher_digest)
             receipt_path.parent.mkdir(parents=True, exist_ok=True)
             temporary = receipt_path.with_suffix(".tmp")
@@ -617,9 +622,21 @@ def _repair_client_frontend(root: Path, port: int) -> str:
             temporary.replace(receipt_path)
     except OSError:
         pass  # An optional speed optimization cannot prevent a valid launch.
-    if sticker_status == "PATCHED":
+    if "PATCHED" in (sticker_status, locale_status):
         return "PATCHED"
     return result["status"]
+
+
+def _patch_interface_language(feapp: Path, data_root: Path) -> str:
+    """Add the English interface; the Chinese client must start even when this cannot be applied."""
+
+    from installer.patch_native_locale import patch_native_locale
+    try:
+        return patch_native_locale(feapp)
+    except (OSError, ValueError, zipfile.BadZipFile) as exc:
+        _append_launcher_event(data_root, "native_locale_skipped", exception_type=type(exc).__name__,
+                               code=str(exc)[:80] if isinstance(exc, ValueError) else "")
+        return "NATIVE_LOCALE_SKIPPED"
 
 
 def _repair_native_navigation(root: Path) -> str:
@@ -1105,7 +1122,10 @@ def _launch(args: argparse.Namespace, root: Path, backend: Path, entrypoint: Pat
     client_environment = _load_llm_environment(client_environment, data_root)
     _configure_memory_environment(backend_environment, data_root)
     if backend_environment.get("OLIVIA_LLM_REQUIRES_API_KEY") != "0" and not any(backend_environment.get(name) for name in ("OLIVIA_LLM_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY")):
-        print("LLM_API_KEY_NOT_CONFIGURED: 尚未连接 Olivia 账户 Key，请在设置的“回信服务 → Olivia 账户”中获取或导入。")
+        from runtime import ui_language
+        from runtime.ui_i18n_backend import tr_in
+        language = ui_language.read_saved(data_root / "config" / ui_language.FILE_NAME)
+        print(tr_in(language, "LLM_API_KEY_NOT_CONFIGURED: 尚未连接 Olivia 账户 Key，请在设置的“回信服务 → Olivia 账户”中获取或导入。"))
     server = None
     _append_launcher_event(data_root, "startup_environment_ready",
                            elapsed_seconds=round(time.monotonic() - preparation_started, 3))

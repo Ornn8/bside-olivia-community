@@ -15,6 +15,7 @@ from aiohttp import web
 from llm_gateway import GatewayRequestScope
 
 from .service import JEV_ERROR_CODES, PersonalChatService, persist_state
+from runtime.ui_i18n_backend import tr
 from runtime.private_world.life_rhythm import LOCAL
 from runtime.reply.jev_billing import account_key_missing
 
@@ -1365,7 +1366,7 @@ def install_personal_chat(app, server):
                     if journal.reserve(event.exchange_id):
                         code = f"{secrets.randbelow(10000):04d}"
                         receipt = await send(
-                            f"连接测试验证码：{code}\n请原样回复这 4 位数字。回复后设置页会显示端到端已验证。"
+                            tr("连接测试验证码：{code}\n请原样回复这 4 位数字。回复后设置页会显示端到端已验证。", code=code)
                         )
                         classifier = getattr(send, "delivery_confirmation", None)
                         confirmation = classifier(receipt) if callable(classifier) else "PLATFORM_CONFIRMED"

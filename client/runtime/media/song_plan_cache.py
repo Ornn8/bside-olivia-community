@@ -7,6 +7,7 @@ from pathlib import Path
 import stat
 import tempfile
 
+from runtime import ui_language
 from runtime.media.music_caption import render_minimax_caption
 from runtime.media.song_content import SongContentPlan, SongSemanticPlan, parse_song_semantic_plan
 
@@ -40,6 +41,8 @@ def cached_song_plan(path: Path, content: str, reply: str, duration: int, planne
         inputs.append(expression_context)
     if style_max_chars != 1000:
         inputs.append({'style_max_chars': style_max_chars})
+    if ui_language.is_english():
+        inputs.append({'lyrics_language': 'en'})  # a plan saved with Chinese lyrics is not reused for English ones
     identity = hashlib.sha256(json.dumps(inputs,
         ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
     expected = {"schema_version": _SCHEMA, "planner_version": 3 if duration == 110 else 2 if duration == 240 else _PLANNER_VERSION,
