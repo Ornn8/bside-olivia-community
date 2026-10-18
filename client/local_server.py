@@ -3283,6 +3283,8 @@ def _recent_active_duplicate(
     *,
     now: float | None = None,
 ) -> dict | None:
+    from original_client_letter_contract import _audio_pending, _photo_pending
+
     current_time = time.time() if now is None else now
     for letter in store.letters:
         created_at = letter.get("created_at")
@@ -3297,6 +3299,11 @@ def _recent_active_duplicate(
         if (
             status == "COMPLETED"
             and letter.get("reply_not_before", 0.0) <= current_time
+            # A voice, song or photo still being made is not delivered yet, and the
+            # writer may send again meanwhile: a retry of the same request must
+            # not start a second generation.
+            and not _audio_pending(letter)
+            and not _photo_pending(letter)
         ):
             continue
         if letter.get("content") == content and letter.get("material", {}) == material:
@@ -4164,7 +4171,27 @@ async def _proactive_loop() -> None:
         await asyncio.sleep(300)
 
 
-def _active_undelivered_letter(*, now: float | None = None, exclude_letter=None) -> dict | None:
+def _generation_pending_duplicate(content: str, material: dict, *, now: float | None = None) -> dict | None:
+    """A recent letter with this exact request whose voice, song or photo is still being made."""
+    from original_client_letter_contract import _audio_pending, _photo_pending
+    from runtime.personal_chat.contact_activity import recent, LETTER_PENDING_SECONDS
+
+    current_time = time.time() if now is None else now
+    for letter in store.letters:
+        if (letter.get("content") == content and letter.get("material", {}) == material
+                and letter.get("origin") != "proactive"
+                and recent(letter, current_time, LETTER_PENDING_SECONDS)
+                and (_audio_pending(letter) or _photo_pending(letter))):
+            return letter
+    return None
+
+
+def _active_undelivered_letter(*, now: float | None = None, exclude_letter=None, sending: bool = False) -> dict | None:
+    """The letter that still holds the line, or None.
+
+    Her own initiative keeps waiting for a requested photo. A person writing does not:
+    the photo job runs on its own, queued behind any other media job, and lands on its letter.
+    """
     from original_client_letter_contract import _photo_pending
     from runtime.personal_chat.contact_activity import recent, LETTER_PENDING_SECONDS
 
@@ -4177,7 +4204,7 @@ def _active_undelivered_letter(*, now: float | None = None, exclude_letter=None)
             return letter
         if not recent(letter, current_time, LETTER_PENDING_SECONDS):
             continue
-        if _photo_pending(letter):
+        if _photo_pending(letter) and not sending:
             return letter
         if letter.get("letter_status") in {"PENDING", "PROCESSING"}:
             return letter
@@ -5618,7 +5645,11 @@ async def route(
             previous = _recent_active_duplicate(content, material)
             if previous is not None:
                 return _send_result_for_letter(previous)
-        active_letter = _active_undelivered_letter()
+        active_letter = _active_undelivered_letter(sending=True)
+        if active_letter is None:
+            # The same request again while its voice, song or photo is still being made would
+            # start (and pay for) a second generation; say that it is already under way.
+            active_letter = _generation_pending_duplicate(content, material)
         if active_letter is not None and active_letter.get('origin') != 'proactive':
             return err(409, "LETTER_IN_PROGRESS", {
                 "status": "FAILED",

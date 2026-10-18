@@ -60,7 +60,15 @@ MAILBOX_LOGIN_REPLACEMENT_0627 = (
     'await h(z.uid.toString(),z.modelGatewayToken||"",!1))'
 )
 MAILBOX_WRITE_ANCHOR_0627 = '"hide-write":o(p)||!o(N3)'
-MAILBOX_WRITE_REPLACEMENT_0627 = '"hide-write":o(h).some(e=>[1,2,3].includes(e.letterStatus))'
+# Installed bundles patched before a letter could wait on generated audio alone.
+MAILBOX_WRITE_PREVIOUS_REPLACEMENT_0627 = (
+    '"hide-write":o(h).some(e=>[1,2,3].includes(e.letterStatus))'
+)
+# Writing stays closed while a reply is being written; a letter that only waits
+# for its voice or song (mediaWaitOnly) no longer holds the compose card.
+MAILBOX_WRITE_REPLACEMENT_0627 = (
+    '"hide-write":o(h).some(e=>[1,2,3].includes(e.letterStatus)&&!e.mediaWaitOnly)'
+)
 
 
 def _repair_mailbox_waiting_footer(javascript: str) -> str:
