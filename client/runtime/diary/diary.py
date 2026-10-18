@@ -392,6 +392,7 @@ class DiaryStore:
                 CREATE TABLE IF NOT EXISTS diary_deleted (day TEXT PRIMARY KEY);
                 CREATE TABLE IF NOT EXISTS diary_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS diary_work (day TEXT PRIMARY KEY, stage TEXT NOT NULL, payload TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS diary_rewrite (day TEXT PRIMARY KEY);
             ''')
             columns = {row[1] for row in db.execute('PRAGMA table_info(diary_entries)')}
             if 'style' not in columns:
@@ -560,9 +561,22 @@ class DiaryStore:
             db.execute("INSERT INTO diary_settings VALUES ('enabled',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                        ('1' if enabled else '0',))
 
+    def rewrite_days(self):
+        """Days whose entry was deleted along with a letter and is to be written again, even when they are older than
+        the days that are caught up. A day leaves the list once it has an entry, is dropped, or has used its tries."""
+        with self._db() as db:
+            queued = [row[0] for row in db.execute('SELECT day FROM diary_rewrite ORDER BY day LIMIT 60')]
+            done = [day for day in queued
+                    if db.execute('SELECT 1 FROM diary_entries WHERE day=? UNION SELECT 1 FROM diary_deleted WHERE day=?',
+                                  (day, day)).fetchone()
+                    or (db.execute('SELECT attempts FROM diary_attempts WHERE day=?', (day,)).fetchone() or (0,))[0] >= MAX_ATTEMPTS]
+            db.executemany('DELETE FROM diary_rewrite WHERE day=?', [(day,) for day in done])
+        return [day for day in queued if day not in done and self.may_attempt(day)]
+
     def skip(self, day, reason):
         """A day with nothing to write is never attempted again."""
         with self._db() as db:
+            db.execute('DELETE FROM diary_rewrite WHERE day=?', (day,))
             db.execute('INSERT INTO diary_attempts VALUES (?,?,?,?) ON CONFLICT(day) DO UPDATE SET '
                        'attempts=excluded.attempts,last_at=excluded.last_at,reason=excluded.reason',
                        (day, MAX_ATTEMPTS, time.time(), reason))
@@ -627,6 +641,7 @@ class DiaryStore:
             db.execute('DELETE FROM diary_comments WHERE day=?', (day,))
             db.execute('DELETE FROM diary_work WHERE day=?', (day,))
             db.execute('INSERT OR IGNORE INTO diary_deleted VALUES (?)', (day,))
+            db.execute('DELETE FROM diary_rewrite WHERE day=?', (day,))
 
     def save(self, day, entry, *, now, model, short, style='ordinary', photo=None):
         with self._db() as db:
@@ -639,6 +654,7 @@ class DiaryStore:
                         json.dumps(entry['facts'], ensure_ascii=False), model, int(short), style, local_photo(photo)))
             db.execute('DELETE FROM diary_attempts WHERE day=?', (day,))
             db.execute('DELETE FROM diary_work WHERE day=?', (day,))
+            db.execute('DELETE FROM diary_rewrite WHERE day=?', (day,))
         return True
 
     def may_attempt(self, day):
@@ -999,7 +1015,9 @@ def due_days(store, now):
     latest = local.date() - timedelta(days=1 if local.hour >= WRITE_AFTER_HOUR else 2)
     days = [(latest - timedelta(days=offset)).isoformat() for offset in range(CATCH_UP_DAYS)]
     _optional(lambda: store.retry_rejected(days), None)
-    return [day for day in reversed(days) if store.may_attempt(day)]
+    # Days the user had written again after deleting a letter come first, whatever their age.
+    asked = _optional(store.rewrite_days, [])
+    return [*asked, *(day for day in reversed(days) if day not in asked and store.may_attempt(day))]
 
 
 def day_life(life_store, day, outfit=None):

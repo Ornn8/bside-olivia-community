@@ -240,7 +240,11 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     }
   };
 
-  const confirmAction = (message) => new Promise((resolve) => {
+  // The letters-and-memories window is a modal dialog, and a confirmation drawn in the page behind it could not be
+  // reached. While the window is open it installs its own nested confirmation here.
+  let confirmHost = null;
+  const confirmAction = (message) => confirmHost ? confirmHost(message) : confirmInPage(message);
+  const confirmInPage = (message) => new Promise((resolve) => {
     document.querySelector(`[${OFFICIAL_IMPORT_CONFIRM_ATTR}]`)?.remove();
     const backdrop = document.createElement("div");
     backdrop.setAttribute(OFFICIAL_IMPORT_CONFIRM_ATTR, "");
@@ -1012,7 +1016,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   // FIRST VIEWPORT: Desktop list/detail columns; fixed paging and record actions.
   // FORM: User-approved HTML prototype; narrow windows switch list/detail views.
   // FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md
-  const createMemoryBrowser = (panel, capability, summary, resultState, updateSummary) => {
+  // The browser lives in the memory tab of the letters-and-memories window. Original letter text is read and searched
+  // in that window's letter tab; `openOriginal(source_id)` hands a memory's source over to it.
+  const createMemoryBrowser = (panel, capability, summary, resultState, updateSummary, openOriginal) => {
     const el = (tag, className) => {
       const node = document.createElement(tag); node.className = className; return node;
     };
@@ -1032,16 +1038,12 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       .om-heading{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:20px;flex-shrink:0}
       .om-heading p{font-size:13px;color:#b3b5b8}
       .om-shell{display:flex;flex-direction:column;flex:1;min-width:0;min-height:0;border-radius:12px;background:#1a1b1d;overflow:hidden}
-      .om-toolbar{padding:0 20px 16px;border-bottom:1px solid #383b3e;flex-shrink:0}
-      .om-tabs{display:flex;gap:24px;margin-bottom:14px}
-      [data-olivia-memory-browser] .om-tab{border:0!important;border-bottom:2px solid transparent!important;border-radius:0!important;padding:14px 0 10px!important;background:transparent!important;color:#b3b5b8!important}
-      [data-olivia-memory-browser] .om-tab[aria-selected="true"]{border-bottom-color:#dbd2c5!important;color:#e8e3db!important}
+      .om-toolbar{padding:16px 20px;border-bottom:1px solid #383b3e;flex-shrink:0}
       .om-tools{display:flex;gap:10px;align-items:center}
       .om-search{display:flex;flex:1;min-width:0}
       [data-olivia-memory-browser] .om-search input{width:100%;background:#111213!important}
       [data-olivia-memory-browser] input::placeholder{color:#b3b5b8}
       .om-filter{display:flex;align-items:center;gap:6px;min-width:0;color:#b3b5b8;font-size:12px;white-space:nowrap}
-      .om-source-filter{display:flex;align-items:center;gap:12px;margin-top:10px;font-size:12px;color:#b3b5b8}
       .om-workspace{display:grid;grid-template-columns:minmax(240px,.84fr) minmax(0,1.16fr);flex:1;min-width:0;min-height:0}
       .om-list-panel{display:flex;flex-direction:column;min-width:0;min-height:0;border-right:1px solid #383b3e}
       .om-count{font-size:12px;color:#b3b5b8;padding:12px 20px;flex-shrink:0}
@@ -1066,7 +1068,6 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       .om-detail article>div:has(textarea){display:grid;grid-template-columns:minmax(0,1fr)}
       .om-detail textarea{width:100%;min-height:140px;resize:vertical;line-height:1.8}
       .om-detail article>div:has(textarea)>div{display:flex;gap:10px}
-      .om-original-text{white-space:pre-wrap;overflow-wrap:anywhere;font-size:16px;line-height:1.95;margin:20px 0!important}
       .om-provenance{padding-top:20px;border-top:1px solid #383b3e;margin-top:24px;color:#b3b5b8;font-size:12px}
       .om-result{flex-shrink:0;color:#b3b5b8;font-size:12px;padding-top:10px;min-height:24px}
       .om-management{position:absolute;right:0;top:44px;z-index:4;background:#232527;border-radius:12px;padding:22px;width:min(430px,100%);max-height:calc(100% - 44px);overflow:auto;box-shadow:0 12px 40px #0007}
@@ -1088,20 +1089,19 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         [data-olivia-memory-browser][data-reading="true"] .om-detail{display:flex;flex:1}
         [data-olivia-memory-browser] .om-back{display:block;align-self:flex-start;flex-shrink:0;margin:20px 20px 0}
         .om-detail-scroll{padding:20px}.om-detail-footer{padding:14px 20px}
-        .om-toolbar{padding:0 14px 14px}
-      }`.replaceAll("[data-olivia-memory-browser]", "[data-olivia-memory-dialog] [data-olivia-memory-browser]");
+        .om-toolbar{padding:14px}
+      }`.replaceAll("[data-olivia-memory-browser]", "[data-letter-deletion] [data-olivia-memory-browser]");
     const state = panel.__oliviaMemoryBrowserState || {
-      active: "memories",
       memories: {query: "", page: 1, days: 0, sort: "new", selected: null, scroll: 0},
-      originals: {query: "", page: 1, days: 0, sort: "new", selected: null, scroll: 0, source_id: null},
     };
     panel.__oliviaMemoryBrowserState = state;
+    const view = state.memories;
     let generation = 0;
     const heading = el("div", "om-heading"), management = el("aside", "om-management");
     management.hidden = true; management.setAttribute("aria-label", t("记忆管理"));
     const originalProgress = text("p", t("展开管理后可刷新信件接入进度。"));
     const managementControls = el("div", "om-management-controls");
-    const manage = button(t("记忆管理"), async () => {
+    const manage = button(t("记忆设置"), async () => {
       management.hidden = !management.hidden; manage.setAttribute("aria-expanded", String(!management.hidden));
       if (management.hidden || capability?.reason_code === "MEMORY_ADMIN_PAUSED") return;
       try {
@@ -1114,8 +1114,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const closeManagement = button(t("收起管理"), () => { management.hidden = true; manage.setAttribute("aria-expanded", "false"); manage.focus(); });
     management.append(text("h3", t("记忆管理")), originalProgress, managementControls, closeManagement);
     heading.append(summary, manage);
-    const shell = el("div", "om-shell"), toolbar = el("div", "om-toolbar"), tabs = el("div", "om-tabs");
-    tabs.setAttribute("role", "tablist"); tabs.setAttribute("aria-label", t("浏览内容"));
+    const shell = el("div", "om-shell"), toolbar = el("div", "om-toolbar");
     const tools = el("div", "om-tools"), searchWrap = el("label", "om-search");
     const input = document.createElement("input"); input.type = "search"; input.maxLength = 500;
     searchWrap.append(input);
@@ -1128,74 +1127,46 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     tools.append(searchWrap);
     const days = select(t("时间"), [["0",t("全部时间")],["7",t("最近 7 天")],["30",t("最近 30 天")],["90",t("最近 90 天")]]);
     const sort = select(t("排序"), [["new",t("最近记录")],["old",t("最早记录")]]);
-    const sourceFilter = el("div", "om-source-filter");
-    sourceFilter.append(text("span", t("正在查看关联原文")), button(t("显示全部原文"), () => { state.originals.source_id = null; state.originals.page = 1; load(); }));
     const workspace = el("div", "om-workspace"), listPanel = el("section", "om-list-panel");
     const count = text("p", "", "om-count"), list = el("div", "om-rows"), pagination = el("nav", "om-pagination");
-    list.setAttribute("aria-label", t("记忆与原文列表")); pagination.setAttribute("aria-label", t("分页"));
+    list.setAttribute("aria-label", t("记忆列表")); pagination.setAttribute("aria-label", t("分页"));
     const detail = el("section", "om-detail"); detail.setAttribute("aria-label", t("选中条目的详情"));
     const pageLabel = text("span", "");
-    const saveScroll = () => { state[state.active].scroll = list.scrollTop || 0; };
-    const previous = button(t("上一页"), () => { saveScroll(); state[state.active].page--; state[state.active].scroll = 0; load(); });
-    const next = button(t("下一页"), () => { saveScroll(); state[state.active].page++; state[state.active].scroll = 0; load(); });
-    const key = row => state.active === "memories" ? row.memory_id : row.source_id + ":" + row.speaker;
+    const saveScroll = () => { view.scroll = list.scrollTop || 0; };
+    const previous = button(t("上一页"), () => { saveScroll(); view.page--; view.scroll = 0; load(); });
+    const next = button(t("下一页"), () => { saveScroll(); view.page++; view.scroll = 0; load(); });
     const selectRow = row => {
-      state[state.active].selected = key(row);
-      for (const item of list.querySelectorAll("button")) item.setAttribute("aria-current", String(item.dataset.memoryKey === key(row)));
+      view.selected = row.memory_id;
+      for (const item of list.querySelectorAll("button")) item.setAttribute("aria-current", String(item.dataset.memoryKey === row.memory_id));
       detail.replaceChildren(button(t("返回列表"), () => {
         root.setAttribute("data-reading", "false");
-        Array.from(list.querySelectorAll("button")).find(item => item.dataset.memoryKey === state[state.active].selected)?.focus();
+        Array.from(list.querySelectorAll("button")).find(item => item.dataset.memoryKey === view.selected)?.focus();
       }));
       detail.children[0].className = "om-back";
       const reading = el("div", "om-detail-scroll");
       detail.append(reading);
-      if (state.active === "memories") {
-        reading.append(text("h3", row.text.split(/\r?\n/)[0].slice(0, 45)));
-        const record = el("div", "om-record");
-        renderMemories(record, [row], load, resultState); reading.append(record);
-        const recordActions = record.querySelector(".om-record-actions");
-        if (recordActions) {
-          const footer = el("div", "om-detail-footer"); footer.append(recordActions); detail.append(footer);
-        }
-        if (row.updated_at) reading.append(text("p", t("最近更新：{time}", {time: formatTime(row.updated_at)}), "om-count"));
+      reading.append(text("h3", row.text.split(/\r?\n/)[0].slice(0, 45)));
+      const record = el("div", "om-record");
+      renderMemories(record, [row], load, resultState); reading.append(record);
+      const recordActions = record.querySelector(".om-record-actions");
+      if (recordActions) {
+        const footer = el("div", "om-detail-footer"); footer.append(recordActions); detail.append(footer);
+      }
+      if (row.updated_at) reading.append(text("p", t("最近更新：{time}", {time: formatTime(row.updated_at)}), "om-count"));
+      if (openOriginal && row.source_id) {
         const provenance = el("div", "om-provenance");
-        provenance.append(button(t("查看关联原文"), async () => {
-          saveScroll(); state.active = "originals"; state.originals.source_id = row.source_id;
-          state.originals.query = ""; state.originals.days = 0; state.originals.page = 1; state.originals.selected = null;
-          await load(); root.setAttribute("data-reading", "true");
-        }));
+        provenance.append(button(t("查看关联原文"), () => { saveScroll(); openOriginal(row.source_id); }));
         reading.append(provenance);
-      } else {
-        reading.append(text("h3", row.speaker === "user" ? t("用户来信") : t("林离回信")),
-          text("p", row.created_at ? formatTime(row.created_at) : t("时间未知"), "om-count"), text("p", row.text, "om-original-text"));
-        if (row.excerpt) reading.append(text("p", t("当前为原文节选。"), "om-count"), button(t("读取完整原文"), async () => {
-          const selected = key(row), collection = state.active;
-          try {
-            const payload = await requestJson(MEMORY_PATH, {browse: 1, collection: "originals", source_id: row.source_id, full: 1, limit: 20});
-            if (collection !== state.active || state[collection].selected !== selected) return;
-            const full = payload.originals?.find(item => item.source_id === row.source_id && item.speaker === row.speaker);
-            if (full) selectRow(full); else resultState.textContent = t("这段原文已不可用，可刷新列表。");
-          } catch (_) { resultState.textContent = t("完整原文读取失败，可稍后重试。"); }
-        }));
-        const footer = el("div", "om-detail-footer");
-        footer.append(button(t("返回记忆"), () => { saveScroll(); state.active = "memories"; load(); }));
-        detail.append(footer);
       }
       root.setAttribute("data-reading", "true");
     };
     const syncTools = () => {
-      const view = state[state.active]; input.value = view.query;
-      input.placeholder = state.active === "memories" ? t("搜索全部记忆") : t("搜索全部信件原文");
+      input.value = view.query;
+      input.placeholder = t("搜索全部记忆");
       input.setAttribute("aria-label", input.placeholder); days.value = String(view.days); sort.value = view.sort;
-      sourceFilter.hidden = !(state.active === "originals" && view.source_id);
-      for (const tab of tabs.querySelectorAll("button")) tab.setAttribute("aria-selected", String(tab.dataset.collection === state.active));
     };
-    for (const [collection, label] of [["memories",t("记忆")],["originals",t("信件原文")]]) {
-      const tab = button(label, () => { saveScroll(); state.active = collection; root.setAttribute("data-reading", "false"); load(); });
-      tab.dataset.collection = collection; tab.className = "om-tab"; tab.setAttribute("role", "tab"); tabs.append(tab);
-    }
     const load = async () => {
-      const id = ++generation, collection = state.active, view = state[collection];
+      const id = ++generation;
       syncTools(); previous.disabled = true; next.disabled = true;
       resultState.textContent = t("正在读取……"); setDiagnosticDetails(resultState, []);
       if (capability?.reason_code === "MEMORY_ADMIN_PAUSED") {
@@ -1203,33 +1174,35 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         detail.replaceChildren(); pageLabel.textContent = ""; resultState.textContent = ""; return;
       }
       try {
-        const payload = await requestJson(MEMORY_PATH, {browse: 1, collection, query: view.query,
-          page: view.page, limit: 20, days: view.days, sort: view.sort, source_id: view.source_id});
+        const payload = await requestJson(MEMORY_PATH, {browse: 1, collection: "memories", query: view.query,
+          page: view.page, limit: 20, days: view.days, sort: view.sort});
         if (id !== generation || panel.isConnected === false) return;
-        const loaded = (collection === "memories" ? payload.memories : payload.originals) || [];
+        const loaded = payload.memories || [];
         const total = Number.isInteger(payload.total) ? payload.total : loaded.length;
         const pages = Math.max(1, Math.ceil(total / 20)); view.page = payload.page || 1;
-        count.textContent = (view.query ? t("找到 {total} 条匹配结果", {total}) : collection === "memories" ? t("共 {total} 条记忆", {total}) : t("共 {total} 条原文", {total})) + t(" · 每页 20 条");
+        count.textContent = (view.query ? t("找到 {total} 条匹配结果", {total}) : t("共 {total} 条记忆", {total})) + t(" · 每页 20 条");
         pageLabel.textContent = t("第 {page} / {pages} 页", {page: view.page, pages}); previous.disabled = view.page <= 1; next.disabled = view.page >= pages;
         list.replaceChildren();
         for (const row of loaded) {
-          const item = button("", () => selectRow(row)); item.className = "om-row"; item.dataset.memoryKey = key(row);
-          item.append(text("span", collection === "memories" ? row.text.split(/\r?\n/)[0] : row.speaker === "user" ? t("用户来信") : t("林离回信"), "om-row-title"),
+          // On a narrow window the record replaces the list; focus moves with it, so that Escape reaches the browser first.
+          const item = button("", () => { selectRow(row); if (window.matchMedia?.("(max-width:700px)").matches) detail.children[0]?.focus(); });
+          item.className = "om-row"; item.dataset.memoryKey = row.memory_id;
+          item.append(text("span", row.text.split(/\r?\n/)[0], "om-row-title"),
             text("span", row.text, "om-row-excerpt"), text("span", (row.updated_at || row.created_at) ? formatTime(row.updated_at || row.created_at) : t("时间未知"), "om-row-time"));
           list.append(item);
         }
-        const selected = loaded.find(row => key(row) === view.selected) || loaded[0];
+        const selected = loaded.find(row => row.memory_id === view.selected) || loaded[0];
         if (selected) selectRow(selected);
         else {
           list.append(text("p", view.query ? t("没有匹配结果，请尝试其他关键词或时间范围。") : t("暂无记录，可更换时间范围查看。"), "om-empty"));
-          detail.replaceChildren(text("p", view.source_id ? t("没有找到关联原文。这条记忆可能来自手动添加或更正。") : t("选中一条记录，在这里阅读完整内容。"), "om-empty"));
+          detail.replaceChildren(text("p", t("选中一条记录，在这里阅读完整内容。"), "om-empty"));
         }
         root.setAttribute("data-reading", "false"); list.scrollTop = view.scroll;
-        if (collection === "memories" && Number.isInteger(payload.total_count)) updateSummary({...capability, count: payload.total_count});
+        if (Number.isInteger(payload.total_count)) updateSummary({...capability, count: payload.total_count});
         if (id === generation) resultState.textContent = "";
       } catch (error) {
         if (id !== generation || panel.isConnected === false) return;
-        if (collection === "memories") updateSummary({state: "unavailable"});
+        updateSummary({state: "unavailable"});
         resultState.textContent = t("读取失败，已显示的记录保留。请点击重试。");
         setDiagnosticDetails(resultState, error?.code || "COMPANION_READ_UNAVAILABLE");
       }
@@ -1237,29 +1210,34 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     let searchTimer;
     input.addEventListener("input", () => {
       window.clearTimeout(searchTimer); generation++;
-      state[state.active].query = input.value.trim(); state[state.active].page = 1; state[state.active].scroll = 0;
-      if (state.active === "originals") state.originals.source_id = null;
+      view.query = input.value.trim(); view.page = 1; view.scroll = 0;
       searchTimer = window.setTimeout(load, 250);
     });
     input.addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); window.clearTimeout(searchTimer); load(); } });
     for (const [control, name] of [[days,"days"],[sort,"sort"]]) control.addEventListener("change", () => {
-      state[state.active][name] = name === "days" ? Number(control.value) : control.value; state[state.active].page = 1; state[state.active].scroll = 0; load();
+      view[name] = name === "days" ? Number(control.value) : control.value; view.page = 1; view.scroll = 0; load();
     });
+    // The window around the browser closes on Escape; the first press only closes what the browser itself opened.
     root.addEventListener("keydown", event => {
-      if (event.key === "Escape" && !management.hidden) { event.stopPropagation(); closeManagement.click(); }
+      if (event.key === "Escape" && !management.hidden) { event.preventDefault(); event.stopPropagation(); closeManagement.click(); }
       else if (event.key === "Escape" && root.getAttribute("data-reading") === "true" && window.matchMedia?.("(max-width:700px)").matches) {
-        event.stopPropagation(); root.setAttribute("data-reading", "false");
+        event.preventDefault(); event.stopPropagation(); root.setAttribute("data-reading", "false");
       }
     });
     pagination.append(previous, pageLabel, next); listPanel.append(count, list, pagination); workspace.append(listPanel, detail);
-    toolbar.append(tabs, tools, sourceFilter); shell.append(toolbar, workspace); resultState.className = "om-result";
+    toolbar.append(tools); shell.append(toolbar, workspace); resultState.className = "om-result";
     tools.append(button(t("刷新 / 重试"), () => { saveScroll(); load(); }));
     root.append(style, heading, shell, resultState, management);
     return {root, load, managementControls};
   };
 
-  const renderMemoryPanel = async (panel, capability) => {
+  const renderMemoryPanel = async (panel, capability, options) => {
     window.clearTimeout(panel.__oliviaMemoryStatusTimer);
+    // `options` tell how the panel is used and stay with the panel for its later renders: the settings page shows a
+    // launcher (status line and a button), the letters-and-memories window shows the browser, and `openOriginal` hands
+    // a memory's source letter over to that window's letter tab.
+    if (options) panel.__oliviaMemoryOptions = options;
+    const {launcher = false, openOriginal = null} = panel.__oliviaMemoryOptions || {};
     const state = capabilityState(capability);
     const confirmClear = async () => await confirmAction(t("确认清空当前用户的 Mem0 长期记忆？"))
       && await confirmAction(t("清空后无法恢复。原始信件和林离世界不会受影响，仍要继续吗？"));
@@ -1414,9 +1392,15 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         (Number.isInteger(count) ? t(" · {count} 条记忆", {count}) : "");
     };
     updateSummary(capability);
+    if (launcher) {
+      const open = button(t("打开信件与记忆"), () => openLettersAndMemories({tab: "memory"}));
+      open.style.justifySelf = "start";
+      panel.replaceChildren(summary, open);
+      return;
+    }
     const resultState = text("p", "", "text-text-secondary text-body-m font-regular");
     resultState.setAttribute("aria-live", "polite");
-    const browser = createMemoryBrowser(panel, capability, summary, resultState, updateSummary);
+    const browser = createMemoryBrowser(panel, capability, summary, resultState, updateSummary, openOriginal);
     const load = browser.load;
 
     const lifecycleControls = actions();
@@ -2895,7 +2879,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         : {};
       renderCompanionStatus(statusNode, capabilities);
       await Promise.allSettled(tasks.concat([
-        renderMemoryPanel(panels.memory, capabilities.memory),
+        renderMemoryPanel(panels.memory, capabilities.memory, {launcher: true}),
         renderPrivateWorldPanel(panels.privateWorld, capabilities.private_world),
       ]));
     } catch (error) {
@@ -2904,7 +2888,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         : t("陪伴状态读取失败，其他功能将独立检查；可导出诊断包排查。");
       statusNode.dataset.state = "unavailable";
       await Promise.allSettled(tasks.concat([
-        renderMemoryPanel(panels.memory, {state: "available"}),
+        renderMemoryPanel(panels.memory, {state: "available"}, {launcher: true}),
         renderPrivateWorldPanel(panels.privateWorld, {state: "available"}),
       ]));
     }
@@ -3220,11 +3204,25 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     });
     if(window.location.hash==='#/collection?view=world')native.router.replace('/world');
   };
-  const openLetterDeletion = async () => {
+  // The memory tab of the letters-and-memories window: reads the capability, then draws the panel with the browser
+  // (the settings page shows only a launcher for it). `openOriginal(source_id)` leads to the letter tab.
+  const mountMemoryTab = async (host, openOriginal) => {
+    host.replaceChildren(text('p', t('正在读取……'), 'lm-empty'));
+    let capability = {state: 'available'};
+    try {
+      const payload = await requestJson(STATUS_PATH);
+      const capabilities = payload.capabilities && typeof payload.capabilities === 'object' ? payload.capabilities : {};
+      capability = capabilities.memory;
+    } catch (_error) { /* the browser reports its own read failure */ }
+    await renderMemoryPanel(host, capability, {openOriginal});
+  };
+  // One window for the mailbox's letters and the long-term memories: letters (list, deletion, search of the original
+  // text), memories (browser and its management) and recently deleted letters.
+  const openLettersAndMemories = async ({tab = 'letters'} = {}) => {
     if (document.querySelector('[data-letter-deletion]')) return;
     const dialog = document.createElement('dialog');
     dialog.setAttribute('data-letter-deletion', '');
-    dialog.setAttribute('aria-label', t('管理信件'));
+    dialog.setAttribute('aria-label', t('信件与记忆'));
     const style = text('style', `
       [data-letter-deletion], [data-letter-confirm] {position:fixed;inset:0;margin:auto;box-sizing:border-box;color:#ede9e1;background:#202124;border:1px solid #48494c;border-radius:16px;padding:0;font:14px/1.6 system-ui,"Microsoft YaHei",sans-serif;color-scheme:dark;max-width:none;max-height:none}
       [data-letter-deletion] {width:min(1000px,calc(100vw - 48px));height:min(740px,calc(100dvh - 64px))}
@@ -3236,9 +3234,25 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       [data-letter-deletion] button:hover, [data-letter-confirm] button:hover {background:#363638}
       [data-letter-deletion] :focus-visible, [data-letter-confirm] :focus-visible {outline:2px solid #e5d6b8;outline-offset:3px}
       [data-letter-deletion] button:disabled {opacity:.45;cursor:default}
+      [data-letter-deletion] [hidden] {display:none!important}
+      [data-letter-deletion] .text-text-title, [data-letter-deletion] .text-text-body {color:#ede9e1!important}
+      [data-letter-deletion] .text-text-secondary {color:#bcb7ad!important}
       [data-letter-deletion] .lm-shell {height:100%;display:flex;flex-direction:column;overflow:hidden;border-radius:inherit}
-      [data-letter-deletion] .lm-header {padding:24px 28px 12px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
-      [data-letter-deletion] .lm-notice {padding:0 28px 18px;color:#c5c0b7;font-size:13px;min-height:40px}
+      [data-letter-deletion] .lm-header {padding:24px 28px 8px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+      [data-letter-deletion] .lm-tabs {display:flex;gap:26px;padding:0 28px;border-bottom:1px solid #414143;flex-shrink:0}
+      [data-letter-deletion] button.lm-tab {padding:10px 0 8px;border:0;border-bottom:2px solid transparent;border-radius:0;color:#bcb7ad}
+      [data-letter-deletion] button.lm-tab:hover {background:transparent;color:#ede9e1}
+      [data-letter-deletion] button.lm-tab[aria-selected="true"] {border-bottom-color:#d8c9ab;color:#ede9e1}
+      [data-letter-deletion] .lm-panel {flex:1;min-height:0;display:flex;flex-direction:column}
+      [data-letter-deletion] .lm-search {padding:14px 28px 0}
+      [data-letter-deletion] .lm-search input {width:100%;height:auto;min-width:0;font:inherit;color:inherit;background:#17181a;border:1px solid #66625c;border-radius:999px;padding:7px 16px}
+      [data-letter-deletion] .lm-search input::placeholder {color:#bcb7ad}
+      [data-letter-deletion] .lm-source {display:flex;align-items:center;flex-wrap:wrap;gap:12px;padding:10px 28px 0;font-size:12px;color:#c5c0b7}
+      [data-letter-deletion] .lm-source button {padding:3px 12px;font-size:12px}
+      [data-letter-deletion] .lm-notice {padding:8px 28px 14px;color:#c5c0b7;font-size:13px;min-height:40px}
+      [data-letter-deletion] .lm-memory {padding:16px 28px 22px;gap:12px;overflow:auto}
+      [data-letter-deletion] .lm-memory > [data-olivia-memory-browser] {flex:1}
+      [data-letter-deletion] .lm-memory > button {align-self:flex-start}
       [data-letter-deletion] .lm-workspace {display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);flex:1;min-height:0;border-top:1px solid #414143}
       [data-letter-deletion] .lm-list, [data-letter-deletion] .lm-preview {overflow:auto;scrollbar-width:thin;scrollbar-color:#68645c transparent;min-height:0}
       [data-letter-deletion] ::-webkit-scrollbar {width:6px}
@@ -3246,9 +3260,11 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       [data-letter-deletion] .lm-preview {padding:28px;border-left:1px solid #414143;background:#242527;white-space:pre-wrap;overflow-wrap:anywhere}
       [data-letter-deletion] .lm-preview h3 {font-size:17px;margin-bottom:16px}
       [data-letter-deletion] .lm-preview p {line-height:1.9}
+      [data-letter-deletion] .lm-preview .lm-note {color:#c5c0b7;font-size:13px;margin-top:20px}
+      [data-letter-deletion] .lm-preview button {margin-top:8px}
       [data-letter-deletion] .lm-row {display:flex;gap:12px;align-items:center;padding:12px 20px;border-bottom:1px solid #363739;min-height:78px}
-      [data-letter-deletion] .lm-row:has(input:checked) {background:#393931}
-      [data-letter-deletion] input {width:18px;height:18px;flex-shrink:0;accent-color:#d8c9ab;cursor:pointer}
+      [data-letter-deletion] .lm-row:has(input:checked), [data-letter-deletion] .lm-row:has([aria-current="true"]) {background:#393931}
+      [data-letter-deletion] input[type="checkbox"] {width:18px;height:18px;flex-shrink:0;accent-color:#d8c9ab;cursor:pointer}
       [data-letter-deletion] button.lm-title {padding:0;border:0;border-radius:3px;text-align:left;flex:1;min-width:0}
       [data-letter-deletion] .lm-title strong {display:block;font-weight:500;white-space:nowrap;text-overflow:ellipsis;overflow:hidden}
       [data-letter-deletion] .lm-meta {display:block;color:#bcb7ad;font-size:12px;margin-top:4px}
@@ -3259,68 +3275,129 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       [data-letter-confirm] {width:min(460px,calc(100vw - 32px));padding:28px}
       [data-letter-confirm] h3 {margin:0 0 12px;font-size:20px}
       [data-letter-confirm] p {margin:0 0 24px;color:#d1cbc0}
+      [data-letter-confirm] label.lm-diary {display:flex;gap:10px;align-items:center;margin:0 0 6px;color:#ede9e1;cursor:pointer}
+      [data-letter-confirm] label.lm-diary input {width:18px;height:18px;margin:0;flex-shrink:0;accent-color:#d8c9ab;cursor:pointer}
+      [data-letter-confirm] p.lm-diary-note {margin:0 0 24px;font-size:13px;color:#bcb7ad}
       @media(max-width:640px) {
         [data-letter-deletion] {width:calc(100vw - 24px);height:calc(100dvh - 32px)}
-        [data-letter-deletion] .lm-header {padding:16px}
-        [data-letter-deletion] .lm-notice {padding:0 16px 12px}
+        [data-letter-deletion] .lm-header {padding:16px 16px 6px}
+        [data-letter-deletion] .lm-tabs {padding:0 16px;gap:20px}
+        [data-letter-deletion] .lm-search {padding:10px 16px 0}
+        [data-letter-deletion] .lm-source {padding:8px 16px 0}
+        [data-letter-deletion] .lm-notice {padding:6px 16px 10px;min-height:0}
+        [data-letter-deletion] .lm-memory {padding:12px 16px 16px}
         [data-letter-deletion] .lm-workspace {grid-template-columns:1fr;grid-template-rows:minmax(120px,1fr) minmax(100px,.65fr)}
         [data-letter-deletion] .lm-preview {border-left:0;border-top:1px solid #414143;padding:16px}
         [data-letter-deletion] .lm-row {padding:10px 16px}
         [data-letter-deletion] .lm-footer {padding:12px 16px}
       }
     `);
-    const shell = text('div', ''), header = actions(), body = text('div', ''), preview = text('section', ''), workspace = text('div', ''), footer = actions();
-    shell.className = 'lm-shell'; header.className = 'lm-header'; body.className = 'lm-list'; preview.className = 'lm-preview'; workspace.className = 'lm-workspace'; footer.className = 'lm-footer';
+    const shell = text('div', ''), header = actions(), tabBar = text('div', ''), lettersPanel = text('div', ''), memoryPanel = text('div', '');
+    const searchRow = text('div', ''), sourceBar = text('div', ''), body = text('div', ''), found = text('div', ''), preview = text('section', ''), workspace = text('div', ''), footer = actions();
+    shell.className = 'lm-shell'; header.className = 'lm-header'; tabBar.className = 'lm-tabs'; lettersPanel.className = 'lm-panel'; memoryPanel.className = 'lm-panel lm-memory';
+    searchRow.className = 'lm-search'; sourceBar.className = 'lm-source'; body.className = 'lm-list'; found.className = 'lm-list'; found.hidden = true;
+    preview.className = 'lm-preview'; workspace.className = 'lm-workspace'; footer.className = 'lm-footer';
+    tabBar.setAttribute('role', 'tablist'); tabBar.setAttribute('aria-label', t('浏览内容'));
+    memoryPanel.hidden = true; sourceBar.hidden = true;
     preview.setAttribute('aria-label', t('信件预览'));
     const notice = text('p', ''), count = text('span', t('已选 0 封'));
     notice.className = 'lm-notice'; count.className = 'lm-count'; notice.setAttribute('role', 'status'); count.setAttribute('aria-live', 'polite');
-    let recent = false, busy = false, changed = false, closed = false, generation = 0;
+    // view: the visible tab; recent: the data the letter panel shows (the letter list or the recently deleted ones)
+    let view = 'letters', recent = false, loadedRecent = false, memoryMounted = false, busy = false, changed = false, closed = false, generation = 0;
+    // The original-text search of the letter tab: `query` and `sourceId` (the letter a memory came from) are its two filters.
+    let query = '', sourceId = null, page = 1, pages = 1, foundSummary = '', shown = null, searchGeneration = 0, searchTimer;
     const selected = new Map();
     const entry = document.activeElement;
-    const dismiss = () => { if (busy) return; closed = true; dialog.close(); dialog.remove(); entry?.focus(); if (changed) window.location.reload(); };
+    const dismiss = () => { if (busy) return; closed = true; confirmHost = null; dialog.close(); dialog.remove(); entry?.focus(); if (changed) window.location.reload(); };
     const close = button(t('关闭'), dismiss), cancel = button(t('取消'), dismiss);
-    const tabs = button(t('最近删除'), async () => { if (busy) return; recent = !recent; await load(); });
-    const refresh = () => { count.textContent = t('已选 {count} 封', {count: selected.size}); remove.disabled = busy || !selected.size || recent; };
+    const previous = button(t('上一页'), () => { page--; void runSearch(); }), next = button(t('下一页'), () => { page++; void runSearch(); }), pageLabel = text('span', '');
+    const searching = () => Boolean(query || sourceId);
+    const refresh = () => {
+      count.textContent = !recent && searching() ? foundSummary : t('已选 {count} 封', {count: selected.size});
+      remove.disabled = busy || !selected.size || recent;
+      previous.disabled = busy || page <= 1; next.disabled = busy || page >= pages;
+    };
     // A nested native dialog stays above the parent's top layer and traps keyboard focus.
-    const confirmDeletion = (message) => new Promise(resolve => {
+    // `diary` ({label}) adds the choice to delete the diary of the letters' day too; its `checked` is read after the answer.
+    const confirmDeletion = (message, diary = null) => new Promise(resolve => {
       const prompt = document.createElement('dialog'); prompt.setAttribute('data-letter-confirm', ''); prompt.setAttribute('aria-label', t('确认操作'));
       const previous = document.activeElement;
       const finish = value => { prompt.close(); prompt.remove(); previous?.focus(); resolve(value); };
       const controls = actions(), no = button(t('取消'), () => finish(false)), yes = button(t('确定'), () => finish(true));
       controls.style.justifyContent = 'flex-end'; controls.append(no, yes);
-      prompt.append(text('h3', t('确认操作')), text('p', message), controls); dialog.append(prompt);
+      const body = text('p', message), choice = [];
+      if (diary) {
+        const row = document.createElement('label'), box = document.createElement('input');
+        row.className = 'lm-diary'; box.type = 'checkbox'; box.checked = false; diary.checked = false;
+        const kept = t('日记是她自己写的，不会因删信自动改动。'), rewritten = t('当天的日记会删除，并按删信后剩下的内容重新写一篇。');
+        const note = text('p', kept, 'lm-diary-note');
+        box.addEventListener('change', () => { diary.checked = box.checked; note.textContent = box.checked ? rewritten : kept; });
+        row.append(box, text('span', diary.label));
+        body.style.marginBottom = '16px';
+        choice.push(row, note);
+      }
+      prompt.append(text('h3', t('确认操作')), body, ...choice, controls); dialog.append(prompt);
       prompt.addEventListener('cancel', event => { event.preventDefault(); event.stopPropagation(); finish(false); });
       prompt.showModal(); no.focus();
     });
+    confirmHost = confirmDeletion;
+    // The diary she wrote for the day of these letters stays as written unless the user also chooses to have that day
+    // deleted and written again. Only when such an entry exists is the choice offered.
+    const diaryChoice = async batch => {
+      try {
+        const found = await routeRequest('/toy/letter/deletion/diary', {letter_ids: [...new Set(batch.map(item => item.letter_id))]}, {confirmed:true});
+        if (!(found.days || []).length) return null;
+        return {checked: false, label: t('删除当天日记并重新生成')};
+      } catch (_) { return null; }
+    };
+    let asking = false;
     const remove = button(t('删除所选'), async () => {
-      if (busy || !selected.size) return;
+      if (busy || asking || !selected.size) return;
       const batch = [...selected.values()];
-      if (!await confirmDeletion(t('删除所选 {count} 封信后，她关于这封信的记忆也会一并清理。删除你的信会保留未选中的回信；尚未回信的任务会取消。30 天内可在“最近删除”恢复。确定删除吗？', {count: batch.length}))) return;
-      await mutate('delete', batch);
+      asking = true; let diary = null, confirmed = false;
+      try {
+        diary = await diaryChoice(batch);
+        confirmed = await confirmDeletion(t('删除所选 {count} 封信后，她关于这封信的记忆也会一并清理。删除你的信会保留未选中的回信；尚未回信的任务会取消。30 天内可在“最近删除”恢复。确定删除吗？', {count: batch.length}), diary);
+      } finally { asking = false; }
+      if (!confirmed) return;
+      await mutate('delete', batch, {withDiary: diary?.checked === true});
     });
     remove.className += ' lm-danger';
-    const navigation = actions(); navigation.append(tabs, close); header.append(text('h2', t('管理信件')), navigation);
-    footer.append(count, cancel, remove); workspace.append(body, preview); shell.append(header, notice, workspace, footer); dialog.append(style, shell);
+    const tabs = {};
+    for (const [name, label] of [['letters', t('信件')], ['memory', t('记忆')], ['recent', t('最近删除')]]) {
+      const tab = button(label, () => void showTab(name));
+      tab.className = 'lm-tab'; tab.setAttribute('role', 'tab'); tab.setAttribute('aria-selected', String(name === 'letters'));
+      tabs[name] = tab; tabBar.append(tab);
+    }
+    const search = document.createElement('input'); search.type = 'search'; search.maxLength = 500;
+    search.placeholder = t('搜索全部信件原文'); search.setAttribute('aria-label', search.placeholder);
+    searchRow.append(search);
+    sourceBar.append(text('span', t('正在查看关联原文')), button(t('显示全部信件'), () => { sourceId = null; page = 1; void applySearch(); }));
+    header.append(text('h2', t('信件与记忆')), close);
+    footer.append(count, previous, pageLabel, next, cancel, remove); workspace.append(body, found, preview);
+    lettersPanel.append(searchRow, sourceBar, notice, workspace, footer);
+    shell.append(header, tabBar, lettersPanel, memoryPanel); dialog.append(style, shell);
     document.body.append(dialog); dialog.showModal(); close.focus();
     dialog.addEventListener('cancel', event => { event.preventDefault(); if (!busy) dismiss(); });
-    const lock = value => { busy = value; for (const control of shell.querySelectorAll('button,input')) control.disabled = value; refresh(); };
+    // A deletion locks the header, the tabs and the letter panel; the memory tab keeps its own controls.
+    const lock = value => { busy = value; for (const area of [header, tabBar, lettersPanel]) for (const control of area.querySelectorAll('button,input')) control.disabled = value; refresh(); };
     const failure = error => ({
       LETTER_DELETE_LEGACY_RELATIONSHIP_UNSUPPORTED: t('这封旧信的关系记录缺少可重放来源，暂不能安全清理。信件未删除。'),
-      LETTER_DELETE_UNATTRIBUTED_DIARY: t('相关日记缺少逐封信的来源记录，暂不能安全清理这封信；整篇清除会影响其他信件。信件未删除。'),
       LETTER_DELETE_RELATIONSHIP_REPLAY_UNSUPPORTED: t('相关关系记录无法精确重放，暂不能安全重算。信件未删除。'),
       LETTER_DELETE_RESTORE_CONFLICT: t('关联记录在删除后发生了变化，已停止恢复以保护新记录。请保留最近删除中的备份。'),
       LETTER_DELETE_MEMORY_BUSY: t('记忆正在写入，请稍后重试。'),
       LETTER_DELETE_MEMORY_UNAVAILABLE: t('记忆存储暂不可用，请恢复连接后重试。'),
     }[error.message] || t('操作未完成。请查看“最近删除”，重试清理或恢复；备份会保留。'));
-    const mutate = async (action, batch) => {
+    const mutate = async (action, batch, {withDiary = false} = {}) => {
       if (busy) return;
       lock(true); let completed = 0, problem = '';
       try {
         for (const payload of batch) {
           notice.textContent = t('正在处理 {current} / {total}…', {current: completed + 1, total: batch.length});
-          // A lost response may still have changed storage; refresh the inbox on exit.
-          changed = true;
-          await routeRequest('/toy/letter/deletion/' + action, payload, {confirmed:true});
+          // A lost response may still have changed storage; refresh the inbox on exit. The memory tab shows memories
+          // that came from these letters, so it reads its list again the next time it is shown.
+          changed = true; memoryMounted = false;
+          await routeRequest('/toy/letter/deletion/' + action, withDiary ? {...payload, with_diary: true} : payload, {confirmed:true});
           completed++;
         }
       } catch (error) { problem = failure(error); }
@@ -3335,8 +3412,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     };
     async function load() {
       const current = ++generation;
+      loadedRecent = recent;
       selected.clear(); refresh(); body.replaceChildren(); preview.replaceChildren(text('p', t('选择一封信，在这里阅读。')));
-      tabs.textContent = recent ? t('返回信箱') : t('最近删除');
       notice.textContent = t('正在读取信件…');
       try {
         const payload = recent ? await routeRequest('/toy/letter/deletion/list', {}, {confirmed:true}) : await routeRequest('/toy/letter/list');
@@ -3394,10 +3471,100 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           card.append(open); group.append(card); body.append(group);
         }
         if (!body.children.length) body.append(text('p', recent ? t('最近没有删除的信件。') : t('信箱里还没有信件。'), 'lm-empty'));
-        notice.textContent = recent ? t('保留 30 天。恢复时，同一轮已删除的信件和关联记忆会一起还原。') : t('点击标题展开，分别勾选我的信或她的回信。删除我的信会保留未选中的回信。');
+        notice.textContent = listHint();
       } catch (_) { if (!closed && current === generation) { body.replaceChildren(text('p', t('信箱读取失败，请关闭后重试。'), 'lm-empty')); notice.textContent = t('暂时无法读取完整列表。'); } }
       finally { if (!closed && current === generation) lock(false); }
     }
+    const listHint = () => recent ? t('保留 30 天。恢复时，同一轮已删除的信件和关联记忆会一起还原。') : t('点击标题展开，分别勾选我的信或她的回信。删除我的信会保留未选中的回信。');
+    // Letter list or search results: the footer shows the selection and its deletion, or the paging of the results.
+    const syncMode = () => {
+      const searchMode = !recent && searching();
+      body.hidden = searchMode; found.hidden = !searchMode; searchRow.hidden = recent; sourceBar.hidden = !(searchMode && sourceId);
+      for (const control of [previous, pageLabel, next]) control.hidden = !searchMode;
+      cancel.hidden = searchMode; remove.hidden = searchMode;
+      refresh();
+    };
+    const readOriginal = row => {
+      const key = row.source_id + ':' + row.speaker;
+      shown = key;
+      for (const item of found.querySelectorAll('button')) item.setAttribute('aria-current', String(item.getAttribute('data-key') === key));
+      preview.replaceChildren(text('h3', row.speaker === 'user' ? t('我的信') : t('她的回信')), text('p', row.text));
+      if (!row.excerpt) return;
+      preview.append(text('p', t('当前为原文节选。'), 'lm-note'), button(t('读取完整原文'), async () => {
+        const current = searchGeneration;
+        try {
+          const payload = await requestJson(MEMORY_PATH, {browse: 1, collection: 'originals', source_id: row.source_id, full: 1, limit: 20});
+          if (closed || current !== searchGeneration || shown !== key) return;
+          const full = payload.originals?.find(item => item.source_id === row.source_id && item.speaker === row.speaker);
+          if (full) readOriginal(full); else notice.textContent = t('这段原文已不可用，可刷新列表。');
+        } catch (_) { if (!closed && current === searchGeneration) notice.textContent = t('完整原文读取失败，可稍后重试。'); }
+      }));
+    };
+    async function runSearch() {
+      const current = ++searchGeneration;
+      syncMode();
+      found.replaceChildren(); shown = null; pageLabel.textContent = '';
+      preview.replaceChildren(text('p', t('选择一封信，在这里阅读。')));
+      notice.textContent = t('搜索结果仅供阅读。回到完整的信件列表后，可勾选并删除。');
+      foundSummary = t('正在读取信件…'); refresh();
+      try {
+        const payload = await requestJson(MEMORY_PATH, {browse: 1, collection: 'originals', query, source_id: sourceId, page, limit: 20});
+        if (closed || current !== searchGeneration) return;
+        const rows = payload.originals || [];
+        const total = Number.isInteger(payload.total) ? payload.total : rows.length;
+        pages = Math.max(1, Math.ceil(total / 20)); page = payload.page || 1;
+        foundSummary = query ? t('找到 {total} 条匹配结果', {total}) : t('共 {total} 条原文', {total});
+        pageLabel.textContent = t('第 {page} / {pages} 页', {page, pages});
+        for (const row of rows) {
+          const label = row.speaker === 'user' ? t('我的信') : t('她的回信');
+          const card = text('div', ''); card.className = 'lm-row';
+          const title = button('', () => readOriginal(row)); title.className = 'lm-title'; title.setAttribute('data-key', row.source_id + ':' + row.speaker);
+          title.append(text('strong', row.text.split('\n')[0] || t('（空）')), text('span', `${label} · ${date(row.created_at)}`, 'lm-meta'));
+          card.append(title); found.append(card);
+        }
+        if (rows.length) readOriginal(rows[0]);
+        else found.append(text('p', query ? t('没有匹配的信件，请尝试其他关键词。') : t('没有找到关联原文。这条记忆可能来自手动添加或更正。'), 'lm-empty'));
+      } catch (_) {
+        if (closed || current !== searchGeneration) return;
+        found.replaceChildren(text('p', t('搜索暂时不可用，请稍后重试。'), 'lm-empty'));
+        foundSummary = ''; pages = 1;
+      }
+      refresh();
+    }
+    const applySearch = async () => {
+      if (searching()) { await runSearch(); return; }
+      searchGeneration++; syncMode();
+      notice.textContent = listHint(); preview.replaceChildren(text('p', t('选择一封信，在这里阅读。')));
+    };
+    search.addEventListener('input', () => {
+      window.clearTimeout(searchTimer); searchGeneration++;
+      query = search.value.trim(); sourceId = null; page = 1;
+      searchTimer = window.setTimeout(applySearch, 250);
+    });
+    search.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); window.clearTimeout(searchTimer); void applySearch(); } });
+    async function showTab(name) {
+      if (busy || name === view) return;
+      view = name; recent = name === 'recent';
+      for (const [key, tab] of Object.entries(tabs)) tab.setAttribute('aria-selected', String(key === name));
+      lettersPanel.hidden = name === 'memory'; memoryPanel.hidden = name !== 'memory';
+      if (name === 'memory') {
+        if (!memoryMounted) { memoryMounted = true; void mountMemoryTab(memoryPanel, openLetter); }
+        return;
+      }
+      const reload = recent !== loadedRecent;
+      if (reload) await load();
+      syncMode();
+      if (reload && !recent && searching()) await runSearch();
+    }
+    // A memory's 'view linked original': the letter tab, showing the letter the memory came from.
+    const openLetter = async source => {
+      window.clearTimeout(searchTimer);
+      search.value = ''; query = ''; sourceId = source; page = 1;
+      await showTab('letters');
+      await runSearch();
+    };
+    syncMode();
+    if (tab === 'memory') void showTab('memory');
     await load();
   };
   const mountMainNavigation = () => {
@@ -3437,7 +3604,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     }
     let deletion = nav.querySelector('[data-letter-deletion-entry]');
     if (route === '#/collection' && !deletion) {
-      deletion = button(t('管理信件'), openLetterDeletion); deletion.setAttribute('data-letter-deletion-entry', ''); nav.append(deletion);
+      deletion = button(t('信件与记忆'), () => openLettersAndMemories()); deletion.setAttribute('data-letter-deletion-entry', ''); nav.append(deletion);
     } else if (route !== '#/collection') deletion?.remove();
     // A longer sub-page title (拍摄设备) would sit under the fixed navigation. The native mailbox and music pages
     // have a title in the same place; in English it is wider ("Mailbox"), so it is measured as well.
@@ -3732,26 +3899,14 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     }).catch(() => { localVersion.textContent = t("本地补丁版本：暂时无法读取"); });
     dialog.append(header, localVersion, status, tabs, panels);
     if (!initialMode) {
+      // This page is a status page with one button; the browser itself is in the letters-and-memories window.
       dialog.setAttribute("data-olivia-memory-dialog", "");
-      Object.assign(dialog.style, {width: "min(1160px, calc(100vw - 40px))",
-        height: "calc(100vh - 48px)", maxHeight: "calc(100vh - 48px)",
-        display: "flex", flexDirection: "column", overflow: "hidden", padding: "24px",
-        boxSizing: "border-box"});
-      backdrop.style.padding = "20px";
-      header.style.flexShrink = "0";
-      localVersion.style.cssText = "font-size:12px;color:#b3b5b8;margin:8px 0 12px;flex-shrink:0";
-      status.style.cssText = "font-size:12px;margin:0 0 12px;flex-shrink:0";
+      localVersion.style.cssText = "font-size:12px;color:#b3b5b8;margin:8px 0 12px";
+      status.style.cssText = "font-size:12px;margin:0 0 12px";
       status.setAttribute("data-memory-dialog-status", "");
-      panels.style.cssText = "flex:1;min-height:0;display:flex;flex-direction:column";
-      panelNodes.memory.style.cssText = "flex:1;min-height:0;padding:0;display:grid;grid-template-rows:minmax(0,1fr);background:transparent";
       theme.textContent += `
         [data-olivia-memory-dialog] [data-memory-dialog-status][data-state="available"]{display:none!important}
         [data-olivia-memory-dialog] [hidden]{display:none!important}
-        [data-olivia-memory-dialog]>div:first-child button{background:#1a1b1d!important;color:#e8e3db!important;border-color:#4c5055!important}
-        @media(max-width:700px){
-          [data-olivia-companion-settings-dialog]:has([data-olivia-memory-dialog]){padding:10px!important}
-          [data-olivia-memory-dialog]{width:calc(100vw - 20px)!important;padding:16px!important}
-        }
       `;
     }
     if (initialMode) {

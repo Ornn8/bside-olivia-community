@@ -232,7 +232,8 @@ def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
     assert "重新准备长期记忆" in BOOTSTRAP_JAVASCRIPT
     assert '["INITIALIZING", "AVAILABLE"].includes(payload.status)' in BOOTSTRAP_JAVASCRIPT
     assert "window.confirm" not in BOOTSTRAP_JAVASCRIPT
-    assert "const confirmAction = (message) => new Promise" in BOOTSTRAP_JAVASCRIPT
+    assert "const confirmInPage = (message) => new Promise" in BOOTSTRAP_JAVASCRIPT
+    assert "const confirmAction = (message) => confirmHost ? confirmHost(message) : confirmInPage(message);" in BOOTSTRAP_JAVASCRIPT
     assert 'confirmation.style.backgroundColor = "#18191c";' in BOOTSTRAP_JAVASCRIPT
     assert "crypto.randomUUID" in BOOTSTRAP_JAVASCRIPT
     assert 'element.style.pointerEvents = "auto";' in BOOTSTRAP_JAVASCRIPT
@@ -760,6 +761,8 @@ class Element {
   addEventListener(name, handler) { this.listeners[name] = handler; }
   async click() { return this.listeners.click && this.listeners.click({ target: this }); }
   focus() {}
+  showModal() {}
+  close() {}
   matches(selector) {
     if (selector.startsWith(".")) return this.className.split(/\s+/).includes(selector.slice(1));
     if (selector.startsWith("[")) {
@@ -813,7 +816,8 @@ let currentStatus = "READY";
 const mutationPaths = [];
 const videoMethods = [];
 let videoWrites = 0;
-const statuses = ["READY", "PAUSED", "READY"];
+// reads: the settings page, the letters-and-memories window opened from it, then one after each lifecycle action
+const statuses = ["READY", "READY", "PAUSED", "READY"];
 const statusPayload = (status) => ({
   status,
   capabilities: {
@@ -945,7 +949,8 @@ vm.runInNewContext(source, context);
         const pending = target.click();
         for (let index = 0; index < count; index += 1) {
           await flush();
-          const dialogs = body.querySelectorAll('[role="dialog"]');
+          // the window is a modal dialog, so its confirmations are nested dialogs inside it
+          const dialogs = body.querySelectorAll('[data-letter-confirm]');
           const confirmation = dialogs[dialogs.length - 1];
           const buttons = confirmation && confirmation.querySelectorAll("button");
           if (!buttons || buttons.length < 2) throw new Error("confirmation dialog missing");
@@ -965,6 +970,10 @@ vm.runInNewContext(source, context);
       await flush(); await flush();
       const shown = body.querySelectorAll("p").map((item) => item.textContent).filter((t) => t.includes("保存") || t.includes("设置"));
       if (!shown.some((t) => t.includes("没有保存成功"))) throw new Error("route mutation error was hidden: " + JSON.stringify(shown) + JSON.stringify(videoMethods));
+      // the settings page only shows the status and a button; the lifecycle controls are in the window it opens
+      if (findButton("暂停长期记忆")) throw new Error("the settings page must not carry the lifecycle controls");
+      await findButton("打开信件与记忆").click();
+      for (let index = 0; index < 6; index += 1) await flush();
           await clickConfirmed(findButton("暂停长期记忆"));
   await flush();
   const resume = findButton("恢复长期记忆");
@@ -1000,7 +1009,7 @@ vm.runInNewContext(source, context);
             "/toy/companion/memory/clear",
         ],
           "videoMethods": ["GET", "POST", "POST", "GET"],
-        "statusIndex": 3,
+        "statusIndex": 4,
     }
 
 
