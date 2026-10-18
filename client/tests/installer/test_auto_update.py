@@ -282,3 +282,159 @@ def test_english_notes_are_kept_for_the_page_after_the_restart(release, monkeypa
         assert call('/toy/autoupdate/state')[1]['data']['notes'] is None
     finally:
         ui_language.reset()
+
+
+class FakeUpdater:
+    """Stands in for the helper that starts the restart; records what happens and when."""
+    calls = []
+
+    def __init__(self, root):
+        pass
+
+    def restart(self):
+        FakeUpdater.calls.append('restart')
+
+
+@pytest.fixture
+def restarting(release, monkeypatch):
+    import original_client_update_api as api
+    FakeUpdater.calls = []
+    monkeypatch.setattr(api, 'LocalComponentUpdater', FakeUpdater)
+    monkeypatch.setattr(api, '_exit_for_restart', lambda: FakeUpdater.calls.append('exit'))
+    monkeypatch.setattr(auto_update, '_reply_sources', {})
+    monkeypatch.setattr(auto_update, 'REPLY_POLL_SECONDS', 0.01)
+    monkeypatch.setenv('OLIVIA_INSTALL_ROOT', str(release))
+    return release
+
+
+async def call_async(path, method='GET'):
+    request = SimpleNamespace(path=path, method=method, headers={'X-Olivia-Companion-Action': 'confirmed'})
+    response = await auto_update.autoupdate_http(Server(), request)
+    return response.status, json.loads(response.body)
+
+
+def test_a_restart_with_no_reply_in_flight_goes_at_once(restarting):
+    async def scenario():
+        await auto_update.restart(restarting)
+        assert FakeUpdater.calls == ['restart'] and not auto_update._state.get('waiting_for_reply')
+    asyncio.run(scenario())
+
+
+def test_a_restart_waits_for_the_reply_she_is_writing_and_the_page_is_told(restarting):
+    async def scenario():
+        writing = {'qq': True}
+        auto_update.track_replies('personal_chat', lambda: writing['qq'])
+        auto_update.track_replies('letters', lambda: 0)
+        task = asyncio.create_task(auto_update.restart(restarting))
+        await asyncio.sleep(0.1)
+        assert FakeUpdater.calls == [] and not task.done()
+        status, value = await call_async('/toy/autoupdate/state')
+        assert status == 200 and value['data']['waiting_for_reply'] is True
+        writing['qq'] = False
+        await asyncio.wait_for(task, 2)
+        assert FakeUpdater.calls == ['restart'] and auto_update._state['restarting'] is True
+        assert (await call_async('/toy/autoupdate/state'))[1]['data']['waiting_for_reply'] is False
+    asyncio.run(scenario())
+
+
+def test_a_letter_reply_in_flight_holds_the_restart_too_and_a_broken_source_does_not(restarting):
+    async def scenario():
+        letters = {'writing': 1}
+        auto_update.track_replies('letters', lambda: letters['writing'])
+        auto_update.track_replies('broken', lambda: 1 / 0)
+        task = asyncio.create_task(auto_update.restart(restarting))
+        await asyncio.sleep(0.1)
+        assert FakeUpdater.calls == []
+        letters['writing'] = 0
+        await asyncio.wait_for(task, 2)
+        assert FakeUpdater.calls == ['restart']
+    asyncio.run(scenario())
+
+
+def test_the_restart_page_route_returns_after_the_wait(restarting):
+    async def scenario():
+        auto_update._state.update(state='ready', version='2.4.0')
+        writing = {'now': True}
+        auto_update.track_replies('personal_chat', lambda: writing['now'])
+        route = asyncio.create_task(call_async('/toy/autoupdate/restart', 'POST'))
+        await asyncio.sleep(0.1)
+        assert not route.done() and FakeUpdater.calls == []
+        writing['now'] = False
+        status, value = await asyncio.wait_for(route, 2)
+        assert status == 200 and value['data'] == {'restarting': True} and FakeUpdater.calls == ['restart']
+    asyncio.run(scenario())
+
+
+def test_the_wait_ends_after_ninety_seconds_and_the_restart_goes_anyway(restarting, monkeypatch):
+    assert auto_update.REPLY_WAIT_SECONDS == 90
+    clock = {'now': 5000.0}
+    real_sleep = asyncio.sleep
+
+    async def fake_sleep(seconds):
+        clock['now'] += seconds
+        await real_sleep(0)
+    monkeypatch.setattr(auto_update, 'time', SimpleNamespace(monotonic=lambda: clock['now']))
+    monkeypatch.setattr(auto_update.asyncio, 'sleep', fake_sleep)
+    monkeypatch.setattr(auto_update, 'REPLY_POLL_SECONDS', 0.5)
+    auto_update.track_replies('personal_chat', lambda: True)   # she never stops writing
+
+    async def scenario():
+        assert await auto_update.wait_for_replies() is False
+        waited = clock['now'] - 5000.0
+        assert 90 <= waited < 90.6
+        assert not auto_update._state.get('waiting_for_reply')
+        clock['now'] = 5000.0
+        await auto_update.restart(restarting)
+        assert FakeUpdater.calls == ['restart'] and 90 <= clock['now'] - 5000.0 < 90.6
+    asyncio.run(scenario())
+
+
+def test_a_restart_that_did_not_start_can_be_asked_for_again(restarting, monkeypatch):
+    async def scenario():
+        auto_update.track_replies('personal_chat', lambda: True)
+        task = asyncio.create_task(auto_update.restart(restarting))
+        await asyncio.sleep(0.05)
+        task.cancel()                                        # the page went away during the wait
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert auto_update._state['restarting'] is False and not auto_update._state.get('waiting_for_reply')
+        auto_update.forget_replies('personal_chat')
+
+        def fails(self):
+            raise RuntimeError('UPDATE_RESTART_HELPER_UNAVAILABLE')
+        monkeypatch.setattr(FakeUpdater, 'restart', fails)
+        with pytest.raises(RuntimeError):
+            await auto_update.restart(restarting)
+        assert auto_update._state['restarting'] is False
+    asyncio.run(scenario())
+
+
+def test_the_automatic_night_restart_also_waits(restarting, monkeypatch):
+    async def scenario():
+        writing = {'now': True}
+        auto_update.track_replies('personal_chat', lambda: writing['now'])
+        auto_update._state.update(state='ready', version='2.4.0', checked_at=10 ** 12)
+        monkeypatch.setattr(auto_update, 'FIRST_CHECK_SECONDS', 0)
+        monkeypatch.setattr(auto_update, 'TICK_SECONDS', 0.01)
+        monkeypatch.setattr(auto_update, 'NIGHT_HOURS', set(range(24)))
+        monkeypatch.setattr(auto_update, 'idle', lambda server, now: True)
+        monkeypatch.setattr(auto_update, '_settle_probation', lambda root, current: None)
+        runner = asyncio.create_task(auto_update._run(SimpleNamespace(), restarting))
+        await asyncio.sleep(0.15)
+        assert FakeUpdater.calls == []
+        writing['now'] = False
+        for _ in range(100):
+            if FakeUpdater.calls:
+                break
+            await asyncio.sleep(0.02)
+        runner.cancel()
+        assert FakeUpdater.calls == ['restart']
+    asyncio.run(scenario())
+
+
+def test_the_page_says_she_is_finishing_a_reply_while_the_restart_waits():
+    from runtime import ui_i18n
+    from runtime.update_ui import JAVASCRIPT
+    text = '她正在写完一条回复，写完就重启'
+    assert text in JAVASCRIPT and 'waiting_for_reply' in JAVASCRIPT
+    assert ui_i18n.EN[text] == 'She is finishing a reply; restarting right after'
