@@ -1101,7 +1101,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     management.hidden = true; management.setAttribute("aria-label", t("记忆管理"));
     const originalProgress = text("p", t("展开管理后可刷新信件接入进度。"));
     const managementControls = el("div", "om-management-controls");
-    const manage = button(t("更多"), async () => {
+    const manage = button(t("记忆设置"), async () => {
       management.hidden = !management.hidden; manage.setAttribute("aria-expanded", String(!management.hidden));
       if (management.hidden || capability?.reason_code === "MEMORY_ADMIN_PAUSED") return;
       try {

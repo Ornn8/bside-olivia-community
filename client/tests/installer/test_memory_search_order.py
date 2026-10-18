@@ -107,9 +107,9 @@ requestJson=async(_path,params)=>params?.collection==='originals'
  : {memories:[row('kept-record')],total:1,total_count:1,page:1,limit:20};
 const panel=new Element('div');await renderMemoryPanel(panel,{state:'available',count:1});
 const find=label=>panel.querySelectorAll('button').find(e=>e.textContent===label);
-assert.equal(find('记忆管理'),undefined,'the entry is called 更多 now');
+assert.equal(find('记忆管理'),undefined,'the entry is called 记忆设置 now');
 assert.equal(panel.querySelector('.om-management').hidden,true,'collapsed until opened');
-await find('更多').click();
+await find('记忆设置').click();
 assert.equal(panel.querySelector('.om-management').hidden,false);
 assert.match(panel.querySelector('.om-management').querySelectorAll('p')[0].textContent,/历史信件 1\/1/);
 assert.equal(panel.querySelector('.om-row-excerpt').textContent,'kept-record','management progress must keep the list mounted');

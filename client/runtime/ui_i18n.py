@@ -85,6 +85,7 @@ EN: dict[str, str] = {
     "长期记忆已删除。": "Memory deleted.",
     "长期记忆删除失败，原记录保持不变。": "Deleting the memory failed. The original is unchanged.",
     "更多": "More",
+    "记忆设置": "Memory settings",
     "暂无可显示的长期记忆。": "No long-term memories to show.",
     "本机陪伴服务已连接。": "Connected to the local companion service.",
     "长期记忆": "Long-term memory",

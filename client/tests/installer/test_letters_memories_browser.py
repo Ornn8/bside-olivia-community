@@ -1,7 +1,7 @@
 """The letters-and-memories window in a browser, with synthetic data only.
 
 The top-bar entry opens one window with three tabs: letters (the mailbox list with deletion, plus a search of the
-original text), memories (the memory browser and its management under 更多) and recently deleted letters. The whole
+original text), memories (the memory browser and its management under 记忆设置) and recently deleted letters. The whole
 injected settings script runs against ``letters_memories_fixture.Service``, an in-process stand-in for the local
 service; nothing here is a real letter, memory or account.
 """

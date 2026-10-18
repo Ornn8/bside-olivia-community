@@ -808,7 +808,7 @@ def test_english_letters_and_memories_window_shows_no_chinese_on_any_tab():
         window.locator(".om-row").first.wait_for()
         window.locator(".om-heading button").click()
         page.wait_for_timeout(300)
-        assert window.locator(".om-heading button").inner_text() == "More"
+        assert window.locator(".om-heading button").inner_text() == "Memory settings"
         assert _unexpected(_chinese(page, "[data-letter-deletion]")) == []
         window.get_by_role("button", name="Clear this user's memory").click()
         page.locator("[data-letter-confirm]").wait_for()
