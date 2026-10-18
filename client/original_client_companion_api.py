@@ -22,6 +22,7 @@ from urllib.parse import urlsplit
 
 from aiohttp import web
 from runtime.private_world.daily_life_runtime import DailyLifeRuntime
+from runtime.private_world.display_english import localize_life, localize_moments
 
 
 COMPANION_READ_SCHEMA = "p03.original-companion-read.v1"
@@ -652,7 +653,7 @@ async def _daily_life(request: web.Request) -> web.Response:
             except ValueError:
                 return _error("DAILY_LIFE_CURSOR_INVALID", 400, origin=origin)
             stage = 'response'
-            return web.json_response(result, headers=headers)
+            return web.json_response(localize_moments(result), headers=headers)
         now = datetime.now(timezone.utc)
         if request.method == "POST":
             stage = 'request'
@@ -670,7 +671,7 @@ async def _daily_life(request: web.Request) -> web.Response:
         result = await asyncio.to_thread(life.snapshot, now)
         stage = 'response'
         _validate_life_snapshot(result)
-        return web.json_response(result, headers=headers)
+        return web.json_response(localize_life(result), headers=headers)
     except OriginalClientCompanionAPIError as exc:
         return _error(exc.code, exc.status, origin=origin)
     except Exception as exc:
