@@ -48,6 +48,7 @@ _SIDECAR_ERRORS = {
     'provider_response_too_large': 'JEV_RESPONSE_INVALID',
     'decision_timeout': 'JEV_TIMEOUT',
     'insufficient_balance': 'JEV_BALANCE_INSUFFICIENT',
+    'life_episode_repeated': 'JEV_LIFE_EPISODE_REPEATED',
     'provider_unavailable': 'JEV_UNAVAILABLE',
     'provider_connect_failed': 'JEV_PROVIDER_CONNECT_FAILED',
     'provider_read_failed': 'JEV_PROVIDER_READ_FAILED',
