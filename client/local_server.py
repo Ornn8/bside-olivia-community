@@ -5648,7 +5648,7 @@ async def route(
         active_letter = _active_undelivered_letter(sending=True)
         if active_letter is None:
             # The same request again while its voice, song or photo is still being made would
-            # start (and pay for) a second generation; say that it is already under way.
+            # start a second generation; say that it is already under way.
             active_letter = _generation_pending_duplicate(content, material)
         if active_letter is not None and active_letter.get('origin') != 'proactive':
             return err(409, "LETTER_IN_PROGRESS", {

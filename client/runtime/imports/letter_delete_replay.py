@@ -101,7 +101,7 @@ class _Trace:
 
     Inserting an input recomputes only the steps from its sorted position on,
     which is what the live projection does for a late arrival; an in-order
-    arrival costs a single step.
+    arrival takes a single step.
     """
 
     def __init__(self, base, legacy, watermark, budget):
