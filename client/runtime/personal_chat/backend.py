@@ -57,13 +57,33 @@ async def _stop_semantic_shadow(server):
     await asyncio.gather(*tasks, return_exceptions=True)
 
 
+def _resume_now(runtime, resumed):
+    """A reply queued again after a restart is not left waiting for the next message: QQ that is already
+    connected takes it at once (otherwise the connection picks it up when it connects)."""
+    runner = runtime.get('qq_runner')
+    sender = getattr(runner, 'sender', None)
+    ids = {event.exchange_id for event in resumed or () if event.channel == 'qq'}
+    if not ids or not callable(getattr(runner, 'pending', None)) or sender is None or not sender.is_available():
+        return
+    tasks = runtime.setdefault('resume_tasks', set())
+    for event in runner.pending('qq'):
+        if event.exchange_id in ids:
+            task = asyncio.create_task(runner(event, sender))
+            tasks.add(task)
+            def finished(done):
+                tasks.discard(done)
+                if not done.cancelled():
+                    done.exception()  # The exchange records its own failure on the stored row.
+            task.add_done_callback(finished)
+
+
 async def _recover_chat_loop(server, runtime, *, interval_seconds=30):
     from runtime.image_understanding import commit_image_memory
     stop = runtime['stop']
     while not stop.is_set():
         failure = None
         try:
-            await runtime['service'].recover()
+            _resume_now(runtime, await runtime['service'].recover())
         except Exception as exc:
             failure = _failure_code(exc)
         for row in tuple(server.store.personal_chats):
@@ -1286,6 +1306,9 @@ def install_personal_chat(app, server):
                 piano=lambda row, send: deliver_piano(server, row, send),
                 default_voice=lambda row, send: deliver_default_voice(server,row,send), inspect_writer=inspect_writer)
             server._personal_chat_service = service
+            # An update restart waits for a reply that is being written (runtime/auto_update.py).
+            from runtime.auto_update import track_replies
+            track_replies('personal_chat', service.replies_in_flight)
             # Recovery runs in _recover_chat_loop right after startup; awaiting it here
             # kept the backend from becoming ready for users with hundreds of chats.
             from .probe import ProbeJournal
@@ -1556,7 +1579,7 @@ def install_personal_chat(app, server):
             await _stop_semantic_shadow(server)
             return
         runtime["stop"].set()
-        tasks = list(runtime["tasks"])
+        tasks = [*runtime["tasks"], *runtime.get('resume_tasks', ())]
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -1575,6 +1598,8 @@ def install_personal_chat(app, server):
         runtime["journal"].db.close()
         if getattr(server, '_personal_chat_service', None) is runtime['service']:
             server._personal_chat_service = None
+        from runtime.auto_update import forget_replies
+        forget_replies('personal_chat', runtime['service'].replies_in_flight)
         if getattr(server, '_qq_contact_ready', None) is runtime.get('qq_ready'):
             server._qq_contact_ready = None
 

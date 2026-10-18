@@ -369,6 +369,10 @@ class DailyLifeStore:
                 CREATE TABLE IF NOT EXISTS life_addressing (
                     source_id TEXT NOT NULL, kind TEXT NOT NULL, quote TEXT NOT NULL,
                     occurred_at TEXT NOT NULL, PRIMARY KEY(source_id, kind));
+                CREATE TABLE IF NOT EXISTS life_addressing_judgments (
+                    kind TEXT NOT NULL, quote_hash TEXT NOT NULL, quote TEXT NOT NULL,
+                    status TEXT NOT NULL, term TEXT, seen_at TEXT NOT NULL,
+                    PRIMARY KEY(kind, quote_hash));
                 CREATE TABLE IF NOT EXISTS life_weather (
                     fetched_at TEXT PRIMARY KEY, payload TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS life_media_reservations (
@@ -630,29 +634,73 @@ class DailyLifeStore:
     # the user's self-reference became hers (2026-10-15); only short spans are names.
     ADDRESSING_QUOTE_MAX = 16
 
+    # Quotes of the address kinds that wait for, or got, the daily judgment; the bounds keep the table small.
+    ADDRESSING_QUEUE_MAX = 200
+    ADDRESSING_JUDGED_MAX = 2000
+
     def record_addressing(self, source_id: str, addressing: dict, *, occurred_at: datetime) -> None:
-        """Keep exact addressing quotes from one delivered exchange (idempotent per exchange)."""
+        """Keep the addressing quotes of one delivered exchange (idempotent per exchange).
+
+        A longer quote of an address kind has a greeting or a clause around the name more often than not. It is
+        kept as written and queued for the daily judgment (addressing_judgment); an already judged one is stored as
+        its term. Until it is judged, and whenever that is unavailable, the profile shows the shape check.
+        """
         _identifier(source_id)
-        from .addressing import address_term
-        rows = [(source_id, kind, term, _time(occurred_at)) for kind, quote in (addressing or {}).items()
-                if kind in self.ADDRESSING_KINDS and (term := address_term(quote))]
-        if not rows:
-            return
+        from .addressing import address_term, needs_judgment, normalize, quote_key
+        stamp = _time(occurred_at)
+        rows = []
         with self._db() as db:
-            db.executemany('INSERT OR IGNORE INTO life_addressing VALUES (?,?,?,?)', rows)
+            for kind, quote in (addressing or {}).items():
+                if kind not in self.ADDRESSING_KINDS:
+                    continue
+                if not needs_judgment(kind, quote):
+                    if term := address_term(quote):
+                        rows.append((source_id, kind, term, stamp))
+                    continue
+                text = normalize(quote)
+                key = quote_key(kind, text)
+                known = db.execute('SELECT status, term FROM life_addressing_judgments WHERE kind=? AND quote_hash=?',
+                                   (kind, key)).fetchone()
+                if known is None:
+                    db.execute("INSERT INTO life_addressing_judgments VALUES (?,?,?,'pending',NULL,?)",
+                               (kind, key, text, stamp))
+                    db.execute("DELETE FROM life_addressing_judgments WHERE status='pending' AND rowid NOT IN "
+                               "(SELECT rowid FROM life_addressing_judgments WHERE status='pending' "
+                               "ORDER BY seen_at DESC LIMIT ?)", (self.ADDRESSING_QUEUE_MAX,))
+                elif known['status'] == 'pending':
+                    db.execute('UPDATE life_addressing_judgments SET seen_at=max(seen_at, ?) WHERE kind=? AND quote_hash=?',
+                               (stamp, kind, key))
+                elif known['term']:
+                    rows.append((source_id, kind, known['term'], stamp))
+                    continue
+                else:
+                    continue  # judged: no term of address in it
+                rows.append((source_id, kind, text, stamp))
+            if rows:
+                db.executemany('INSERT OR IGNORE INTO life_addressing VALUES (?,?,?,?)', rows)
 
     def addressing_profile(self, *, now: datetime, per_kind: int = 2) -> dict:
         """Most recent distinct quotes per kind; a later explicit change naturally wins."""
-        from .addressing import address_term
+        from .addressing import JUDGED_KINDS, QUOTE_MAX, address_term, normalize, quote_key
         profile = {}
         with self._db() as db:
             for kind in self.ADDRESSING_KINDS:
+                judged = {}
+                if kind in JUDGED_KINDS:
+                    judged = {row[0]: row[1] for row in db.execute(
+                        "SELECT quote_hash, term FROM life_addressing_judgments WHERE kind=? AND status='judged'", (kind,))}
                 seen = []
                 for quote, stamp in db.execute(
                         'SELECT quote, occurred_at FROM life_addressing WHERE kind=? AND occurred_at<=? '
                         'AND length(quote)<=? ORDER BY occurred_at DESC, source_id DESC',
-                        (kind, _time(now), self.ADDRESSING_QUOTE_MAX)):
-                    term = address_term(quote)
+                        (kind, _time(now), QUOTE_MAX if kind in JUDGED_KINDS else self.ADDRESSING_QUOTE_MAX)):
+                    key = quote_key(kind, normalize(quote))
+                    if key in judged:
+                        term = judged[key]  # the daily judgment; None: the quote holds no term of address
+                    elif len(quote) > self.ADDRESSING_QUOTE_MAX:
+                        continue
+                    else:
+                        term = address_term(quote)
                     if term and term not in (item['quote'] for item in seen):
                         seen.append({'quote': term, 'occurred_at': stamp})
                     if len(seen) == per_kind:
@@ -660,6 +708,52 @@ class DailyLifeStore:
                 if seen:
                     profile[kind] = seen
         return profile
+
+    def setting(self, key: str) -> str | None:
+        with self._db() as db:
+            row = db.execute('SELECT value FROM life_settings WHERE key=?', (key,)).fetchone()
+        return row[0] if row else None
+
+    def set_setting(self, key: str, value: str) -> None:
+        with self._db() as db:
+            db.execute('INSERT OR REPLACE INTO life_settings VALUES (?,?)', (key, value))
+
+    def pending_addressing(self, limit: int) -> list:
+        """(kind, key, quote) of the quotes waiting for judgment, newest first."""
+        with self._db() as db:
+            return [(row['kind'], row['quote_hash'], row['quote']) for row in db.execute(
+                "SELECT kind, quote_hash, quote FROM life_addressing_judgments WHERE status='pending' "
+                "ORDER BY seen_at DESC, quote_hash LIMIT ?", (limit,))]
+
+    def queue_legacy_addressing(self, per_kind: int = 20) -> None:
+        """Queue the newest distinct stored quotes of the address kinds (once, from before the judgment)."""
+        from .addressing import JUDGED_KINDS, QUOTE_MAX, needs_judgment, normalize, quote_key
+        with self._db() as db:
+            for kind in JUDGED_KINDS:
+                queued = set()
+                for quote, stamp in db.execute(
+                        'SELECT quote, max(occurred_at) FROM life_addressing WHERE kind=? AND length(quote)<=? '
+                        'GROUP BY quote ORDER BY max(occurred_at) DESC', (kind, QUOTE_MAX)).fetchall():
+                    if not needs_judgment(kind, quote):
+                        continue
+                    text = normalize(quote)
+                    key = quote_key(kind, text)
+                    if key in queued:
+                        continue
+                    queued.add(key)
+                    db.execute("INSERT OR IGNORE INTO life_addressing_judgments VALUES (?,?,?,'pending',NULL,?)",
+                               (kind, key, text, stamp))
+                    if len(queued) == per_kind:
+                        break
+
+    def settle_addressing_judgments(self, results: list) -> None:
+        """results: (kind, key, term or None). A judged quote is never asked again."""
+        with self._db() as db:
+            db.executemany("UPDATE life_addressing_judgments SET status='judged', term=? WHERE kind=? AND quote_hash=?",
+                           [(term, kind, key) for kind, key, term in results])
+            db.execute("DELETE FROM life_addressing_judgments WHERE status='judged' AND rowid NOT IN "
+                       "(SELECT rowid FROM life_addressing_judgments WHERE status='judged' "
+                       "ORDER BY seen_at DESC LIMIT ?)", (self.ADDRESSING_JUDGED_MAX,))
 
     def record_exchange(self, source_id: str, user_text: str, reply_text: str, updates: list, *, occurred_at: datetime, current_quote: str | None = None, relationship: dict | None = None, received_at: datetime | None = None, routine: dict | None = None, boundaries: list | None = None, origin: str = "user", contact_choice: dict | None = None, development: list | None = None) -> bool:
         """Consume only final letter text; exact quotations bind each update to its actor."""

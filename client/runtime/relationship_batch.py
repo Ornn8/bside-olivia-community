@@ -150,7 +150,6 @@ async def request_batch(gateway, batch, chosen):
 
 async def tick(server, now=None, request=request_batch):
     from runtime.relationship_lite import ledger
-    from runtime.relationship_growth import route
     from runtime.relationship_moments import sync_messages
     now = now or datetime.now(timezone.utc)
     target = ledger(server)
@@ -163,6 +162,30 @@ async def tick(server, now=None, request=request_batch):
     queue, batch = await asyncio.to_thread(prepare)
     if batch is None:
         return 'waiting'
+    outcome = await _submit(server, queue, batch, target, request, now)
+    # The queued nickname quotes are judged on the same cadence, right after. Neither request affects the other.
+    await _judge_nicknames(server, now)
+    return outcome
+
+
+async def _judge_nicknames(server, now):
+    """One request for the quotes of address waiting in the daily life store (at most one a day); never raises."""
+    life = getattr(getattr(server, 'daily_life_runtime', None), 'store', None)
+    if life is None:
+        return
+    try:
+        from runtime.private_world.addressing_judgment import run_daily_batch
+        if await run_daily_batch(life, now) == 'unavailable':
+            server._safe_log('addressing_judgment_deferred')
+    except Exception:
+        try:
+            server._safe_log('addressing_judgment_deferred')
+        except Exception:
+            pass
+
+
+async def _submit(server, queue, batch, target, request, now):
+    from runtime.relationship_growth import route
     try:
         result = queue.result(batch['request_id'])
         if result is None:

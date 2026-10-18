@@ -411,7 +411,9 @@ def test_exchange_keeps_how_each_side_addresses_the_other_as_original_quotes():
             return next(k for k, v in text.items() if v == picks[key])
         return first(key, q, state)
     result = asyncio.run(extract(Port(choose), data, '', 'life:addr'))
-    assert result['addressing'] == {'user_calls_linli': '小离'}
+    # A short quote is a term by shape. A longer one of an address kind goes on as written for the daily
+    # judgment; the user's own name ('你的老姜。') keeps only the shape check, which drops it.
+    assert result['addressing'] == {'user_calls_linli': '小离', 'linli_calls_user': '好呀老姜'}
 
     proactive = {**data, 'origin': 'proactive'}
     port = Port(first)
