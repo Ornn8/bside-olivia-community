@@ -1257,6 +1257,12 @@ class OpenAICompatibleAdapter(Gateway):
             text = _extract_response_text(data)
             if len(text) > self._output_limit(request, scope):
                 raise InvalidGatewayInput('OUTPUT_TOO_LONG')
+            if response_format.get('caller_validates') is True:
+                # The caller fits and checks the result itself, so a reply that is slightly off the contract
+                # (a long label, a missing optional key, text around the JSON) is handed over, not thrown away.
+                if not text:
+                    raise ProviderProtocolError('empty_output')
+                return GatewayResponse(text, request, self.config.provider, self.config.model)
             # Remove a complete Markdown wrapper only; never guess missing JSON.
             fenced = re.fullmatch(r'\s*```(?:json)?\s*\n(.*?)\n```\s*', text, re.DOTALL | re.IGNORECASE)
             if fenced:

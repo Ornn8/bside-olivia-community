@@ -8,7 +8,6 @@ import json
 from types import SimpleNamespace
 
 import pytest
-from jsonschema import ValidationError
 
 from runtime import ui_language
 from runtime.diary import diary
@@ -148,8 +147,9 @@ def test_chinese_diary_uses_exactly_the_original_formats(tmp_path):
     assert gateway.calls[0][1]["request_id"] == "diary:2026-10-07"
     assert gateway.calls[1][1]["response_format"] == diary.REVISE_FORMAT
     assert gateway.calls[1][1]["request_id"] == "diary-revise:2026-10-07"
-    with pytest.raises(ValidationError):
-        validate(ENGLISH_ENTRY, diary.day_messages(ROWS, "2026-10-07"))
+    # English text in Chinese mode is held to the Chinese limits: the labels are clipped, nothing is refused.
+    fitted = validate(ENGLISH_ENTRY, diary.day_messages(ROWS, "2026-10-07"))
+    assert len(fitted["title"]) <= 20 and len(fitted["mood"]) <= 8 and fitted["title"] != ENGLISH_ENTRY["title"]
 
 
 def test_english_diary_has_room_and_asks_through_user_facing_requests(tmp_path):
