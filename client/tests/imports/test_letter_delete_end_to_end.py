@@ -379,17 +379,109 @@ def test_a_letter_deleted_before_the_relationship_batch_never_reaches_it(tmp_pat
         backend.stop()
 
 
-def test_a_diary_without_sources_refuses_the_deletion_and_changes_nothing(world):
-    api, before = world.api, world.before
-    api.diary(add=True)  # a diary entry for the day of the letters, written before there were per-letter sources
-    refused = api.delete(world.ids['garden-done'], 'user')
-    assert (refused['http'], refused['data']['error_code']) == (409, 'LETTER_DELETE_UNATTRIBUTED_DIARY')
-    unchanged = settled(world)
-    diary_free = {k: v for k, v in comparable(unchanged).items() if not k.startswith('diary.')}
-    assert diary_free == {k: v for k, v in comparable(before).items() if not k.startswith('diary.')}
-    assert api.trash() == [] and api.detail(world.ids['garden-done'])['content'] == BY_KEY['garden-done']['user']
-    api.diary(add=False)
-    assert api.delete(world.ids['garden-done'], 'user')['data']['status'] == 'DELETED'
+def diary_of_that_day(snapshot):
+    return [r for r in snapshot['databases']['diary'].get('diary_entries', []) if len(r['day']) == 10]
+
+
+def quoting_days(snapshot, text):
+    return [r['day'] for r in snapshot['databases']['diary'].get('diary_entries', []) if text in r['body']]
+
+
+def test_her_diary_stays_as_written_when_the_letter_is_deleted(world, evidence):
+    """The deletion always goes ahead. Her diary is her own writing and is not changed unless the user also asks."""
+    api = world.api
+    exchange, letter = BY_KEY['garden-done'], world.ids['garden-done']
+    api.diary(add=True, text=exchange['user'])  # her diary of that day quotes the user's letter
+    with_diary = settled(world)
+    assert len(api.diary_offer([letter])['days']) == 1  # what the confirmation asks about
+
+    assert api.delete(letter, 'user')['data']['status'] == 'DELETED'
+    after = settled(world)
+    assert api.detail(letter)['content'] == '' and len(api.memories()) == 4
+    assert after['databases']['diary'] == with_diary['databases']['diary'], 'her diary was changed'
+    assert counts(after)['diary'] == {'entries': 2, 'comments': 1, 'days_to_write_again': 0}
+    # the diary is the one place that still quotes the letter, as it was written; the tick leaves it alone
+    assert where(after, exchange['user']) == ['diary.diary_entries']
+    assert exchange['user'] in api.diary_tick()[diary_of_that_day(after)[0]['day']]
+
+    restore_all(api)
+    final = settled(world)
+    assert comparable(final) == comparable(with_diary), differences(comparable(with_diary), comparable(final))
+    evidence['delete_my_letter_diary_kept'] = {'before': counts(with_diary), 'after_delete': counts(after), 'after_restore': counts(final)}
+
+
+def test_her_diary_of_that_day_is_written_again_without_the_deleted_letter(world, evidence):
+    api = world.api
+    exchange, letter = BY_KEY['garden-done'], world.ids['garden-done']
+    api.diary(add=True, text=exchange['user'])
+    with_diary = settled(world)
+    (original,) = diary_of_that_day(with_diary)
+
+    assert api.delete(letter, 'user', with_diary=True)['data']['status'] == 'DELETED'
+    after = settled(world)
+    # the day's entry and its comment are gone and the day is queued; the memoir of the month is not touched
+    assert counts(after)['diary'] == {'entries': 1, 'comments': 0, 'days_to_write_again': 1}
+    assert diary_of_that_day(after) == []
+    # the memoir of the month is the one record that still quotes the letter, as written
+    month = [r['day'] for r in with_diary['databases']['diary']['diary_entries'] if len(r['day']) == 7]
+    assert quoting_days(after, exchange['user']) == month and where(after, exchange['user']) == ['diary.diary_entries']
+
+    # the diary writer runs: the day is written again from what is left of its letters
+    entries = api.diary_tick()
+    rewritten = entries[original['day']]
+    assert rewritten.startswith('那天的信：') and exchange['user'] not in rewritten
+    assert BY_KEY['ice']['user'] in rewritten and exchange['reply'] in rewritten  # her reply to the deleted letter stays
+    written = settled(world)
+    # the new entry does not quote the deleted letter; only the memoir of the month does, unchanged
+    assert quoting_days(written, exchange['user']) == month and where(written, exchange['user']) == ['diary.diary_entries']
+    assert counts(written)['diary'] == {'entries': 2, 'comments': 0, 'days_to_write_again': 0}
+    assert api.diary_tick()[original['day']] == rewritten, 'written once, not again'
+
+    # restore: the original entry and its comment replace the new one
+    assert api.restore(api.trash()[0]['id'])['data']['status'] == 'RESTORED'
+    final = settled(world)
+    assert [(r['day'], r['body']) for r in diary_of_that_day(final)] == [(original['day'], original['body'])]
+    assert api.diary_tick()[original['day']] == original['body'], 'nothing is written after the restore'
+    final = settled(world)
+    assert comparable(final) == comparable(with_diary), differences(comparable(with_diary), comparable(final))
+    evidence['delete_my_letter_diary_written_again'] = {
+        'before': counts(with_diary), 'after_delete': counts(after), 'after_written_again': counts(written), 'after_restore': counts(final)}
+
+
+def test_a_day_older_than_the_caught_up_days_is_still_written_again_once(world):
+    api = world.api
+    exchange, letter = BY_KEY['garden-done'], world.ids['garden-done']
+    api.diary(add=True, text=exchange['user'])
+    day = diary_of_that_day(settled(world))[0]['day']
+    assert api.delete(letter, 'user', with_diary=True)['data']['status'] == 'DELETED'
+    settled(world)
+    # ten days on, the day is far outside the days the diary catches up; the request still brings it back
+    entries = api.diary_tick(days_ahead=10)
+    assert entries[day].startswith('那天的信：') and exchange['user'] not in entries[day]
+    again = settled(world)
+    assert counts(again)['diary']['days_to_write_again'] == 0
+    assert api.diary_tick(days_ahead=10)[day] == entries[day]
+
+
+def test_the_diary_choice_follows_the_deletion_when_a_later_one_is_undone_and_done_again(world):
+    """The first letter is deleted without the diary, a second one after it with it. Restoring the older one keeps the choice."""
+    api = world.api
+    api.diary(add=True, text=BY_KEY['garden-plan']['user'])
+    with_diary = settled(world)
+    plan, done = world.ids['garden-plan'], world.ids['garden-done']
+    assert api.delete(plan, 'user')['data']['status'] == 'DELETED'  # the diary stays
+    assert api.delete(done, 'user', with_diary=True)['data']['status'] == 'DELETED'  # this one has the day written again
+    assert counts(settled(world))['diary'] == {'entries': 1, 'comments': 0, 'days_to_write_again': 1}
+
+    older = min(api.trash(), key=lambda item: item['deleted_at'])
+    assert api.restore(older['id'])['data']['status'] == 'RESTORED'
+    middle = settled(world)
+    assert api.detail(plan)['content'] == BY_KEY['garden-plan']['user'] and api.detail(done)['content'] == ''
+    assert counts(middle)['diary'] == {'entries': 1, 'comments': 0, 'days_to_write_again': 1}
+
+    restore_all(api)
+    final = settled(world)
+    assert comparable(final) == comparable(with_diary), differences(comparable(with_diary), comparable(final))
 
 
 @pytest.mark.parametrize('assessed', [False, True], ids=['batch waiting', 'batch assessed'])

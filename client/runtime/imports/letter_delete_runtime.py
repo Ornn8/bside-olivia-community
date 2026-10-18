@@ -1,5 +1,5 @@
 """Durable deletion journal and local-store coordination for mailbox actions."""
-from contextlib import ExitStack
+from contextlib import ExitStack, closing
 from copy import deepcopy
 import base64
 import json
@@ -8,8 +8,8 @@ import sqlite3
 import time
 import uuid
 
-from .letter_delete import (RETENTION_SECONDS, Sources, apply_sql, history_plan, imported_identity, imported_plan,
-                            legacy_plan, prune, sql_plan, world_plan)
+from .letter_delete import (RETENTION_SECONDS, Sources, apply_diary, apply_sql, diary_plan, history_plan,
+                            imported_identity, imported_plan, legacy_plan, prune, sql_plan, world_plan)
 
 
 def _encode(value):
@@ -141,22 +141,32 @@ def _database_plans(server, adapter, sources, identity=None):
     return [p for p in plans if p['patches']]
 
 
-def _check_diary_provenance(server, row):
+def _diary_days(server, row):
+    """The day this letter arrived, if her diary has an entry for it.
+
+    Her diary is her own writing: it stays as written unless the user also asks for the day to be written again. A
+    letter without a usable time belongs to no day."""
     diary = getattr(server, 'diary_store', None)
     if diary is None:
-        return
+        return []
     from runtime.diary.diary import _received_at, local_day
     stamp = _received_at(row)
-    with sqlite3.connect(diary.path) as db:
-        if stamp is None:
-            exists = db.execute('SELECT 1 FROM diary_entries LIMIT 1').fetchone()
-        else:
-            day = local_day(stamp)
-            exists = db.execute('SELECT 1 FROM diary_entries WHERE day IN (?,?) LIMIT 1', (day, day[:7])).fetchone()
-        if exists:
-            # These older narratives/facts contain quotations but no per-letter
-            # provenance. Deleting the entire day would erase other sources.
-            raise ValueError('LETTER_DELETE_UNATTRIBUTED_DIARY')
+    if stamp is None:
+        return []
+    day = local_day(stamp)
+    with closing(sqlite3.connect(diary.path)) as db:
+        return [day] if db.execute('SELECT 1 FROM diary_entries WHERE day=?', (day,)).fetchone() else []
+
+
+def _diary_offer(server, body):
+    """What the confirmation asks about: which of these letters' days have a diary entry."""
+    ids = body.get('letter_ids')
+    if not isinstance(ids, list) or len(ids) > 500 or any(not isinstance(item, str) for item in ids):
+        raise ValueError('LETTER_DELETE_INVALID')
+    wanted = set(ids)
+    days = {day for row in server._letter_collection('current', strict=True, maintenance=False)
+            if row.get('letter_id') in wanted for day in _diary_days(server, row)}
+    return {'status': 'READY', 'days': sorted(days)}
 
 
 def _apply(server, adapter, entry, restore=False):
@@ -164,7 +174,10 @@ def _apply(server, adapter, entry, restore=False):
     if originals and not restore:
         originals.mark_letter_deleted(server._memory_config.user_id, entry['letter'], entry['part'])
     for database in entry['databases']:
-        apply_sql(database['path'], _decode(database['patches']), restore=restore)
+        if 'diary' in database:
+            apply_diary(database['path'], database['diary'], restore=restore)
+        else:
+            apply_sql(database['path'], _decode(database['patches']), restore=restore)
     _apply_points(adapter, entry['points'], restore=restore)
     getattr(adapter, '_evidence_cache', {}).clear()
     if originals and restore:
@@ -231,6 +244,8 @@ def operate(server, action, body):
                  'summary': item['letter'].get('content' if item['part'] == 'user' else 'reply_text', '')[:120]}
                 for key, item in server.store.letter_trash.items()
                 if item.get('user_id', 'local-user') == server._memory_config.user_id]}
+    if action == 'diary':
+        return _diary_offer(server, body)
     with ExitStack() as stack:
         adapter = _provider(server, stack)
         if action == 'restore':
@@ -259,8 +274,8 @@ def operate(server, action, body):
             if any(item.get('provider_root') != entry.get('provider_root') for item in (*group, *later)):
                 raise ValueError('LETTER_DELETE_MEMORY_UNAVAILABLE')
             undo = sorted((*group, *later), key=lambda item: item['deleted_at'], reverse=True)
-            again = sorted(({'letter_id': item['letter_id'], 'part': item['part'], 'deleted_at': item['deleted_at']}
-                            for item in later), key=lambda item: item['deleted_at'])
+            again = sorted(({'letter_id': item['letter_id'], 'part': item['part'], 'deleted_at': item['deleted_at'],
+                             'with_diary': item.get('with_diary', False)} for item in later), key=lambda item: item['deleted_at'])
             for item in undo:
                 item['status'] = 'restoring'
             server._persist_store_state()
@@ -268,14 +283,16 @@ def operate(server, action, body):
                 _apply(server, adapter, item, restore=True)
             purge(server)
             for item in again:
-                _delete(server, adapter, item['letter_id'], item['part'], deleted_at=item['deleted_at'])
+                _delete(server, adapter, item['letter_id'], item['part'], deleted_at=item['deleted_at'], with_diary=item['with_diary'])
             return {'status': 'RESTORED'}
         if action != 'delete' or body.get('part') not in {'user', 'reply'} or not isinstance(body.get('letter_id'), str):
             raise ValueError('LETTER_DELETE_INVALID')
-        return _delete(server, adapter, body['letter_id'], body['part'])
+        if type(body.get('with_diary', False)) is not bool:
+            raise ValueError('LETTER_DELETE_INVALID')
+        return _delete(server, adapter, body['letter_id'], body['part'], with_diary=body.get('with_diary', False))
 
 
-def _delete(server, adapter, lid, part, *, deleted_at=None):
+def _delete(server, adapter, lid, part, *, deleted_at=None, with_diary=False):
     entry = next((e for e in server.store.letter_trash.values() if e['letter_id'] == lid and e['part'] == part
                   and e.get('user_id', 'local-user') == server._memory_config.user_id), None)
     if entry:
@@ -289,7 +306,6 @@ def _delete(server, adapter, lid, part, *, deleted_at=None):
         field = 'content' if part == 'user' else 'reply_text'
         if row is None or not row.get(field) or part == 'user' and row.get('origin') == 'proactive':
             raise ValueError('LETTER_DELETE_NOT_FOUND')
-        _check_diary_provenance(server, row)
         sources = Sources(row, part, server._memory_config.user_id)
         identity = _imported_identity(server, lid)
         databases, points = _database_plans(server, adapter, sources, identity), _points(adapter, sources)
@@ -297,10 +313,13 @@ def _delete(server, adapter, lid, part, *, deleted_at=None):
                                {point['id'] for point in points if point['after'] is None})
         if history:
             databases.append({'path': str(adapter.config.history_path), 'patches': history})
+        diary = diary_plan(server.diary_store.path, _diary_days(server, row)) if with_diary and getattr(server, 'diary_store', None) else None
+        if diary:
+            databases.append({'path': str(server.diary_store.path), 'diary': diary})
         entry = {'letter_id': lid, 'part': part, 'letter': deepcopy(row), 'status': 'prepared',
                  'user_id': server._memory_config.user_id,
                  'provider_root': str(getattr(getattr(adapter, 'config', None), 'data_root', '')),
-                 'deleted_at': deleted_at or time.time(), 'databases': _encode(databases), 'imported_identity': identity,
+                 'deleted_at': deleted_at or time.time(), 'databases': _encode(databases), 'imported_identity': identity, 'with_diary': bool(diary),
                  'points': points,
                  'media': {k: v for k, v in row.items() if (
                      part == 'reply' and (k.startswith(('media_', 'image_', 'music_', 'video_', 'audio_')) or k in {'reply_segments', 'reply_video_url', 'reply_audio_url', 'reply_structure', 'reply_signature'})

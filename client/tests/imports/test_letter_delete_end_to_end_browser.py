@@ -85,6 +85,8 @@ def test_the_window_follows_a_real_deletion_and_restore(tmp_path):
         backend.wait_ready()
         api = backend.api
         ids = seed(api)
+        api.diary(add=True, text=exchange['user'])  # her diary of that day quotes the letter: the confirmation offers the choice
+        api.settle()
         before = api.snapshot()
         record = {'stores': {'before': counts(before)}, 'ui': {}}
         with sync_playwright() as playwright:
@@ -124,11 +126,17 @@ def test_the_window_follows_a_real_deletion_and_restore(tmp_path):
                 expect(window.locator('.lm-count')).to_have_text('已选 1 封')
                 page.screenshot(path=str(shots / '04-ticked-my-letter.png'))
                 window.get_by_role('button', name='删除所选').click()
-                _confirm(page).get_by_role('button', name='确定').click()
+                # the confirmation offers to delete the diary of that day and write it again: unchecked, with the short line
+                prompt = _confirm(page)
+                expect(prompt.get_by_label('删除当天日记并重新生成')).not_to_be_checked()
+                expect(prompt).to_contain_text('日记是她自己写的，不会因删信自动改动。')
+                page.screenshot(path=str(shots / '04a-confirmation-with-diary-choice.png'))
+                prompt.get_by_role('button', name='确定').click()
                 expect(window.locator('.lm-notice')).to_contain_text('已删除 1 封')
                 api.settle()
                 after = api.snapshot()
                 record['stores']['after_delete'] = counts(after)
+                assert after['databases']['diary'] == before['databases']['diary'], 'her diary stays as written'
 
                 # AFTER DELETE, letter tab: the letter is still there with only her reply
                 expect(window.locator(LETTER_ROWS)).to_have_count(5)
@@ -190,7 +198,69 @@ def test_the_window_follows_a_real_deletion_and_restore(tmp_path):
                 browser.close()
         assert comparable(restored) == comparable(before)
         assert backend.blocked_connections == []
+        record['ui']['diary_choice'] = 'offered, unchecked by default; her diary unchanged after the deletion'
         (shots / 'evidence-browser.json').write_text(json.dumps(record, ensure_ascii=False, indent=2, sort_keys=True),
                                                      encoding='utf-8')
     finally:
         backend.stop()
+
+
+def test_ticking_the_diary_choice_deletes_that_day_and_it_is_written_again(tmp_path):
+    shots = Path(os.environ.get('OLIVIA_E2E_SHOTS') or tmp_path / 'shots')
+    shots.mkdir(parents=True, exist_ok=True)
+    exchange = BY_KEY['garden-done']
+    backend = Backend(tmp_path / 'app', script_for(), SITE)
+    try:
+        backend.wait_ready()
+        api = backend.api
+        seed(api)
+        api.diary(add=True, text=exchange['user'])
+        before = settled_snapshot(api)
+        record = {'before': counts(before)}
+        with sync_playwright() as playwright:
+            browser = _launch(playwright)
+            try:
+                page = _boot(browser, backend)
+                page.wait_for_selector('[data-letter-deletion-entry]')
+                page.click('[data-letter-deletion-entry]')
+                window = page.locator('[data-letter-deletion]')
+                window.wait_for()
+                group = _group(window, exchange)
+                group.get_by_role('button').first.click()
+                group.locator('input[type=checkbox]').nth(0).check()
+                window.get_by_role('button', name='删除所选').click()
+                prompt = _confirm(page)
+                prompt.get_by_label('删除当天日记并重新生成').check()
+                page.screenshot(path=str(shots / '14-confirmation-diary-choice-ticked.png'))
+                prompt.get_by_role('button', name='确定').click()
+                expect(window.locator('.lm-notice')).to_contain_text('已删除 1 封')
+                after = settled_snapshot(api)
+                record['after_delete'] = counts(after)
+                assert counts(after)['diary'] == {'entries': 1, 'comments': 0, 'days_to_write_again': 1}
+                # the diary writer then writes the day again without the deleted letter
+                entries = api.diary_tick()
+                (day,) = [d for d in entries if len(d) == 10]
+                assert exchange['user'] not in entries[day] and BY_KEY['ice']['user'] in entries[day]
+                record['after_written_again'] = counts(settled_snapshot(api))
+                # restore from 最近删除: the original entry replaces the new one
+                _tab(window, '最近删除').click()
+                window.get_by_role('button', name='恢复', exact=True).click()
+                _confirm(page).get_by_role('button', name='确定').click()
+                expect(window.locator('.lm-notice')).to_contain_text('信件和关联记忆已恢复')
+                restored = settled_snapshot(api)
+                record['after_restore'] = counts(restored)
+                assert api.diary_tick()[day] == [r['body'] for r in before['databases']['diary']['diary_entries'] if r['day'] == day][0]
+                assert page.errors == []
+            finally:
+                browser.close()
+        assert comparable(settled_snapshot(api)) == comparable(before)
+        assert backend.blocked_connections == []
+        (shots / 'evidence-browser-diary.json').write_text(json.dumps(record, ensure_ascii=False, indent=2, sort_keys=True),
+                                                           encoding='utf-8')
+    finally:
+        backend.stop()
+
+
+def settled_snapshot(api):
+    api.settle()
+    return api.snapshot()

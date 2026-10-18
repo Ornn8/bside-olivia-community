@@ -318,6 +318,7 @@ ROUTES: dict[str, dict[str, Any]] = {
     "/toy/letter/deletion/delete": _route(["POST"], "letters.legacy_import", evidence="local-extension"),
     "/toy/letter/deletion/restore": _route(["POST"], "letters.legacy_import", evidence="local-extension"),
     "/toy/letter/deletion/list": _route(["POST"], "letters.legacy_import", evidence="local-extension"),
+    "/toy/letter/deletion/diary": _route(["POST"], "letters.legacy_import", evidence="local-extension"),
     "/toy/letter/legacy/official-import": _route(
         ["GET", "POST"],
         "letters.official_import",

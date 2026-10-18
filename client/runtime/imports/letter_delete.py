@@ -219,6 +219,47 @@ def apply_sql(path, patches, *, restore=False):
             db.execute(statement)
 
 
+DIARY_TABLES = ('diary_entries', 'diary_comments', 'diary_work', 'diary_attempts')
+
+
+def diary_plan(path, days):
+    """Her diary of these days, to be written again from what is left of their letters.
+
+    The entry, its comments, an unfinished draft and the day's attempt record go, and each day is put on the list of
+    days to write again. A draft is part of it because it quotes the day's letters. Memoirs of a month are not
+    touched. The rows are kept whole, so that the restore can put them back."""
+    rows = {}
+    with sqlite3.connect(path) as db:
+        db.row_factory = sqlite3.Row
+        tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        for table in DIARY_TABLES:
+            if table in tables:
+                rows[table] = [dict(row) for day in days for row in db.execute(f'SELECT * FROM {table} WHERE day=?', (day,))]
+    return {'days': list(days), 'rows': rows} if rows.get('diary_entries') else None
+
+
+def apply_diary(path, plan, *, restore=False):
+    """Remove the days' diary rows and queue the days for a new entry; or, to restore, drop whatever has been written
+    for those days since (the new entry, its comments, a draft) and put the original rows back. Safe to repeat."""
+    with sqlite3.connect(path) as db:
+        db.execute('BEGIN IMMEDIATE')
+        db.execute('CREATE TABLE IF NOT EXISTS diary_rewrite (day TEXT PRIMARY KEY)')
+        tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        for day in plan['days']:
+            for table in DIARY_TABLES:
+                if table in tables:
+                    db.execute(f'DELETE FROM {table} WHERE day=?', (day,))
+            if restore:
+                db.execute('DELETE FROM diary_rewrite WHERE day=?', (day,))
+            else:
+                db.execute('INSERT OR IGNORE INTO diary_rewrite VALUES (?)', (day,))
+        if restore:
+            for table, rows in plan['rows'].items():
+                for row in rows:
+                    db.execute(f'INSERT INTO {table} ({",".join(map(_quote, row))}) VALUES ({",".join("?" for _ in row)})',
+                               tuple(row.values()))
+
+
 def history_plan(path, memory_ids):
     """Mem0 writes the text of every memory into its own change history; a removed memory leaves it there too."""
     patches = []

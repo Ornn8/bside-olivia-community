@@ -187,11 +187,15 @@ class Api:
     def detail(self, letter_id: str) -> dict:
         return self.get('/toy/letter/detail?' + urllib.parse.urlencode({'letter_id': letter_id}))['data']
 
-    def delete(self, letter_id: str, part: str) -> dict:
-        status, body = self.request('POST', '/toy/letter/deletion/delete', {'letter_id': letter_id, 'part': part},
-                                    confirmed=True)
+    def delete(self, letter_id: str, part: str, *, with_diary: bool = False) -> dict:
+        payload = {'letter_id': letter_id, 'part': part, **({'with_diary': True} if with_diary else {})}
+        status, body = self.request('POST', '/toy/letter/deletion/delete', payload, confirmed=True)
         body['http'] = status
         return body
+
+    def diary_offer(self, letter_ids: list[str]) -> dict:
+        """What the confirmation asks before it offers to delete the diary: the days and months that have an entry."""
+        return self.request('POST', '/toy/letter/deletion/diary', {'letter_ids': letter_ids}, confirmed=True)[1]['data']
 
     def trash(self) -> list[dict]:
         return self.request('POST', '/toy/letter/deletion/list', {}, confirmed=True)[1]['data']['items']
@@ -226,8 +230,13 @@ class Api:
     def reindex(self) -> dict:
         return self.request('POST', '/__e2e__/reindex')[1]
 
-    def diary(self, add: bool) -> dict:
-        return self.request('POST', '/__e2e__/diary_add' if add else '/__e2e__/diary_clear')[1]
+    def diary_tick(self, days_ahead: int = 2) -> dict:
+        """Run the diary writer as it runs every few minutes, as of `days_ahead` days from now: the entries then."""
+        return self.request('POST', '/__e2e__/diary_tick', {'days_ahead': days_ahead})[1]['entries']
+
+    def diary(self, add: bool, text: str = '') -> dict:
+        """Write (or clear) her diary for today, the month's memoir and a comment; `text` is quoted in the entries."""
+        return self.request('POST', '/__e2e__/diary_add' if add else '/__e2e__/diary_clear', {'text': text})[1]
 
 
 # Two old letters of the kind the app imports from a backup: only the two texts of each pair.
@@ -300,6 +309,7 @@ _NOT_COMPARED = {
     'life': {'life_settings', 'life_weather', 'life_routine_days', 'daily_life_refresh_retry',
              'character_development_topics'},
     'journal': {'canonical_memory_deliveries', 'canonical_memory_failure_budget', 'canonical_memory_retry_limit'},
+    'diary': {'diary_attempts', 'diary_settings'},  # what the diary writer notes about the days it found empty
 }
 _VOLATILE = {'updated_at'}
 
@@ -380,5 +390,8 @@ def counts(snapshot: dict) -> dict:
                          'moments': len(world.get('relationship_moments', [])),
                          'candidates': len(world.get('private_world_candidates', [])),
                          'levels': relationship_levels(snapshot)},
+        'diary': {'entries': len(snapshot['databases']['diary'].get('diary_entries', [])),
+                  'comments': len(snapshot['databases']['diary'].get('diary_comments', [])),
+                  'days_to_write_again': len(snapshot['databases']['diary'].get('diary_rewrite', []))},
         'trash_items': len(snapshot['trash']),
     }

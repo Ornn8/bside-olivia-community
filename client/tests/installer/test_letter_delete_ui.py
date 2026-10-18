@@ -27,12 +27,13 @@ const actions=()=>new Element('div');
 let confirmHost=null;const MEMORY_PATH='memory',STATUS_PATH='status';
 let memoryMounts=[],requestJson=async()=>{throw new Error('no memory service')};
 const mountMemoryTab=async(host,openOriginal)=>{memoryMounts.push({host,openOriginal})};
-let requests=[],failAt=0,failLoad=false,hold=null,detailRequests=0,readHold=null;
+let requests=[],failAt=0,failLoad=false,hold=null,detailRequests=0,readHold=null,diaryFound={days:[]},diaryRequests=[],diaryFails=false;
 let letters=[{letter_id:'a',content:'<img src=x onerror=evil()>',reply_text:'她的回信',created_at:1792230000},
  {letter_id:'b',content:'第二封信',reply_text:'第二封回信'},
  {letter_id:'c',origin:'proactive',content:'内部提示',reply_text:'她主动寄来的信'}];
 let trash=[];
 const routeRequest=async(path,body,options)=>{
+ if(path.endsWith('/deletion/diary')){assert.equal(options.confirmed,true);diaryRequests.push(body);if(diaryFails)throw new Error('unavailable');return diaryFound}
  if(path.endsWith('/delete')){
   assert.equal(options.confirmed,true);requests.push(body);if(hold)await hold;
   if(failAt===requests.length)throw new Error('LETTER_DELETE_MEMORY_BUSY');
@@ -169,6 +170,47 @@ await find('记忆').click();assert.equal(memoryMounts.length,2,'memories made f
 await find('最近删除').click();await accept(find('恢复').click());
 await find('记忆').click();assert.equal(memoryMounts.length,3,'restored memories are listed again');
 await find('信件').click();await find('记忆').click();assert.equal(memoryMounts.length,3);
+''')
+
+
+def test_the_diary_choice_appears_only_when_the_letters_have_a_diary_entry():
+    run_js(r'''
+const choice=()=>all().find(x=>x.tag==='span'&&x.textContent==='删除当天日记并重新生成');
+const note=()=>all().some(x=>x.tag==='p'&&x.textContent==='日记是她自己写的，不会因删信自动改动。');
+// no diary entry: the confirmation is the one it always was
+await openAll();select(0);let pending=find('删除所选').click();await tick();
+assert.deepEqual(diaryRequests,[{letter_ids:['a']}]);assert.equal(choice(),undefined);assert.equal(note(),false);
+await find('确定').click();await pending;assert.deepEqual(requests,[{letter_id:'a',part:'user'}]);
+// a diary entry for the day: one line, unchecked, with the short explanation
+diaryFound={days:['2026-10-18']};await expand();select(0);select(2);
+pending=find('删除所选').click();await tick();
+assert.deepEqual(diaryRequests.at(-1),{letter_ids:['a','b']});
+assert.equal(choice().textContent,'删除当天日记并重新生成');assert.equal(note(),true);
+const box=all().find(x=>x.tag==='input'&&x.parent?.className==='lm-diary');assert.equal(box.checked,false);
+await find('确定').click();await pending;           // unchecked: the requests do not mention the diary
+assert.ok(requests.slice(1).every(body=>!('with_diary' in body)));
+// ticked: every request of the batch carries the choice; cancelling sends nothing
+diaryFound={days:['2026-10-18']};await expand();select(0);pending=find('删除所选').click();await tick();
+await find('取消').click();await pending;
+const before=requests.length;await expand();select(0);select(1);pending=find('删除所选').click();await tick();
+all().find(x=>x.tag==='input'&&x.parent?.className==='lm-diary').checked=true;
+all().find(x=>x.tag==='input'&&x.parent?.className==='lm-diary').events.change();
+await find('确定').click();await pending;
+assert.equal(requests.length-before,2);assert.ok(requests.slice(before).every(body=>body.with_diary===true));
+''')
+
+
+def test_a_failing_diary_question_leaves_the_confirmation_as_it_was_and_cancel_sends_nothing():
+    run_js(r'''
+diaryFails=true;await openAll();select(0);let pending=find('删除所选').click();await tick();
+assert.equal(all().some(x=>x.tag==='span'&&x.textContent==='删除当天日记并重新生成'),false);
+await find('取消').click();await pending;assert.equal(requests.length,0);
+diaryFails=false;diaryFound={days:['2026-10-18']};
+pending=find('删除所选').click();await tick();await find('取消').click();await pending;assert.equal(requests.length,0);
+// a second press while the question is still being asked opens no second confirmation
+pending=find('删除所选').click();const again=find('删除所选').click();await tick();
+assert.equal(all().filter(x=>x.tag==='dialog'&&x.attrs['data-letter-confirm']!==undefined).length,1);
+await find('取消').click();await pending;await again;
 ''')
 
 

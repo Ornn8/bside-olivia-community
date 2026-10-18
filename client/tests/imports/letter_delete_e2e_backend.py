@@ -198,6 +198,17 @@ def patch_stand_ins(server, script: Script, root: Path):
 
     server.private_world_candidate_analyzer = Analyzer()
 
+    # Her diary: the writer's answer is an entry that quotes every message of the day it was given.
+    from runtime.diary import diary as diary_module
+
+    async def write_diary(gateway, request_id, system, packet, response_format, timeout, *, model):
+        if '-revise:' in request_id or request_id.startswith('diary-memoir'):
+            raise RuntimeError('DIARY_WRITER_UNAVAILABLE')  # the draft stands
+        said = ' / '.join(part for m in packet['messages'] for part in (m['user'], m['linli']) if part)
+        return {'title': '重写的日记', 'mood': '平静', 'body': '那天的信：' + said, 'facts': []}
+
+    diary_module._complete = write_diary
+
     # Imported old letters: the model's judgment of a batch of five exchanges, and the switch that lets it run.
     from runtime.imports import relationship_batches as history_batches
     from runtime.imports.historical_memory import HistoricalRelationshipAssessment
@@ -375,16 +386,27 @@ def e2e_middleware(server, root: Path, script: Script):
             if outbox is not None:
                 await outbox.scan_once()
             return web.json_response({'rescanned': outbox is not None, 'status': runtime.status})
+        if name == 'diary_tick':
+            from datetime import datetime, timedelta, timezone
+            ahead = (await request.json()).get('days_ahead', 2)
+            await server._diary_tick(datetime.now(timezone.utc) + timedelta(days=ahead))
+            return web.json_response({'entries': {e['day']: e['body'] for e in
+                                                  (server.diary_store.entry(d) for d in server.diary_store.days()) if e}})
         if name in {'diary_add', 'diary_clear'}:
             from datetime import datetime, timezone
             from runtime.diary.diary import local_day
             day = local_day(datetime.now(timezone.utc))
+            text = (await request.json()).get('text', '') if request.can_read_body else ''
             with server.diary_store._db() as db:
                 if name == 'diary_add':
-                    db.execute('INSERT OR REPLACE INTO diary_entries(day,written_at,title,mood,body,facts) VALUES (?,?,?,?,?,?)',
-                               (day, day, '合成日记', '平静', '这一天的几段对话写在一起。', '[]'))
+                    # her diary for today, the memoir of this month, and a comment under the day
+                    for key, title in ((day, '合成日记'), (day[:7], '合成月度回忆')):
+                        db.execute('INSERT OR REPLACE INTO diary_entries(day,written_at,title,mood,body,facts) VALUES (?,?,?,?,?,?)',
+                                   (key, day, title, '平静', '这一天的几段对话写在一起。' + text, '[]'))
+                    db.execute('INSERT INTO diary_comments VALUES (?,?,?)', (day, day, '合成评论'))
                 else:
-                    db.execute('DELETE FROM diary_entries')
+                    for table in ('diary_entries', 'diary_comments', 'diary_deleted'):
+                        db.execute(f'DELETE FROM {table}')
             return web.json_response({'day': day})
         if name == 'reindex':
             return web.json_response(await reindex(server))

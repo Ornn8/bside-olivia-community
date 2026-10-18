@@ -3275,6 +3275,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       [data-letter-confirm] {width:min(460px,calc(100vw - 32px));padding:28px}
       [data-letter-confirm] h3 {margin:0 0 12px;font-size:20px}
       [data-letter-confirm] p {margin:0 0 24px;color:#d1cbc0}
+      [data-letter-confirm] label.lm-diary {display:flex;gap:10px;align-items:center;margin:0 0 6px;color:#ede9e1;cursor:pointer}
+      [data-letter-confirm] label.lm-diary input {width:18px;height:18px;margin:0;flex-shrink:0;accent-color:#d8c9ab;cursor:pointer}
+      [data-letter-confirm] p.lm-diary-note {margin:0 0 24px;font-size:13px;color:#bcb7ad}
       @media(max-width:640px) {
         [data-letter-deletion] {width:calc(100vw - 24px);height:calc(100dvh - 32px)}
         [data-letter-deletion] .lm-header {padding:16px 16px 6px}
@@ -3315,22 +3318,47 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       previous.disabled = busy || page <= 1; next.disabled = busy || page >= pages;
     };
     // A nested native dialog stays above the parent's top layer and traps keyboard focus.
-    const confirmDeletion = (message) => new Promise(resolve => {
+    // `diary` ({label}) adds the choice to delete the diary of the letters' day too; its `checked` is read after the answer.
+    const confirmDeletion = (message, diary = null) => new Promise(resolve => {
       const prompt = document.createElement('dialog'); prompt.setAttribute('data-letter-confirm', ''); prompt.setAttribute('aria-label', t('确认操作'));
       const previous = document.activeElement;
       const finish = value => { prompt.close(); prompt.remove(); previous?.focus(); resolve(value); };
       const controls = actions(), no = button(t('取消'), () => finish(false)), yes = button(t('确定'), () => finish(true));
       controls.style.justifyContent = 'flex-end'; controls.append(no, yes);
-      prompt.append(text('h3', t('确认操作')), text('p', message), controls); dialog.append(prompt);
+      const body = text('p', message), choice = [];
+      if (diary) {
+        const row = document.createElement('label'), box = document.createElement('input');
+        row.className = 'lm-diary'; box.type = 'checkbox'; box.checked = false; diary.checked = false;
+        box.addEventListener('change', () => { diary.checked = box.checked; });
+        row.append(box, text('span', diary.label));
+        body.style.marginBottom = '16px';
+        choice.push(row, text('p', t('日记是她自己写的，不会因删信自动改动。'), 'lm-diary-note'));
+      }
+      prompt.append(text('h3', t('确认操作')), body, ...choice, controls); dialog.append(prompt);
       prompt.addEventListener('cancel', event => { event.preventDefault(); event.stopPropagation(); finish(false); });
       prompt.showModal(); no.focus();
     });
     confirmHost = confirmDeletion;
+    // The diary she wrote for the day of these letters stays as written unless the user also chooses to have that day
+    // deleted and written again. Only when such an entry exists is the choice offered.
+    const diaryChoice = async batch => {
+      try {
+        const found = await routeRequest('/toy/letter/deletion/diary', {letter_ids: [...new Set(batch.map(item => item.letter_id))]}, {confirmed:true});
+        if (!(found.days || []).length) return null;
+        return {checked: false, label: t('删除当天日记并重新生成')};
+      } catch (_) { return null; }
+    };
+    let asking = false;
     const remove = button(t('删除所选'), async () => {
-      if (busy || !selected.size) return;
+      if (busy || asking || !selected.size) return;
       const batch = [...selected.values()];
-      if (!await confirmDeletion(t('删除所选 {count} 封信后，她关于这封信的记忆也会一并清理。删除你的信会保留未选中的回信；尚未回信的任务会取消。30 天内可在“最近删除”恢复。确定删除吗？', {count: batch.length}))) return;
-      await mutate('delete', batch);
+      asking = true; let diary = null, confirmed = false;
+      try {
+        diary = await diaryChoice(batch);
+        confirmed = await confirmDeletion(t('删除所选 {count} 封信后，她关于这封信的记忆也会一并清理。删除你的信会保留未选中的回信；尚未回信的任务会取消。30 天内可在“最近删除”恢复。确定删除吗？', {count: batch.length}), diary);
+      } finally { asking = false; }
+      if (!confirmed) return;
+      await mutate('delete', batch, {withDiary: diary?.checked === true});
     });
     remove.className += ' lm-danger';
     const tabs = {};
@@ -3353,13 +3381,12 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const lock = value => { busy = value; for (const area of [header, tabBar, lettersPanel]) for (const control of area.querySelectorAll('button,input')) control.disabled = value; refresh(); };
     const failure = error => ({
       LETTER_DELETE_LEGACY_RELATIONSHIP_UNSUPPORTED: t('这封旧信的关系记录缺少可重放来源，暂不能安全清理。信件未删除。'),
-      LETTER_DELETE_UNATTRIBUTED_DIARY: t('相关日记缺少逐封信的来源记录，暂不能安全清理这封信；整篇清除会影响其他信件。信件未删除。'),
       LETTER_DELETE_RELATIONSHIP_REPLAY_UNSUPPORTED: t('相关关系记录无法精确重放，暂不能安全重算。信件未删除。'),
       LETTER_DELETE_RESTORE_CONFLICT: t('关联记录在删除后发生了变化，已停止恢复以保护新记录。请保留最近删除中的备份。'),
       LETTER_DELETE_MEMORY_BUSY: t('记忆正在写入，请稍后重试。'),
       LETTER_DELETE_MEMORY_UNAVAILABLE: t('记忆存储暂不可用，请恢复连接后重试。'),
     }[error.message] || t('操作未完成。请查看“最近删除”，重试清理或恢复；备份会保留。'));
-    const mutate = async (action, batch) => {
+    const mutate = async (action, batch, {withDiary = false} = {}) => {
       if (busy) return;
       lock(true); let completed = 0, problem = '';
       try {
@@ -3368,7 +3395,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           // A lost response may still have changed storage; refresh the inbox on exit. The memory tab shows memories
           // that came from these letters, so it reads its list again the next time it is shown.
           changed = true; memoryMounted = false;
-          await routeRequest('/toy/letter/deletion/' + action, payload, {confirmed:true});
+          await routeRequest('/toy/letter/deletion/' + action, withDiary ? {...payload, with_diary: true} : payload, {confirmed:true});
           completed++;
         }
       } catch (error) { problem = failure(error); }
