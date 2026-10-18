@@ -27,6 +27,7 @@ from runtime.tls import client_tls_context
 from runtime.reply.model_capabilities import model_capabilities
 from runtime.reply.model_request_policy import reasoning_request_parameters
 from runtime.official_endpoints import API_ORIGIN, canonical_api_base
+from runtime import ui_language
 
 
 PROVIDER_USER_AGENT = "Olivia-Community/0.1"
@@ -36,7 +37,7 @@ _RELAY_HOST = urlsplit(API_ORIGIN).hostname
 
 def provider_request_headers(base_url: str, *, session_id: str | None = None) -> dict[str, str]:
     """Identify Olivia honestly to the relay."""
-    return {"User-Agent": PROVIDER_USER_AGENT, "X-Olivia-Chat-Price": "account-20261017"}
+    return {"User-Agent": PROVIDER_USER_AGENT, "X-Olivia-Chat-Price": "account-20261017", **ui_language.headers()}
 
 
 ALLOWED_ROLES = frozenset({"system", "user", "assistant"})

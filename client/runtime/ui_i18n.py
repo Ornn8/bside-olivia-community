@@ -7,6 +7,10 @@ argument in both languages, so a sentence with numbers or names is one entry, no
 
 The language is read from localStorage ``olivia.ui.language`` (``zh-cn`` or ``en``); without a stored value it is
 always Chinese, and English only after the user picks it in the language switch. The native bundle reads the same key.
+
+``oliviaI18n.onChange(listener)`` lets a feature hear about a switch before the page reloads; the settings script uses
+it to tell the local backend (``POST /api/ui-language``), and the reload waits for that call for at most a few seconds.
+The backend's own wording is in ``runtime/ui_i18n_backend.py``.
 """
 
 from __future__ import annotations
@@ -1466,11 +1470,38 @@ _PRELUDE = r'''
     // Chinese until English is chosen with the language switch (the browser language is not consulted).
     return "zh-cn";
   };
+  // Features that need to hear about a change (for example to tell the local backend) register here. When one of
+  // them returns a promise, the reload waits for it, but never longer than a couple of seconds.
+  const listeners = [];
+  const onChange = (listener) => {
+    if (typeof listener === "function") listeners.push(listener);
+  };
+  const reload = () => {
+    try { window.location.reload(); } catch (_) {}
+  };
   const set = (value) => {
     const next = known(String(value).toLowerCase());
     if (!next) return;
     try { window.localStorage.setItem(STORAGE_KEY, next); } catch (_) {}
-    try { window.location.reload(); } catch (_) {}
+    const pending = [];
+    for (const listener of listeners) {
+      try {
+        const result = listener(next);
+        if (result && typeof result.then === "function") pending.push(Promise.resolve(result).catch(() => {}));
+      } catch (_) {}
+    }
+    if (!pending.length) {
+      reload();
+      return;
+    }
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      reload();
+    };
+    Promise.all(pending).then(finish, finish);
+    try { window.setTimeout(finish, 2500); } catch (_) { finish(); }
   };
   const t = (zh, vars) => {
     if (typeof zh !== "string") return zh;
@@ -1484,7 +1515,7 @@ _PRELUDE = r'''
     }
     return out;
   };
-  window.oliviaI18n = Object.freeze({lang, set, t});
+  window.oliviaI18n = Object.freeze({lang, set, t, onChange});
 })();
 '''
 

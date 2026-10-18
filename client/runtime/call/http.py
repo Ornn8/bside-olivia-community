@@ -23,6 +23,7 @@ from urllib.parse import urlsplit
 
 from aiohttp import ClientError, ClientSession, ClientTimeout, TCPConnector, web
 
+from runtime import ui_language
 from runtime.cloud_service import endpoint
 from runtime.tls import client_tls_context
 
@@ -54,7 +55,7 @@ def _ws_url(base):
 async def _cloud_json(method, path, *, timeout, headers=None, body=None):
     base, _ = _cloud()
     async with ClientSession(timeout=timeout, trust_env=False, connector=TCPConnector(ssl=client_tls_context())) as session:
-        async with session.request(method, base + path, headers=headers or {}, json=body) as response:
+        async with session.request(method, base + path, headers=ui_language.with_header(headers) or {}, json=body) as response:
             if response.status != 200:
                 return response.status, None
             return 200, await response.json(content_type=None)
@@ -247,7 +248,7 @@ async def avatar_file(name, headers):
             async with ClientSession(timeout=AVATAR_TIMEOUT, trust_env=False,
                                      connector=TCPConnector(ssl=client_tls_context())) as session:
                 async with session.get(base + '/v1/call/avatar/files/' + name,
-                                       headers={'Authorization': 'Bearer ' + key}) as response:
+                                       headers={'Authorization': 'Bearer ' + key, **ui_language.headers()}) as response:
                     if response.status == 403:
                         raise web.HTTPForbidden(reason='CALL_AVATAR_NOT_OWNED')
                     if response.status != 200:

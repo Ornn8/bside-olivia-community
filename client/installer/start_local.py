@@ -1122,7 +1122,10 @@ def _launch(args: argparse.Namespace, root: Path, backend: Path, entrypoint: Pat
     client_environment = _load_llm_environment(client_environment, data_root)
     _configure_memory_environment(backend_environment, data_root)
     if backend_environment.get("OLIVIA_LLM_REQUIRES_API_KEY") != "0" and not any(backend_environment.get(name) for name in ("OLIVIA_LLM_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY")):
-        print("LLM_API_KEY_NOT_CONFIGURED: 尚未连接 Olivia 账户 Key，请在设置的“回信服务 → Olivia 账户”中获取或导入。")
+        from runtime import ui_language
+        from runtime.ui_i18n_backend import tr_in
+        language = ui_language.read_saved(data_root / "config" / ui_language.FILE_NAME)
+        print(tr_in(language, "LLM_API_KEY_NOT_CONFIGURED: 尚未连接 Olivia 账户 Key，请在设置的“回信服务 → Olivia 账户”中获取或导入。"))
     server = None
     _append_launcher_event(data_root, "startup_environment_ready",
                            elapsed_seconds=round(time.monotonic() - preparation_started, 3))

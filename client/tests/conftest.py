@@ -40,6 +40,15 @@ def chinese_mode_helper_in_browser_pages(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def interface_language_is_chinese():
+    # The interface language is process-wide state; every test starts in Chinese, the default.
+    from runtime import ui_language
+    ui_language.reset()
+    yield
+    ui_language.reset()
+
+
+@pytest.fixture(autouse=True)
 def present_user(request, monkeypatch):
     # Life slows to 3-5 hours while the user has not written. Synthetic worlds
     # rarely record exchanges, so tests see an active user unless they opt in.

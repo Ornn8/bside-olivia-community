@@ -77,6 +77,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const SETUP_STATUS_PATH = "/toy/setup/status";
   const LLM_DELETE_PATH = "/toy/setup/llm/delete";
   const SETUP_COMPLETE_PATH = "/toy/setup/complete";
+  const UI_LANGUAGE_PATH = "/api/ui-language";
   const MEM0_CAPABILITY_PATH = "/toy/capabilities/mem0";
   const MEM0_CAPABILITY_ACTION_PATH = "/toy/capabilities/mem0/action";
   const UPDATE_ACTION_PATH = "/toy/updates/local/action";
@@ -707,6 +708,14 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       window.clearTimeout(timeout);
     }
   };
+
+  // The local backend follows the interface language (its own notices and the header it sends to Olivia's cloud
+  // services). It is told at start and again whenever the language is switched; the switch waits for this call.
+  const reportUiLanguage = (language) => requestSetup(UI_LANGUAGE_PATH, { language }).catch(() => {});
+  if (window.oliviaI18n && typeof window.oliviaI18n.onChange === "function") {
+    window.oliviaI18n.onChange(reportUiLanguage);
+    void reportUiLanguage(window.oliviaI18n.lang());
+  }
 
   const requestCapability = async (path, body = null, timeoutMs = 25000) => {
     if (body !== null && !setupSessionToken) {

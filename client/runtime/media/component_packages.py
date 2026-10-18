@@ -10,6 +10,8 @@ import uuid
 import zipfile
 import shutil
 
+from runtime.ui_i18n_backend import tr
+
 
 COMPONENTS = {
     'original': ('原创歌曲音色与曲风', '1000 步林离音色与单依纯钢琴曲风，配合 ACE 唱歌组件使用',
@@ -135,15 +137,15 @@ class MediaComponents:
         items = []
         for key, (label, description, keys) in COMPONENTS.items():
             installed = all(environment.get(k) and Path(environment[k]).exists() for k in keys)
-            items.append({'id': key, 'label': label, 'description': description,
+            items.append({'id': key, 'label': tr(label), 'description': tr(description),
                           'state': 'installed' if installed else 'missing',
                           'source': ('component' if all(k in managed for k in keys) else 'existing') if installed else None})
             if key == 'voice' and installed:
                 try:
                     config = json.loads(Path(environment['OLIVIA_TTS_CONFIG']).read_text(encoding='utf-8'))
                     if config['settings']['provider_options'].get('runtime_backend') == 'rocm':
-                        items[-1].update(label='说话语音 · 2250（AMD 实验）',
-                            description='Windows 11 / ROCm 专用；仅语音，尚未完成 AMD 实机验收')
+                        items[-1].update(label=tr('说话语音 · 2250（AMD 实验）'),
+                            description=tr('Windows 11 / ROCm 专用；仅语音，尚未完成 AMD 实机验收'))
                 except (OSError, ValueError, KeyError, TypeError):
                     pass
         progress = dict(self.progress)

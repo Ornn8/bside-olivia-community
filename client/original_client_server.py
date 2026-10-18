@@ -900,6 +900,8 @@ def create_original_client_server_runtime(
             setup_service,
             trusted_origins=origins,
         )
+        from original_client_ui_language_api import mount_ui_language_api
+        mount_ui_language_api(app, setup_service)
         if cloud_service is not None:
             from original_client_cloud_api import mount_cloud_api
             mount_cloud_api(app, cloud_service, setup_service)

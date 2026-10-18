@@ -133,7 +133,15 @@ _BOOTSTRAP_JAVASCRIPT = r'''(() => {
 
     const failure = document.createElement("p");
     failure.hidden = true;
-    failure.textContent = "本地视频暂时无法播放。";
+    // English only when the user chose it in the language switch (the same key the rest of the interface reads).
+    const english = (() => {
+      try {
+        return window.localStorage.getItem("olivia.ui.language") === "en";
+      } catch (_error) {
+        return false;
+      }
+    })();
+    failure.textContent = english ? "This local video can't be played right now." : "本地视频暂时无法播放。";
     failure.style.color = "#fff";
     failure.style.fontFamily = "system-ui, sans-serif";
 

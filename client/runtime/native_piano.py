@@ -13,6 +13,7 @@ from runtime.cloud_service import CloudError
 from runtime.remote_generation import RemoteGeneration
 from runtime import piano
 from runtime.piano_collection import account
+from runtime.ui_i18n_backend import tr
 
 STATES = {'queued': 1, 'running': 2, 'succeeded': 3, 'cancelled': 4, 'failed': 5}
 _locks: dict[str, asyncio.Lock] = {}
@@ -65,7 +66,7 @@ async def upload_http(server, request):
         with target.open('xb') as stream:
             stream.write(data)
         from runtime.piano_collection import save
-        save(server, bytes(data), Path(record['filename'].replace('\\', '/')).stem[:60] or '钢琴小样', 'client', caps['max_midi_bytes'])
+        save(server, bytes(data), Path(record['filename'].replace('\\', '/')).stem[:60] or tr('钢琴小样'), 'client', caps['max_midi_bytes'])
         return web.Response(status=204, headers=headers)
     except CloudError as exc:
         return web.json_response(server.err(exc.status, exc.code, {}), status=exc.status, headers=headers)

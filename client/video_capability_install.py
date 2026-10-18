@@ -18,6 +18,7 @@ import sys
 import threading
 import tempfile
 from installer.uninstall_safety import native_path
+from runtime.ui_i18n_backend import tr
 import time
 from typing import Any
 import uuid
@@ -1458,7 +1459,7 @@ class VideoCapabilityInstaller:
                     bundle,
                     probe_cache=probe_cache,
                 )
-                self._status[bundle.identifier] = VideoBundleStatus(bundle.identifier, state, sum(item.size_bytes for item in bundle.files), sum(item.size_bytes for item in bundle.files), current_file="检查视频运行依赖" if state == VideoCapabilityState.VERIFYING else None, source=current.source if current else None, reason_code=reason)
+                self._status[bundle.identifier] = VideoBundleStatus(bundle.identifier, state, sum(item.size_bytes for item in bundle.files), sum(item.size_bytes for item in bundle.files), current_file=tr("检查视频运行依赖") if state == VideoCapabilityState.VERIFYING else None, source=current.source if current else None, reason_code=reason)
             elif current is None or current.state not in {VideoCapabilityState.FAILED, VideoCapabilityState.PAUSED}:
                 self._status[bundle.identifier] = VideoBundleStatus(bundle.identifier, VideoCapabilityState.MISSING, 0, sum(item.size_bytes for item in bundle.files))
 
@@ -1478,7 +1479,7 @@ class VideoCapabilityInstaller:
                 for item in bundles:
                     if item["state"] == "ready":
                         item["state"] = "verifying"
-                        item["current_file"] = "检查视频运行依赖"
+                        item["current_file"] = tr("检查视频运行依赖")
             if self._hardware is not None and self._hardware["status"] != "READY":
                 for item, bundle in zip(bundles, self.manifest.bundles, strict=True):
                     if bundle.requires_gpu and item["state"] not in {
@@ -2772,12 +2773,12 @@ class VideoCapabilityInstaller:
                 )
             ]
             self._set(bundle, VideoCapabilityState.VERIFYING, downloaded,
-                      current="解压运行环境", source=source_used)
+                      current=tr("解压运行环境"), source=source_used)
             stage, file_id = 'extract', None
             expected.extend(self._assemble_archives(root, bundle))
             stage = 'verify_tree'
             self._set(bundle, VideoCapabilityState.VERIFYING, downloaded,
-                      current="校验安装文件", source=source_used)
+                      current=tr("校验安装文件"), source=source_used)
             final = self._final_root(bundle)
             if len({item["path"].casefold() for item in expected}) != len(expected):
                 raise VideoCapabilityError("VIDEO_STAGED_TREE_INVALID")
@@ -2795,13 +2796,13 @@ class VideoCapabilityInstaller:
                 last_verification_progress = now
                 with self._lock:
                     self._set(bundle, VideoCapabilityState.VERIFYING, downloaded,
-                              current=f"校验安装文件 {done / 1048576:.1f} / {total / 1048576:.1f} MiB",
+                              current=tr("校验安装文件 {done} / {total} MiB", done=f"{done / 1048576:.1f}", total=f"{total / 1048576:.1f}"),
                               source=source_used)
 
             _verify_staged_tree(root, expected, workers=4, progress=verification_progress)
             if "OLIVIA_BREEZE_TTS_PYTHON" in (bundle.runtime_environment or {}):
                 self._set(bundle, VideoCapabilityState.VERIFYING, downloaded,
-                          current="安装本地运行依赖（无需联网）", source=source_used)
+                          current=tr("安装本地运行依赖（无需联网）"), source=source_used)
             stage = 'dependencies'
             self._bootstrap_breeze_runtime(root, bundle)
             stage = 'activate'
@@ -3008,7 +3009,7 @@ class VideoCapabilityInstaller:
             if done != total and now - last_progress < 0.5:
                 return
             last_progress = now
-            label = "解压运行环境" if phase == "extracting" else "校验解压文件"
+            label = tr("解压运行环境") if phase == "extracting" else tr("校验解压文件")
             with self._lock:
                 current = self._status[bundle.identifier]
                 self._set(bundle, VideoCapabilityState.VERIFYING, current.downloaded_bytes,

@@ -129,6 +129,7 @@ RELEASE_ROOT_FILES = {
     "original_client_cloud_api.py",
     "original_client_relay_api.py",
     "original_client_settings_ui.py",
+    "original_client_ui_language_api.py",
     "original_client_update_api.py",
     "patch_companion_settings.py",
     "patch_feapp.py",

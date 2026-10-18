@@ -7,6 +7,7 @@ from aiohttp import ClientSession, ClientTimeout, ClientError, ClientSSLError, C
 from original_client_setup_api import LLMSetupError, _authorize, _body, _headers, SESSION_HEADER
 from runtime.remote_generation import gpu_tls_context
 from runtime.official_endpoints import API_BASE, canonical_api_base
+from runtime import ui_language
 
 RELAY_BASE = API_BASE
 # Written only for a NEW binding and used as the fallback when no valid model is saved;
@@ -30,7 +31,8 @@ async def relay_request(base, key, method, path, payload=None):
             async with session.request(method, base.rstrip('/')+path, json=payload,
                                        headers={'Authorization':'Bearer '+key,
                                                 'X-Olivia-Chat-Price': 'account-20261017',
-                                                'X-Olivia-JEV-Price': 'jev-input-cny-20261017-v6'}, allow_redirects=False,
+                                                'X-Olivia-JEV-Price': 'jev-input-cny-20261017-v6',
+                                                **ui_language.headers()}, allow_redirects=False,
                                        ssl=gpu_tls_context()) as response:
                 raw = bytearray()
                 async for chunk in response.content.iter_chunked(8192):
@@ -69,6 +71,8 @@ def mount_relay_api(app, setup):
     lock = asyncio.Lock()
     from runtime import model_routes
     model_routes.configure(setup._config_root)
+    # The saved interface language is needed before the first cloud call (policy fetch, headers).
+    ui_language.configure(setup._config_root / ui_language.FILE_NAME)
     key_path = setup._config_root / 'olivia_relay_key.dpapi'
     pending_path = setup._config_root / 'olivia_relay_registration.pending'
 

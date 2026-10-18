@@ -2,6 +2,8 @@
 from datetime import date
 import re
 
+from runtime.ui_i18n_backend import tr
+
 # Keep each catalog's exact allowlist during rolling client/server upgrades.
 DAILY_LOOK_COUNTS = {'mori': 14, 'rebellious': 1, 'dark': 1, 'cargo': 1,
                      'tie-shorts': 1, 'french': 8, 'earth': 3, 'japanese': 4,
@@ -175,8 +177,8 @@ def validate(value):
 
 
 def catalog():
-    return [{'style_id': key, 'label': style['label'], 'description': style['description'],
-             'pieces': list(style['pieces']), 'colors': list(style['colors'])}
+    return [{'style_id': key, 'label': tr(style['label']), 'description': tr(style['description']),
+             'pieces': [tr(piece) for piece in style['pieces']], 'colors': list(style['colors'])}
             for key, style in STYLES.items()]
 
 

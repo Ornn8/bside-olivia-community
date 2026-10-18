@@ -5,6 +5,8 @@ import re
 import hashlib
 import time
 
+from runtime.ui_i18n_backend import tr
+
 _capabilities = {}
 
 BEDTIME_OFFER_INSTRUCTION = {
@@ -77,9 +79,9 @@ def validate_script(value):
 
 
 def filename(title):
-    value=re.sub(r'[\x00-\x1f<>:"/\\|?*]','_',title).strip(' .')[:70] or '睡前音频'
+    value=re.sub(r'[\x00-\x1f<>:"/\\|?*]','_',title).strip(' .')[:70] or tr('睡前音频')
     if value.upper() in {'CON','PRN','AUX','NUL',*[f'COM{i}' for i in range(1,10)],*[f'LPT{i}' for i in range(1,10)]}:
-        value='音频_'+value
+        value=tr('音频_')+value
     return value+'.mp3'
 
 

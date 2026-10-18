@@ -54,6 +54,7 @@ def start(server, app):
 
 
 async def _run(server, app):
+    from runtime import ui_language
     from runtime.call.http import _cloud
     from runtime.tls import client_tls_context
     failures = 0
@@ -64,7 +65,7 @@ async def _run(server, app):
         try:
             async with ClientSession(timeout=ClientTimeout(total=None, sock_connect=10), trust_env=False,
                                      connector=TCPConnector(ssl=client_tls_context())) as session:
-                async with session.ws_connect(_desk_url(base), headers={'Authorization': 'Bearer ' + key},
+                async with session.ws_connect(_desk_url(base), headers={'Authorization': 'Bearer ' + key, **ui_language.headers()},
                                               heartbeat=30, max_msg_size=4 * 1024 * 1024) as ws:
                     failures = 0
                     await Line(server, app, ws).serve()

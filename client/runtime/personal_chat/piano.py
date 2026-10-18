@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 
 from runtime import piano
+from runtime.ui_i18n_backend import tr
 
 
 async def receive_midi(server, event, row, identifier, reference, name):
@@ -33,7 +34,7 @@ async def receive_midi(server, event, row, identifier, reference, name):
             raise ValueError('PIANO_MIDI_TOO_LARGE')
         piano.validate_midi(name, target.read_bytes(), caps['max_midi_bytes'])
         api = RemoteGeneration(os.environ.get('OLIVIA_GPU_API_URL', ''), os.environ.get('OLIVIA_GPU_API_KEY', ''))
-        title = Path(name.replace('\\', '/')).stem[:60] or '钢琴小样'
+        title = Path(name.replace('\\', '/')).stem[:60] or tr('钢琴小样')
         piece = piano_collection.save(server, target.read_bytes(), title, 'qq', caps['max_midi_bytes'])
         asset = await piano_collection.upload(server, api, piece, caps['max_midi_bytes'])
         target.unlink(missing_ok=True)

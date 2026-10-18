@@ -13,6 +13,7 @@ from weakref import WeakKeyDictionary
 import zipfile
 
 from aiohttp import ClientSession, ClientTimeout, TCPConnector, ClientError
+from runtime import ui_language
 from runtime.cloud_service import CloudError
 from runtime.remote_generation import gpu_tls_context
 from runtime.official_endpoints import COMPONENT_COS_HOSTS, COMPONENT_COS_PREFIX, canonical_api_origin
@@ -225,7 +226,7 @@ async def _cloud_ui_entry(base, asset_id):
     async with ClientSession(timeout=ClientTimeout(total=20), trust_env=False,
             connector=TCPConnector(ssl=gpu_tls_context())) as session:
         async with session.get(base + '/v1/components/images/ui/' + asset_id, allow_redirects=False,
-                headers={'X-Olivia-Component-Storage': 'cos-v2'}) as response:
+                headers={'X-Olivia-Component-Storage': 'cos-v2', **ui_language.headers()}) as response:
             if response.status != 200:
                 raise CloudError('IMAGE_ASSET_UNAVAILABLE', 503)
             raw = await response.content.read(8193)
@@ -275,7 +276,7 @@ async def ensure_image(data_root, kind, asset_id, *, base_url=None):
                 async with ClientSession(timeout=ClientTimeout(total=45), trust_env=False,
                         connector=TCPConnector(ssl=gpu_tls_context())) as session:
                     async with session.get(ticket_url, allow_redirects=False,
-                            headers={'X-Olivia-Component-Storage': 'cos-v2'}) as response:
+                            headers={'X-Olivia-Component-Storage': 'cos-v2', **ui_language.headers()}) as response:
                         if response.status != 200:
                             raise CloudError('IMAGE_ASSET_UNAVAILABLE', 503)
                         raw = await response.content.read(8193)

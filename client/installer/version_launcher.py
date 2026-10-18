@@ -768,9 +768,17 @@ def _rolled_back(root: Path) -> bool:
         return False
 
 
-def _restart_failure_prompt() -> None:
+def _restart_failure_prompt(root: Path | None = None) -> None:
     import ctypes
-    ctypes.windll.user32.MessageBoxW(None, "Olivia 自动重启失败，请手动打开", "Olivia", 0x10 | 0x40000)
+    # This launcher runs without the backend packages, so it reads the saved interface language itself.
+    text = "Olivia 自动重启失败，请手动打开"
+    try:
+        saved = json.loads((root / "data" / "config" / "ui-language.json").read_text(encoding="utf-8")) if root else None
+        if isinstance(saved, dict) and saved.get("language") == "en":
+            text = "Olivia couldn't restart automatically. Please open it manually."
+    except (OSError, ValueError):
+        pass
+    ctypes.windll.user32.MessageBoxW(None, text, "Olivia", 0x10 | 0x40000)
 
 
 def _wait_restart_processes(root: Path, kernel, handles, owner_pid: int | None = None) -> None:
@@ -848,7 +856,7 @@ def _update_restart(root: Path, ready: Path, owner_pid: int | None = None) -> in
         code = str(exc) if isinstance(exc, RuntimeError) and re.fullmatch(r"UPDATE_RESTART_[A-Z_]+", str(exc)) else "UPDATE_RESTART_HELPER_FAILED"
         _restart_event(root, "failed", code=code)
         if not _rolled_back(root):  # a rolled-back start is already bringing the previous version up
-            _restart_failure_prompt()
+            _restart_failure_prompt(root)
         return 2
     finally:
         for _, handle in handles:

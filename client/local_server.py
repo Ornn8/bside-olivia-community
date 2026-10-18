@@ -68,6 +68,7 @@ from letter_triage import (
     _singing_video_configured,
 )
 from runtime.media.media_paths import configured_media_path
+from runtime.ui_i18n_backend import tr
 from runtime.media.local_song_library import LocalSongLibrary, LocalSongError
 from music_reply import (
     _persist_provider_failure,
@@ -3839,7 +3840,7 @@ async def _jev_proactive_tick() -> None:
             _observe_letter_initiative('deferred')
             return
         _proactive_reason = 'writing'
-        await _publish_proactive(intent, {'decision': 'send', 'format': 'text', 'title': '想和你说说话'}, turn=turn)
+        await _publish_proactive(intent, {'decision': 'send', 'format': 'text', 'title': tr('想和你说说话')}, turn=turn)
         _refresh_proactive_context()
         scan_pending(root)
         _proactive_reason = 'waiting'
@@ -3915,7 +3916,7 @@ async def _legacy_proactive_tick() -> None:
     turn = await _prepare_proactive_turn(intent, now=datetime.fromtimestamp(now, timezone.utc))
     # Eligibility already supplies a concrete reason. The model writes the
     # invitation in character, but does not postpone it or add media latency.
-    plan = ({'decision': 'send', 'format': 'text', 'title': '想和你聊两句'} if contact or daily
+    plan = ({'decision': 'send', 'format': 'text', 'title': tr('想和你聊两句')} if contact or daily
             else json.loads(await _proactive_complete(intent, planning=True, turn=turn)))
     if (not isinstance(plan, dict) or set(plan) != {'decision', 'format', 'title'}
             or plan['decision'] not in {'send', 'defer'} or plan['format'] not in {'text', 'voice'}
@@ -4370,7 +4371,7 @@ async def route(
                 source = (root / 'media' / name).resolve()
                 if not source.is_relative_to((root / 'media').resolve()) or not source.is_file():
                     return err(409, 'LETTER_AUDIO_NOT_READY', {})
-                report = await asyncio.to_thread(library.import_audio, source, body.get('name', '林离的原创歌曲' if song_url else '林离的翻唱'))
+                report = await asyncio.to_thread(library.import_audio, source, body.get('name', tr('林离的原创歌曲') if song_url else tr('林离的翻唱')))
                 return ok(report)
             if p.endswith("/import"):
                 return ok(await asyncio.to_thread(library.import_path, body.get("path")))
@@ -4794,10 +4795,10 @@ async def route(
             "model_gateway_token": fake_jwt(),
             "userInfo": {
                 "uid": store.uid,
-                "nickname": "玩家",
+                "nickname": tr("玩家"),
                 "isNewUser": False,
                 "isNewDevice": False,
-                "performanceModes": [{"type": "Solo", "displayName": "独奏"}],
+                "performanceModes": [{"type": "Solo", "displayName": tr("独奏")}],
                 "musicMenus": [],
             },
         })
