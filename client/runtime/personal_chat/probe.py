@@ -15,6 +15,8 @@ from urllib.parse import urlsplit
 
 import aiohttp
 
+from runtime.ui_i18n_backend import tr
+
 from .events import owner_message
 
 
@@ -103,7 +105,7 @@ async def wechat(args, session, journal):
         else:
             raise RuntimeError("WECHAT_LOGIN_EXPIRED")
     credentials = json.loads(_dpapi_unprotect(credentials_path.read_text(encoding="utf-8")))
-    print('微信连接测试就绪；请在授权后的会话中发送 /连接测试。普通消息不会发送给模型或写入记忆。', flush=True)
+    print(tr('微信连接测试就绪；请在授权后的会话中发送 /连接测试。普通消息不会发送给模型或写入记忆。'), flush=True)
     cursor = ""
     for _ in range(args.polls):
         try:
@@ -120,7 +122,7 @@ async def wechat(args, session, journal):
             ack = await wechat_request(session, credentials["base"], "/ilink/bot/sendmessage", token=credentials["token"], body={
                 "msg": {"from_user_id": "", "to_user_id": event.owner_id, "client_id": event.exchange_id,
                         "message_type": 2, "message_state": 2, "context_token": raw["context_token"],
-                        "item_list": [{"type": 1, "text_item": {"text": "连接测试消息已提交。正式端到端验证请在 Olivia 设置页按提示完成。"}}]}})
+                        "item_list": [{"type": 1, "text_item": {"text": tr("连接测试消息已提交。正式端到端验证请在 Olivia 设置页按提示完成。")}}]}})
             # A ret=0 response without a platform message id has been observed
             # without a visible client-side delivery. Do not call that roundtrip success.
             if not isinstance(ack.get("message_id"), str) or not ack["message_id"].strip():
@@ -143,7 +145,7 @@ async def qq(args, session, journal):
         await ws.send_json({"action": "get_login_info", "echo": "login"})
         account = None
         pending = set()
-        print('QQ 已连接协议端，等待登录状态；仅响应指定用户的 /连接测试。', flush=True)
+        print(tr('QQ 已连接协议端，等待登录状态；仅响应指定用户的 /连接测试。'), flush=True)
         async for message in ws:
             if message.type != aiohttp.WSMsgType.TEXT:
                 continue
@@ -171,7 +173,7 @@ async def qq(args, session, journal):
                 pending.add(event.exchange_id)
                 await ws.send_json({"action": "send_private_msg", "echo": event.exchange_id,
                     "params": {"user_id": int(event.owner_id), "message": [{"type": "text", "data": {
-                        "text": "连接测试成功。这是固定测试消息，还没有调用林离的记忆和世界。"}}]}})
+                        "text": tr("连接测试成功。这是固定测试消息，还没有调用林离的记忆和世界。")}}]}})
 
 
 async def run(args):

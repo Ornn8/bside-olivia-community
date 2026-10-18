@@ -18,10 +18,11 @@ _LOCK = threading.Lock()
 
 
 def _ticket():
+    from runtime import ui_language
     from runtime.remote_generation import gpu_tls_context
     from .napcat_installer import NapCatSetupError
     request = urllib.request.Request(TICKET_URL, headers={
-        'User-Agent': 'Olivia-QQ-bootstrap/1', 'X-Olivia-Component-Storage': 'cos-v2'})
+        'User-Agent': 'Olivia-QQ-bootstrap/1', 'X-Olivia-Component-Storage': 'cos-v2', **ui_language.headers()})
     with urllib.request.urlopen(request, context=gpu_tls_context(), timeout=20) as response:
         if response.geturl() != TICKET_URL:
             raise NapCatSetupError('NAPCAT_SOURCE_INVALID')

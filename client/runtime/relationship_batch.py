@@ -112,6 +112,7 @@ async def request_batch(gateway, batch, chosen):
     import os
     from aiohttp import ClientSession, ClientTimeout, ClientError
     from original_client_relay_api import RELAY_BASE
+    from runtime import ui_language
     from runtime.tls import client_tls_context
     gateway = getattr(gateway, 'primary', gateway)
     config = gateway.config
@@ -121,7 +122,7 @@ async def request_batch(gateway, batch, chosen):
     packet = {**batch, 'route': chosen, 'criteria': get_policy('relationship_criteria')}
     async with ClientSession(timeout=ClientTimeout(total=240), trust_env=False) as session:
         async with session.post(RELAY_BASE + '/relationship-batch', json=packet,
-            headers={'Authorization': 'Bearer ' + os.environ.get(config.api_key_env, '')},
+            headers={'Authorization': 'Bearer ' + os.environ.get(config.api_key_env, ''), **ui_language.headers()},
             ssl=client_tls_context(), allow_redirects=False) as response:
             if response.status != 200:
                 code = None

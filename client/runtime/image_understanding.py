@@ -95,6 +95,7 @@ async def describe_image(server, path, source='generated', *, operation_id=None)
                 {'type': 'text', 'text': f'采样时间：{seconds}秒'},
                 {'type': 'image_url', 'image_url': {'url': frame}}])
     from original_client_relay_api import RELAY_BASE
+    from runtime import ui_language
     from runtime.remote_generation import gpu_tls_context
     tls = {'ssl': gpu_tls_context()} if url == RELAY_BASE else {}
     identity = f'image-observation-v1:{operation_id or digest}:{source}:{digest}'
@@ -104,7 +105,8 @@ async def describe_image(server, path, source='generated', *, operation_id=None)
                                 **tls,
                                 headers={'Authorization': 'Bearer ' + key,
                                          'Idempotency-Key': request_id,
-                                         'X-Request-ID': 'image-observation-' + digest[:32]}) as response:
+                                         'X-Request-ID': 'image-observation-' + digest[:32],
+                                         **(ui_language.headers() if url == RELAY_BASE else {})}) as response:
             if response.status != 200:
                 code = ({409: 'IMAGE_VISION_DUPLICATE', 401: 'IMAGE_VISION_AUTH_FAILED',
                          403: 'IMAGE_VISION_AUTH_FAILED', 402: 'IMAGE_VISION_QUOTA_EXHAUSTED'}

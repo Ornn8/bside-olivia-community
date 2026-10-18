@@ -5,6 +5,8 @@ import pytest
 from original_client_settings_ui import BOOTSTRAP_JAVASCRIPT
 from runtime.personal_chat.setup_ui import PERSONAL_CHAT_SETUP_JAVASCRIPT
 
+SHIM = Path(__file__).resolve().parents[1].joinpath("js_shim", "olivia_i18n_shim.js").read_text(encoding="utf-8")
+
 
 def test_cloud_dialog_retry_cancel_and_chat_button_contrast(tmp_path):
     browser = Path('C:/Program Files/Google/Chrome/Application/chrome.exe')
@@ -17,7 +19,7 @@ def test_cloud_dialog_retry_cancel_and_chat_button_contrast(tmp_path):
     page = tmp_path / 'preflight.html'
     page.write_text('''<!doctype html><meta charset="utf-8"><style>body{background:#181818;color:black}'''+css+'''</style>
 <div data-olivia-personal-chat-setup><button class="olivia-chat-action">重新绑定</button><button class="olivia-chat-action">一键安装</button></div><pre id="result"></pre>
-<script>
+<script>'''+SHIM+'''</script><script>
 const text=(tag,value)=>{const el=document.createElement(tag);el.textContent=value;return el};
 const actions=()=>document.createElement('div');
 const button=(label,fn)=>{const el=text('button',label);el.onclick=fn;return el};

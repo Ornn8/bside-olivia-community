@@ -446,6 +446,8 @@ class JevDecisionPort:
         if self.endpoint.startswith('https://'):
             from .jev_billing import cloud_request_headers
             headers.update(cloud_request_headers(body_digest))
+            from runtime import ui_language
+            headers.update(ui_language.headers())
         else:
             headers.update(billing_headers())
             if self._token:

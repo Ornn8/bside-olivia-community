@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from enum import Enum
 import re
 
+from runtime import output_language
+
 
 class ReplyContextError(ValueError):
     code = "REPLY_CONTEXT_INVALID"
@@ -396,7 +398,7 @@ class OutputConstraints:
     @classmethod
     def for_mode(cls, mode: ReplyMode) -> "OutputConstraints":
         if mode is ReplyMode.TEXT_LETTER:
-            return cls(OutputChannel.LETTER, max_characters=1_200)
+            return cls(OutputChannel.LETTER, max_characters=output_language.scaled(1_200))
         if mode in {ReplyMode.SPOKEN_VIDEO, ReplyMode.MUSICAL_VIDEO, ReplyMode.VOICE_REPLY, ReplyMode.SINGING_VIDEO, ReplyMode.VOICE_SONG_VIDEO}:
             return cls(OutputChannel.SPOKEN_TEXT)
         if mode is ReplyMode.FUTURE_IM:

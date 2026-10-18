@@ -1,9 +1,28 @@
 Set shell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 root = fso.GetParentFolderName(WScript.ScriptFullName)
+' The interface language saved by the app (data\config\ui-language.json); Chinese unless English was chosen.
+Function OliviaEnglish(installRoot)
+    OliviaEnglish = False
+    On Error Resume Next
+    savedLanguage = installRoot & "\data\config\ui-language.json"
+    If fso.FileExists(savedLanguage) Then
+        Set languageStream = fso.OpenTextFile(savedLanguage, 1)
+        languageText = languageStream.ReadAll
+        languageStream.Close
+        If InStr(languageText, """language"": ""en""") > 0 Then OliviaEnglish = True
+    End If
+    On Error GoTo 0
+End Function
 If WScript.Arguments.Named.Exists("error") Then
     errorCode = WScript.Arguments.Named.Item("error")
-    MsgBox "Olivia 启动失败（错误码 " & errorCode & "）。" & vbCrLf & "请将安装目录 data\logs 下的启动日志提供给维护者。", 16, "Olivia 本地版"
+    failureTitle = "Olivia 本地版"
+    failureText = "Olivia 启动失败（错误码 " & errorCode & "）。" & vbCrLf & "请将安装目录 data\logs 下的启动日志提供给维护者。"
+    If OliviaEnglish(root) Then
+        failureTitle = "Olivia"
+        failureText = "Olivia failed to start (error code " & errorCode & ")." & vbCrLf & "Please send the startup logs in the data\logs folder of the installation to the maintainer."
+    End If
+    MsgBox failureText, 16, failureTitle
     WScript.Quit 0
 End If
 wscriptExe = shell.ExpandEnvironmentStrings("%WINDIR%") & "\System32\wscript.exe"

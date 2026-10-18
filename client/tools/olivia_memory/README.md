@@ -2,7 +2,7 @@
 
 把灵离（`.soul` 文件）里的旧信搬进本地 Olivia（月离）的信件库，并保证时间显示与信箱排序正确；以前导入过、但显示为 `NaN-NaN-NaN` 或「时间未知」的信，也能就地修复。完整使用说明（带图）见 [`说明.docx`](说明.docx)。
 
-设置页中的信件对比、时间修复和重复信整理，见 [信件对比与整理指南](letter-maintenance-guide.md)。本目录随安装包分发，安装后也能直接阅读这份指南。
+设置页中的信件对比、时间修复和重复信整理，见 [信件对比与整理指南](letter-maintenance-guide.md)（English: [Compare and tidy letters](letter-maintenance-guide.en.md)）。本目录随安装包分发，安装后也能直接阅读这份指南。
 
 ## 文件
 
@@ -12,6 +12,7 @@
 | `运行.bat` | Windows 启动器：定位本机 Python 后启动 `olivia_memory.py`（纯 ASCII，CRLF） |
 | `说明.docx` | 面向用户的带图详细说明书（正文、用法、回滚） |
 | `letter-maintenance-guide.md` | 设置页中的信件对比、时间修复和重复信整理指南 |
+| `letter-maintenance-guide.en.md` | 同一份指南的英文版（界面英文模式下的按钮和提示用语） |
 
 ## 边界
 
@@ -29,7 +30,7 @@
 
 ## 设计要点（给后续维护者）
 
-- `letter-maintenance-guide.md` 是 `client/docs/letter-maintenance-guide.md` 的随包副本；更新说明时，两处内容应保持一致。
+- `letter-maintenance-guide.md` 是 `client/docs/letter-maintenance-guide.md` 的随包副本；更新说明时，两处内容应保持一致。英文版 `letter-maintenance-guide.en.md` 同样在两处各有一份，随中文版一起更新。
 - `created_at` 必须落库为数字（epoch 秒）；ISO 字符串只修排序不修显示，`None`（走 `letter_pairs.json` 导入）两样都错。
 - 同一分钟的多封信按 `.soul` `exchanges` 数组顺序定先后，通过可排序的 `memory_id` / 秒数承载；`uuid4` 不可用。
 - 判重按「去信 + 回信」忽略空白全等，跨 `legacy_letters` 与 `state.json` 两个存储；近似重复（正文很像但不逐字相同）与精确判重共用同一套相似度口径与门槛，`compare` 与 `apply` 共用同一套索引与分类实现。

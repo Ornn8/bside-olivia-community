@@ -15,6 +15,8 @@ import zipfile
 
 from aiohttp import web
 
+from runtime.ui_i18n_backend import tr
+
 
 STATUS_PATH = "/toy/capabilities/mem0"
 ACTION_PATH = "/toy/capabilities/mem0/action"
@@ -129,8 +131,8 @@ def _select_windows_offline_archive() -> Path | None:
     script = (
         "Add-Type -AssemblyName System.Windows.Forms;"
         "$dialog = New-Object System.Windows.Forms.OpenFileDialog;"
-        "$dialog.Title = '选择 Olivia 记忆离线包';"
-        "$dialog.Filter = 'Olivia 记忆离线包 (*.zip)|*.zip';"
+        f"$dialog.Title = '{tr('选择 Olivia 记忆离线包')}';"
+        f"$dialog.Filter = '{tr('Olivia 记忆离线包 (*.zip)|*.zip')}';"
         "$dialog.Multiselect = $false;"
         "if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) "
         "{ [Console]::Out.Write($dialog.FileName) }"

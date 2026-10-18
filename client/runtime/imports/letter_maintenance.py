@@ -11,6 +11,7 @@ import json
 import re
 
 from .letter_backup import MAX_BYTES, MAX_LETTERS, _soul_backup, validate_backup
+from runtime.ui_i18n_backend import tr
 
 TERMINAL = {'COMPLETED', 'FAILED', 'CANCELED', 'CANCELLED'}
 FAILED = TERMINAL - {'COMPLETED'}
@@ -118,7 +119,7 @@ def preview(rows, edits, backup=None):
     for raw, row in zip(rows, projected):
         change = edits.get(key(raw), {})
         if change:
-            add('restore', row, options=[('恢复整理前的显示和时间', raw, None, None)])
+            add('restore', row, options=[(tr('恢复整理前的显示和时间'), raw, None, None)])
         if change.get('hidden'):
             continue
         if (row.get('letter_status', 'COMPLETED') not in TERMINAL
@@ -127,11 +128,11 @@ def preview(rows, edits, backup=None):
             continue
         visible.append(row)
         if row.get('letter_status') in FAILED:
-            add('failed', row, options=[('从信箱收起这封失败信', row, {'hidden': 'failed'}, None)])
+            add('failed', row, options=[(tr('从信箱收起这封失败信'), row, {'hidden': 'failed'}, None)])
         # Unlike the standalone heuristic, absence of native fields is not proof
         # of import. Only explicit external-tool provenance permits bulk hiding.
         if row.get('imported_by'):
-            add('imported', row, options=[('收起旧工具导入信', row, {'hidden': 'imported'}, None)])
+            add('imported', row, options=[(tr('收起旧工具导入信'), row, {'hidden': 'imported'}, None)])
 
     index = defaultdict(list)
     for row in visible:
@@ -141,7 +142,7 @@ def preview(rows, edits, backup=None):
         completed = [r for r in group if r.get('letter_status', 'COMPLETED') == 'COMPLETED']
         completed.sort(key=lambda r: (not r.get('read_only', False), stamp(r.get('created_at')) is not None), reverse=True)
         for row in completed[1:]:
-            add('duplicate', row, completed[0], [('保留右侧，收起左侧', row, {'hidden': 'duplicate'}, completed[0])])
+            add('duplicate', row, completed[0], [(tr('保留右侧，收起左侧'), row, {'hidden': 'duplicate'}, completed[0])])
 
     # Cache bigrams and bound expensive comparisons. Exact matching always covers
     # the entire mailbox; partial near scans are explicitly reported to the UI.
@@ -180,8 +181,8 @@ def preview(rows, edits, backup=None):
                     result['near_limited'] = True
                     break
                 if similar(a, b):
-                    add('near', a, b, [('保留左侧，收起右侧', b, {'hidden': 'near'}, a),
-                                       ('保留右侧，收起左侧', a, {'hidden': 'near'}, b)])
+                    add('near', a, b, [(tr('保留左侧，收起右侧'), b, {'hidden': 'near'}, a),
+                                       (tr('保留右侧，收起左侧'), a, {'hidden': 'near'}, b)])
     else:
         sources = defaultdict(list)
         for position, row in enumerate(source):
@@ -203,7 +204,7 @@ def preview(rows, edits, backup=None):
             time = times.pop()
             for existing in matches:
                 if time is not None and (stamp(existing.get('created_at')) != time or existing.get('_maintenance_order') != position):
-                    add('time', existing, row, [('按备份修复时间和顺序', existing,
+                    add('time', existing, row, [(tr('按备份修复时间和顺序'), existing,
                                                 {'created_at': time, 'order': position}, None)])
                 else:
                     add('same', existing, row)

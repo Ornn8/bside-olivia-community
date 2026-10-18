@@ -17,6 +17,8 @@ from weakref import WeakValueDictionary
 
 from jsonschema import Draft202012Validator
 
+from runtime import output_language, ui_language
+
 SHANGHAI = timezone(timedelta(hours=8))
 WRITE_AFTER_HOUR = 1        # yesterday's entry is written after 01:00 local time, or at the next start
 CATCH_UP_DAYS = 7           # missed days written when the app was closed
@@ -79,6 +81,41 @@ REVISE_SCHEMA['properties'] = {key: SCHEMA['properties'][key] for key in ('title
 REVISE_FORMAT = {'type': 'json_schema', 'json_schema': {
     'name': 'diary_revision', 'strict': True, 'schema': REVISE_SCHEMA}}
 _DATE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
+
+
+def _english_limits(value):
+    """The same schema with every text length limit sized for English, which runs longer than Chinese."""
+    if isinstance(value, dict):
+        return {key: item * output_language.LENGTH_FACTOR if key == 'maxLength' else _english_limits(item)
+                for key, item in value.items()}
+    if isinstance(value, list):
+        return [_english_limits(item) for item in value]
+    return value
+
+
+_ENGLISH_SCHEMA = _english_limits(SCHEMA)
+_ENGLISH_REVISE_SCHEMA = _english_limits(REVISE_SCHEMA)
+_ENGLISH_VALIDATOR = Draft202012Validator(_ENGLISH_SCHEMA)
+_ENGLISH_FORMAT = {'type': 'json_schema', 'json_schema': {
+    'name': 'diary_entry', 'strict': True, 'schema': _without_counts(_ENGLISH_SCHEMA)}}
+_ENGLISH_REVISE_FORMAT = {'type': 'json_schema', 'json_schema': {
+    'name': 'diary_revision', 'strict': True, 'schema': _ENGLISH_REVISE_SCHEMA}}
+
+
+def _formats():
+    """The entry validator, the revision schema and both response formats for the interface language."""
+    if ui_language.is_english():
+        return _ENGLISH_VALIDATOR, _ENGLISH_REVISE_SCHEMA, _ENGLISH_FORMAT, _ENGLISH_REVISE_FORMAT
+    return _VALIDATOR, REVISE_SCHEMA, FORMAT, REVISE_FORMAT
+
+
+def _length_in_range(body, bounds):
+    """Whether the edited body keeps the length asked for. The bounds are Chinese characters; English is counted
+    in words (about 0.6 per character, with room either way)."""
+    low, high = bounds
+    if ui_language.is_english():
+        return round(low * 0.45) <= len(body.split()) <= round(high * 0.85)
+    return low <= len(_normalized(body)) <= high
 
 PROMPT = '''你是林离。一天结束了，你在睡前写今天的日记。这本日记他会看到，是你们之间的小秘密；可你写的时候，是写给自己的。
 怎么写：
@@ -199,7 +236,7 @@ def _normalized(text):
 
 
 def validate(value, messages):
-    _VALIDATOR.validate(value)
+    _formats()[0].validate(value)
     title, mood, body = (value[key].strip() for key in ('title', 'mood', 'body'))
     if not title or not body:
         raise ValueError('DIARY_ENTRY_EMPTY')
@@ -755,7 +792,7 @@ async def _write(store, gateway, day, rows, *, persona, life=None, now=None, tim
             base_url = getattr(config, 'base_url', '')
             model = routed_model(base_url, getattr(config, 'model', None))
             entry = await _complete(gateway, prefix + ':' + day, (MEMOIR_PROMPT if memoir else PROMPT) + QUALITY_PROMPT,
-                                    packet, FORMAT, timeout_seconds, model=model)
+                                    packet, _formats()[2], timeout_seconds, model=model)
             entry = validate(entry, packet['messages'])
             work = dict(entry=entry, packet=packet, short=short, style=style, photos=photos,
                         model=model, base_url=base_url, source_window_version=1)
@@ -774,11 +811,10 @@ async def _write(store, gateway, day, rows, *, persona, life=None, now=None, tim
                 store.checkpoint(day, 'revising', work)
                 revised = await _complete(gateway, prefix + '-revise:' + day, REVISE_PROMPT,
                     {**work['packet'], 'draft': {k: work['entry'][k] for k in ('title', 'mood', 'body')}},
-                    REVISE_FORMAT, timeout_seconds, model=work['model'])
-                Draft202012Validator(REVISE_SCHEMA).validate(revised)
+                    _formats()[3], timeout_seconds, model=work['model'])
+                Draft202012Validator(_formats()[1]).validate(revised)
                 entry = validate({**revised, 'facts': work['entry']['facts']}, work['packet']['messages'])
-                low, high = work['packet']['length_range']
-                if not low <= len(_normalized(entry['body'])) <= high:
+                if not _length_in_range(entry['body'], work['packet']['length_range']):
                     raise ValueError('DIARY_REVISION_LENGTH')
                 work['entry'] = {**entry, 'facts': work['entry']['facts']}
             except Exception:

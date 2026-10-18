@@ -5,6 +5,7 @@ import os
 from aiohttp import web
 from original_client_setup_api import _authorize, _body, _headers, SESSION_HEADER
 from runtime.cloud_service import CloudError
+from runtime.ui_i18n_backend import tr
 
 
 def mount_cloud_api(app, service, setup, gpu_settings=None):
@@ -97,7 +98,7 @@ def mount_cloud_api(app, service, setup, gpu_settings=None):
         except CloudError as exc:
             payload = {'error_code': exc.code}
             if exc.code == 'GPU_CLIENT_UPDATE_REQUIRED':
-                payload['message'] = '请重启客户端以更新原创收费确认。草稿已保留。'
+                payload['message'] = tr('请重启客户端以更新原创收费确认。草稿已保留。')
             return web.json_response(payload, status=exc.status, headers=_headers(origin))
     async def options(request):
         origin = _authorize(request, confirm=False)

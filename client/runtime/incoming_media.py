@@ -119,13 +119,14 @@ async def describe_media(server, path, kind, name, operation_id):
     from original_client_relay_api import RELAY_BASE
     if url != RELAY_BASE or not key.startswith('olivia-'):
         raise RuntimeError('MEDIA_NATIVE_NOT_CONFIGURED')
+    from runtime import ui_language
     from runtime.remote_generation import gpu_tls_context
     identity = 'media-observation:' + hashlib.sha256(operation_id.encode()).hexdigest()
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=300)) as session:
         async with session.post(url + '/media/observations', json={'kind': kind, 'mime_type': mime,
                 'data': base64.b64encode(raw).decode()}, allow_redirects=False,
                 ssl=gpu_tls_context(), headers={'Authorization': 'Bearer ' + key,
-                    'Idempotency-Key': identity, 'X-Request-ID': identity}) as response:
+                    'Idempotency-Key': identity, 'X-Request-ID': identity, **ui_language.headers()}) as response:
             if response.status != 200:
                 raise RuntimeError('MEDIA_NATIVE_UNAVAILABLE')
             body = bytearray()

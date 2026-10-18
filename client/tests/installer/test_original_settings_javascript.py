@@ -8,6 +8,7 @@ import subprocess
 import pytest
 
 from original_client_settings_ui import BOOTSTRAP_JAVASCRIPT
+from runtime.ui_i18n import I18N_JAVASCRIPT
 
 
 def test_relationship_refresh_keeps_loaded_content_visible():
@@ -105,7 +106,8 @@ def test_llm_save_and_delete_copy_says_changes_apply_immediately() -> None:
 
     assert "已连接并保存 Olivia 回信服务，下一次发送生效。" in source
     assert "连接已删除。下一次发送立即生效。" in source
-    assert "重启 Olivia 后生效" not in source
+    # the English dictionary at the head of the bootstrap lists every wrapped sentence, so look at the scripts only
+    assert "重启 Olivia 后生效" not in source.replace(I18N_JAVASCRIPT, "")
     assert "confirmAction" in source
     assert "window.open" not in source
     assert "innerHTML" not in source
@@ -263,7 +265,7 @@ def test_memory_capability_offers_direct_offline_zip_import() -> None:
         "const renderMem0CapabilityPanel = async (panel, initialMode = false) => {", 1
     )[1].split("const videoCapabilityViewState", 1)[0]
 
-    assert 'button("导入记忆离线包（ZIP）"' in memory_panel
+    assert 'button(t("导入记忆离线包（ZIP）")' in memory_panel
     assert '{ action: "import_offline" }' in memory_panel
     assert "无需解压" in memory_panel
 
@@ -279,13 +281,13 @@ def test_memory_offline_import_progress_is_not_described_as_a_download() -> None
         in memory_panel
     )
     assert (
-        'downloading: offlineImport ? "正在校验并导入离线包" : "下载中"'
+        'downloading: offlineImport ? t("正在校验并导入离线包") : t("下载中")'
         in memory_panel
     )
-    assert 'queued: offlineImport ? "等待导入" : "等待下载"' in memory_panel
-    assert 'field(offlineImport ? "离线包内容" : "下载量"' in memory_panel
-    assert 'field(offlineImport ? "待处理" : "剩余"' in memory_panel
-    assert 'button(offlineImport ? "暂停导入" : "暂停下载"' in memory_panel
+    assert 'queued: offlineImport ? t("等待导入") : t("等待下载")' in memory_panel
+    assert 'field(offlineImport ? t("离线包内容") : t("下载量")' in memory_panel
+    assert 'field(offlineImport ? t("待处理") : t("剩余")' in memory_panel
+    assert 'button(offlineImport ? t("暂停导入") : t("暂停下载")' in memory_panel
 
 
 def test_memory_runtime_preparation_shows_live_elapsed_time() -> None:

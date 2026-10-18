@@ -41,6 +41,7 @@ from runtime.reply.reply_media import (
     render_reply_video,
 )
 from runtime.media.song_content import plan_song_content
+from runtime.ui_i18n_backend import tr
 from runtime.media.voice_conversion import (
     VoiceConversionError,
     convert_singing_voice,
@@ -384,9 +385,9 @@ def video_reply_dependency_status(
         except LatentSyncReplyError:
             ffmpeg_ready = False
         dependencies = [
-            {'id': name, 'label': label, 'state': 'ready' if ready else 'missing',
+            {'id': name, 'label': tr(label), 'state': 'ready' if ready else 'missing',
              'install_mode': 'remote' if name != 'ffmpeg' else 'managed', 'sources': [],
-             'source_summary': '云端服务' if name != 'ffmpeg' else '本地素材组装'}
+             'source_summary': tr('云端服务') if name != 'ffmpeg' else tr('本地素材组装')}
             for name, label, ready in (
                 ('cloud_video', '云端语音视频', 'video' in kinds),
                 ('cloud_music', '云端音乐视频', 'original_video' in kinds),
@@ -579,14 +580,14 @@ def video_reply_dependency_status(
             source_summary = "国内：ModelScope；备用：Hugging Face"
         result: dict[str, object] = {
             "id": identifier,
-            "label": label,
+            "label": tr(label),
             "state": "ready" if ready else "missing",
             "install_mode": install_mode,
-            "source_summary": source_summary,
+            "source_summary": tr(source_summary),
             "sources": [
                 {
                     "id": source_id,
-                    "label": (
+                    "label": tr(
                         "国内源（ModelScope）"
                         if source_id == "domestic"
                         and identifier in {"latentsync", "minimax_music3"}

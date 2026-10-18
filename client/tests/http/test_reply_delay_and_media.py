@@ -487,7 +487,7 @@ def test_letter_media_progress_ui_asks_the_user_to_top_up() -> None:
     from original_client_settings_ui import BOOTSTRAP_JAVASCRIPT
 
     assert (
-        "cloudErrors.GPU_INSUFFICIENT_BALANCE='Olivia 可用余额不足，请充值后重试。';"
+        "cloudErrors.GPU_INSUFFICIENT_BALANCE=t('Olivia 可用余额不足，请充值后重试。');"
         in BOOTSTRAP_JAVASCRIPT
     )
 

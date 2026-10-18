@@ -142,7 +142,7 @@ def test_client_gets_short_grace_after_backend_exit(tmp_path, monkeypatch):
 def test_helper_failure_is_logged_and_visible(tmp_path, monkeypatch):
     events = []
     monkeypatch.setattr(launcher, "_restart_processes", lambda root: (_ for _ in ()).throw(OSError("private detail")))
-    monkeypatch.setattr(launcher, "_restart_failure_prompt", lambda: events.append("prompt"))
+    monkeypatch.setattr(launcher, "_restart_failure_prompt", lambda *_: events.append("prompt"))
     assert launcher._update_restart(tmp_path, tmp_path / "ready") == 2
     log = (tmp_path / "data/logs/launcher.jsonl").read_text()
     assert "UPDATE_RESTART_HELPER_FAILED" in log
@@ -164,7 +164,7 @@ def test_helper_orders_shutdown_before_normal_start(tmp_path, monkeypatch, fail_
     monkeypatch.setattr(launcher.time, "sleep", lambda _: ready.unlink(missing_ok=True))
     monkeypatch.setattr(launcher, "_close_restart_windows", lambda pids: steps.append("close"))
     monkeypatch.setattr(launcher, "_wait_restart_processes", lambda *args: steps.append("wait"))
-    monkeypatch.setattr(launcher, "_restart_failure_prompt", lambda: steps.append("prompt"))
+    monkeypatch.setattr(launcher, "_restart_failure_prompt", lambda *_: steps.append("prompt"))
 
     class Process:
         def poll(self):

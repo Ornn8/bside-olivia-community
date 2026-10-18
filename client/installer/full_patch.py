@@ -46,6 +46,7 @@ PAYLOAD_DIRS = (
 )
 PAYLOAD_EXTRA_DIRS = (
     "runtime/letter_stickers",
+    "runtime/native_locale",
     "runtime/imports",
     "runtime/media",
     "runtime/memory",
@@ -80,6 +81,10 @@ PAYLOAD_EXTRA_FILES = (
     "runtime/call_ui.py",
     "runtime/call_avatar_ui.py",
     "runtime/update_ui.py",
+    "runtime/ui_i18n.py",
+    "runtime/ui_i18n_backend.py",
+    "runtime/ui_language.py",
+    "runtime/output_language.py",
     "runtime/auto_update.py",
     "runtime/ed25519.py",
     "runtime/personal_chat/piano.py",
@@ -124,6 +129,7 @@ PAYLOAD_ROOT_FILES = {
     "original_client_cloud_api.py",
     "original_client_relay_api.py",
     "original_client_settings_ui.py",
+    "original_client_ui_language_api.py",
     "original_client_update_api.py",
     "patch_companion_settings.py",
     "patch_feapp.py",
@@ -150,6 +156,7 @@ PAYLOAD_REQUIRED_ROOT_FILES = {
     "original_client_cloud_api.py",
     "original_client_relay_api.py",
     "original_client_settings_ui.py",
+    "original_client_ui_language_api.py",
     "original_client_update_api.py",
     "original_client_video_capability_api.py",
     "patch_companion_settings.py",
@@ -159,10 +166,16 @@ PAYLOAD_REQUIRED_ROOT_FILES = {
     "video_capability_install.py",
 }
 PAYLOAD_REQUIRED_RELATIVE_FILES = {
+    "installer/patch_native_locale.py",
+    "runtime/native_locale/en.js",
     "runtime/personal_chat/_patch_desktop_mail.py",
     "runtime/call_ui.py",
     "runtime/call_avatar_ui.py",
     "runtime/update_ui.py",
+    "runtime/ui_i18n.py",
+    "runtime/ui_i18n_backend.py",
+    "runtime/ui_language.py",
+    "runtime/output_language.py",
     "runtime/auto_update.py",
     "runtime/ed25519.py",
     "runtime/call/__init__.py",
@@ -933,6 +946,8 @@ def install_full_patch(
             )
             from installer.patch_letter_stickers import patch_letter_stickers
             patch_letter_stickers(feapp)
+            from installer.patch_native_locale import patch_native_locale
+            patch_native_locale(feapp)
             player_patch = patch_webplayer(
                 webplayer,
                 work_root=resources,

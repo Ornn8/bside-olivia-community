@@ -1,6 +1,8 @@
 """Letter presentation metadata stays outside canonical spoken/memory text."""
 import re
 
+from runtime import ui_language
+
 
 LETTER_PRESENTATION_INSTRUCTION = (
     '信件格式：按语意自然分段，换话题或情绪转折时另起一段，段间空一行；'
@@ -17,7 +19,8 @@ def valid_signature(value):
 
 
 def split_signature(text):
-    signature = '林离'
+    english = ui_language.is_english()
+    signature = 'Linli' if english else '林离'
     marker = re.search(r'\[{1,2}\s*signature\s*:', text, re.IGNORECASE)
     if marker:
         footer = text[marker.start():].strip()
@@ -25,8 +28,11 @@ def split_signature(text):
         if match and valid_signature(match[1]):
             signature = match[1]
         text = text[:marker.start()].rstrip()
+    if english and signature == '林离':
+        signature = 'Linli'  # the prompt's own default is the Chinese name
     # Strip only duplicate terminal signatures; preserve model-authored whitespace inside the body.
-    suffix = r'(?:\r?\n)+[ \t]*(?:[—－-]{1,2})?(?:' + re.escape(signature) + r'|林离)[ \t\r\n]*$'
+    suffix = (r'(?:\r?\n)+[ \t]*(?:[—－-]{1,2})?(?:' + re.escape(signature) + r'|林离' + ('|Linli' if english else '')
+              + r')[ \t\r\n]*$')
     while re.search(suffix, text):
         text = re.sub(suffix, '', text)
     return text, signature

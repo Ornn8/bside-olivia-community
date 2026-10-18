@@ -50,12 +50,13 @@ def available():
 
 
 def _post(key, texts, timeout):
+    from runtime import ui_language
     from runtime.official_endpoints import API_BASE
     from runtime.tls import client_tls_context
     from runtime.reply.companion_decision import _NoRedirect
     body = json.dumps({'model': MODEL, 'input': texts}, ensure_ascii=False).encode()
     request = urllib.request.Request(API_BASE + '/embeddings', data=body, method='POST',
-                                     headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json'})
+                                     headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json', **ui_language.headers()})
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect(),
                                         urllib.request.HTTPSHandler(context=client_tls_context()))
     with opener.open(request, timeout=timeout) as response:

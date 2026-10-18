@@ -14,6 +14,7 @@ JAVASCRIPT = r'''
   if (typeof document === 'undefined' || !document.head || typeof document.querySelector !== 'function'
       || typeof window === 'undefined' || window.__oliviaCallUi) return;
   window.__oliviaCallUi = true;
+  const t = (zh, vars) => window.oliviaI18n ? window.oliviaI18n.t(zh, vars) : String(zh).replace(/\{(\w+)\}/g, (m, k) => vars && k in vars ? vars[k] : m);
   const css = document.createElement('style');
   css.textContent = `
   .olivia-call-entry{display:none;align-items:center;gap:6px;height:32px;padding:0 14px 0 11px;border:1px solid #8c7a5c;
@@ -122,8 +123,8 @@ JAVASCRIPT = r'''
 
   // The phone button sits in the header's account group (next to 账户), styled like the header's pills.
   const entry = node('button', 'olivia-call-entry');
-  entry.type = 'button'; entry.append(icon()); node('span', null, '打电话', entry);
-  entry.setAttribute('aria-label', '给她打电话'); entry.title = '给她打电话';
+  entry.type = 'button'; entry.append(icon()); node('span', null, t('打电话'), entry);
+  entry.setAttribute('aria-label', t('给她打电话')); entry.title = t('给她打电话');
   entry.onclick = () => open();
   let placing = false;
   function place() {
@@ -149,7 +150,7 @@ JAVASCRIPT = r'''
   }
 
   // The user picks the model of each call; the last choice is remembered on this computer.
-  const MODEL_LABELS = {flash: ['标准', '日常聊天'], plus: ['增强', '回应更生动、更像她']};
+  const MODEL_LABELS = {flash: [t('标准'), t('日常聊天')], plus: [t('增强'), t('回应更生动、更像她')]};
   const MODEL_KEY = 'olivia-call-model';
   const models = () => (config?.models || []).filter(m => MODEL_LABELS[m.id] && typeof m.cents_per_minute === 'number');
   function chosenModel() {
@@ -165,16 +166,16 @@ JAVASCRIPT = r'''
     if (!plan?.cents_per_minute) return '';
     const low = plan.base_cents_per_minute, high = plan.busy_cents_per_minute;
     return high && low && high !== low
-      ? `每分钟 ${yuan(low)}，通话的人多时 ${yuan(high)}；接通时的价格整通电话不变，按秒计费。`
-      : `每分钟 ${yuan(plan.cents_per_minute)}，按秒计费。`;
+      ? t('每分钟 {low}，通话的人多时 {high}；接通时的价格整通电话不变，按秒计费。', {low: yuan(low), high: yuan(high)})
+      : t('每分钟 {price}，按秒计费。', {price: yuan(plan.cents_per_minute)});
   }
 
   const MESSAGES = {
-    CALL_ACCOUNT_REQUIRED: '还没有连接 Olivia 账户，暂时不能打电话。',
-    CALL_INSUFFICIENT_BALANCE: '余额不足，充值后再打吧。', CALL_BUSY: '线路有点忙，稍后再打试试。',
-    CALL_NETWORK: '网络不太稳定，没能打通。', CALL_AUTH_FAILED: '账户 Key 无效，请在设置里重新连接。',
-    CALL_MODEL_UNKNOWN: '这个通话模型暂时不能用，换一个试试。',
-    MIC: '没能打开麦克风，请检查麦克风权限和设备。'
+    CALL_ACCOUNT_REQUIRED: t('还没有连接 Olivia 账户，暂时不能打电话。'),
+    CALL_INSUFFICIENT_BALANCE: t('余额不足，充值后再打吧。'), CALL_BUSY: t('线路有点忙，稍后再打试试。'),
+    CALL_NETWORK: t('网络不太稳定，没能打通。'), CALL_AUTH_FAILED: t('账户 Key 无效，请在设置里重新连接。'),
+    CALL_MODEL_UNKNOWN: t('这个通话模型暂时不能用，换一个试试。'),
+    MIC: t('没能打开麦克风，请检查麦克风权限和设备。')
   };
 
   // Her avatar, for accounts that own it, takes the orb's place (files come through this computer's backend).
@@ -202,15 +203,15 @@ JAVASCRIPT = r'''
     const price = '¥' + (avatarState.cents / 100).toFixed(avatarState.cents % 100 ? 2 : 0);
     const offer = node('div', 'olivia-call-offer');
     const words = node('div', null, null, offer);
-    node('b', null, '她的通话形象', words);
-    const note = node('span', null, '通话时换成会动的她，表情和手势跟着说话变化。', words);
-    const buy = node('button', null, '解锁 ' + price, offer);
+    node('b', null, t('她的通话形象'), words);
+    const note = node('span', null, t('通话时换成会动的她，表情和手势跟着说话变化。'), words);
+    const buy = node('button', null, t('解锁 {price}', {price}), offer);
     buy.type = 'button';
     // Two steps in the button itself: the first click states the one-time price, the second buys.
     buy.onclick = async () => {
       if (!buy.dataset.armed) {
-        buy.dataset.armed = '1'; buy.textContent = '确认 ' + price;
-        note.textContent = '一次性 ' + price + '，之后一直可用。再点一次确认购买。';
+        buy.dataset.armed = '1'; buy.textContent = t('确认 {price}', {price});
+        note.textContent = t('一次性 {price}，之后一直可用。再点一次确认购买。', {price});
         return;
       }
       buy.disabled = true;
@@ -221,11 +222,11 @@ JAVASCRIPT = r'''
           await showAvatar(canvas, card, call);
           return;
         }
-        note.textContent = result.error === 'balance' ? '余额不足，先到「账户」里充值再来解锁吧。' : '暂时没能完成购买，请稍后再试。';
+        note.textContent = result.error === 'balance' ? t('余额不足，先到「账户」里充值再来解锁吧。') : t('暂时没能完成购买，请稍后再试。');
       } catch (_) {
-        note.textContent = '暂时没能完成购买，请稍后再试。';
+        note.textContent = t('暂时没能完成购买，请稍后再试。');
       }
-      delete buy.dataset.armed; buy.textContent = '解锁 ' + price; buy.disabled = false;
+      delete buy.dataset.armed; buy.textContent = t('解锁 {price}', {price}); buy.disabled = false;
     };
     card.querySelector('.olivia-call-orb')?.after(offer);
   }
@@ -233,20 +234,20 @@ JAVASCRIPT = r'''
   function open() {
     if (overlay) return;
     overlay = node('div', 'olivia-call', null, document.body);
-    overlay.setAttribute('role', 'dialog'); overlay.setAttribute('aria-modal', 'true'); overlay.setAttribute('aria-label', '语音通话');
+    overlay.setAttribute('role', 'dialog'); overlay.setAttribute('aria-modal', 'true'); overlay.setAttribute('aria-label', t('语音通话'));
     const card = node('div', 'olivia-call-card', null, overlay); card.dataset.state = 'idle';
     const face = node('canvas', 'olivia-call-avatar', null, card); face.hidden = true; face.setAttribute('aria-hidden', 'true');
     const orb = node('div', 'olivia-call-orb', null, card);
-    node('p', 'olivia-call-title', '语音通话', card);
+    node('p', 'olivia-call-title', t('语音通话'), card);
     const status = node('p', 'olivia-call-status', '', card); status.setAttribute('role', 'status');
     let model = chosenModel();
     const choices = node('div', 'olivia-call-models', null, card);
-    choices.setAttribute('role', 'group'); choices.setAttribute('aria-label', '通话模型');
+    choices.setAttribute('role', 'group'); choices.setAttribute('aria-label', t('通话模型'));
     choices.hidden = models().length < 2;
     const price = node('p', 'olivia-call-price', priceText(model), card);
     for (const plan of models()) {
       const [label, hint] = MODEL_LABELS[plan.id];
-      const button = node('button', null, `${label} ${yuan(plan.cents_per_minute)}/分钟`, choices);
+      const button = node('button', null, t('{label} {price}/分钟', {label, price: yuan(plan.cents_per_minute)}), choices);
       button.type = 'button'; button.title = hint; button.dataset.model = plan.id;
       button.setAttribute('aria-pressed', String(plan.id === model?.id));
       button.onclick = () => {
@@ -256,10 +257,10 @@ JAVASCRIPT = r'''
     }
     const caption = node('p', 'olivia-call-caption', '', card); caption.setAttribute('aria-live', 'polite');
     const actions = node('div', 'olivia-call-actions', null, card);
-    const dial = node('button', null, '拨打', actions); dial.type = 'button'; dial.dataset.kind = 'dial';
-    const mute = node('button', null, '静音', actions); mute.type = 'button'; mute.hidden = true; mute.setAttribute('aria-pressed', 'false');
-    const hang = node('button', null, '取消', actions); hang.type = 'button'; hang.dataset.kind = 'cancel';
-    const toPhone = node('button', 'olivia-call-phone-link', '用手机打', card); toPhone.type = 'button';
+    const dial = node('button', null, t('拨打'), actions); dial.type = 'button'; dial.dataset.kind = 'dial';
+    const mute = node('button', null, t('静音'), actions); mute.type = 'button'; mute.hidden = true; mute.setAttribute('aria-pressed', 'false');
+    const hang = node('button', null, t('取消'), actions); hang.type = 'button'; hang.dataset.kind = 'cancel';
+    const toPhone = node('button', 'olivia-call-phone-link', t('用手机打'), card); toPhone.type = 'button';
     toPhone.hidden = !config?.phone;
     toPhone.onclick = () => phonePanel(card);
     let call = null;
@@ -267,7 +268,7 @@ JAVASCRIPT = r'''
     hang.onclick = () => call ? call.hangup() : close();
     mute.onclick = () => { const on = mute.getAttribute('aria-pressed') !== 'true'; mute.setAttribute('aria-pressed', String(on)); call?.mute(on); };
     dial.onclick = async () => {
-      dial.hidden = true; choices.hidden = true; toPhone.hidden = true; hang.textContent = '挂断'; hang.dataset.kind = 'hangup'; card.dataset.state = 'ringing'; status.textContent = '正在呼叫…';
+      dial.hidden = true; choices.hidden = true; toPhone.hidden = true; hang.textContent = t('挂断'); hang.dataset.kind = 'hangup'; card.dataset.state = 'ringing'; status.textContent = t('正在呼叫…');
       call = new Call({status, caption, orb, card, mute, hang, price, model: model?.id, done: () => { call = null; }});
       if (avatar) call.attach(avatar);
       await call.start();
@@ -284,7 +285,7 @@ JAVASCRIPT = r'''
     const grid = qrMatrix(text), n = grid.length + 8;
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     svg.setAttribute('viewBox', `0 0 ${n} ${n}`); svg.setAttribute('shape-rendering', 'crispEdges');
-    svg.setAttribute('role', 'img'); svg.setAttribute('aria-label', '配对二维码');
+    svg.setAttribute('role', 'img'); svg.setAttribute('aria-label', t('配对二维码'));
     let d = '';
     grid.forEach((row, y) => row.forEach((dark, x) => { if (dark) d += `M${x + 4} ${y + 4}h1v1h-1z`; }));
     const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
@@ -295,20 +296,20 @@ JAVASCRIPT = r'''
     const shown = [...card.children];
     shown.forEach(el => { el.dataset.wasHidden = el.hidden ? '1' : ''; el.hidden = true; });
     const panel = node('div', 'olivia-call-phone', null, card);
-    node('p', 'olivia-call-title', '用手机打', panel);
-    const intro = node('p', null, '用手机相机扫这个二维码，打开的页面就能给她打电话。电脑上的 Olivia 需要开着，她的记忆和今天的生活都从这里读取。', panel);
+    node('p', 'olivia-call-title', t('用手机打'), panel);
+    const intro = node('p', null, t('用手机相机扫这个二维码，打开的页面就能给她打电话。电脑上的 Olivia 需要开着，她的记忆和今天的生活都从这里读取。'), panel);
     const box = node('div', 'olivia-call-qr', null, panel);
-    const hint = node('p', null, '正在生成二维码…', panel); hint.setAttribute('role', 'status');
+    const hint = node('p', null, t('正在生成二维码…'), panel); hint.setAttribute('role', 'status');
     const list = node('ul', 'olivia-call-phones', null, panel);
-    const back = node('button', null, '返回', node('div', 'olivia-call-actions', null, panel)); back.type = 'button';
+    const back = node('button', null, t('返回'), node('div', 'olivia-call-actions', null, panel)); back.type = 'button';
     let known = null;
     const draw = phones => {
       list.replaceChildren();
       for (const phone of phones) {
         const li = node('li', null, null, list);
-        const when = phone.created ? new Date(phone.created * 1000).toLocaleDateString('zh-CN', {month: 'long', day: 'numeric'}) : '';
-        node('span', null, `${phone.label || '手机'}${when ? '（' + when + '配对）' : ''}`, li);
-        const off = node('button', null, '解除配对', li); off.type = 'button';
+        const when = phone.created ? new Date(phone.created * 1000).toLocaleDateString(t('zh-CN'), {month: 'long', day: 'numeric'}) : '';
+        node('span', null, `${phone.label || t('手机')}${when ? t('（{when}配对）', {when}) : ''}`, li);
+        const off = node('button', null, t('解除配对'), li); off.type = 'button';
         off.onclick = async () => {
           off.disabled = true;
           try { await local('/toy/call/phone/unpair', {id: phone.id}); await refresh(); } catch (_) { off.disabled = false; }
@@ -320,20 +321,20 @@ JAVASCRIPT = r'''
       let value;
       try { value = await local('/toy/call/phones'); } catch (_) { return; }
       const phones = value.phones || [];
-      if (known !== null && phones.length > known) { hint.textContent = '配对成功，现在可以在手机上给她打电话了。'; box.hidden = true; intro.hidden = true; }
+      if (known !== null && phones.length > known) { hint.textContent = t('配对成功，现在可以在手机上给她打电话了。'); box.hidden = true; intro.hidden = true; }
       known = phones.length; draw(phones);
     };
-    const retry = node('button', null, '重试', node('div', 'olivia-call-actions', null, panel)); retry.type = 'button';
+    const retry = node('button', null, t('重试'), node('div', 'olivia-call-actions', null, panel)); retry.type = 'button';
     retry.parentElement.hidden = true;
     const pair = async () => {
-      retry.parentElement.hidden = true; box.hidden = false; hint.textContent = '正在生成二维码…';
+      retry.parentElement.hidden = true; box.hidden = false; hint.textContent = t('正在生成二维码…');
       try {
         const value = await local('/toy/call/phone/pair', {});
         box.replaceChildren(qrSvg(value.url));
-        hint.textContent = '二维码 10 分钟内有效，只能用一次。以后从手机桌面图标直接打（扫码后按页面提示添加到主屏幕）。';
+        hint.textContent = t('二维码 10 分钟内有效，只能用一次。以后从手机桌面图标直接打（扫码后按页面提示添加到主屏幕）。');
       } catch (e) {
-        hint.textContent = e.message === 'CALL_NETWORK' ? '连不上服务器，请检查网络后重试。'
-          : MESSAGES[e.message] || '暂时没能生成二维码，请稍后再试。';
+        hint.textContent = e.message === 'CALL_NETWORK' ? t('连不上服务器，请检查网络后重试。')
+          : MESSAGES[e.message] || t('暂时没能生成二维码，请稍后再试。');
         box.hidden = true; retry.parentElement.hidden = false;
       }
     };
@@ -405,9 +406,9 @@ JAVASCRIPT = r'''
       catch (e) { await minimum; return this.fail(e.message); }
       if (started.pickup === 'missed') {
         await new Promise(r => setTimeout(r, 18000));
-        return this.finish('暂时无人接听', null);
+        return this.finish(t('暂时无人接听'), null);
       }
-      if (started.cents_per_minute) ui.price.textContent = `本次通话每分钟 ${yuan(started.cents_per_minute)}，按秒计费。`;
+      if (started.cents_per_minute) ui.price.textContent = t('本次通话每分钟 {price}，按秒计费。', {price: yuan(started.cents_per_minute)});
       await minimum;
       this.connect(started);
     }
@@ -427,7 +428,7 @@ JAVASCRIPT = r'''
       ws.onopen = () => ws.send(JSON.stringify({type: 'start', v: 1, ticket: started.ticket}));
       ws.onmessage = e => typeof e.data === 'string' ? this.message(JSON.parse(e.data)) : this.audio(e.data);
       ws.onclose = () => {
-        if (!this.ended) this.finish(this.startedAt ? '通话已结束' : '没能接通，请稍后再试', null);
+        if (!this.ended) this.finish(this.startedAt ? t('通话已结束') : t('没能接通，请稍后再试'), null);
         if (!this.kept) this.recover();
       };
     }
@@ -461,9 +462,9 @@ JAVASCRIPT = r'''
         this.herDone.add(m.turn); this.avatar?.event('her_done');
         if ((this.drainedAt[m.turn] || 0) > (this.lastAudioAt[m.turn] || 0)) this.reportPlayed(m.turn);
       } else if (m.type === 'notice' && m.reason === 'limit') {
-        ui.status.textContent = '余额快用完了，通话即将结束';
+        ui.status.textContent = t('余额快用完了，通话即将结束');
       } else if (m.type === 'end') {
-        if (this.ended) this.keep(m); else this.finish('通话结束', m);
+        if (this.ended) this.keep(m); else this.finish(t('通话结束'), m);
       }
     }
 
@@ -525,18 +526,18 @@ JAVASCRIPT = r'''
 
     tick() {
       const s = Math.floor((Date.now() - this.startedAt) / 1000);
-      this.ui.status.textContent = '通话中 ' + String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
+      this.ui.status.textContent = t('通话中 {time}', {time: String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0')});
     }
 
     hangup() {
       if (this.ws?.readyState === 1) {
         // Hang up at once; the server's report (charge, transcript, notes) follows on the open socket.
         this.ws.send(JSON.stringify({type: 'hangup'}));
-        this.finish('通话结束', null, true);
-      } else this.finish('已取消', null);
+        this.finish(t('通话结束'), null, true);
+      } else this.finish(t('已取消'), null);
     }
 
-    fail(code) { this.finish(MESSAGES[code] || '暂时没能打通，请稍后再试', null); }
+    fail(code) { this.finish(MESSAGES[code] || t('暂时没能打通，请稍后再试'), null); }
 
     finish(text, report, awaitReport = false) {
       if (this.ended) return; this.ended = true;
@@ -549,8 +550,8 @@ JAVASCRIPT = r'''
       setTimeout(() => this.context?.close().catch(() => {}), 300);
       const ui = this.ui; ui.card.dataset.state = 'ended'; ui.mute.hidden = true;
       const seconds = report?.seconds ?? (this.startedAt ? Math.round((Date.now() - this.startedAt) / 1000) : 0);
-      ui.status.textContent = text + (seconds ? '  ' + Math.floor(seconds / 60) + ' 分 ' + (seconds % 60) + ' 秒' : '');
-      ui.hang.textContent = '关闭'; ui.hang.dataset.kind = 'cancel'; ui.hang.onclick = close;
+      ui.status.textContent = text + (seconds ? t('  {minutes} 分 {seconds} 秒', {minutes: Math.floor(seconds / 60), seconds: seconds % 60}) : '');
+      ui.hang.textContent = t('关闭'); ui.hang.dataset.kind = 'cancel'; ui.hang.onclick = close;
       if (report) this.keep(report);
       ui.done();
     }
@@ -568,7 +569,7 @@ JAVASCRIPT = r'''
     keep(report) {
       this.kept = true;
       clearTimeout(this.reportTimer);
-      if (typeof report.charge_cents === 'number') this.ui.price.textContent = '本次通话 ' + yuan(report.charge_cents);
+      if (typeof report.charge_cents === 'number') this.ui.price.textContent = t('本次通话 {price}', {price: yuan(report.charge_cents)});
       if (report.transcript?.length && report.call_id) {
         local('/toy/call/end', {call_id: report.call_id, seconds: report.seconds, charge_cents: report.charge_cents,
           reason: report.reason, pickup: this.pickup, transcript: report.transcript, notes: report.notes}).catch(() => {});

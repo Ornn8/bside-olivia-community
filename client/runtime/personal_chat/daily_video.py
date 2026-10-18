@@ -14,6 +14,9 @@ import time
 
 from aiohttp import web
 
+from runtime import output_language
+from runtime.ui_i18n_backend import tr
+
 LOCAL = timezone(timedelta(hours=8))
 EVENT_KINDS = {'housework', 'walk', 'bath_finished', 'shopping', 'meal', 'wake_up', 'moment'}
 PATH = '/toy/companion/daily-video'
@@ -55,7 +58,7 @@ def validate_input(value):
                            for key, limit in (('image_direction', 400), ('video_direction', 800)))):
                 raise ValueError()
         if 'share_text' in value and (not isinstance(value['share_text'], str)
-                or not 1 <= len(value['share_text']) <= 200 or not value['share_text'].strip()
+                or not 1 <= len(value['share_text']) <= output_language.scaled(200) or not value['share_text'].strip()
                 or any(ord(c) < 32 for c in value['share_text'])):
             raise ValueError()
     except (ValueError, TypeError, KeyError):
@@ -94,16 +97,16 @@ def capture_caption(value, now):
     share = value.get('share_text', '').strip()
     if (local_now - captured).total_seconds() < 60:
         return share
-    when = ('今天 ' if captured.date() == local_now.date() else captured.strftime('%Y-%m-%d '))
-    stamp = ('这是' + when + captured.strftime('%H:%M')
-             + ('那次洗澡后的样子。' if value['event_kind'] == 'bath_finished' else '拍的。'))
+    when = (tr('今天 ') if captured.date() == local_now.date() else tr('{date} ', date=captured.strftime('%Y-%m-%d')))
+    stamp = tr('这是{when}{time}那次洗澡后的样子。' if value['event_kind'] == 'bath_finished' else '这是{when}{time}拍的。',
+               when=when, time=captured.strftime('%H:%M'))
     return (share + '\n' if share else '') + stamp
 
 
 def select_candidate(value, candidates):
     """Forward same-call staging; event facts remain bound to the supplied source."""
     if (not isinstance(value, dict) or not {'event_id', 'spoken_text'} <= set(value) <= {'event_id', 'spoken_text', 'staging', 'share_text'}
-            or not isinstance(value['spoken_text'], str) or not 1 <= len(value['spoken_text'].strip()) <= 100):
+            or not isinstance(value['spoken_text'], str) or not 1 <= len(value['spoken_text'].strip()) <= output_language.scaled(100)):
         raise ValueError('DAILY_VIDEO_SELECTION_INVALID')
     candidate = next((item for item in candidates or [] if item['event_id'] == value['event_id']), None)
     if candidate is None:

@@ -128,7 +128,7 @@ def test_mem0_runtime_download_explains_temporarily_flat_progress() -> None:
     )
     assert "mem0RuntimeProgressStartedAt = Date.now()" in BOOTSTRAP_JAVASCRIPT
     assert (
-        "正在准备运行环境，已用时 ${runtimeElapsedSeconds} 秒（首次约需 3–8 分钟）"
+        't("正在准备运行环境，已用时 {seconds} 秒（首次约需 3–8 分钟）", {seconds: runtimeElapsedSeconds})'
         in BOOTSTRAP_JAVASCRIPT
     )
 
@@ -318,7 +318,7 @@ def test_original_settings_imports_local_history_without_official_server() -> No
     assert "payload.would_update" in BOOTSTRAP_JAVASCRIPT
     assert "payload.would_remove" in BOOTSTRAP_JAVASCRIPT
     assert "未在原版游戏目录找到 letter_pairs.json" in BOOTSTRAP_JAVASCRIPT
-    assert 'importButton.textContent = "查看进度 / 导入"' in BOOTSTRAP_JAVASCRIPT
+    assert 'importButton.textContent = t("查看进度 / 导入")' in BOOTSTRAP_JAVASCRIPT
     assert "mountOfficialLetterImport(section)" not in BOOTSTRAP_JAVASCRIPT
 
 
@@ -689,7 +689,7 @@ def test_original_settings_management_ui_renders_untrusted_data_as_text_only() -
 
 def test_original_settings_clear_memory_uses_two_explicit_confirmations() -> None:
     source = BOOTSTRAP_JAVASCRIPT
-    assert source.count('const clear = button("清空当前用户记忆"') == 1
+    assert source.count('const clear = button(t("清空当前用户记忆")') == 1
     assert "确认清空当前用户的 Mem0 长期记忆？" in source
     assert "清空后无法恢复。原始信件和林离世界不会受影响，仍要继续吗？" in source
     assert "requestMutation(MEMORY_CLEAR_PATH" in source
@@ -915,6 +915,9 @@ const statusPayload = (status) => ({
   }
   if (endpoint.pathname === "/toy/improve") {
     return {ok:true,json:async()=>({code:0,data:{enabled:false,uploaded:0,since:null}})};
+  }
+  if (endpoint.pathname === "/api/ui-language") {
+    return {ok:true,json:async()=>({status:"SAVED",language:"zh-cn",persisted:true})};
   }
   mutationPaths.push(endpoint.pathname);
   return { ok: true, json: async () => ({ status: "APPLIED", request_id: "memory.lifecycle.1", affected_count: 0 }) };

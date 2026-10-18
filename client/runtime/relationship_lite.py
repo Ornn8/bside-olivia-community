@@ -7,6 +7,7 @@ from runtime.cloud_policy import get_policy
 from runtime.relationship_growth import route, volume_updates
 from runtime.relationship_policy import ROUTES, volume_catalog
 from runtime.relationship_moments import moments, plans
+from runtime.ui_i18n_backend import tr
 
 
 def ledger(server):
@@ -100,11 +101,16 @@ def details(server, now=None):
     pending = plans(life, now=now)
     hint = ('聊聊那个还没完成的约定吧。' if pending else
             '分享一件今天真正触动你的小事，不必刻意找话题。')
-    return {'status': 'READY', 'version': state.version, 'route': route(state), 'routes': ROUTES,
-        'volume': state.relationship_volume, **volume_catalog(state, now), 'dynamic': dynamic,
-        'dimensions': {key: {'text': texts['dimensions'][key][level(state, key)], 'rising': key in rising}
+    # The page shows these in the interface language. Built-in wording is translated; wording the service sent
+    # (already in that language, or unknown to this client) passes through unchanged.
+    catalog = volume_catalog(state, now)
+    return {'status': 'READY', 'version': state.version, 'route': route(state),
+        'routes': {key: tr(name) for key, name in ROUTES.items()},
+        'volume': state.relationship_volume, **catalog, 'title': tr(catalog['title']),
+        'description': tr(catalog['description']), 'dynamic': tr(dynamic),
+        'dimensions': {key: {'text': tr(texts['dimensions'][key][level(state, key)]), 'rising': key in rising}
                        for key in ('familiarity', 'trust', 'comfort', 'closeness')},
-        'moments': [{'date': r['occurred_at'][:10], 'text': texts['moments'][r['kind']],
+        'moments': [{'date': r['occurred_at'][:10], 'text': tr(texts['moments'][r['kind']]),
                      'quote': '' if r['sensitive'] else r['user_quote'][:40]} for r in recent],
         'plans': [{'title': p.get('title', ''), 'detail': p.get('detail', '')} for p in pending[:5]],
-        'addressing': addressing, 'hint': hint}
+        'addressing': addressing, 'hint': tr(hint)}
