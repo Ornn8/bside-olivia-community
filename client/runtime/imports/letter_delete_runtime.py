@@ -8,7 +8,8 @@ import sqlite3
 import time
 import uuid
 
-from .letter_delete import RETENTION_SECONDS, Sources, apply_sql, legacy_plan, prune, sql_plan, world_plan
+from .letter_delete import (RETENTION_SECONDS, Sources, apply_sql, history_plan, imported_identity, imported_plan,
+                            legacy_plan, prune, sql_plan, world_plan)
 
 
 def _encode(value):
@@ -101,7 +102,16 @@ def _apply_points(adapter, patches, restore=False):
     adapter._evidence_cache.clear()
 
 
-def _database_plans(server, adapter, sources):
+def _imported_identity(server, letter_id):
+    """The name an imported pair has in the relationship queue. Once one side is deleted the archive can no longer
+    give it, so the deletion of the other side takes it from the first deletion."""
+    earlier = next((item['imported_identity'] for item in server.store.letter_trash.values()
+                    if item['letter_id'] == letter_id and item.get('imported_identity')), None)
+    path = getattr(server.memory_adapter, 'db_path', None)
+    return earlier or (imported_identity(path, letter_id) if path and Path(path).exists() else None)
+
+
+def _database_plans(server, adapter, sources, identity=None):
     plans = []
     expected_world, _, _ = server.resolve_private_world_database(
         {**server._os.environ, 'OLIVIA_PRIVATE_WORLD_ENABLED': '1'}, user_id=sources.user)
@@ -116,6 +126,9 @@ def _database_plans(server, adapter, sources):
     path = getattr(archive, 'db_path', None)
     if path and Path(path).exists():
         plans.append({'path': str(path), 'patches': sql_plan(path, sources) + legacy_plan(path, sources)})
+        waiting = (server._state_root() or Path('.')) / 'history-relationship.sqlite3'
+        if identity and waiting.exists():
+            plans.append({'path': str(waiting), 'patches': imported_plan(waiting, identity, sources.part)})
     originals = getattr(adapter, '_originals', None)
     if originals and originals.path.exists():
         plans.append({'path': str(originals.path), 'patches': sql_plan(originals.path, sources)})
@@ -234,47 +247,70 @@ def operate(server, action, body):
             group = sorted((item for item in server.store.letter_trash.values()
                             if item['letter_id'] == entry['letter_id'] and item.get('user_id', 'local-user') == server._memory_config.user_id),
                            key=lambda item: item['deleted_at'], reverse=True)
-            if any(item.get('provider_root') != entry.get('provider_root') for item in group):
+            # A later deletion rewrote the records it shares with this one (a shared project, the relationship
+            # numbers), so those records no longer match what this deletion left. Undo the later deletions
+            # newest first, restore this exchange, then delete them again from the restored state.
+            later = [item for item in server.store.letter_trash.values()
+                     if item.get('user_id', 'local-user') == server._memory_config.user_id
+                     and not any(item is member for member in group)
+                     and item['deleted_at'] > min(member['deleted_at'] for member in group)]
+            if any(item['status'] != 'deleted' for item in later):
+                raise ValueError('LETTER_DELETE_RESTORE_PENDING')
+            if any(item.get('provider_root') != entry.get('provider_root') for item in (*group, *later)):
                 raise ValueError('LETTER_DELETE_MEMORY_UNAVAILABLE')
-            for item in group:
+            undo = sorted((*group, *later), key=lambda item: item['deleted_at'], reverse=True)
+            again = sorted(({'letter_id': item['letter_id'], 'part': item['part'], 'deleted_at': item['deleted_at']}
+                            for item in later), key=lambda item: item['deleted_at'])
+            for item in undo:
                 item['status'] = 'restoring'
             server._persist_store_state()
-            for item in group:
+            for item in undo:
                 _apply(server, adapter, item, restore=True)
             purge(server)
+            for item in again:
+                _delete(server, adapter, item['letter_id'], item['part'], deleted_at=item['deleted_at'])
             return {'status': 'RESTORED'}
         if action != 'delete' or body.get('part') not in {'user', 'reply'} or not isinstance(body.get('letter_id'), str):
             raise ValueError('LETTER_DELETE_INVALID')
-        lid, part = body['letter_id'], body['part']
-        entry = next((e for e in server.store.letter_trash.values() if e['letter_id'] == lid and e['part'] == part
-                      and e.get('user_id', 'local-user') == server._memory_config.user_id), None)
-        if entry:
-            if entry['status'] == 'deleted':
-                return {'status': 'DELETED'}
-            if entry['status'] == 'restoring':
-                raise ValueError('LETTER_DELETE_RESTORE_PENDING')
-        else:
-            rows = server._letter_collection('current', strict=True, maintenance=False)
-            row = next((row for row in rows if row.get('letter_id') == lid), None)
-            field = 'content' if part == 'user' else 'reply_text'
-            if row is None or not row.get(field) or part == 'user' and row.get('origin') == 'proactive':
-                raise ValueError('LETTER_DELETE_NOT_FOUND')
-            _check_diary_provenance(server, row)
-            sources = Sources(row, part, server._memory_config.user_id)
-            entry = {'letter_id': lid, 'part': part, 'letter': deepcopy(row), 'status': 'prepared',
-                     'user_id': server._memory_config.user_id,
-                     'provider_root': str(getattr(getattr(adapter, 'config', None), 'data_root', '')),
-                     'deleted_at': time.time(), 'databases': _encode(_database_plans(server, adapter, sources)),
-                     'points': _points(adapter, sources),
-                     'media': {k: v for k, v in row.items() if (
-                         part == 'reply' and (k.startswith(('media_', 'image_', 'music_', 'video_', 'audio_')) or k in {'reply_segments', 'reply_video_url', 'reply_audio_url', 'reply_structure', 'reply_signature'})
-                         or part == 'user' and k in {'material', 'incoming_media_observations'})}}
-            key = uuid.uuid4().hex
-            server.store.letter_trash[key] = entry
-            try:
-                server._persist_store_state()
-            except Exception:
-                del server.store.letter_trash[key]
-                raise
-        _apply(server, adapter, entry)
-        return {'status': 'DELETED', 'retention_days': 30}
+        return _delete(server, adapter, body['letter_id'], body['part'])
+
+
+def _delete(server, adapter, lid, part, *, deleted_at=None):
+    entry = next((e for e in server.store.letter_trash.values() if e['letter_id'] == lid and e['part'] == part
+                  and e.get('user_id', 'local-user') == server._memory_config.user_id), None)
+    if entry:
+        if entry['status'] == 'deleted':
+            return {'status': 'DELETED'}
+        if entry['status'] == 'restoring':
+            raise ValueError('LETTER_DELETE_RESTORE_PENDING')
+    else:
+        rows = server._letter_collection('current', strict=True, maintenance=False)
+        row = next((row for row in rows if row.get('letter_id') == lid), None)
+        field = 'content' if part == 'user' else 'reply_text'
+        if row is None or not row.get(field) or part == 'user' and row.get('origin') == 'proactive':
+            raise ValueError('LETTER_DELETE_NOT_FOUND')
+        _check_diary_provenance(server, row)
+        sources = Sources(row, part, server._memory_config.user_id)
+        identity = _imported_identity(server, lid)
+        databases, points = _database_plans(server, adapter, sources, identity), _points(adapter, sources)
+        history = history_plan(getattr(getattr(adapter, 'config', None), 'history_path', None),
+                               {point['id'] for point in points if point['after'] is None})
+        if history:
+            databases.append({'path': str(adapter.config.history_path), 'patches': history})
+        entry = {'letter_id': lid, 'part': part, 'letter': deepcopy(row), 'status': 'prepared',
+                 'user_id': server._memory_config.user_id,
+                 'provider_root': str(getattr(getattr(adapter, 'config', None), 'data_root', '')),
+                 'deleted_at': deleted_at or time.time(), 'databases': _encode(databases), 'imported_identity': identity,
+                 'points': points,
+                 'media': {k: v for k, v in row.items() if (
+                     part == 'reply' and (k.startswith(('media_', 'image_', 'music_', 'video_', 'audio_')) or k in {'reply_segments', 'reply_video_url', 'reply_audio_url', 'reply_structure', 'reply_signature'})
+                     or part == 'user' and k in {'material', 'incoming_media_observations'})}}
+        key = uuid.uuid4().hex
+        server.store.letter_trash[key] = entry
+        try:
+            server._persist_store_state()
+        except Exception:
+            del server.store.letter_trash[key]
+            raise
+    _apply(server, adapter, entry)
+    return {'status': 'DELETED', 'retention_days': 30}

@@ -3365,8 +3365,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       try {
         for (const payload of batch) {
           notice.textContent = t('正在处理 {current} / {total}…', {current: completed + 1, total: batch.length});
-          // A lost response may still have changed storage; refresh the inbox on exit.
-          changed = true;
+          // A lost response may still have changed storage; refresh the inbox on exit. The memory tab shows memories
+          // that came from these letters, so it reads its list again the next time it is shown.
+          changed = true; memoryMounted = false;
           await routeRequest('/toy/letter/deletion/' + action, payload, {confirmed:true});
           completed++;
         }

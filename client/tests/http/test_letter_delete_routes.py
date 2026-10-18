@@ -157,3 +157,35 @@ def test_delete_both_sides_and_restore_exchange(server):
     assert server.store.letters[0]['content'] == '我的信'
     assert server.store.letters[0]['reply_text'] == '她的信'
     assert not server.store.letter_trash
+
+
+def test_restoring_the_older_deletion_first_keeps_the_newer_one_deleted(server, tmp_path, monkeypatch):
+    """Two deletions rewrote the same record. Restoring in any order must give what the remaining deletion leaves."""
+    import json
+    import sqlite3
+    from types import SimpleNamespace
+    path = tmp_path / 'life.db'
+    with sqlite3.connect(path) as db:
+        db.execute('CREATE TABLE life_notes(id TEXT PRIMARY KEY, payload TEXT)')
+        db.execute('INSERT INTO life_notes VALUES (?,?)', ('shared', json.dumps(
+            {'sources': ['reply:a:1', 'reply:b:1', 'reply:c:1'], 'text': 'shared'})))
+    monkeypatch.setattr(server, 'daily_life_runtime', SimpleNamespace(store=SimpleNamespace(path=path)))
+    server.store.letters.append(dict(letter_id='b', content='第二封', reply_text='第二封回信', letter_status='COMPLETED', created_at=200))
+
+    def sources():
+        with sqlite3.connect(path) as db:
+            return json.loads(db.execute('SELECT payload FROM life_notes').fetchone()[0])['sources']
+
+    assert call(server, 'delete', {'letter_id': 'a', 'part': 'user'})['code'] == 0
+    assert call(server, 'delete', {'letter_id': 'b', 'part': 'user'})['code'] == 0
+    assert sources() == ['reply:c:1']
+    older, newer = sorted(call(server, 'list')['data']['items'], key=lambda item: item['deleted_at'])
+    assert call(server, 'restore', {'id': older['id']})['data']['status'] == 'RESTORED'
+    # letter a is back with its share of the record; letter b stays deleted, with its original deletion time
+    assert sources() == ['reply:a:1', 'reply:c:1']
+    assert server.store.letters[0]['content'] == '我的信' and server.store.letters[1]['content'] == ''
+    (remaining,) = call(server, 'list')['data']['items']
+    assert (remaining['letter_id'], remaining['status'], remaining['deleted_at']) == ('b', 'deleted', newer['deleted_at'])
+    assert call(server, 'restore', {'id': remaining['id']})['data']['status'] == 'RESTORED'
+    assert sources() == ['reply:a:1', 'reply:b:1', 'reply:c:1'] and call(server, 'list')['data']['items'] == []
+    assert server.store.letters[1]['content'] == '第二封'

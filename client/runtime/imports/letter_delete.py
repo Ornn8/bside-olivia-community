@@ -2,6 +2,7 @@
 from copy import deepcopy
 import hashlib
 import json
+from pathlib import Path
 import re
 import sqlite3
 
@@ -43,6 +44,8 @@ def prune(value, sources):
     if not isinstance(value, dict):
         return value
     actor = value.get('history_actor', value.get('actor'))
+    # A memory made from a live letter names its speaker local_user: the user's own side.
+    actor = 'user' if actor == 'local_user' else actor
     if actor in {'user', 'linli'} and actor != ('user' if sources.part == 'user' else 'linli'):
         return deepcopy(value)
     result = deepcopy(value)
@@ -84,7 +87,8 @@ def sql_plan(path, sources):
         db.row_factory = sqlite3.Row
         tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         allowed = {'originals', 'chunks', 'relationship_quotes', 'source_vectors', 'vector_pending',
-                   'source_dependencies', 'conversation_memory', 'conversation_memory_fts', 'private_world_candidates'}
+                   'source_dependencies', 'conversation_memory', 'conversation_memory_fts', 'private_world_candidates',
+                   'relationship_moments', 'relationship_queue'}
         allowed |= {t for t in tables if t.startswith(('life_', 'character_emotion_', 'character_development_'))}
         # Legacy pairs are intentionally handled separately: mailbox identity and
         # retrieval text must change together, including the protected SQL table.
@@ -96,6 +100,9 @@ def sql_plan(path, sources):
                 if before.get('user', before.get('user_id', sources.user)) != sources.user:
                     continue
                 own = any(sources.matches(before.get(key)) for key in SOURCE_KEYS)
+                if table == 'relationship_queue':
+                    # A turn that waits for the relationship batch holds both texts; a judged one holds none.
+                    own = before.get('status') == 'pending' and (own or sources.matches(before.get('message_id')))
                 if table in {'originals', 'chunks'} and own:
                     if before.get('actor') != ('user' if sources.part == 'user' else 'linli'):
                         continue
@@ -134,6 +141,10 @@ def sql_plan(path, sources):
                             after[column] = json.dumps(cleaned, ensure_ascii=False, sort_keys=True)
                 if after != before:
                     patches.append({'table': table, 'before': before, 'after': after})
+        if 'relationship_batch_state' in tables and any(p['table'] == 'relationship_queue' for p in patches):
+            # The relay's saved answer for the waiting batch quotes the turns it judged, this one among them.
+            for row in db.execute("SELECT rowid AS _rowid_,* FROM relationship_batch_state WHERE key LIKE 'relationship-batch:%'"):
+                patches.append({'table': 'relationship_batch_state', 'before': dict(row), 'after': None})
         # A shared project is a projection of its attributed updates. Removing
         # its newest update reveals the last surviving source, not an empty item.
         if 'life_moments' in tables:
@@ -190,6 +201,8 @@ def apply_sql(path, patches, *, restore=False):
             if comparable(current) == comparable(desired):
                 continue
             if comparable(current) != comparable(expected):
+                if restore and patch.get('soft'):
+                    continue  # a record that only schedules later work: the restore goes on without it
                 raise ValueError('LETTER_DELETE_RESTORE_CONFLICT')
             if desired is None:
                 db.execute(f'DELETE FROM {table} WHERE {where}', identity)
@@ -204,6 +217,64 @@ def apply_sql(path, patches, *, restore=False):
                            (*[desired[key] for key in columns], *identity))
         for _, statement in guards:
             db.execute(statement)
+
+
+def history_plan(path, memory_ids):
+    """Mem0 writes the text of every memory into its own change history; a removed memory leaves it there too."""
+    patches = []
+    if not memory_ids or not path or not Path(path).exists():
+        return patches
+    with sqlite3.connect(path) as db:
+        db.row_factory = sqlite3.Row
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='history'").fetchone():
+            return patches
+        for row in db.execute('SELECT rowid AS _rowid_, * FROM history ORDER BY rowid'):
+            if row['memory_id'] in memory_ids:
+                patches.append({'table': 'history', 'before': dict(row), 'after': None})
+    return patches
+
+
+REMOVED_TEXT = '（已删除）'
+
+
+def imported_identity(archive_path, letter_id):
+    """How the relationship assessment of imported letters names this pair: by the digest of its two texts."""
+    with sqlite3.connect(archive_path) as db:
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE name='legacy_letters'").fetchone():
+            return None
+        row = db.execute('SELECT metadata_json FROM legacy_letters WHERE memory_id=?', (letter_id,)).fetchone()
+    metadata = json.loads(row[0]) if row else {}
+    content, reply = metadata.get('user_content'), metadata.get('reply_text')
+    if not isinstance(content, str) or not isinstance(reply, str) or not content.strip() or not reply.strip():
+        return None
+    return 'relationship-letter:' + hashlib.sha256(json.dumps([content, reply], ensure_ascii=False).encode('utf-8')).hexdigest()
+
+
+def imported_plan(path, identity, part):
+    """Imported letters wait in batches of five for one relationship assessment, each batch keeping both texts.
+
+    A batch that has not been assessed loses the pair, so it is never judged. An assessed batch keeps the pair's
+    place (its command identity is made of the source ids) and loses only the deleted text. A batch that was
+    assessed after the deletion cannot take the pair back; the restore leaves it as it is and goes on.
+    """
+    patches = []
+    with sqlite3.connect(path) as db:
+        db.row_factory = sqlite3.Row
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE name='batches'").fetchone():
+            return patches
+        for row in db.execute('SELECT rowid AS _rowid_, * FROM batches ORDER BY id'):
+            pairs = json.loads(row['payload'])
+            if not any(item.get('source_record_id') == identity for item in pairs):
+                continue
+            if row['state'] == 'done':
+                field = 'user_message' if part == 'user' else 'assistant_message'
+                kept = [{**item, field: REMOVED_TEXT} if item.get('source_record_id') == identity else item for item in pairs]
+            else:
+                kept = [item for item in pairs if item.get('source_record_id') != identity]
+            before = dict(row)
+            after = {**before, 'payload': json.dumps(kept, ensure_ascii=False)} if kept else None
+            patches.append({'table': 'batches', 'before': before, 'after': after, 'soft': True})
+    return patches
 
 
 def legacy_plan(path, sources):

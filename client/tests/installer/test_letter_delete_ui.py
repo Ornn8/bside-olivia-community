@@ -158,6 +158,20 @@ await find('信件').click();assert.ok(all().some(x=>x.textContent==='已选 0 �
 ''')
 
 
+def test_memory_tab_reads_its_list_again_after_a_deletion_or_a_restore():
+    run_js(r'''
+await openAll();
+await find('记忆').click();assert.equal(memoryMounts.length,1);
+await find('信件').click();
+await find('记忆').click();assert.equal(memoryMounts.length,1,'no change, no new read');
+await find('信件').click();await expand();select(0);await accept(find('删除所选').click());
+await find('记忆').click();assert.equal(memoryMounts.length,2,'memories made from the deleted letter are gone from the list');
+await find('最近删除').click();await accept(find('恢复').click());
+await find('记忆').click();assert.equal(memoryMounts.length,3,'restored memories are listed again');
+await find('信件').click();await find('记忆').click();assert.equal(memoryMounts.length,3);
+''')
+
+
 def test_the_window_can_open_on_the_memory_tab():
     run_js(r'''
 const panel=name=>document.body.querySelectorAll('div').find(x=>x.className.split(' ').includes(name));
