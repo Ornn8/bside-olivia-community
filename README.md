@@ -1,3 +1,4 @@
+<p align="center"><a href="README.en.md">English</a> | <b>中文</b></p>
 <div align="center">
 
 <img src="client/runtime/letter_stickers/linli-110.png" width="200" alt="林离在书桌前写信"> <img src="client/runtime/letter_stickers/linli-111.png" width="200" alt="林离端着一杯茶"> <img src="client/runtime/letter_stickers/linli-112.png" width="200" alt="林离托着下巴想事情">
