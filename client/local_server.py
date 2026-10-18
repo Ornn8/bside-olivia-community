@@ -68,6 +68,7 @@ from letter_triage import (
     _singing_video_configured,
 )
 from runtime.media.media_paths import configured_media_path
+from runtime import output_language, ui_language
 from runtime.ui_i18n_backend import tr
 from runtime.media.local_song_library import LocalSongLibrary, LocalSongError
 from music_reply import (
@@ -3695,6 +3696,11 @@ async def _proactive_complete(intent: dict, *, planning: bool, turn: dict, mode:
     return text
 
 
+def _names_wechat(body: str) -> bool:
+    """The invitation must name both apps; an English letter names WeChat in Latin letters."""
+    return '微信' in body or ui_language.is_english() and 'wechat' in body.lower()
+
+
 async def _publish_proactive(intent: dict, plan: dict, *, turn: dict) -> None:
     global _proactive_busy
     if (not _proactive_ready() or not _proactive_turn_current(intent, turn)
@@ -3711,7 +3717,7 @@ async def _publish_proactive(intent: dict, plan: dict, *, turn: dict) -> None:
     letter = None
     try:
         body = await _proactive_complete(intent, planning=False, mode=plan['format'], turn=turn)
-        if intent.get('kind') == 'contact_invitation' and ('QQ' not in body.upper() or '微信' not in body):
+        if intent.get('kind') == 'contact_invitation' and ('QQ' not in body.upper() or not _names_wechat(body)):
             raise ValueError('PROACTIVE_CONTACT_INVITATION_INCOMPLETE')
         signature = None
         from runtime.reply.letter_presentation import split_signature
@@ -3920,7 +3926,7 @@ async def _legacy_proactive_tick() -> None:
             else json.loads(await _proactive_complete(intent, planning=True, turn=turn)))
     if (not isinstance(plan, dict) or set(plan) != {'decision', 'format', 'title'}
             or plan['decision'] not in {'send', 'defer'} or plan['format'] not in {'text', 'voice'}
-            or not isinstance(plan['title'], str) or not 1 <= len(plan['title']) <= 40):
+            or not isinstance(plan['title'], str) or not 1 <= len(plan['title']) <= output_language.scaled(40)):
         raise ValueError('PROACTIVE_PLAN_INVALID')
     # User activity during planning wins. Re-read the newly projected source,
     # not the background worker's stale decision.

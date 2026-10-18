@@ -5,6 +5,7 @@ import re
 import hashlib
 import time
 
+from runtime import output_language
 from runtime.ui_i18n_backend import tr
 
 _capabilities = {}
@@ -70,7 +71,7 @@ def validate_script(value):
         value={**value,'spoken_text':value['spoken_text'].replace('\\n','\n').replace('\\"','"')}
     if (not isinstance(value,dict) or set(value)!={'title','spoken_text','continuation_summary'}
             or not isinstance(value['title'],str) or not 1<=len(value['title'])<=80
-            or not isinstance(value['spoken_text'],str) or not 40<=len(value['spoken_text'])<=8000
+            or not isinstance(value['spoken_text'],str) or not 40<=len(value['spoken_text'])<=output_language.scaled(8000)
             or not isinstance(value['continuation_summary'],str) or len(value['continuation_summary'])>1200
             or value['spoken_text'].lstrip().startswith(('{','[','```'))
             or re.search(r'\[\[|<\||\[(?:耳语|停顿|动作)|【(?:耳语|停顿|动作)|[（(](?:轻声|耳语|靠近|极轻|停顿|音效)',value['spoken_text'])):

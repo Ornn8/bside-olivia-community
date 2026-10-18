@@ -12,6 +12,7 @@ from .events import PersonalMessage
 from runtime.reply.character_emotion_context import rebind_expression_context
 from runtime.reply.companion_decision import ERROR_CODES as _JEV_PORT_ERRORS
 from runtime.cloud_policy import get_policy
+from runtime import ui_language
 from runtime.ui_i18n_backend import tr
 from runtime.reply.proactive_runtime import unprompted
 JEV_ERROR_CODES = _JEV_PORT_ERRORS | {
@@ -33,6 +34,15 @@ def _sent_time(row):
         return value if value.utcoffset() is not None else None
     except (KeyError, TypeError, ValueError, AttributeError):
         return None
+
+
+def chat_text(reply_text):
+    """The reply as it is sent and stored: a Chinese full stop becomes a line break, and Chinese chat does not end a
+    sentence with a stray ASCII period (English sentences keep theirs)."""
+    text = re.sub(r'。+[ \t]*', '\n', reply_text)
+    if not ui_language.is_english():
+        text = re.sub(r'(?<!\.)\.(?!\.)(?=\s|$)', '', text)
+    return text.strip()
 
 
 def _clear_draft(row):
@@ -582,8 +592,7 @@ class PersonalChatService:
                 self._schedule_photo(row, send)
                 return
             # Keep the stored canonical text identical to the displayed IM text.
-            text = re.sub(r'。+[ \t]*', '\n', row['reply_text'])
-            text = re.sub(r'(?<!\.)\.(?!\.)(?=\s|$)', '', text).strip()
+            text = chat_text(row['reply_text'])
             if not text:
                 raise ValueError('PERSONAL_CHAT_REPLY_INVALID')
             if proactive:

@@ -27,7 +27,7 @@ from runtime.tls import client_tls_context
 from runtime.reply.model_capabilities import model_capabilities
 from runtime.reply.model_request_policy import reasoning_request_parameters
 from runtime.official_endpoints import API_ORIGIN, canonical_api_base
-from runtime import ui_language
+from runtime import output_language, ui_language
 
 
 PROVIDER_USER_AGENT = "Olivia-Community/0.1"
@@ -886,6 +886,11 @@ class OpenAICompatibleAdapter(Gateway):
         headers["X-Request-ID"] = _wire_request_id(request_id, label)
         return headers
 
+    def _output_limit(self, request: str, scope: GatewayRequestScope | None) -> int:
+        """The longest answer accepted. English runs longer than Chinese, so the calls that write for the user get more room."""
+        limit = self.config.max_output_chars
+        return output_language.scaled(limit) if output_language.writes_for_user(request, scope) else limit
+
     def _uses_max_reasoning(self, scope: GatewayRequestScope | None) -> bool:
         return (
             supports_scoped_reasoning(self.config)
@@ -921,8 +926,12 @@ class OpenAICompatibleAdapter(Gateway):
         stream: bool,
         max_reasoning: bool = False,
         scope: GatewayRequestScope | None = None,
+        request_id: str | None = None,
     ) -> dict[str, Any]:
         normalized = validate_messages(messages, max_input_chars=self.config.max_input_chars)
+        # In English the calls whose text the user reads get the language directive; it is added after the
+        # input check, so it never uses up room the caller measured for the prompt.
+        normalized = output_language.with_directive(normalized, request_id, scope)
         capabilities = model_capabilities(self.config.base_url, self.config.model, self.config.provider_options)
         if self.config.api_style == "responses":
             request_input = [
@@ -1149,6 +1158,7 @@ class OpenAICompatibleAdapter(Gateway):
             stream=False,
             max_reasoning=max_reasoning,
             scope=scope,
+            request_id=request,
         )
         if response_format is not None:
             # Interpretation callers (including recall) own partial-result
@@ -1173,7 +1183,7 @@ class OpenAICompatibleAdapter(Gateway):
                     index = next((i for i in range(len(current) - 1, -1, -1)
                                   if current[i].get('role') == 'user'), len(current))
                     current.insert(index, instruction)
-                    body = self._body(current, stream=False, max_reasoning=max_reasoning, scope=scope)
+                    body = self._body(current, stream=False, max_reasoning=max_reasoning, scope=scope, request_id=request)
                 if caps.json_mode:
                     wire = {'type': 'json_object'}
             if wire is not None:
@@ -1192,7 +1202,7 @@ class OpenAICompatibleAdapter(Gateway):
             if scope in {GatewayRequestScope.TEXT_LETTER_MAX_REASONING, GatewayRequestScope.JSON_MAX_REASONING, GatewayRequestScope.PERSONAL_CHAT_JSON} and _extract_finish_reason(data) == "stop":
                 raise ProviderEmptyResponse()
             raise ProviderProtocolError('empty_output')
-        if len(text) > self.config.max_output_chars:
+        if len(text) > self._output_limit(request, scope):
             raise InvalidGatewayInput("OUTPUT_TOO_LONG")
         return GatewayResponse(text, request, self.config.provider, self.config.model)
 
@@ -1211,7 +1221,8 @@ class OpenAICompatibleAdapter(Gateway):
             current = [{**messages[0], 'content': messages[0]['content'] + '\n' + instruction['content']}, *messages[1:]]
         responses = self.config.api_style == 'responses'
         for attempt in range(attempts):
-            body = self._body(current, stream=False, max_reasoning=self._uses_max_reasoning(scope), scope=scope)
+            body = self._body(current, stream=False, max_reasoning=self._uses_max_reasoning(scope), scope=scope,
+                              request_id=request)
             if scope is None and self.config.api_style == 'chat_completions':
                 body.update(caps.reasoning_parameters(False))
             body.pop('response_format', None)
@@ -1244,7 +1255,7 @@ class OpenAICompatibleAdapter(Gateway):
                 error.diagnostic_stage = 'structured_completion'
                 raise error
             text = _extract_response_text(data)
-            if len(text) > self.config.max_output_chars:
+            if len(text) > self._output_limit(request, scope):
                 raise InvalidGatewayInput('OUTPUT_TOO_LONG')
             # Remove a complete Markdown wrapper only; never guess missing JSON.
             fenced = re.fullmatch(r'\s*```(?:json)?\s*\n(.*?)\n```\s*', text, re.DOTALL | re.IGNORECASE)
@@ -1282,7 +1293,7 @@ class OpenAICompatibleAdapter(Gateway):
             return (GatewayToolCall(name=single['name'], arguments=json.loads(result.text)),)
         if not capabilities.tools or (capabilities.json_schema and single is not None):
             return await structured_tool(attempts=2)
-        body = self._body(messages, stream=False)
+        body = self._body(messages, stream=False, request_id=request)
         if self.config.api_style == 'chat_completions' and capabilities.thinking == 'qwen':
             body.update(capabilities.reasoning_parameters(False))
         if self.config.api_style == "responses":
@@ -1401,6 +1412,7 @@ class OpenAICompatibleAdapter(Gateway):
             stream=True,
             max_reasoning=max_reasoning,
             scope=scope,
+            request_id=request,
         )
         if self.config.api_style == "chat_completions" and model_capabilities(
             self.config.base_url, self.config.model, self.config.provider_options
@@ -1480,7 +1492,7 @@ class OpenAICompatibleAdapter(Gateway):
                             if text:
                                 saw_delta = True
                                 buffered_chars += len(text)
-                                if buffered_chars > self.config.max_output_chars:
+                                if buffered_chars > self._output_limit(request, scope):
                                     raise InvalidGatewayInput("OUTPUT_TOO_LONG")
                                 buffered.append(text)
                             if finish_reason:

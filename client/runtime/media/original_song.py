@@ -1,6 +1,7 @@
 """Approved original-song preset, independent of source-conditioned covers."""
 from pathlib import Path
 
+from runtime import ui_language
 from runtime.media.ace_cover import CoverError, cover_paths, generate_ace
 from runtime.media.media_paths import configured_media_path
 from runtime.media.music_reply import MusicReplyError
@@ -100,7 +101,7 @@ def render_original_reply(content, reply_text, output_path, *, environment,
         return {**metadata, 'music_planning_duration_seconds': planning_duration}
     try:
         metadata = generate('original', {'lyrics': plan.lyrics, 'music_options': music_options}, audio, environment=environment) if enabled(environment) else generate_ace(None, audio, environment=environment, paths=original_paths(environment),
-            lyrics=plan.lyrics, language="zh", task_type="text2music",
+            lyrics=plan.lyrics, language="en" if ui_language.is_english() else "zh", task_type="text2music",
             parameters=generation_parameters(music_options, plan.caption if expression_context is not None else CAPTION))
     except CoverError as exc:
         raise MusicReplyError(str(exc)) from None

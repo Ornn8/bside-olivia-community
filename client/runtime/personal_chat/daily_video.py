@@ -14,6 +14,7 @@ import time
 
 from aiohttp import web
 
+from runtime import output_language
 from runtime.ui_i18n_backend import tr
 
 LOCAL = timezone(timedelta(hours=8))
@@ -57,7 +58,7 @@ def validate_input(value):
                            for key, limit in (('image_direction', 400), ('video_direction', 800)))):
                 raise ValueError()
         if 'share_text' in value and (not isinstance(value['share_text'], str)
-                or not 1 <= len(value['share_text']) <= 200 or not value['share_text'].strip()
+                or not 1 <= len(value['share_text']) <= output_language.scaled(200) or not value['share_text'].strip()
                 or any(ord(c) < 32 for c in value['share_text'])):
             raise ValueError()
     except (ValueError, TypeError, KeyError):
@@ -105,7 +106,7 @@ def capture_caption(value, now):
 def select_candidate(value, candidates):
     """Forward same-call staging; event facts remain bound to the supplied source."""
     if (not isinstance(value, dict) or not {'event_id', 'spoken_text'} <= set(value) <= {'event_id', 'spoken_text', 'staging', 'share_text'}
-            or not isinstance(value['spoken_text'], str) or not 1 <= len(value['spoken_text'].strip()) <= 100):
+            or not isinstance(value['spoken_text'], str) or not 1 <= len(value['spoken_text'].strip()) <= output_language.scaled(100)):
         raise ValueError('DAILY_VIDEO_SELECTION_INVALID')
     candidate = next((item for item in candidates or [] if item['event_id'] == value['event_id']), None)
     if candidate is None:
