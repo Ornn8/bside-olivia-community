@@ -24,6 +24,13 @@ WRITE_AFTER_HOUR = 1        # yesterday's entry is written after 01:00 local tim
 CATCH_UP_DAYS = 7           # missed days written when the app was closed
 RETRY_AFTER = 3600
 MAX_ATTEMPTS = 3
+WRITE_TIMEOUT_SECONDS = 360  # one writer call; a model that thinks first can need more than the old three minutes
+UNSERVED_CODES = {'PROVIDER_QUOTA_EXHAUSTED', 'PROVIDER_BUSY', 'PROVIDER_AUTH_FAILED'}  # refused before it was served
+# What the last try of a day failed with when the writer answered but nothing could be used, or did not answer in
+# the time it was given (see retry_rejected). Offline and unreachable are not among them.
+REOPEN_REASONS = ('ProviderProtocolError', 'ProviderEmptyResponse', 'JSONDecodeError', 'ValidationError', 'ValueError',
+                  'TimeoutError')
+RETRY_ONCE_KEY = 'retry_rejected_once'
 SHORT_DAY_CHARS = 40        # a day with less user text gets a short note
 MAX_SOURCE_CHARS = 24000    # one day's messages offered to the writer
 CONTEXT_DAYS = 3
@@ -75,11 +82,14 @@ def _without_counts(value):
     return value
 
 
-FORMAT = {'type': 'json_schema', 'json_schema': {'name': 'diary_entry', 'strict': True, 'schema': _without_counts(SCHEMA)}}
+# The gateway hands the reply over unchecked (caller_validates): validate() below fits it to the contract, so a
+# label a few characters too long or an optional key left out never throws away an entry that was written.
+FORMAT = {'type': 'json_schema', 'json_schema': {'name': 'diary_entry', 'strict': True, 'schema': _without_counts(SCHEMA)},
+          'caller_validates': True}
 _VALIDATOR = Draft202012Validator(SCHEMA)
 REVISE_SCHEMA['properties'] = {key: SCHEMA['properties'][key] for key in ('title', 'mood', 'body')}
 REVISE_FORMAT = {'type': 'json_schema', 'json_schema': {
-    'name': 'diary_revision', 'strict': True, 'schema': REVISE_SCHEMA}}
+    'name': 'diary_revision', 'strict': True, 'schema': REVISE_SCHEMA}, 'caller_validates': True}
 _DATE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
 
 
@@ -97,9 +107,9 @@ _ENGLISH_SCHEMA = _english_limits(SCHEMA)
 _ENGLISH_REVISE_SCHEMA = _english_limits(REVISE_SCHEMA)
 _ENGLISH_VALIDATOR = Draft202012Validator(_ENGLISH_SCHEMA)
 _ENGLISH_FORMAT = {'type': 'json_schema', 'json_schema': {
-    'name': 'diary_entry', 'strict': True, 'schema': _without_counts(_ENGLISH_SCHEMA)}}
+    'name': 'diary_entry', 'strict': True, 'schema': _without_counts(_ENGLISH_SCHEMA)}, 'caller_validates': True}
 _ENGLISH_REVISE_FORMAT = {'type': 'json_schema', 'json_schema': {
-    'name': 'diary_revision', 'strict': True, 'schema': _ENGLISH_REVISE_SCHEMA}}
+    'name': 'diary_revision', 'strict': True, 'schema': _ENGLISH_REVISE_SCHEMA}, 'caller_validates': True}
 
 
 def _formats():
@@ -235,20 +245,134 @@ def _normalized(text):
     return re.sub(r'\s+', '', text or '')
 
 
-def validate(value, messages):
-    _formats()[0].validate(value)
-    title, mood, body = (value[key].strip() for key in ('title', 'mood', 'body'))
-    if not title or not body:
-        raise ValueError('DIARY_ENTRY_EMPTY')
-    source = _normalized('\n'.join(m['user'] + '\n' + m['linli'] for m in messages))
-    facts = []
-    for fact in value['facts']:
-        quote = _normalized(fact['quote'])
-        date = fact['date'] if isinstance(fact['date'], str) and _DATE.fullmatch(fact['date']) else None
+_CLAUSE_BREAK = re.compile(r'[，。！？、；：,.!?;:…—～~]')
+_WORD_BREAK = re.compile(r'\s')
+_JOINER = re.compile('[又但却而]')
+_TRAILING = ' ，。！？、；：,.!?;:…—～~'
+BODY_ROOM = 2               # a body is kept whole up to this many times its nominal limit
+
+
+def _limits():
+    """The length limits of the interface language: labels, body, fact text and quote, and how many facts."""
+    schema = _formats()[0].schema['properties']
+    fact = schema['facts']['items']['properties']
+    return {'title': schema['title']['maxLength'], 'mood': schema['mood']['maxLength'],
+            'body': schema['body']['maxLength'], 'facts': schema['facts']['maxItems'],
+            'text': fact['text']['maxLength'], 'quote': fact['quote']['maxLength']}
+
+
+def _clip(text, limit):
+    """Fit a short label to its limit at a natural break: whole clauses, then whole words, then a joining word."""
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    window = text[:limit + 1]
+    for pattern, floor in ((_CLAUSE_BREAK, max(2, limit // 3)), (_WORD_BREAK, 2), (_JOINER, 2)):
+        ends = [match.start() for match in pattern.finditer(window) if match.start() >= floor]
+        if ends:
+            return text[:ends[-1]].strip(_TRAILING)
+    return text[:limit].strip(_TRAILING)
+
+
+def _fit_body(body, limit):
+    """A body is long by nature: keep it whole unless it is far past the limit, then end it at a sentence."""
+    body = body.strip()
+    if len(body) <= limit * BODY_ROOM:
+        return body
+    end = max(body.rfind(mark, 0, limit) for mark in ('。', '！', '？', '!', '?', '\n'))
+    return body[:end + 1].strip() if end >= limit // 2 else body[:limit].strip()
+
+
+def _label(value):
+    return value.strip() if isinstance(value, str) else ''
+
+
+def _paragraphs(value):
+    if isinstance(value, list):
+        return '\n\n'.join(part.strip() for part in value if isinstance(part, str) and part.strip())
+    return _label(value)
+
+
+def _entry_object(value):
+    """The entry itself, even when the writer wrapped it in a list or under one extra key."""
+    for _ in range(2):
+        if isinstance(value, list) and len(value) == 1:
+            value = value[0]
+        elif isinstance(value, dict) and 'body' not in value and len(value) == 1:
+            value = next(iter(value.values()))
+        else:
+            break
+    return value if isinstance(value, dict) else None
+
+
+def _fitted_facts(facts, source, limits):
+    """Facts are a bonus: keep up to the limit that are well formed and quoted from that day, drop the rest."""
+    kept = []
+    for fact in facts if isinstance(facts, list) else []:
+        if not isinstance(fact, dict) or len(kept) >= limits['facts']:
+            continue
+        kind, text, quote = fact.get('kind'), _label(fact.get('text')), _label(fact.get('quote'))
+        kind = kind.strip().lower() if isinstance(kind, str) else None
         # A fact without a verbatim quote from this day is not something the user said.
-        if len(quote) >= 2 and quote in source and fact['text'].strip():
-            facts.append({'kind': fact['kind'], 'text': fact['text'].strip(), 'date': date, 'quote': fact['quote'].strip()})
-    return {'title': title, 'mood': mood, 'body': body, 'facts': facts}
+        if kind not in FACT_KINDS or not text or len(_normalized(quote)) < 2 or _normalized(quote) not in source:
+            continue
+        date = fact.get('date')
+        kept.append({'kind': kind, 'text': _clip(text, limits['text']),
+                     'date': date.strip() if isinstance(date, str) and _DATE.fullmatch(date.strip()) else None,
+                     'quote': quote[:limits['quote']].strip()})
+    return kept
+
+
+def validate(value, messages):
+    """Fit a written entry to the contract. Only output with no body at all is refused: labels that run long are
+    clipped at a natural break, malformed facts are dropped, and a missing label is made from the body."""
+    entry = _entry_object(value)
+    if entry is None:
+        raise ValueError('DIARY_ENTRY_INVALID')
+    limits = _limits()
+    body = _fit_body(_paragraphs(entry.get('body')), limits['body'])
+    if not body:
+        raise ValueError('DIARY_ENTRY_EMPTY')
+    title = _clip(_label(entry.get('title')), limits['title']) or _clip(body, limits['title'])
+    mood = _clip(_label(entry.get('mood')), limits['mood'])
+    source = _normalized('\n'.join(m['user'] + '\n' + m['linli'] for m in messages))
+    return {'title': title, 'mood': mood, 'body': body, 'facts': _fitted_facts(entry.get('facts'), source, limits)}
+
+
+def _revision(value, draft):
+    """The edited entry for validate(): labels the edit left out stay as drafted, facts always stay as drafted."""
+    entry = _entry_object(value)
+    if entry is None or 'body' not in entry:
+        raise ValueError('DIARY_REVISION_INVALID')
+    return {'title': _label(entry.get('title')) or draft['title'], 'mood': _label(entry.get('mood')) or draft['mood'],
+            'body': entry['body'], 'facts': draft['facts']}
+
+
+def _json_value(text):
+    """The reply as JSON: bare, inside a code fence, or with words around the object."""
+    text = (text or '').strip()
+    try:
+        return json.loads(text)
+    except ValueError:
+        pass
+    decoder, start = json.JSONDecoder(), text.find('{')
+    while start != -1:
+        try:
+            value, _ = decoder.raw_decode(text, start)
+        except ValueError:
+            value = None
+        found = _entry_object(value)
+        if found is not None and 'body' in found:
+            return found
+        start = text.find('{', start + 1)
+    raise ValueError('DIARY_NOT_JSON')
+
+
+def unserved(error):
+    """Whether the request never got a service to answer it (offline, unreachable, refused at the door)."""
+    from llm_gateway import GatewayError, ProviderUnavailable
+    return isinstance(error, (ProviderUnavailable, ConnectionError)) or (
+        isinstance(error, GatewayError) and error.code in UNSERVED_CODES)
 
 
 class DiaryStore:
@@ -530,6 +654,34 @@ class DiaryStore:
             db.execute('INSERT INTO diary_attempts VALUES (?,1,?,?) ON CONFLICT(day) DO UPDATE SET '
                        'attempts=attempts+1,last_at=excluded.last_at,reason=excluded.reason', (day, time.time(), reason))
 
+    def deferred(self, day, reason):
+        """Nothing reached a service (offline, unreachable): wait before the next try without using one up."""
+        with self._db() as db:
+            db.execute('INSERT INTO diary_attempts VALUES (?,0,?,?) ON CONFLICT(day) DO UPDATE SET '
+                       'last_at=excluded.last_at,reason=excluded.reason', (day, time.time(), reason))
+
+    def retry_rejected(self, days):
+        """Once, ever: a day whose tries were all used up on unusable replies or on a call that ran out of time gets
+        one more try.
+
+        Earlier versions refused replies that were only a little off the contract, and gave a slow writer three
+        minutes, so whole days were lost. The reason kept for a day tells such a day from one that failed because
+        nothing was reachable. The marker is written in the same step, so no later start repeats this, and a day
+        that fails again stays closed.
+        """
+        with self._db() as db:
+            if db.execute('SELECT 1 FROM diary_settings WHERE key=?', (RETRY_ONCE_KEY,)).fetchone():
+                return []
+            reopened = [row[0] for row in db.execute(
+                'SELECT day FROM diary_attempts WHERE length(day)=10 AND day>=? AND day<=? AND attempts>=? '
+                'AND reason IN (%s) AND day NOT IN (SELECT day FROM diary_entries) '
+                'AND day NOT IN (SELECT day FROM diary_deleted)' % ','.join('?' * len(REOPEN_REASONS)),
+                (min(days), max(days), MAX_ATTEMPTS, *REOPEN_REASONS))] if days else []
+            db.executemany("UPDATE diary_attempts SET attempts=?,last_at=0,reason='RETRY_ONCE' WHERE day=?",
+                           [(MAX_ATTEMPTS - 1, day) for day in reopened])
+            db.execute('INSERT OR IGNORE INTO diary_settings VALUES (?,?)', (RETRY_ONCE_KEY, '1'))
+        return reopened
+
     def context(self, now):
         """Bounded reply context: the last few entries, comments and every kept fact."""
         today = local_day(now)
@@ -607,7 +759,7 @@ def memoir_months(store, rows, now):
     return [{'month': month, 'chars': min(chars, MEMOIR_SOURCE_CHARS)} for month, chars in sorted(months.items())]
 
 
-async def write_month(store, gateway, month, rows, *, persona, now=None, timeout_seconds=240,
+async def write_month(store, gateway, month, rows, *, persona, now=None, timeout_seconds=WRITE_TIMEOUT_SECONDS,
                       relationship_stage='unknown', videos=(), visits=()):
     return await _write(store, gateway, month, rows, persona=persona, now=now,
                         timeout_seconds=timeout_seconds, relationship_stage=relationship_stage, videos=videos,
@@ -630,7 +782,7 @@ def due_facts(store, now):
     return list({(f['kind'], f['text']): f for f in due}.values())
 
 
-async def write_day(store, gateway, day, rows, *, persona, life=None, now=None, timeout_seconds=180,
+async def write_day(store, gateway, day, rows, *, persona, life=None, now=None, timeout_seconds=WRITE_TIMEOUT_SECONDS,
                     relationship_stage='unknown', videos=(), visits=()):
     """Write a draft and edit it once; optional enrichment never costs a completed draft.
 
@@ -812,8 +964,7 @@ async def _write(store, gateway, day, rows, *, persona, life=None, now=None, tim
                 revised = await _complete(gateway, prefix + '-revise:' + day, REVISE_PROMPT,
                     {**work['packet'], 'draft': {k: work['entry'][k] for k in ('title', 'mood', 'body')}},
                     _formats()[3], timeout_seconds, model=work['model'])
-                Draft202012Validator(_formats()[1]).validate(revised)
-                entry = validate({**revised, 'facts': work['entry']['facts']}, work['packet']['messages'])
+                entry = validate(_revision(revised, work['entry']), work['packet']['messages'])
                 if not _length_in_range(entry['body'], work['packet']['length_range']):
                     raise ValueError('DIARY_REVISION_LENGTH')
                 work['entry'] = {**entry, 'facts': work['entry']['facts']}
@@ -839,7 +990,7 @@ async def _complete(gateway, request_id, system, packet, response_format, timeou
     with pinned_model(getattr(getattr(gateway, 'config', None), 'base_url', ''), model):
         result = await asyncio.wait_for(structured(prompt, request_id=request_id,
             scope=GatewayRequestScope.BACKGROUND_REASONING, response_format=response_format), timeout=timeout)
-    return json.loads(result.text)
+    return _json_value(result.text)
 
 
 def due_days(store, now):
@@ -847,6 +998,7 @@ def due_days(store, now):
     local = now.astimezone(SHANGHAI)
     latest = local.date() - timedelta(days=1 if local.hour >= WRITE_AFTER_HOUR else 2)
     days = [(latest - timedelta(days=offset)).isoformat() for offset in range(CATCH_UP_DAYS)]
+    _optional(lambda: store.retry_rejected(days), None)
     return [day for day in reversed(days) if store.may_attempt(day)]
 
 

@@ -3979,7 +3979,7 @@ def _diary_public_entry(entry):
 
 
 async def _diary_tick(now=None) -> None:
-    from runtime.diary.diary import due_days, write_day, day_life
+    from runtime.diary.diary import due_days, write_day, day_life, unserved
     from runtime.private_world.daily_life_runtime import life_persona
     if diary_store is None or not diary_store.enabled():
         return
@@ -3993,8 +3993,11 @@ async def _diary_tick(now=None) -> None:
                 persona=life_persona(letters_adapter.persona_v2_path),
                 life=day_life(getattr(daily_life_runtime, 'store', None), day, outfit), now=now,
                 relationship_stage=stage, videos=videos, visits=_diary_visits(day))
-        except (GatewayError, asyncio.TimeoutError, OSError, RuntimeError, ValueError, TypeError, KeyError, sqlite3.Error) as exc:
-            diary_store.failed(day, type(exc).__name__)
+        except Exception as exc:
+            # A request that never reached a service keeps its attempt; any other failure uses one up. Nothing
+            # escapes this loop: an unexpected error must not stop the diary until the next start.
+            record = diary_store.deferred if unserved(exc) else diary_store.failed
+            record(day, type(exc).__name__)
             _safe_log('diary_write_failed', error_code=getattr(exc, 'code', None) or type(exc).__name__)
             continue
         if outcome == 'empty':
@@ -4012,7 +4015,7 @@ async def _write_memoirs(months) -> None:
 
 
 async def _write_memoirs_once(months) -> None:
-    from runtime.diary.diary import write_month
+    from runtime.diary.diary import write_month, unserved
     from runtime.private_world.daily_life_runtime import life_persona
     _memoir_state.update(running=True, done=0, failed=0, total=len(months))
     try:
@@ -4025,9 +4028,10 @@ async def _write_memoirs_once(months) -> None:
                                   persona=life_persona(letters_adapter.persona_v2_path),
                                   relationship_stage=stage, videos=videos, visits=_diary_visits(month))
                 _memoir_state['done' if outcome == 'written' or diary_store.entry(month) else 'failed'] += 1
-            except (GatewayError, asyncio.TimeoutError, OSError, RuntimeError, ValueError, TypeError, KeyError, sqlite3.Error) as exc:
+            except Exception as exc:
                 _memoir_state['failed'] += 1
-                diary_store.failed(month, type(exc).__name__)
+                record = diary_store.deferred if unserved(exc) else diary_store.failed
+                record(month, type(exc).__name__)
                 _safe_log('diary_memoir_failed', error_code=getattr(exc, 'code', None) or type(exc).__name__)
     finally:
         _memoir_state['running'] = False
