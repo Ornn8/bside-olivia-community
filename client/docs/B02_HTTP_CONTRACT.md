@@ -88,7 +88,7 @@ CORS 仅允许 loopback Origin，或精确命中原生客户端固定信任源
 - LLM timeout/error：发信确认保持 200/PENDING，detail 随后标记 `FAILED` 并带错误码；不得写入 `reply_text` 占位符。
 - 当前信箱状态损坏或原子写入在 replace 前失败：current list/unread/detail/send 返回 503 `STORE_STATE_UNAVAILABLE`，legacy 只读信箱保持独立；replace 后仅目录同步失败时保留已提交信并继续调度，日志只记录脱敏诊断码。
 - 同一时间只接收一封未交付信：上一封仍为 PENDING/PROCESSING，或虽已生成但尚未到 `reply_not_before` 时，不同的新信返回 409 `LETTER_IN_PROGRESS`；相同请求的网络重试仍复用原信，回信可见后允许继续寄信。
-- 回信正文已写完、只在等语音或歌曲生成时，这封信不再占用上一条的名额：新信照常接收，信箱列表里该信仍是未送达状态（`letterStatus` 3、无正文），并带 `mediaWaitOnly: true`，客户端据此不收起写信入口。该信 60 秒内的完全相同请求仍视为重试并复用原信，不会再开一次录制。
+- 回信正文已写完、只在等语音、歌曲或照片生成时，这封信不再占用上一条的名额：新信照常接收（生成任务仍按顺序一个接一个做，结果只写回各自的信），信箱列表里该信仍是未送达状态（`letterStatus` 3、无正文），并带 `mediaWaitOnly: true`，客户端据此不收起写信入口。她自己的主动写信仍等待被索要的照片完成。同一请求（正文与素材完全相同）在其生成期间再次寄出，60 秒内视为重试并复用原信，之后返回 409 `LETTER_IN_PROGRESS` 和 `active_letter_id`，不会再开一次生成；交付后相同的信照常接收。
 - 相同正文和素材在短窗口内失败后重试成功时，旧 FAILED 记录保留在本地审计状态，但从 current list 隐藏；直接查询旧 ID 返回 410 `LETTER_SUPERSEDED` 和替代信件 ID，不回显旧正文。
 - `/letter/resend` 当前未实现；重复请求返回相同 501，不改变信件内容或状态。
 - `scope=legacy` 的 list/detail 只读，detail 不改变 `is_read`；send 对 legacy scope 返回 403 `READ_ONLY_SCOPE`。

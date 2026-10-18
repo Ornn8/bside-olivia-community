@@ -123,14 +123,22 @@ def _audio_pending(letter: Mapping[str, object]) -> bool:
     )
 
 
-def _media_wait_only(letter: Mapping[str, object]) -> bool:
-    """The written reply is finished and only generated audio is still outstanding.
+def _media_wait_only(letter: Mapping[str, object], *, now: float | None = None) -> bool:
+    """The written reply is finished and only generated media (audio or a photo) is outstanding.
 
-    The reply stays unpublished (the text and the voice or song arrive together),
-    but nothing about the next letter depends on it: the server already accepts a
-    new letter at this point. A requested photo keeps its own single-flight wait.
+    The reply stays unpublished (the text and its voice, song or photo arrive together),
+    but nothing about the next letter depends on it: the generation runs on its own,
+    one job at a time, and the result is written to this letter only. A letter that is
+    also held back by a publication deadline still counts as undelivered.
     """
-    return _audio_pending(letter) and not _photo_pending(letter)
+    if not (_audio_pending(letter) or _photo_pending(letter)):
+        return False
+    deadline = letter.get("reply_not_before", 0.0)
+    if deadline in (None, ""):
+        deadline = 0.0
+    if isinstance(deadline, bool) or not isinstance(deadline, (int, float)):
+        return False
+    return float(deadline) <= _now_value(now)
 
 
 def _video_pending(letter: Mapping[str, object]) -> bool:
@@ -317,7 +325,7 @@ def serialize_letter_summary(
         payload['replyDisposition'] = 'no_reply'
     if video_pending:
         payload["videoPending"] = True
-    if _media_wait_only(letter):
+    if _media_wait_only(letter, now=now):
         payload["mediaWaitOnly"] = True
     if (status == int(OriginalClientLetterStatus.PENDING)
             and letter.get('reply_wait_reason') == 'bathing'
