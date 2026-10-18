@@ -19,8 +19,8 @@ from typing import Any
 
 from runtime import ui_language
 
-# Request ids of the calls whose text reaches the user. Matching is by prefix, never by substring, so
-# "history-select:letter-reply:..." (a recall step for a letter) stays internal.
+# Request ids of the calls whose text reaches the user. Matching is by prefix, never by substring, so an id
+# that only contains a listed one in the middle (the recall step of a letter reply) stays internal.
 USER_REQUEST_PREFIXES = (
     "letter-reply:",  # letter replies (the writer)
     "personal-chat:",  # QQ / WeChat replies and proactive chat, incl. spoken stories and piano notes

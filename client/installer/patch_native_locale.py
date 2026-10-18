@@ -61,7 +61,7 @@ RAW_REWRITES = (
 )
 
 # Chinese string literals outside the locale module: (chinese, english, occurrences, added_by_patch).
-# The first group is in the official bundle. The second group is written into the bundle by our own
+# The first group is in the base bundle. The second group is written into the bundle by our own
 # mailbox/music patches, so an unpatched bundle has none of them and a patched one has exactly `occurrences`.
 LITERALS = (
     ('请选择文件', 'Please choose a file', 1, False),
