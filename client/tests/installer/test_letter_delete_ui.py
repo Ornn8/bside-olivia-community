@@ -23,6 +23,10 @@ const window={location:{reload(){}}};
 const text=(tag,value,cls)=>Object.assign(new Element(tag),{textContent:value,className:cls||''});
 const button=(label,fn)=>Object.assign(text('button',label),{click:fn});
 const actions=()=>new Element('div');
+// what the window takes from the surrounding script: the confirmation hook, the memory service and the memory tab
+let confirmHost=null;const MEMORY_PATH='memory',STATUS_PATH='status';
+let memoryMounts=[],requestJson=async()=>{throw new Error('no memory service')};
+const mountMemoryTab=async(host,openOriginal)=>{memoryMounts.push({host,openOriginal})};
 let requests=[],failAt=0,failLoad=false,hold=null,detailRequests=0,readHold=null;
 let letters=[{letter_id:'a',content:'<img src=x onerror=evil()>',reply_text:'她的回信',created_at:1792230000},
  {letter_id:'b',content:'第二封信',reply_text:'第二封回信'},
@@ -43,12 +47,12 @@ const routeRequest=async(path,body,options)=>{
 };
 const all=()=>document.body.querySelectorAll('button,input,span,p,dialog,strong');
 const find=label=>all().filter(el=>el.tag==='button'&&el.textContent===label).at(-1);
-const inputs=()=>all().filter(el=>el.tag==='input');
+const inputs=()=>all().filter(el=>el.tag==='input'&&el.type==='checkbox');
 const select=(index,value=true)=>{const el=inputs()[index];el.checked=value;el.events.change()};
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 const accept=async promise=>{await tick();await find('确定').click();await promise};
 const expand=async()=>{for(const el of all().filter(x=>x.className==='lm-title'))await el.click()};
-const openAll=async()=>{await openLetterDeletion();await expand()};
+const openAll=async()=>{await openLettersAndMemories();await expand()};
 '''
 
 
@@ -56,7 +60,7 @@ def run_js(checks):
     node = shutil.which('node')
     if not node:
         pytest.skip('Node.js unavailable')
-    source = 'const openLetterDeletion = ' + BOOTSTRAP_JAVASCRIPT.split('const openLetterDeletion = ', 1)[1].split('const mountMainNavigation =', 1)[0]
+    source = 'const openLettersAndMemories = ' + BOOTSTRAP_JAVASCRIPT.split('const openLettersAndMemories = ', 1)[1].split('const mountMainNavigation =', 1)[0]
     result = subprocess.run([node, '-e', HARNESS + source + '\n(async()=>{' + checks + '})().catch(error=>{console.error(error);process.exitCode=1});'], capture_output=True, timeout=20)
     assert result.returncode == 0, result.stderr.decode('utf8', errors='replace')
 
@@ -70,7 +74,7 @@ select(0);const cancelled=find('删除所选').click();await tick();await find('
 await accept(find('删除所选').click());assert.deepEqual(requests,[{letter_id:'a',part:'user'}]);
 assert.equal(letters[0].reply_text,'她的回信');
 await find('最近删除').click();await accept(find('恢复').click());assert.deepEqual(requests.at(-1),{id:'0'});
-await find('返回信箱').click();await expand();select(0);await accept(find('删除所选').click());assert.equal(requests.at(-1).part,'reply');
+await find('信件').click();await expand();select(0);await accept(find('删除所选').click());assert.equal(requests.at(-1).part,'reply');
 ''')
 
 
@@ -108,15 +112,15 @@ assert.equal(requests.length,1);release();await pending;
 def test_empty_read_failure_and_tab_clear_selection():
     run_js(r'''
 await openAll();select(0);await find('最近删除').click();assert.ok(all().some(x=>x.textContent==='最近没有删除的信件。'));
-assert.equal(find('删除所选').disabled,true);letters=[];await find('返回信箱').click();assert.ok(all().some(x=>x.textContent==='信箱里还没有信件。'));
-await find('最近删除').click();failLoad=true;await find('返回信箱').click();assert.ok(all().some(x=>x.textContent==='信箱读取失败，请关闭后重试。'));assert.equal(find('关闭').disabled,false);
+assert.equal(find('删除所选').disabled,true);letters=[];await find('信件').click();assert.ok(all().some(x=>x.textContent==='信箱里还没有信件。'));
+await find('最近删除').click();failLoad=true;await find('信件').click();assert.ok(all().some(x=>x.textContent==='信箱读取失败，请关闭后重试。'));assert.equal(find('关闭').disabled,false);
 ''')
 
 
 def test_prepared_retry_requires_confirmation():
     run_js(r'''
 trash=[{id:'t',letter_id:'a',part:'user',summary:'未完成的删除',status:'prepared',expires_at:1}];
-await openLetterDeletion();await find('最近删除').click();
+await openLettersAndMemories();await find('最近删除').click();
 const cancelled=find('继续清理').click();await tick();await find('取消').click();await cancelled;assert.equal(requests.length,0);
 await accept(find('继续清理').click());assert.deepEqual(requests,[{letter_id:'a',part:'user'}]);
 ''')
@@ -124,10 +128,65 @@ await accept(find('继续清理').click());assert.deepEqual(requests,[{letter_id
 
 def test_open_does_not_mark_letters_read_and_pending_preview_can_close():
     run_js(r'''
-await openLetterDeletion();assert.equal(detailRequests,0);
+await openLettersAndMemories();assert.equal(detailRequests,0);
 let release;readHold=new Promise(r=>release=r);
 const pending=all().find(x=>x.className==='lm-title').click();await tick();
 assert.equal(detailRequests,1);assert.equal(find('关闭').disabled,false);
 await find('关闭').click();assert.equal(document.body.children.length,0);
 release();await pending;assert.equal(detailRequests,1);assert.equal(requests.length,0);assert.equal(document.body.children.length,0);
+''')
+
+
+def test_tabs_keep_the_ticks_and_mount_the_memory_tab_once():
+    run_js(r'''
+const panel=name=>document.body.querySelectorAll('div').find(x=>x.className.split(' ').includes(name));
+await openAll();select(0);select(2);
+assert.ok(all().some(x=>x.textContent==='已选 2 封'));
+const listReads=()=>requests.length;
+assert.equal(memoryMounts.length,0,'the memory tab is not read before it is shown');
+await find('记忆').click();
+assert.equal(memoryMounts.length,1);assert.equal(panel('lm-memory').hidden,false);assert.equal(panel('lm-panel').hidden,true);
+assert.equal(typeof memoryMounts[0].openOriginal,'function');
+await find('信件').click();
+assert.equal(panel('lm-memory').hidden,true);assert.equal(panel('lm-panel').hidden,false);
+assert.ok(all().some(x=>x.textContent==='已选 2 封'),'ticks survive a visit to the memory tab');
+assert.equal(inputs().filter(x=>x.checked).length,2);
+await find('记忆').click();assert.equal(memoryMounts.length,1,'mounted once');
+await find('最近删除').click();assert.equal(panel('lm-memory').hidden,true);
+assert.ok(all().some(x=>x.textContent==='最近没有删除的信件。'));
+await find('信件').click();assert.ok(all().some(x=>x.textContent==='已选 0 封'),'the list reloads after the recently deleted tab; ticks are cleared as before');
+''')
+
+
+def test_the_window_can_open_on_the_memory_tab():
+    run_js(r'''
+const panel=name=>document.body.querySelectorAll('div').find(x=>x.className.split(' ').includes(name));
+await openLettersAndMemories({tab:'memory'});
+assert.equal(memoryMounts.length,1);assert.equal(panel('lm-memory').hidden,false);
+const tabs=all().filter(x=>x.tag==='button'&&x.className==='lm-tab');
+assert.deepEqual(tabs.map(x=>[x.textContent,x.attrs['aria-selected']]),[['信件','false'],['记忆','true'],['最近删除','false']]);
+await find('信件').click();assert.equal(panel('lm-memory').hidden,true);
+''')
+
+
+def test_memory_confirmations_use_the_window_and_are_released_on_close():
+    run_js(r'''
+await openLettersAndMemories();
+assert.equal(typeof confirmHost,'function','memory actions confirm inside the modal window');
+const answer=confirmHost('确认清空当前用户的 Mem0 长期记忆？');await tick();
+assert.ok(all().some(x=>x.tag==='p'&&x.textContent==='确认清空当前用户的 Mem0 长期记忆？'));
+await find('取消').click();assert.equal(await answer,false);
+const second=confirmHost('再确认一次？');await tick();await find('确定').click();assert.equal(await second,true);
+await find('关闭').click();assert.equal(confirmHost,null);
+''')
+
+
+def test_tabs_are_locked_while_a_deletion_runs():
+    run_js(r'''
+await openAll();select(0);let release;hold=new Promise(r=>release=r);
+const pending=find('删除所选').click();await tick();await find('确定').click();await tick();
+for(const label of ['信件','记忆','最近删除'])assert.equal(find(label).disabled,true,label);
+await find('记忆').click();assert.equal(memoryMounts.length,0);
+release();await pending;
+for(const label of ['信件','记忆','最近删除'])assert.equal(find(label).disabled,false,label);
 ''')

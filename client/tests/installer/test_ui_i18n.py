@@ -697,6 +697,24 @@ def test_english_memory_dialog_shows_no_chinese():
         browser.close()
 
 
+def test_english_memory_dialog_opens_the_letters_and_memories_window():
+    sync_playwright = pytest.importorskip("playwright.sync_api").sync_playwright
+    from tests.installer.letters_memories_fixture import Service, boot
+    with sync_playwright() as p:
+        browser = _launch(p)
+        page = boot(browser, Service("en"), language="en", hash="#/settings")
+        page.wait_for_selector("[data-olivia-group=letters]")
+        page.evaluate("document.querySelector('[data-olivia-group=letters]').open = true")
+        page.get_by_role("button", name="Open", exact=True).first.click()
+        page.get_by_role("button", name="Open letters and memories").click()
+        window = page.locator("[data-letter-deletion]")
+        window.locator(".om-row").first.wait_for()
+        assert window.get_by_role("tab", name="Memories").get_attribute("aria-selected") == "true"
+        assert _unexpected(_chinese(page, "[data-letter-deletion]")) == []
+        assert page.errors == []
+        browser.close()
+
+
 @pytest.mark.parametrize("language,title,submit,limited", [
     ("zh-cn", "写下你的感受", "寄出信件", True),
     ("en", "Write down how you feel", "Send letter", True),
@@ -757,29 +775,52 @@ def _source_between(start: str, end: str) -> str:
 HELPERS = _source_between("  const text = (tag, value, className)", "  const setButtonsBusy =")
 
 
-def test_english_letter_manager_shows_no_chinese():
+def test_english_letters_and_memories_window_shows_no_chinese_on_any_tab():
     sync_playwright = pytest.importorskip("playwright.sync_api").sync_playwright
-    manager = _source_between("  const openLetterDeletion = ", "  const mountMainNavigation =")
-    body = HELPERS + """
-      const actions = () => document.createElement('div');
-      const letters = [{letter_id: 'a', content: 'Hello Linli', reply_text: 'Hello you', created_at: 1792230000},
-                       {letter_id: 'c', origin: 'proactive', content: 'inner', reply_text: 'Good morning', created_at: 1792057200}];
-      const trash = [{id: 't1', letter_id: 'z', part: 'user', summary: 'An old letter', status: 'deleted', expires_at: 1794822000}];
-      const routeRequest = async (path) => {
-        if (path.includes('/deletion/list')) return {items: trash};
-        if (path.includes('/detail')) return letters.find(x => x.letter_id === new URLSearchParams(path.split('?')[1]).get('letter_id'));
-        return {list: letters};
-      };
-    """ + manager + "\nwindow.openManager = openLetterDeletion;"
+    from tests.installer.letters_memories_fixture import Service, boot
     with sync_playwright() as p:
         browser = _launch(p)
-        page = _sliced_page(browser, "en", body, "<div id='app'></div>")
-        page.evaluate("async () => { await window.openManager(); for (const el of document.querySelectorAll('.lm-title')) await el.click(); }")
-        page.wait_for_timeout(400)
-        assert page.get_by_role("button", name="Recently deleted").is_visible()
-        assert page.get_by_role("button", name="Delete selected").is_visible()
+        page = boot(browser, Service("en"), language="en")
+        page.wait_for_selector("[data-letter-deletion-entry]")
+        assert page.locator("[data-letter-deletion-entry]").inner_text() == "Letters and memories"
+        assert _unexpected(_chinese(page, "[data-olivia-main-navigation]")) == []
+        page.click("[data-letter-deletion-entry]")
+        window = page.locator("[data-letter-deletion]")
+        window.locator(".lm-title").first.wait_for()
+        assert window.get_by_role("tab").all_inner_texts() == ["Letters", "Memories", "Recently deleted"]
+        # letters: the list, an expanded exchange, the search, a long result with its full text, the linked-letter strip
+        window.locator(".lm-list > div").nth(0).get_by_role("button").click()
+        page.wait_for_timeout(300)
         assert _unexpected(_chinese(page, "[data-letter-deletion]")) == []
-        page.get_by_role("button", name="Recently deleted").click()
+        window.locator(".lm-search input").fill("rain")
+        window.get_by_text("matches found").wait_for()
+        assert window.get_by_role("button", name="Load full text").is_visible()
+        assert _unexpected(_chinese(page, "[data-letter-deletion]")) == []
+        window.get_by_role("button", name="Load full text").click()
+        page.wait_for_timeout(300)
+        window.locator(".lm-search input").fill("zzzz")
+        window.get_by_text("No matching letters. Try other keywords.").wait_for()
+        assert _unexpected(_chinese(page, "[data-letter-deletion]")) == []
+        window.locator(".lm-search input").fill("")
+        page.wait_for_timeout(400)
+        # memories: the browser, its management and a confirmation, then the hand-over to the letter tab
+        window.get_by_role("tab", name="Memories").click()
+        window.locator(".om-row").first.wait_for()
+        window.locator(".om-heading button").click()
+        page.wait_for_timeout(300)
+        assert window.locator(".om-heading button").inner_text() == "More"
+        assert _unexpected(_chinese(page, "[data-letter-deletion]")) == []
+        window.get_by_role("button", name="Clear this user's memory").click()
+        page.locator("[data-letter-confirm]").wait_for()
+        assert _unexpected(_chinese(page, "[data-letter-deletion]")) == []
+        page.keyboard.press("Escape")
+        page.keyboard.press("Escape")
+        window.get_by_role("button", name="View linked original").click()
+        window.get_by_text("Viewing linked original text").wait_for()
+        window.get_by_role("button", name="Show all letters").wait_for()
+        assert _unexpected(_chinese(page, "[data-letter-deletion]")) == []
+        # recently deleted
+        window.get_by_role("tab", name="Recently deleted").click()
         page.wait_for_timeout(400)
         assert _unexpected(_chinese(page, "[data-letter-deletion]")) == []
         assert page.errors == []

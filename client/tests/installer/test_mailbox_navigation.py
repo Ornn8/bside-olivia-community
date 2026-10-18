@@ -54,6 +54,7 @@ vm.runInNewContext(source,context);
  assert.equal(body.children.length,1,'rerenders must not duplicate navigation');
  assert.equal(body.children[0].children[0].getAttribute('aria-current'),'page');
  assert.equal(body.children[0].children.filter(x=>Object.hasOwn(x.attributes,'data-letter-deletion-entry')).length,1);
+ assert.equal(body.children[0].children.find(x=>Object.hasOwn(x.attributes,'data-letter-deletion-entry')).textContent,'信件与记忆','one top-bar entry for the letters and the memories');
  window.location.hash='#/studio';
  context.navigation.mountMainNavigation();
  assert.equal(body.children[0].children[0].href,'#/collection','music must retain a mailbox entry');
