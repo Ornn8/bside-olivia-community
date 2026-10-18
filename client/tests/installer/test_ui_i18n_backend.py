@@ -413,6 +413,18 @@ def test_the_start_script_message_reads_the_saved_choice():
     assert "Olivia 启动失败（错误码 " in script and "Olivia 本地版" in script
 
 
+def test_the_native_launcher_message_reads_the_saved_choice():
+    source = (ROOT / "installer" / "olivia_launcher" / "Program.cs").read_text(encoding="utf-8")
+    assert 'Path.Combine(root, "data", "config", "ui-language.json")' in source
+    assert 'Contains("\\"language\\": \\"en\\"")' in source
+    assert "Olivia failed to start (error code " in source
+    # the Chinese message is still the default, and the English one is the same text as the start script's
+    assert "Olivia 启动失败（错误码 " in source
+    script = (ROOT / "installer" / "start_hidden.vbs.txt").read_text(encoding="utf-8")
+    english = "Please send the startup logs in the data\\\\logs folder of the installation to the maintainer."
+    assert english in source and english.replace("\\\\", "\\") in script
+
+
 def test_the_web_player_message_reads_the_saved_choice():
     from patch_webplayer import _BOOTSTRAP_JAVASCRIPT
 

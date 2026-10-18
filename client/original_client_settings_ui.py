@@ -1526,6 +1526,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const requestToken = {};
     panel._lifeRequest = requestToken;
     const alive = () => panel.isConnected !== false && panel._lifeRequest === requestToken;
+    // The wide gap that separates a time from its title in Chinese is an ordinary space in English.
+    const gap = () => window.oliviaI18n && window.oliviaI18n.lang() === "en" ? " " : "　";
     const labels = { planned: t("打算做"), ongoing: t("进行中"), paused: t("暂时搁下"), completed: t("已完成"), cancelled: t("已取消"), awaiting_user: t("等你说说后续") };
     const when = (value) => {
       const date = new Date(value);
@@ -1747,7 +1749,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         const day=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(at));
         if(day!==date || seenActivities.has(item.source_id))continue;
         seenActivities.add(item.source_id);
-        rows.push({kind:'clock',at,label:`${span(item.occurred_at,item.last_recorded_at)}　${item.activity} · ${item.record_count > 1 ? t('同状态记录') : t('生活记录')}`,note:typeof item.note==='string'?item.note:''});
+        rows.push({kind:'clock',at,label:`${span(item.occurred_at,item.last_recorded_at)}${gap()}${item.activity} · ${item.record_count > 1 ? t('同状态记录') : t('生活记录')}`,note:typeof item.note==='string'?item.note:''});
       }
       const names={breakfast:t('早餐'),lunch:t('午餐'),dinner:t('晚餐'),snack:t('加餐')};
       const slots=['breakfast','lunch','dinner'];
@@ -1769,7 +1771,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           const food=typeof item.food==='string' ? item.food : '';
           const states={planned:t('计划吃{food}', {food}),eating:t('正在吃{food}', {food}),eaten:t('已吃{food}', {food}),skipped:t('这餐没吃')};
           const state=states[item.status] || t('用餐记录待更新');
-          label=`${planned ? t('计划 ') : ''}${span(start,item.status==='eaten' ? item.finished_at : null)}　${names[slot]} · ${item.stale ? t('上次记录：{state}；当前状态待更新', {state}) : state}`;
+          label=`${planned ? t('计划 ') : ''}${span(start,item.status==='eaten' ? item.finished_at : null)}${gap()}${names[slot]} · ${item.stale ? t('上次记录：{state}；当前状态待更新', {state}) : state}`;
           if(item.stale && failure)label+=` · ${failure}`;
           if(item.recovered)label+=` · ${clock(item.recorded_at) ? t('补记于 {time}', {time: clock(item.recorded_at)}) : t('补记')}`;
         }
@@ -2026,7 +2028,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         }
         agenda.append(text('small',t('课表和打算不证明已经发生，以后续生活记录为准。'),'olivia-world-muted'));
         const next=section(t('接下来'),'');next.className='olivia-world-aside';
-        if(schedule.next_class)next.append(line('calendar',`${when(schedule.next_class.start)}　${schedule.next_class.title}`,'olivia-world-agenda'));
+        if(schedule.next_class)next.append(line('calendar',`${when(schedule.next_class.start)}${gap()}${schedule.next_class.title}`,'olivia-world-agenda'));
         else next.append(text('p',t('暂无下一节课的安排。'),'olivia-world-muted'));
         const promise=payload.shared.find(item=>item.time_scope !== 'transient' && !item.deadline_expired && !['completed','cancelled'].includes(item.status));
         if(promise){next.append(line('link',t('与你的约定'),'olivia-world-agenda'),text('p',said(promise)),text('small',labels[promise.status] || t('状态待确认'),'olivia-world-muted'))}

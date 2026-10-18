@@ -3,7 +3,7 @@
 The life store, the prompts and the reply context keep these texts in Chinese and nothing here changes that. When the
 interface is English, the API that feeds the page asks this module to put English wording on the copy it sends: the
 activity names, the places, the rest rhythm, the timetable, the stock episodes and the sentences the program composes
-from them. Wording that a model wrote (what she practises, the shops she visits, her own words) has no entry and is
+from them. Wording that a model wrote (what she practices, the shops she visits, her own words) has no entry and is
 passed through as it is; a sentence that mixes the two keeps the model's words inside the English frame.
 
 Chinese mode returns the very object it was given, so nothing changes there.
@@ -30,7 +30,27 @@ PLACES: dict[str, tuple[str, str, str]] = {
     "学校琴房": ("School practice room", "In a practice room at school", "a practice room at school"),
     "学校教室": ("School classroom", "In a classroom at school", "a classroom at school"),
 }
-PLACE_DETAIL_SUFFIX = "，沿用已有布局与陈设。"
+# Rooms and shops the day-plan writer is told to use (exact names only); a room at home may carry "家里".
+PLAN_PLACES: dict[str, tuple[str, str, str]] = {
+    "厨房": ("Kitchen", "In the kitchen", "the kitchen"),
+    "音乐房": ("Music room", "In the music room", "the music room"),
+    "客厅": ("Living room", "In the living room", "the living room"),
+    "阳台": ("Balcony", "On the balcony", "the balcony"),
+    "书房": ("Study", "In the study", "the study"),
+    "餐桌": ("Dining table", "At the dining table", "the dining table"),
+    "琴房": ("Practice room", "In a practice room", "a practice room"),
+    "图书馆": ("Library", "In the library", "the library"),
+    "食堂": ("Canteen", "In the canteen", "the canteen"),
+    "商场服装店": ("Clothing store in a mall", "At a clothing store in a mall", "a clothing store in a mall"),
+    "超市": ("Supermarket", "At the supermarket", "the supermarket"),
+    "文具店": ("Stationery shop", "At the stationery shop", "the stationery shop"),
+    "花店": ("Flower shop", "At the flower shop", "the flower shop"),
+    "面包店": ("Bakery", "At the bakery", "the bakery"),
+    "展馆": ("Exhibition hall", "At the exhibition hall", "the exhibition hall"),
+    "公园": ("Park", "In the park", "the park"),
+    "校门口的文具店": ("Stationery shop by the school gate", "At the stationery shop by the school gate",
+                       "the stationery shop by the school gate"),
+}
 
 # --- activities ---------------------------------------------------------------------------------------------------
 # label -> (title, phrase used inside a sentence)
@@ -69,6 +89,12 @@ FOCUSES: dict[str, str] = {
     "和声草稿": "a harmony sketch",
     "练习录音": "a practice recording",
     "课堂笔记": "class notes",
+    # The examples the day-plan writer is given; it often repeats them as they are.
+    "和声学作业第三题": "question 3 of the harmony assignment",
+    "乐团分谱第二乐章": "the second movement of her orchestra part",
+    "图书馆借的传记": "a biography borrowed from the library",
+    "阳台上的衣物": "clothes on the balcony",
+    "校门口的文具店": "the stationery shop by the school gate",
 }
 
 COURSES: dict[str, str] = {
@@ -118,6 +144,9 @@ FOODS: dict[str, str] = {
     "米饭和炒时蔬": "rice with stir-fried seasonal vegetables", "菌菇面": "mushroom noodles",
     "馄饨": "wontons", "鸡肉和米饭": "chicken with rice", "杂粮粥": "multigrain congee",
     "水果": "fruit", "酸奶": "yogurt", "面包": "bread", "坚果": "nuts",
+    # The examples the day-plan writer is given.
+    "二食堂的番茄牛腩饭": "tomato beef rice from Canteen 2", "楼下的煎饼果子": "jianbing from downstairs",
+    "外卖的酸辣粉": "hot and sour noodles from delivery", "番茄牛腩饭": "tomato beef rice",
 }
 
 # --- rhythm, wellbeing, timetable -----------------------------------------------------------------------------------
@@ -139,10 +168,10 @@ RHYTHM: dict[str, str] = {
     "这段休息后精力有所恢复，可以按意愿接回轻活动。": "Her energy has recovered after this rest, and she can ease back into light activities if she likes.",
     "这段休息后缓过来一些，仍适合放慢节奏。": "She feels somewhat better after this rest, but a slower pace still suits her.",
     "连续休息不足，身体不太舒服，减少练习；若休息后仍不适，安排门诊咨询。":
-        "She has not been resting enough and does not feel well, so she is practicing less. If she still feels unwell after resting, she will arrange to see a doctor.",
+        "She hasn't been resting enough and doesn't feel well, so she is practicing less. If she still feels unwell after resting, she will arrange to see a doctor.",
     "连续休息不足，身体不太舒服，今天先减少活动、好好休息。":
-        "She has not been resting enough and does not feel well, so today she is doing less and resting properly.",
-    "正在慢慢恢复，先不把日程排满。": "She is slowly recovering and is not filling up her schedule yet.",
+        "She hasn't been resting enough and doesn't feel well, so today she is doing less and resting properly.",
+    "正在慢慢恢复，先不把日程排满。": "She is slowly recovering and isn't filling up her schedule yet.",
     "没有持续身体不适的记录。": "No record of ongoing discomfort.",
     "这段休息后精力有所恢复。": "Her energy has recovered after this rest.",
     "恢复后又有新的消耗，放慢节奏安排生活。": "She has been drained again after recovering, so she is taking things slowly.",
@@ -171,10 +200,10 @@ EPISODES: dict[str, str] = {
     # bath
     "准备开始清洁": "Getting ready to wash",
     "进入浴室，开始本次洗澡": "Went into the bathroom and started her bath",
-    "已经开始这次洗澡，还没有洗完。": "She has started her bath and has not finished yet.",
+    "已经开始这次洗澡，还没有洗完。": "She has started her bath and hasn't finished yet.",
     "洗澡结束后头发还湿着": "Her hair was still wet after the bath",
     "关好水并裹好浴巾，准备擦头发": "Turned off the water, wrapped up in a towel and got ready to dry her hair",
-    "刚洗完这次澡，已经裹好浴巾，头发还没完全干。": "She has just finished her bath, is wrapped in a towel, and her hair is not quite dry yet.",
+    "刚洗完这次澡，已经裹好浴巾，头发还没完全干。": "She has just finished her bath, is wrapped in a towel, and her hair isn't quite dry yet.",
     "发梢还在滴水": "Her hair was still dripping",
     "裹好浴巾后先用毛巾擦发梢": "Wrapped up in a towel and dried the ends of her hair first",
     "这次洗澡已经完成，裹好浴巾后正在擦头发。": "Her bath is done; she is wrapped in a towel and drying her hair.",
@@ -187,19 +216,19 @@ EPISODES: dict[str, str] = {
     "这次购物已经完成，买好的东西收进了袋子。": "The shopping is done, and what she bought is in the bag.",
     "当前没有合适的选项": "Nothing suitable at the moment",
     "这次先不买，结束挑选": "Decided not to buy anything this time and stopped browsing",
-    "这次没有买到合适的用品，之后再找。": "She did not find anything suitable this time and will look again later.",
+    "这次没有买到合适的用品，之后再找。": "She didn't find anything suitable this time and will look again later.",
     # class
-    "概念还没有理清": "The concepts were not clear yet",
+    "概念还没有理清": "The concepts weren't clear yet",
     "对照自己的笔记重新整理": "Went back over her notes to sort them out",
     "当前这一处内容理清了一点，课程仍在进行。": "She has this part a bit clearer; the class is still going.",
     "注意力有些分散": "Her attention was drifting",
     "把注意力收回当前内容，记下疑问": "Brought her attention back to the lesson and wrote down her questions",
     "记下了还未弄懂的问题，尚未解决，课程仍在进行。":
-        "She has written down what she still does not understand; it is not settled, and the class is still going.",
-    "有一部分课堂内容还没理解": "Part of the lesson was not clear yet",
+        "She has written down what she still doesn't understand; it isn't settled, and the class is still going.",
+    "有一部分课堂内容还没理解": "Part of the lesson wasn't clear yet",
     "先记下疑问，继续跟进课程内容": "Wrote down her questions and kept following the lesson",
     "课堂上有一部分内容还没理解，已记下疑问，留待继续梳理。":
-        "She did not understand part of the lesson, has noted her questions and will sort them out later.",
+        "She didn't understand part of the lesson, hasn'ted her questions and will sort them out later.",
     # reading
     "一段意思不容易把握": "One passage was hard to grasp",
     "回读前后文并做简短笔记": "Re-read the text around it and made short notes",
@@ -207,19 +236,19 @@ EPISODES: dict[str, str] = {
     "阅读节奏断断续续": "Her reading kept stopping and starting",
     "缩小到当前这一小段": "Narrowed down to the short section in front of her",
     "完成了这一小段阅读和整理。": "She has finished reading and summarizing this short section.",
-    "注意力维持不住": "She could not keep her focus",
+    "注意力维持不住": "She couldn't keep her focus",
     "标记读到的位置，暂时合上": "Marked her place and closed the book for now",
     "这次阅读暂停，未读部分留待之后。": "Reading is paused; the rest is left for later.",
     # creative
-    "想法还不够清楚": "The idea was not clear enough yet",
+    "想法还不够清楚": "The idea wasn't clear enough yet",
     "先做一个粗略版本再比较": "Made a rough version first to compare",
     "有了一个初稿，仍需修改。": "She has a first draft that still needs work.",
-    "细节不够顺手": "The details were not coming together",
-    "删减多余部分，完成一个小版本": "Cut what was not needed and finished a small version",
+    "细节不够顺手": "The details weren't coming together",
+    "删减多余部分，完成一个小版本": "Cut what wasn't needed and finished a small version",
     "完成了本次选定的小版本。": "She finished the small version she had picked.",
     "几种尝试都不满意": "None of her attempts satisfied her",
     "保留草稿，暂时停下来": "Kept the draft and stopped for now",
-    "这次没有得到满意的版本，问题仍保留。": "She did not get a version she was happy with this time, and the problem remains.",
+    "这次没有得到满意的版本，问题仍保留。": "She didn't get a version she was happy with this time, and the problem remains.",
     # walk
     "步调有点急": "Her pace was a bit hurried",
     "放慢速度，留意脚下和周围": "Slowed down and paid attention to her steps and surroundings",
@@ -227,22 +256,22 @@ EPISODES: dict[str, str] = {
     "脑中仍挂着待办": "Her to-do list was still on her mind",
     "暂时把注意力放到行走上": "Put her attention on walking for now",
     "结束了这一小段散步。": "She has finished this short walk.",
-    "不想继续走太久": "She did not want to walk for long",
+    "不想继续走太久": "She didn't want to walk for long",
     "缩短这次散步": "Cut the walk short",
     "这次散步提前停下。": "The walk ended early.",
     # errand
-    "所需步骤还没理清": "The steps she needed were not clear yet",
+    "所需步骤还没理清": "The steps she needed weren't clear yet",
     "先检查自己已有的信息与准备": "Checked the information and preparation she already had",
-    "完成了准备检查，事情尚未办完。": "She has finished checking her preparation, but the errand is not done.",
-    "随身所需物品还没整理好": "What she needed to carry was not sorted yet",
+    "完成了准备检查，事情尚未办完。": "She has finished checking her preparation, but the errand isn't done.",
+    "随身所需物品还没整理好": "What she needed to carry wasn't sorted yet",
     "检查并整理这次自己需要带的东西": "Checked and sorted what she needs to take",
     "整理好了这次出门需要带的东西。": "She has sorted out what she needs to take with her.",
     "准备还有遗漏": "Her preparation still had gaps",
     "列出自己还需要补齐的部分": "Listed what she still needs to fill in",
     "这件事暂时搁置，仍有准备未完成。": "This is on hold for now; some preparation is still unfinished.",
-    "这一轮未能推进": "She could not make progress this round",
+    "这一轮未能推进": "She couldn't make progress this round",
     "记录目前卡住的步骤": "Noted the step she is stuck on",
-    "本次未办成，已记下卡住的步骤。": "It did not get done this time; she has noted the step she is stuck on.",
+    "本次未办成，已记下卡住的步骤。": "It didn't get done this time; she hasn'ted the step she is stuck on.",
     # housework
     "东西放得有些散": "Things were a bit scattered",
     "先只整理眼前的一小块": "Started with just the small area in front of her",
@@ -250,14 +279,14 @@ EPISODES: dict[str, str] = {
     "容易一边整理一边分心": "It was easy to get distracted while tidying",
     "把范围限定到当前的小区域": "Limited herself to the small area she was in",
     "完成了眼前这一小块的整理。": "She has finished tidying this small area.",
-    "精力不足以继续": "She did not have the energy to carry on",
+    "精力不足以继续": "She didn't have the energy to carry on",
     "收住当前动作，留下待整理部分": "Stopped what she was doing and left the rest for later",
     "家务暂时停下，还留有未完成的部分。": "The housework is paused, with some left to do.",
     # practice and the plain way to stop
     "注意力难以维持": "It was hard to keep her focus",
     "结束这一轮，给自己留出间隔": "Ended this round to give herself a break",
     "这次提前停下，之后再接着做。": "She stopped early this time and will pick it up again later.",
-    "衔接还不够顺": "The transitions were not smooth enough yet",
+    "衔接还不够顺": "The transitions weren't smooth enough yet",
     "放慢速度，单独重复衔接处": "Slowed down and repeated the transition on its own",
     "这一处比开始时顺了一些，仍需再练。": "This spot is smoother than when she started, but it still needs practice.",
     "节奏容易赶": "She tended to rush the rhythm",
@@ -265,18 +294,18 @@ EPISODES: dict[str, str] = {
     "本次选定的小片段完成了一遍稳定的连贯练习。": "She played the passage she picked through once, steadily and smoothly.",
     "同一处反复失误": "She kept slipping in the same place",
     "缩小练习范围并尝试放慢": "Narrowed the practice range and tried slowing down",
-    "这次仍未处理好，先停下来，保留这个问题。": "She still did not get it right this time; she stopped for now and the problem remains.",
-    "本次练习提前停下，目标还没有完成。": "Practice stopped early this time, and she has not reached her goal yet.",
+    "这次仍未处理好，先停下来，保留这个问题。": "She still didn't get it right this time; she stopped for now and the problem remains.",
+    "本次练习提前停下，目标还没有完成。": "Practice stopped early this time, and she hasn't reached her goal yet.",
     # rest and sleep
     "脑子还挂着待办": "Her mind was still on her to-do list",
     "先把待办放下，安静坐一会儿": "Put the to-do list aside and sat quietly for a while",
     "这一小段休息结束后，感觉节奏缓下来。": "After this short rest, she feels her pace has eased.",
     "仍惦记未完成的事": "She was still thinking about unfinished things",
     "尝试放松，但注意力又回到待办": "Tried to relax, but her attention drifted back to her tasks",
-    "只放松了一点，还没完全缓过来。": "She only relaxed a little and has not quite settled.",
+    "只放松了一点，还没完全缓过来。": "She only relaxed a little and hasn't quite settled.",
     "精力仍不足": "Her energy was still low",
     "减少手头活动，继续安静休息": "Cut back on what she was doing and kept resting quietly",
-    "仍需要继续休息，没有开始新的任务。": "She still needs more rest and has not started anything new.",
+    "仍需要继续休息，没有开始新的任务。": "She still needs more rest and hasn't started anything new.",
     "需要从之前的消耗中缓过来": "She needed to recover from earlier exertion",
     "放下手头事务，安静休息后重新感受精力": "Set her tasks aside, rested quietly, then checked how her energy felt",
     "这段休息后精力有所恢复，可以按自己的意愿接回轻活动。":
@@ -292,10 +321,10 @@ EPISODES: dict[str, str] = {
     "这一夜的睡眠已经结束，刚醒来，还在慢慢缓神。": "The night's sleep is over; she has just woken up and is still coming round.",
     "夜间睡眠期间又开始通信": "Messages started again during her night's sleep",
     "之前的夜间睡眠尚未记录结束，已经错过晨间醒来时段":
-        "The earlier night's sleep had not been recorded as ended, and the morning waking time has passed",
+        "The earlier night's sleep hadn't been recorded as ended, and the morning waking time has passed",
     "明确结束之前这段睡眠，重新安排此刻的休息与活动": "Clearly ended the earlier sleep and rearranged her rest and activities for now",
     "之前这段睡眠现已结束，当前已经醒着；没有确认睡眠充分或精力恢复，之后再安排休息。":
-        "The earlier sleep has ended and she is awake now; it is not confirmed that she slept enough or recovered, so she will arrange more rest later.",
+        "The earlier sleep has ended and she is awake now; it isn't confirmed that she slept enough or recovered, so she will arrange more rest later.",
     "之前的补觉需要续接": "The nap she had started needed to be picked up",
     "结束已经开始的补觉，重新感受醒来后的精力": "Ended the nap she had started and checked how her energy felt after waking",
     "这段补觉结束，醒来后精力有所恢复，可以按意愿接回日常安排。":
@@ -304,37 +333,37 @@ EPISODES: dict[str, str] = {
     "结束这一段补觉，先慢慢接回吃饭和轻活动": "Ended the nap and slowly eased back into eating and light activities",
     "补了一段觉，已经缓过来一些，仍适合放慢节奏。": "She has had a nap and feels somewhat better, but a slower pace still suits her.",
     "补觉期间又开始通信": "Messages started again during her nap",
-    "结束这次未完整睡完的补觉，重新安排休息": "Ended the nap she had not finished and rearranged her rest",
-    "这段补觉没有完整结束，当前已经醒着，之后再安排休息。": "The nap did not finish; she is awake now and will arrange more rest later.",
+    "结束这次未完整睡完的补觉，重新安排休息": "Ended the nap she hadn't finished and rearranged her rest",
+    "这段补觉没有完整结束，当前已经醒着，之后再安排休息。": "The nap didn't finish; she is awake now and will arrange more rest later.",
     # meals
     "没有明显阻碍": "Nothing was in the way",
     "按自己的节奏吃完": "Finished eating at her own pace",
     "这一餐已经吃完。": "She has finished this meal.",
     "吃得比预想慢": "She ate more slowly than expected",
-    "放慢速度，不急着接下一项": "Slowed down and did not rush into the next thing",
+    "放慢速度，不急着接下一项": "Slowed down and didn't rush into the next thing",
     "这一餐吃完了，之后再接回安排。": "She has finished the meal and will get back to her plans afterwards.",
-    "当下不想开始进食": "She did not feel like eating right then",
+    "当下不想开始进食": "She didn't feel like eating right then",
     "决定这一餐先不吃": "Decided to skip this meal for now",
-    "这次没有吃这一餐。": "She did not have this meal.",
+    "这次没有吃这一餐。": "She didn't have this meal.",
     "等待外卖送达": "Waiting for the delivery",
     "已经下单，等待送餐": "Placed the order and is waiting for it to arrive",
-    "外卖已经下单，尚未送达，也没有开始吃。": "The delivery is ordered but has not arrived, and she has not started eating.",
+    "外卖已经下单，尚未送达，也没有开始吃。": "The delivery is ordered but hasn't arrived, and she hasn't started eating.",
     "餐食还需准备": "The meal still needed preparing",
     "开始准备这一餐": "Started preparing this meal",
-    "正在准备餐食，还没有开始吃。": "She is preparing the meal and has not started eating.",
+    "正在准备餐食，还没有开始吃。": "She is preparing the meal and hasn't started eating.",
     "需要前往用餐地点": "She needed to get to where she is eating",
     "准备出门就餐": "Getting ready to go out to eat",
-    "准备去计划中的地点吃饭，尚未到店。": "She is getting ready to go to the place she planned to eat at, and has not arrived yet.",
+    "准备去计划中的地点吃饭，尚未到店。": "She is getting ready to go to the place she planned to eat at, and hasn't arrived yet.",
     "需要买饭带回": "She needed to pick up a meal",
     "准备去买这一餐": "Getting ready to go and buy this meal",
-    "准备买饭带回，还没有取到餐。": "She is getting ready to buy a meal to bring back and has not picked it up yet.",
+    "准备买饭带回，还没有取到餐。": "She is getting ready to buy a meal to bring back and hasn't picked it up yet.",
     "想先留一点间隔": "She wanted to leave a little gap first",
     "把用餐安排到已经选定的稍后时刻": "Scheduled the meal for the later time she had chosen",
-    "这一餐尚未开始，保留明确的用餐计划。": "The meal has not started; the plan to eat is still set.",
+    "这一餐尚未开始，保留明确的用餐计划。": "The meal hasn't started; the plan to eat is still set.",
     "停下其他活动，开始进食": "Stopped what else she was doing and started eating",
-    "这一餐正在吃，尚未结束。": "She is eating this meal and has not finished.",
-    "暂时没有很强的食欲": "She did not have much of an appetite",
-    "慢一点吃，不勉强赶进度": "Ate slowly and did not force herself to hurry",
+    "这一餐正在吃，尚未结束。": "She is eating this meal and hasn't finished.",
+    "暂时没有很强的食欲": "She didn't have much of an appetite",
+    "慢一点吃，不勉强赶进度": "Ate slowly and didn't force herself to hurry",
     "已经开始进食，仍在慢慢吃。": "She has started eating and is still taking her time.",
     # meanings and next steps
     "觉得这一小步有价值": "Feels this small step was worthwhile",
@@ -342,7 +371,7 @@ EPISODES: dict[str, str] = {
     "觉得自己需要一点恢复空间": "Feels she needs a little room to recover",
     "把它当作普通的一段生活，没有额外解释": "Takes it as an ordinary stretch of life, with nothing more to read into it",
     "先留一段间隔再安排下一项": "Leave a gap before planning the next thing",
-    "下次优先回到本次未稳的片段": "Next time, go back first to the passage that was not steady",
+    "下次优先回到本次未稳的片段": "Next time, go back first to the passage that wasn't steady",
     "练习片段仍待巩固": "The passage still needs consolidating",
     "之后回到这次尚未解决的部分": "Come back later to the part that is still unresolved",
     "本次活动中留下的问题仍待处理": "A problem left over from this activity still needs dealing with",
@@ -361,10 +390,10 @@ PROGRESS: dict[str, str] = {
     "当前内容仍未理解清楚": "Still not clear on this material",
     "已整理一部分，仍有余项": "Part of it is tidied, with more left",
     "完成本次选定范围的整理": "Finished tidying the chosen area",
-    "本次整理暂未完成": "The tidying is not finished yet",
+    "本次整理暂未完成": "The tidying isn't finished yet",
     "形成一版局部草稿，仍待修改": "Made a partial draft that still needs revising",
     "完成本次短草稿并留存": "Finished and saved a short draft",
-    "本次草稿未达到预期": "The draft did not turn out as hoped",
+    "本次草稿未达到预期": "The draft didn't turn out as hoped",
     "补充了一部分课堂笔记": "Added to her class notes",
     "完成本次选定知识点的笔记整理": "Finished organizing her notes on the chosen topic",
     "当前知识点仍有疑问": "Still has questions about this topic",
@@ -425,6 +454,11 @@ def place_forms(name: object) -> tuple[str, str, str] | None:
         return None
     if name in PLACES:
         return PLACES[name]
+    if name in PLAN_PLACES:
+        return PLAN_PLACES[name]
+    if name.startswith("家里") and name[2:] in PLAN_PLACES:
+        label, sentence, bare = PLAN_PLACES[name[2:]]
+        return (f"{label} at home", f"{sentence} at home", f"{bare} at home")
     for prefix, suffix, template in _TRAVEL:
         if name.startswith(prefix) and name.endswith(suffix) and len(name) > len(prefix) + len(suffix):
             inner = name[len(prefix):len(name) - len(suffix)]
@@ -471,7 +505,7 @@ def activity_forms(text: object) -> tuple[str, str] | None:
             meal = _meal(text[len(verb):])
             return (title.format(meal=meal), phrase.format(meal=meal))
     for stage, (title, phrase) in MEAL_STAGES.items():
-        if text.startswith(stage) and text[len(stage):] in MEAL_SLOTS:
+        if text.startswith(stage) and text[len(stage):] in {"早餐", "午餐", "晚餐"}:
             meal = _meal(text[len(stage):])
             return (title.format(meal=meal), phrase.format(meal=meal))
     return None
@@ -506,6 +540,19 @@ def _meal_note(text: str) -> str | None:
     return f"{forms[0]}: {food_text(food)}."
 
 
+def _standalone_note(text: str) -> str | None:
+    """``在<known place><known activity>。`` found without the record it came from (a quote of her own note)."""
+
+    if not text.startswith("在") or not text.endswith("。"):
+        return None
+    body = text[1:-1]
+    for cut in range(1, len(body)):
+        where, forms = place_forms(body[:cut]), activity_forms(body[cut:])
+        if where is not None and forms is not None:
+            return f"{where[1]}, {forms[1]}."
+    return None
+
+
 def note_text(text: object, location: object = None, activity: object = None) -> object:
     """The note of a moment: ``在<place><activity>。`` or a meal's ``<description>：<food>。``."""
 
@@ -517,7 +564,9 @@ def note_text(text: object, location: object = None, activity: object = None) ->
     if meal is not None:
         return meal
     forms = activity_forms(activity)
-    if forms is None or not text.startswith("在") or not text.endswith(activity + "。"):
+    if forms is None:
+        return _standalone_note(text) or text
+    if not text.startswith("在") or not text.endswith(activity + "。"):
         return text
     name = text[1:len(text) - len(activity) - 1]
     if isinstance(location, str) and location and name != location:
@@ -550,6 +599,27 @@ def episode_text(text: object) -> object:
         return (f"She has started a nap, planning to rest for {nap['minutes']} minutes and then see how her energy "
                 "is and what comes next.")
     return _course_prefixed(text) or text
+
+
+UNCLEAR_PART = re.compile(r"^(?P<activity>.+)时，有一部分内容还没理解；具体疑问尚未记录。$")
+CONCERNS: dict[str, str] = {
+    "这一处暂时没弄懂，不代表整节课失败或已经结束。":
+        "She hasn't got this part yet, which doesn't mean the whole class went badly or is over.",
+}
+
+
+def concern_text(text: object) -> object:
+    """A line of what is on her mind that the program composed from a record, or a quote of one of her notes."""
+
+    if not isinstance(text, str) or not text:
+        return text
+    if text in CONCERNS:
+        return CONCERNS[text]
+    unclear = UNCLEAR_PART.match(text)
+    if unclear and unclear["activity"].startswith("上") and unclear["activity"][1:] in COURSES:
+        course = COURSES[unclear["activity"][1:]]
+        return f"Part of {course} wasn't clear yet; the specific questions haven't been noted."
+    return note_text(text)
 
 
 def _progress_text(text: str) -> str:
@@ -747,15 +817,28 @@ def _moment(item: Any) -> Any:
     return {**item, "content": _moment_content(item.get("kind"), item["content"])}
 
 
+def _reaction(item: Any) -> Any:
+    if not isinstance(item, dict):
+        return item
+    out = dict(item)
+    if isinstance(item.get("goal_or_need"), str):
+        out["goal_or_need"] = NEEDS.get(item["goal_or_need"], item["goal_or_need"])
+    if isinstance(item.get("quote"), str):
+        out["quote"] = concern_text(item["quote"])
+    return out
+
+
 def _emotion(value: Any) -> Any:
     if not isinstance(value, dict):
         return value
     out = dict(value)
     if isinstance(value.get("reactions"), list):
-        out["reactions"] = [
-            {**item, "goal_or_need": NEEDS.get(item["goal_or_need"], item["goal_or_need"])}
-            if isinstance(item, dict) and isinstance(item.get("goal_or_need"), str) else item
-            for item in value["reactions"]
+        out["reactions"] = [_reaction(item) for item in value["reactions"]]
+    if isinstance(value.get("concerns"), list):
+        out["concerns"] = [
+            {**item, "summary": concern_text(item["summary"])}
+            if isinstance(item, dict) and isinstance(item.get("summary"), str) else item
+            for item in value["concerns"]
         ]
     return out
 
@@ -767,11 +850,9 @@ def _reply_basis(value: Any) -> Any:
     if isinstance(value.get("activity"), str):
         out["activity"] = activity_title(value["activity"])
     if isinstance(value.get("reactions"), list):
-        out["reactions"] = [
-            {**item, "goal_or_need": NEEDS.get(item["goal_or_need"], item["goal_or_need"])}
-            if isinstance(item, dict) and isinstance(item.get("goal_or_need"), str) else item
-            for item in value["reactions"]
-        ]
+        out["reactions"] = [_reaction(item) for item in value["reactions"]]
+    if isinstance(value.get("concerns"), list):
+        out["concerns"] = [concern_text(item) for item in value["concerns"]]
     return out
 
 

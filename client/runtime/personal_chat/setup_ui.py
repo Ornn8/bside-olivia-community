@@ -473,7 +473,7 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
           renderError(health, {code: status.reply_errors.qq});
           const failedAt = new Date(status.reply_error_at?.qq || "");
           if (!Number.isNaN(failedAt.getTime())) {
-            const time = failedAt.toLocaleString("zh-CN", {month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit"});
+            const time = failedAt.toLocaleString(t("zh-CN"), {month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit"});
             health.append(node("div", t("这是 {time} 那条消息的失败；之后还没有新的回复结果，发一条新消息即可确认是否已恢复。", {time}), "olivia-chat-copy"));
           }
         }

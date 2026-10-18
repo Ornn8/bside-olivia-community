@@ -84,18 +84,19 @@ def test_every_place_the_program_names_has_a_label(name, label):
 
 
 def test_travelling_to_a_place_reads_as_a_sentence_and_keeps_the_model_name():
-    assert english.location_text('准备前往商场服装店') == 'Getting ready to go to 商场服装店'
+    assert english.location_text('准备前往街角书店') == 'Getting ready to go to 街角书店'
     assert english.location_text('前往学校琴房的路上') == 'On the way to a practice room at school'
-    assert english.location_text('前往商场服装店的路上') == 'On the way to 商场服装店'
+    assert english.location_text('前往街角书店的路上') == 'On the way to 街角书店'
+    assert english.location_text('前往商场服装店的路上') == 'On the way to a clothing store in a mall'
 
 
 def test_model_written_names_and_focuses_are_kept_inside_the_english_frame():
     to_english()
     shown = english.localize_life({'current': {
-        'location': '商场服装店', 'activity': '买日常用品：秋天穿的外套', 'note': '在商场服装店买日常用品：秋天穿的外套。'}})['current']
-    assert shown['location'] == '商场服装店'
+        'location': '街角书店', 'activity': '买日常用品：秋天穿的外套', 'note': '在街角书店买日常用品：秋天穿的外套。'}})['current']
+    assert shown['location'] == '街角书店'
     assert shown['activity'] == 'Shopping for everyday things: 秋天穿的外套'
-    assert shown['note'] == 'At 商场服装店, shopping for everyday things: 秋天穿的外套.'
+    assert shown['note'] == 'At 街角书店, shopping for everyday things: 秋天穿的外套.'
 
 
 def test_free_text_without_a_known_frame_is_left_alone():
@@ -126,7 +127,8 @@ def test_activity_titles(text, title):
 
 def test_meal_notes_name_the_food():
     assert english.note_text('正在吃午饭：馄饨。') == 'Having lunch: wontons.'
-    assert english.note_text('已下单，等待外卖：番茄牛腩饭。') == 'Delivery ordered, waiting: 番茄牛腩饭.'
+    assert english.note_text('已下单，等待外卖：妈妈做的汤面。') == 'Delivery ordered, waiting: 妈妈做的汤面.'
+    assert english.note_text('已下单，等待外卖：番茄牛腩饭。') == 'Delivery ordered, waiting: tomato beef rice.'
     assert english.note_text('没吃早饭。') == 'Skipped breakfast.'
 
 
@@ -416,3 +418,56 @@ def test_the_life_endpoint_answers_in_the_interface_language(tmp_path):
     assert english_history['moments'][0]['content']['activity'] == 'Resting'
     assert english_history['moments'][0]['id'] == chinese_history['moments'][0]['id']
     assert english_history['next_cursor'] == chinese_history['next_cursor']
+
+
+# --- what she has on her mind, and quotes of her own notes ---------------------------------------------------------------
+
+def test_quotes_of_her_own_notes_and_the_stock_concern_lines_have_english():
+    to_english()
+    shown = english.localize_life({
+        'emotion': {'reactions': [{'reaction': 'relieved', 'quote': '在卧室休息。', 'goal_or_need': '休息与恢复精力'},
+                                  {'reaction': 'calm', 'quote': '我今天有点累。', 'goal_or_need': None}],
+                    'concerns': [{'summary': '上钢琴专业课时，有一部分内容还没理解；具体疑问尚未记录。'},
+                                 {'summary': '这一处暂时没弄懂，不代表整节课失败或已经结束。'},
+                                 {'summary': '明天的课堂展示'}]},
+        'reply_basis': {'status': 'available', 'activity': '休息',
+                        'reactions': [{'reaction': 'pleased', 'quote': '正在吃午饭：馄饨。', 'goal_or_need': '得到理解与陪伴'}],
+                        'concerns': ['这一处暂时没弄懂，不代表整节课失败或已经结束。', '她自己写的牵挂']}})
+    reactions = shown['emotion']['reactions']
+    assert reactions[0]['quote'] == 'In her bedroom, resting.'
+    assert reactions[0]['goal_or_need'] == 'resting and recovering her energy'
+    assert reactions[0]['reaction'] == 'relieved'
+    assert reactions[1]['quote'] == '我今天有点累。' and reactions[1]['goal_or_need'] is None
+    assert [item['summary'] for item in shown['emotion']['concerns']] == [
+        "Part of Piano major class wasn't clear yet; the specific questions haven't been noted.",
+        "She hasn't got this part yet, which doesn't mean the whole class went badly or is over.",
+        '明天的课堂展示']
+    basis = shown['reply_basis']
+    assert basis['activity'] == 'Resting'
+    assert basis['reactions'][0]['quote'] == 'Having lunch: wontons.'
+    assert basis['reactions'][0]['goal_or_need'] == 'being understood and having company'
+    assert basis['concerns'][1] == '她自己写的牵挂'
+
+
+# --- what the day-plan writer is told to use -------------------------------------------------------------------------
+
+def test_the_examples_in_the_day_plan_prompt_have_english():
+    from runtime.private_world import day_plan
+    quoted = re.findall(r'“([^”]+)”', day_plan.PROMPT)
+    assert len(quoted) >= 8
+    for example in quoted:
+        assert example in english.FOCUSES or example in english.FOODS, example
+    for name in ('卧室', '厨房', '音乐房', '商场服装店', '超市', '文具店', '花店', '面包店', '展馆', '公园'):
+        assert english.place_forms(name) is not None, name
+
+
+def test_plan_places_read_naturally_in_a_sentence():
+    to_english()
+    assert english.location_text('家里餐桌') == 'Dining table at home'
+    assert english.location_text('前往超市的路上') == 'On the way to the supermarket'
+    current = {'location': '超市', 'activity': '买日常用品：牙膏', 'note': '在超市买日常用品：牙膏。'}
+    shown = english.localize_life({'current': current})['current']
+    assert (shown['location'], shown['activity'], shown['note']) == (
+        'Supermarket', 'Shopping for everyday things: 牙膏', 'At the supermarket, shopping for everyday things: 牙膏.')
+    assert english.localize_life({'current': {'location': '二食堂', 'activity': '休息', 'note': '在二食堂休息。'}})['current'][
+        'note'] == 'At 二食堂, resting.'
