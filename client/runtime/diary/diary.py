@@ -136,7 +136,7 @@ PROMPT = '''你是林离。一天结束了，你在睡前写今天的日记。�
 - 你自己今天的生活（day_life、sent）是背景，自然带一两笔，别抢了他的位置。
 - 结尾停在一个具体的画面或一句轻轻的话上，不总结，不升华，不写“今天真是美好的一天”。
 title：日记本上随手写的小标题，不超过12个字，别用“今天和他”这类套话。mood：今天的心情，一到四个字。
-facts：从 messages 里挑出值得长期记住的事，没有就给空数组。kind：promise 约定、anniversary 纪念日或生日、name 称呼或昵称、user_event 他近期要发生的事（考试、体检、出行等）、plan 你们的计划、preference 他明确说的喜好或忌口。text 用一句话写清楚这件事；date 是这件事的日期（YYYY-MM-DD，没有就为 null）；quote 必须是 messages 里原样出现的一小段文字（不超过40字），作为依据。
+facts：从 messages 里挑出值得长期记住的事，最多8条，没有就给空数组；每条都要有 kind、text、date、quote 四个键。kind：promise 约定、anniversary 纪念日或生日、name 称呼或昵称、user_event 他近期要发生的事（考试、体检、出行等）、plan 你们的计划、preference 他明确说的喜好或忌口。text 用一句话写清楚这件事（不超过30字）；date 是这件事的日期（YYYY-MM-DD，没有就为 null）；quote 必须是 messages 里原样出现的一小段文字（不超过40字），作为依据。
 只返回契约 JSON。'''
 
 
