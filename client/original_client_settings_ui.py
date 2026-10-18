@@ -3307,7 +3307,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const failure = error => ({
       LETTER_DELETE_LEGACY_RELATIONSHIP_UNSUPPORTED: t('这封旧信的关系记录缺少可重放来源，暂不能安全清理。信件未删除。'),
       LETTER_DELETE_UNATTRIBUTED_DIARY: t('相关日记缺少逐封信的来源记录，暂不能安全清理这封信；整篇清除会影响其他信件。信件未删除。'),
-      LETTER_DELETE_RELATIONSHIP_REPLAY_UNSUPPORTED: t('相关关系记录含交错或重复证据，暂不能安全重算。信件未删除。'),
+      LETTER_DELETE_RELATIONSHIP_REPLAY_UNSUPPORTED: t('相关关系记录无法精确重放，暂不能安全重算。信件未删除。'),
       LETTER_DELETE_RESTORE_CONFLICT: t('关联记录在删除后发生了变化，已停止恢复以保护新记录。请保留最近删除中的备份。'),
       LETTER_DELETE_MEMORY_BUSY: t('记忆正在写入，请稍后重试。'),
       LETTER_DELETE_MEMORY_UNAVAILABLE: t('记忆存储暂不可用，请恢复连接后重试。'),
