@@ -455,7 +455,7 @@ JAVASCRIPT = r'''
       } else if (m.type === 'stop') {
         this.stopped.add(m.turn); this.player.port.postMessage({clear: true}); this.avatar?.event('stop');
         // The caption keeps only what she said aloud before she was cut off.
-        if (typeof m.heard === 'string' && m.turn === this.turn) { this.her = m.heard; ui.caption.textContent = m.heard ? m.heard + '……' : ''; }
+        if (typeof m.heard === 'string' && m.turn === this.turn) { this.her = m.heard; ui.caption.textContent = m.heard ? m.heard + t('……') : ''; }
       } else if (m.type === 'hush') {
         this.player.port.postMessage({clear: true});   // her filler sound, when the user goes on talking
       } else if (m.type === 'her_done') {

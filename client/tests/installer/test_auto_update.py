@@ -228,3 +228,57 @@ def test_the_update_notice_is_in_the_injected_bootstrap():
     assert JAVASCRIPT in BOOTSTRAP_JAVASCRIPT and '/toy/autoupdate/restart' in JAVASCRIPT and '现在重启更新' in JAVASCRIPT
     source = Path(__file__).resolve().parents[2]
     assert 'runtime/update_ui.py' in {p.relative_to(source).as_posix() for p in _frontend_patcher_files(source)}
+
+
+ENGLISH_NOTES = {'title': 'Photos now come with a line first.', 'items': [{'title': 'More than a bare picture', 'text': 'She answers you first.'}]}
+
+
+def test_english_release_notes_follow_the_interface_language(release, monkeypatch):
+    from runtime import ui_language
+    monkeypatch.setenv('OLIVIA_INSTALL_ROOT', str(release))
+    zip_bytes = bundle('2.4.0')
+    raw, signature = signed('2.4.0', zip_bytes, notes_en=ENGLISH_NOTES)
+    manifest = auto_update.parse_manifest(raw, signature)
+    assert manifest['notes_en'] == ENGLISH_NOTES and manifest['notes']['items'][0]['title'] == '发照片不再只有一张图'
+    auto_update._state.update(state='ready', version='2.4.0', notes=manifest['notes'], notes_en=manifest['notes_en'])
+    ui_language.reset()
+    assert call('/toy/autoupdate/state')[1]['data']['notes']['items'][0]['title'] == '发照片不再只有一张图'
+    ui_language.set_language('en')
+    try:
+        assert call('/toy/autoupdate/state')[1]['data']['notes'] == ENGLISH_NOTES
+    finally:
+        ui_language.reset()
+
+
+def test_a_release_without_english_notes_keeps_showing_the_notes_it_has(release, monkeypatch):
+    from runtime import ui_language
+    monkeypatch.setenv('OLIVIA_INSTALL_ROOT', str(release))
+    raw, signature = signed('2.4.0', bundle('2.4.0'))
+    manifest = auto_update.parse_manifest(raw, signature)
+    assert manifest['notes_en'] == {'title': '', 'items': []}
+    auto_update._state.update(state='ready', version='2.4.0', notes=manifest['notes'], notes_en=manifest['notes_en'])
+    ui_language.set_language('en')
+    try:
+        assert call('/toy/autoupdate/state')[1]['data']['notes'] == manifest['notes']
+        # A state saved before this field existed has no English notes at all.
+        auto_update._state.pop('notes_en')
+        assert call('/toy/autoupdate/state')[1]['data']['notes'] == manifest['notes']
+    finally:
+        ui_language.reset()
+
+
+def test_english_notes_are_kept_for_the_page_after_the_restart(release, monkeypatch):
+    from runtime import ui_language
+    monkeypatch.setenv('OLIVIA_INSTALL_ROOT', str(release))
+    (release / 'data' / 'updates').mkdir(parents=True)
+    (release / 'data' / 'updates' / 'notes.json').write_text(json.dumps(
+        {'version': '2.3.9', 'notes': {'title': '中文', 'items': []}, 'notes_en': ENGLISH_NOTES, 'seen': False}), encoding='utf-8')
+    auto_update._settle_probation(release, '2.3.9')
+    ui_language.set_language('en')
+    try:
+        data = call('/toy/autoupdate/state')[1]['data']
+        assert data['state'] == 'updated' and data['notes'] == ENGLISH_NOTES
+        assert call('/toy/autoupdate/seen', 'POST')[0] == 200
+        assert call('/toy/autoupdate/state')[1]['data']['notes'] is None
+    finally:
+        ui_language.reset()

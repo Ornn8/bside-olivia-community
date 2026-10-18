@@ -7,6 +7,17 @@ internal static class Program
 {
     internal static bool ShouldReport(int code) { return code != 0 && code != -1; }
 
+    // The interface language the app saved (data\config\ui-language.json); Chinese unless English was chosen.
+    internal static bool EnglishInterface(string root)
+    {
+        try
+        {
+            string saved = Path.Combine(root, "data", "config", "ui-language.json");
+            return File.Exists(saved) && File.ReadAllText(saved).Contains("\"language\": \"en\"");
+        }
+        catch (Exception) { return false; }
+    }
+
     internal static string Quote(string value)
     {
         return "\"" + value.Replace("\"", "\\\"") + "\"";
@@ -36,9 +47,10 @@ internal static class Program
     private static int Main()
     {
         int code;
+        string root = null;
         try
         {
-            string root = Path.GetDirectoryName(Application.ExecutablePath);
+            root = Path.GetDirectoryName(Application.ExecutablePath);
             string port = Environment.GetEnvironmentVariable("OLIVIA_PORT");
             if (String.IsNullOrEmpty(port)) port = "8899";
             code = Launch(root, port);
@@ -46,8 +58,12 @@ internal static class Program
         catch (System.ComponentModel.Win32Exception error) { code = error.NativeErrorCode; }
         catch (Exception) { code = 2; }
         if (ShouldReport(code))
-            MessageBox.Show("Olivia 启动失败（错误码 " + code + "）。\r\n请将安装目录 data\\logs 下的启动日志提供给维护者。",
-                "Olivia", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        {
+            string text = "Olivia 启动失败（错误码 " + code + "）。\r\n请将安装目录 data\\logs 下的启动日志提供给维护者。";
+            if (root != null && EnglishInterface(root))
+                text = "Olivia failed to start (error code " + code + ").\r\nPlease send the startup logs in the data\\logs folder of the installation to the maintainer.";
+            MessageBox.Show(text, "Olivia", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
         return code;
     }
 }

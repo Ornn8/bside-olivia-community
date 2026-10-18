@@ -53,6 +53,7 @@ EN: dict[str, str] = {
     "取消": "Cancel",
     "确定": "OK",
     "zh-CN": "en-US",
+    "……": "…",
     "可用": "Available",
     "部分可用": "Partly available",
     "暂不可用": "Unavailable",

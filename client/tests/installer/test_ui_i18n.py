@@ -290,6 +290,31 @@ def test_chinese_text_outside_t_is_a_known_exception(scanned):
         assert set(template_parts) <= UNWRAPPED_TEMPLATE_PARTS, f"{name}: Chinese in a template literal: {template_parts[:3]}"
 
 
+# Full-width marks and the Chinese double ellipsis are Chinese typography too: outside t() they would show in English.
+FULL_WIDTH = re.compile(r"[　-〿＀-￯]|……")
+FULL_WIDTH_OUTSIDE_T = {
+    "'？?'": "call page: punctuation the spoken-text cue detector looks for",
+    "'！!'": "call page: punctuation the spoken-text cue detector looks for",
+    "'~～'": "call page: punctuation the spoken-text cue detector looks for",
+    '"　"': "the Chinese branch of the gap between a time and a title (English uses a plain space)",
+}
+
+
+def test_full_width_punctuation_outside_t_is_a_known_exception():
+    for name, source in SOURCES.items():
+        tokens, _ = _lex(source)
+        found = []
+        for kind, start, end, parts in _walk(tokens):
+            if kind == "str":
+                before = source[max(0, start - 40):start].rstrip()
+                if not re.search(r"(?<![\w$.])t\($", before) and FULL_WIDTH.search(source[start:end]):
+                    found.append(source[start:end])
+            elif kind == "tpl":
+                found += [source[part[1]:part[2]] for part in parts if part[0] == "s" and FULL_WIDTH.search(source[part[1]:part[2]])]
+        known = set(FULL_WIDTH_OUTSIDE_T) | set(UNWRAPPED) | UNWRAPPED_TEMPLATE_PARTS
+        assert [literal for literal in found if literal not in known] == [], name
+
+
 def test_audit_reasons_and_native_labels_stay_chinese():
     source = SOURCES["bootstrap"]
     assert 'const LETTER_COMPOSER_TITLE = "写下你的感受";' in source
