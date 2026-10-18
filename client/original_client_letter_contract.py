@@ -123,6 +123,16 @@ def _audio_pending(letter: Mapping[str, object]) -> bool:
     )
 
 
+def _media_wait_only(letter: Mapping[str, object]) -> bool:
+    """The written reply is finished and only generated audio is still outstanding.
+
+    The reply stays unpublished (the text and the voice or song arrive together),
+    but nothing about the next letter depends on it: the server already accepts a
+    new letter at this point. A requested photo keeps its own single-flight wait.
+    """
+    return _audio_pending(letter) and not _photo_pending(letter)
+
+
 def _video_pending(letter: Mapping[str, object]) -> bool:
     return (
         (letter.get("reply_video_enabled") is True or _exact_reply_mode(letter.get("reply_mode")) == "musical_video")
@@ -307,6 +317,8 @@ def serialize_letter_summary(
         payload['replyDisposition'] = 'no_reply'
     if video_pending:
         payload["videoPending"] = True
+    if _media_wait_only(letter):
+        payload["mediaWaitOnly"] = True
     if (status == int(OriginalClientLetterStatus.PENDING)
             and letter.get('reply_wait_reason') == 'bathing'
             and letter.get('reply_resume_at', 0) > _now_value(now)):

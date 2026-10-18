@@ -6,6 +6,7 @@ import pytest
 
 from patch_companion_settings import MAIN_JS_0627, _repair_mailbox_write_access
 from patch_feapp import MAILBOX_WRITE_ANCHOR_0627
+from patch_feapp import MAILBOX_WRITE_PREVIOUS_REPLACEMENT_0627, MAILBOX_WRITE_REPLACEMENT_0627
 from patch_feapp import _repair_mailbox_waiting_footer
 
 
@@ -135,7 +136,8 @@ m.hideWrite=false;if(sidebar().waiting!==false)throw Error("card did not recover
     subprocess.run([shutil.which("node"), "-e", script], capture_output=True, text=True, check=True)
 
 
-@pytest.mark.parametrize("visibility", [MAILBOX_WRITE_ANCHOR_0627, '"hide-write":!1'])
+@pytest.mark.parametrize("visibility", [
+    MAILBOX_WRITE_ANCHOR_0627, '"hide-write":!1', MAILBOX_WRITE_PREVIOUS_REPLACEMENT_0627])
 def test_native_mailbox_waits_for_reply_and_releases_failed_letters(tmp_path, visibility):
     # Verbatim MailboxView render call from the supported native 0.0.9.627 bundle.
     fragment = 'k(V4,{"mail-list":o(h),"selected-mail-id":o(T),"total-count":o(y)+1,"remaining-count":o(f),loading:o(E),'+visibility+',onSelect:A,onWrite:z},null,8,["mail-list","selected-mail-id","total-count","remaining-count","loading","hide-write"])'
@@ -163,3 +165,103 @@ def test_native_poll_updates_status_even_when_unread_and_media_do_not_change(tmp
     patched = main.read_text(encoding="utf-8")
     script = 'let B,K,updated=false;const re={letterStatus:5,isUnread:false},Ee={letterStatus:1,isUnread:false};'+patched+';if(!updated)throw Error("failed letter remains pending");'
     subprocess.run([shutil.which("node"), "-e", script], capture_output=True, text=True, check=True)
+
+
+MEDIA_ONLY_RENDER = ('k(V4,{"mail-list":o(h),"selected-mail-id":o(T),"total-count":o(y)+1,"remaining-count":o(f),loading:o(E),'
+                     '{visibility},onSelect:A,onWrite:z},null,8,["mail-list","selected-mail-id","total-count","remaining-count","loading","hide-write"])')
+
+
+def _hide_write_results(patched, lists):
+    script = ('const o=x=>x,V4={},T=null,y=0,f=99,E=false,A=()=>{},z=()=>{},p=false,N3=true;let h=[];const k=(component,props)=>props;'
+              'const render=()=>' + patched + ';const output=[];'
+              'for(const list of ' + json.dumps(lists) + '){h=list;output.push(render()["hide-write"])}console.log(JSON.stringify(output));')
+    result = subprocess.run([shutil.which("node"), "-e", script], capture_output=True, text=True, check=True)
+    return json.loads(result.stdout)
+
+
+def test_native_mailbox_stays_open_for_a_letter_that_only_waits_for_its_voice(tmp_path):
+    main = tmp_path / MAIN_JS_0627
+    main.parent.mkdir(parents=True)
+    main.write_text(MEDIA_ONLY_RENDER.replace('{visibility}', MAILBOX_WRITE_ANCHOR_0627), encoding="utf-8")
+    assert _repair_mailbox_write_access(tmp_path) == "PATCHED"
+    patched = main.read_text(encoding="utf-8")
+    assert patched.count(MAILBOX_WRITE_REPLACEMENT_0627) == 1
+    media = {"letterStatus": 3, "mediaWaitOnly": True}
+    writing = {"letterStatus": 1, "mediaWaitOnly": False}
+    assert _hide_write_results(patched, [
+        [media],                      # only the voice or song is outstanding
+        [media, media],               # two such letters at once
+        [media, {"letterStatus": 4}],  # one delivered, one still being made
+        [writing],                    # a reply that is still being written holds the card
+        [media, writing],             # ... even next to a voice letter
+        [{"letterStatus": 3}],        # a server that sends no flag keeps the previous behaviour
+        [],
+    ]) == [False, False, False, True, True, True, False]
+
+
+def _media_only_script(patched, mapping_functions):
+    return ('const bt={FAILED:5,REPLIED:4},Yt={NONE:0};' + patched + ';'
+            'const base={letterId:"a",letterStatus:3,isRead:1,auditStatus:2,summary:"s",createdAt:1,content:"c"};'
+            'const out={list:bn({...base,mediaWaitOnly:true}).mediaWaitOnly,listWithout:bn(base).mediaWaitOnly,'
+            + mapping_functions +
+            'pollSeesIt:changed(bn({...base,mediaWaitOnly:true}),bn(base)),pollSeesNothing:changed(bn(base),bn(base))};'
+            'console.log(JSON.stringify(out));')
+
+
+# Verbatim native list-row mapping and poll condition (0.0.9.627), trimmed to what the patch touches.
+NATIVE_ROW = ('function bn(e){const t=e.letterStatus===bt.FAILED||e.replyType!==Yt.NONE&&e.letterStatus===bt.REPLIED;'
+              'return{id:e.letterId,isUnread:e.isRead===0,letterStatus:e.letterStatus,auditStatus:e.auditStatus,'
+              'sent:{subject:e.summary,timestamp:e.createdAt*1e3,content:""},received:t?{type:1}:void 0}}')
+NATIVE_DETAIL_ROW = ('function p1(e){const s=e.letterStatus===bt.FAILED;return{id:e.letterId,isUnread:e.isRead===0,'
+                     'letterStatus:e.letterStatus,auditStatus:e.auditStatus,detailLoaded:!0,sent:{subject:"",content:e.content},'
+                     'received:s?{type:1}:void 0}}')
+NATIVE_POLL = ('function changed(re,Ee,B,K){return(((B=re.received)==null?void 0:B.type)!==((K=Ee.received)==null?void 0:K.type)'
+               '||re.isUnread!==Ee.isUnread)&&!0}')
+
+
+def test_media_only_flag_reaches_the_list_rows_and_the_poll_and_reruns_are_stable():
+    from runtime.personal_chat._patch_companion_settings_base import _repair_native_media_only_wait
+    source = NATIVE_ROW + NATIVE_DETAIL_ROW + NATIVE_POLL
+    # The videoPending step of the same pass runs first on a fresh bundle.
+    source = source.replace('letterStatus:e.letterStatus,auditStatus:e.auditStatus,',
+                            'letterStatus:e.letterStatus,videoPending:e.videoPending===true,auditStatus:e.auditStatus,')
+    source = source.replace('re.isUnread!==Ee.isUnread)',
+                            're.isUnread!==Ee.isUnread||re.videoPending!==Ee.videoPending||re.letterStatus!==Ee.letterStatus)')
+    patched = _repair_native_media_only_wait(source)
+    assert patched.count('mediaWaitOnly:e.mediaWaitOnly===true') == 2
+    assert patched.count('re.mediaWaitOnly!==Ee.mediaWaitOnly') == 1
+    assert _repair_native_media_only_wait(patched) == patched
+    script = _media_only_script(patched, 'detail:p1({...base,mediaWaitOnly:true}).mediaWaitOnly,detailWithout:p1(base).mediaWaitOnly,')
+    result = subprocess.run([shutil.which("node"), "-e", script], capture_output=True, text=True, check=True)
+    assert json.loads(result.stdout) == {"list": True, "detail": True, "listWithout": False, "detailWithout": False,
+                                         "pollSeesIt": True, "pollSeesNothing": False}
+
+
+def test_whole_pass_adds_the_flag_once_and_keeps_the_bundle_stable_on_rerun(tmp_path):
+    main = tmp_path / MAIN_JS_0627
+    main.parent.mkdir(parents=True)
+    main.write_text('/*' + MAILBOX_WRITE_ANCHOR_0627 + '*/' + chr(10) + NATIVE_ROW + chr(10) + NATIVE_POLL, encoding="utf-8")
+    assert _repair_mailbox_write_access(tmp_path) == "PATCHED"
+    patched = main.read_text(encoding="utf-8")
+    assert patched.count('mediaWaitOnly:e.mediaWaitOnly===true') == 1
+    assert patched.count('re.mediaWaitOnly!==Ee.mediaWaitOnly') == 1
+    # A second pass must not add the flag again (other steps of the pass are not part of this check).
+    _repair_mailbox_write_access(tmp_path)
+    again = main.read_text(encoding="utf-8")
+    assert again.count('mediaWaitOnly:e.mediaWaitOnly===true') == 1
+    assert again.count('re.mediaWaitOnly!==Ee.mediaWaitOnly') == 1
+    assert again.count(MAILBOX_WRITE_REPLACEMENT_0627) == 1
+    script = _media_only_script(patched.split(chr(10), 1)[1], '')
+    result = subprocess.run([shutil.which("node"), "-e", script], capture_output=True, text=True, check=True)
+    assert json.loads(result.stdout) == {"list": True, "listWithout": False, "pollSeesIt": True, "pollSeesNothing": False}
+
+
+def test_bundle_patched_before_this_change_is_upgraded_in_place(tmp_path):
+    main = tmp_path / MAIN_JS_0627
+    main.parent.mkdir(parents=True)
+    main.write_text('x;' + MAILBOX_WRITE_PREVIOUS_REPLACEMENT_0627 + ';y', encoding="utf-8")
+    assert _repair_mailbox_write_access(tmp_path) == "PATCHED"
+    patched = main.read_text(encoding="utf-8")
+    assert patched == 'x;' + MAILBOX_WRITE_REPLACEMENT_0627 + ';y'
+    assert MAILBOX_WRITE_PREVIOUS_REPLACEMENT_0627 not in patched
+    assert _repair_mailbox_write_access(tmp_path) == "ALREADY_PATCHED"

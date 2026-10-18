@@ -3283,6 +3283,8 @@ def _recent_active_duplicate(
     *,
     now: float | None = None,
 ) -> dict | None:
+    from original_client_letter_contract import _audio_pending
+
     current_time = time.time() if now is None else now
     for letter in store.letters:
         created_at = letter.get("created_at")
@@ -3297,6 +3299,10 @@ def _recent_active_duplicate(
         if (
             status == "COMPLETED"
             and letter.get("reply_not_before", 0.0) <= current_time
+            # A voice or song still being made is not delivered yet, and the
+            # writer may send again meanwhile: a retry of the same request must
+            # not start a second recording.
+            and not _audio_pending(letter)
         ):
             continue
         if letter.get("content") == content and letter.get("material", {}) == material:
