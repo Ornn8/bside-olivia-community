@@ -6479,7 +6479,14 @@ async def _letter_trash_loop():
         await asyncio.sleep(3600)
 
 
+def _letter_replies_in_flight() -> int:
+    return sum(1 for task in tuple(reply_jobs.values()) if not task.done())
+
+
 async def _start_reply_tasks(_app: web.Application) -> None:
+    # An update restart waits for a letter reply that is being written (runtime/auto_update.py).
+    from runtime.auto_update import track_replies
+    track_replies('letters', _letter_replies_in_flight)
     trash_task = asyncio.create_task(_letter_trash_loop())
     media_tasks.add(trash_task)
     trash_task.add_done_callback(media_tasks.discard)
@@ -6613,6 +6620,8 @@ def _start_conversation_memory_initialization(loop: asyncio.AbstractEventLoop) -
 
 async def _stop_reply_tasks(_app: web.Application) -> None:
     global _proactive_task, _visit_task, _history_relationship_task, _history_relationship_queue
+    from runtime.auto_update import forget_replies
+    forget_replies('letters', _letter_replies_in_flight)
     if _history_relationship_task is not None:
         _history_relationship_task.cancel()
         await asyncio.gather(_history_relationship_task, return_exceptions=True)

@@ -7,6 +7,10 @@ the page (runtime/update_ui.py) shows "新版本已准备好"; a click shows wha
 app is idle (no call, no reply in progress, no message for a while). After an update the page shows
 what changed once.
 
+A restart never cuts off a reply she is writing: restart() first waits (at most REPLY_WAIT_SECONDS) while a
+QQ/WeChat or letter reply is being generated or sent, and the state tells the page so (waiting_for_reply).
+Background jobs (diary, world, relationship batch) are safe to interrupt and are never waited for.
+
 Trust: https://bside-moon.cn/update/latest.json and latest.json.sig, an Ed25519 signature over the exact
 bytes with PUBLIC_KEY below (the private key stays on the release machine). The patch zip must match
 the signed size and sha256, and its manifest digest the signed manifest_sha256, before the installer
@@ -45,6 +49,8 @@ NIGHT_HOURS = {2, 3, 4, 5}         # local time when an idle app may restart on 
 QUIET_SECONDS = 20 * 60            # no chat activity for this long counts as idle
 CALL_SECONDS = 7 * 60              # the call page re-reads her world every 5 minutes while a call runs
 PROBATION_SECONDS = 90
+REPLY_WAIT_SECONDS = 90            # a restart holds back this long for a reply that is being written or sent
+REPLY_POLL_SECONDS = 0.5
 MAX_ZIP_BYTES = 256 * 1024 * 1024
 BUSY = {'RECEIVED', 'PENDING', 'SENDING', 'MEDIA_PENDING'}
 PROBATION_NAME = '.olivia-update-probation.json'
@@ -54,6 +60,51 @@ log = logging.getLogger('olivia.auto_update')
 
 _state = {'state': 'idle', 'version': None, 'notes': None, 'notes_en': None, 'checked_at': 0.0, 'failures': {},
           'restarting': False}
+
+
+_reply_sources = {}
+
+
+def track_replies(name, source):
+    """Register what counts as a reply in flight: source() is true (or a positive count) while one is being
+    generated or sent. Registering a name again replaces it."""
+    _reply_sources[name] = source
+
+
+def forget_replies(name, source=None):
+    """Drop a registration; with source, only if it is still that registration."""
+    if source is None or _reply_sources.get(name) == source:
+        _reply_sources.pop(name, None)
+
+
+def replies_in_flight():
+    for source in tuple(_reply_sources.values()):
+        try:
+            if source():
+                return True
+        except Exception:
+            continue  # a broken source must never hold back an update
+    return False
+
+
+async def wait_for_replies(timeout=None, interval=None):
+    """Hold a restart back while a reply is in flight. True when nothing is left, False once the time is up."""
+    timeout = REPLY_WAIT_SECONDS if timeout is None else timeout
+    interval = REPLY_POLL_SECONDS if interval is None else interval
+    if not replies_in_flight():
+        return True
+    deadline = time.monotonic() + timeout
+    _state['waiting_for_reply'] = True
+    try:
+        while replies_in_flight():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                log.info('auto update: restarting although a reply is still in flight')
+                return False
+            await asyncio.sleep(min(interval, remaining))
+        return True
+    finally:
+        _state['waiting_for_reply'] = False
 
 
 def version_key(text):
@@ -240,8 +291,10 @@ async def restart(root):
     _state['restarting'] = True
     from original_client_update_api import LocalComponentUpdater, _exit_for_restart
     try:
+        # Before the helper is started: it closes this process a moment after it has been accepted.
+        await wait_for_replies()
         await asyncio.to_thread(LocalComponentUpdater(root).restart)
-    except Exception:
+    except BaseException:
         _state['restarting'] = False
         raise
     asyncio.get_running_loop().call_later(1, _exit_for_restart)
@@ -310,7 +363,8 @@ async def autoupdate_http(server, request):
     root = _root()
     if path == '/toy/autoupdate/state' and method == 'GET':
         return reply({'state': _state['state'], 'version': _state['version'], 'notes': shown_notes(),
-                      'current': running_version(), 'enabled': root is not None})
+                      'current': running_version(), 'enabled': root is not None,
+                      'waiting_for_reply': bool(_state.get('waiting_for_reply'))})
     if method == 'POST' and request.headers.get('X-Olivia-Companion-Action') != 'confirmed':
         return reply('COMPANION_CONFIRMATION_REQUIRED', 403)
     if path == '/toy/autoupdate/restart' and method == 'POST':

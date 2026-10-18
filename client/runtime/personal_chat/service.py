@@ -26,6 +26,13 @@ BALANCE_ERROR_CODES = frozenset({
     'LLM_QUOTA_EXHAUSTED', 'GPU_INSUFFICIENT_BALANCE',
 })
 TURN_IS_CURRENT = ContextVar('personal_chat_turn_is_current', default=None)
+# A reply cut off by a restart is written again, once, only for a message that recent.
+RESUME_WINDOW_SECONDS = 15 * 60
+
+
+def _boundary(item, index):
+    return (float(item.get('read_boundary_created_at', item.get('created_at', 0))),
+            item.get('read_boundary_sequence', item.get('received_sequence', index)))
 
 
 def _sent_time(row):
@@ -120,6 +127,7 @@ class PersonalChatService:
         self.speech_tasks = {}
         self.typing = {}
         self.active_user_turns = set()
+        self.handling = 0
         self.consumer_tasks = {}
         # One owner shares memory/world across both channels; serialize exchanges.
         self.lock = asyncio.Lock()
@@ -292,18 +300,26 @@ class PersonalChatService:
             TURN_IS_CURRENT.reset(current)
             MEDIA_RESOLVER.reset(media_token)
 
+    def replies_in_flight(self):
+        """A reply to the owner is being generated or sent. An update restart waits for it."""
+        return self.handling > 0 or bool(self.active_user_turns)
+
     async def handle(self, event, send):
-        await self.ingest(event)
-        # A platform replay can regroup a previously delivered burst differently.
-        # Resolve original IDs before choosing a new canonical exchange identity.
-        async with self.batch_lock:
-            # One initial draft plus at most one regenerated draft per pass.
-            # Continued input returns to the durable queue and its merge window.
-            for _ in range(2):
-                updated = await self._handle_batch(event, send)
-                if updated is None:
-                    return
-                event = updated
+        self.handling += 1
+        try:
+            await self.ingest(event)
+            # A platform replay can regroup a previously delivered burst differently.
+            # Resolve original IDs before choosing a new canonical exchange identity.
+            async with self.batch_lock:
+                # One initial draft plus at most one regenerated draft per pass.
+                # Continued input returns to the durable queue and its merge window.
+                for _ in range(2):
+                    updated = await self._handle_batch(event, send)
+                    if updated is None:
+                        return
+                    event = updated
+        finally:
+            self.handling -= 1
 
     async def notify_generation_failure(self, event, send):
         """One system notice per exhausted input; never publish an unchecked draft."""
@@ -412,16 +428,13 @@ class PersonalChatService:
                     self._schedule_photo(row, send)
                     return
                 position = self.rows.index(row)
-                def boundary(item, index):
-                    return (float(item.get('read_boundary_created_at', item.get('created_at', 0))),
-                            item.get('read_boundary_sequence', item.get('received_sequence', index)))
                 if row.get('delivery_status') in {'RECEIVED', 'GENERATED', 'FAILED', 'GENERATING'} and any(
                     old is not row
                     and (old.get('delivery_status') == 'DELIVERED'
-                         and boundary(old, index) > boundary(row, position)
+                         and _boundary(old, index) > _boundary(row, position)
                          or old.get('delivery_status') == 'RECEIVED'
                          and old.get('binding_id') == row.get('binding_id')
-                         and boundary(old, index)[0] - boundary(row, position)[0] > 300)
+                         and _boundary(old, index)[0] - _boundary(row, position)[0] > 300)
                     for index, old in enumerate(self.rows)
                 ):
                     # Replays include failed or interrupted generation, not just
@@ -919,8 +932,47 @@ class PersonalChatService:
             if row.get('channel')==channel:
                 self._schedule_speech(row,send)
 
-    async def recover(self):
-        """Recover local consumers only; never initiate an outbound resend."""
+    def _cancelled_earlier(self, row):
+        """A reply that an earlier run cancelled while it was being written (an orderly shutdown)."""
+        return (row.get('delivery_status') == 'FAILED' and row.get('error_code') == 'PERSONAL_CHAT_GENERATION_INTERRUPTED'
+                and row.get('generation_interrupted') is True
+                and bool(row.get('generation_run_id')) and row.get('generation_run_id') != self.run_id)
+
+    def _resumable(self, row, now):
+        """The owner's message got no reply because we stopped, it is recent, and nothing newer has been answered."""
+        channel = row.get('channel')
+        binding = self.bindings.get(channel)
+        if (binding is None or row.get('origin') == 'proactive' or row.get('superseded_by')
+                or row.get('generation_resumed_at') or row.get('send_attempt_id') or row.get('delivery_receipt')
+                or not row.get('source_messages') or not isinstance(row.get('letter_id'), str)
+                or row.get('binding_id') != PersonalMessage(channel, *binding, '', '').binding_id):
+            return False
+        try:
+            if not -60 <= now - _boundary(row, 0)[0] <= RESUME_WINDOW_SECONDS:
+                return False
+            mine = _boundary(row, self.rows.index(row))
+            return not any(other is not row and other.get('binding_id') == row.get('binding_id')
+                           and other.get('delivery_status') in {'DELIVERED', 'SENDING', 'DELIVERY_UNCONFIRMED'}
+                           and _boundary(other, index) > mine for index, other in enumerate(self.rows))
+        except (TypeError, ValueError):
+            return False
+
+    def _requeue(self, row, now):
+        """Queue the message for a fresh generation, once: the normal path generates, bills, sends and records it."""
+        _clear_draft(row)
+        row.update(delivery_status='RECEIVED', letter_status='PROCESSING', generation_attempts=0,
+                   input_revision=row.get('input_revision', 0) + 1, generation_resumed_at=now)
+        row.pop('error_code', None)
+        row.pop('generation_interrupted', None)
+        return self._stored_event(row, row['channel'], *self.bindings[row['channel']])
+
+    async def recover(self, now=None):
+        """Recover local consumers; never initiate an outbound resend.
+
+        A recent message whose reply was cut off before anything was sent is queued again, once. Returns the
+        events queued again so that a transport that is already connected can take them at once."""
+        now = datetime.now(timezone.utc).timestamp() if now is None else now
+        resumed = []
         for row in list(self.rows):
             if row.get('delivery_status') == 'GENERATING' and row.get('generation_run_id') != self.run_id:
                 receipt = row.get('delivery_receipt')
@@ -943,6 +995,8 @@ class PersonalChatService:
                 elif attempt and row.get('send_attempt_id') == attempt:
                     row.update(delivery_status='DELIVERY_UNCONFIRMED', letter_status='PROCESSING',
                                error_code='PERSONAL_CHAT_DELIVERY_UNCONFIRMED')
+                elif self._resumable(row, now):
+                    resumed.append(self._requeue(row, now))
                 else:
                     retained = bool(self.inspect_writer(row)) if callable(self.inspect_writer) else False
                     row.update(delivery_status='FAILED', letter_status='FAILED',
@@ -950,6 +1004,10 @@ class PersonalChatService:
                                generation_interrupted=True,
                                generation_recovery='CANDIDATE_RETAINED' if retained else 'NO_CANDIDATE')
                 await persist_state(self.persist)
+            elif self._cancelled_earlier(row) and self._resumable(row, now):
+                resumed.append(self._requeue(row, now))
+                await persist_state(self.persist)
             self._schedule_commit(row)
             # Let a waiting message proceed between recovered exchanges.
             await asyncio.sleep(0)
+        return tuple(resumed)

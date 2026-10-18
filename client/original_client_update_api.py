@@ -450,6 +450,9 @@ def mount_original_client_update_api(
         async with control_lock:
             if not restart_pending or restart_started:
                 raise UpdateAPIError("UPDATE_RESTART_NOT_PENDING", status=409)
+            # A reply that is being written is finished first (bounded; see runtime/auto_update.py).
+            from runtime.auto_update import wait_for_replies
+            await wait_for_replies()
             try:
                 await asyncio.to_thread(updater.restart)
             except Exception as exc:

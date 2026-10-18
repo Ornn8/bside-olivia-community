@@ -81,8 +81,15 @@ JAVASCRIPT = r'''
       const now = node('button', null, t('现在重启更新'), actions); now.type = 'button'; now.dataset.primary = '';
       now.onclick = async () => {
         now.disabled = later.disabled = true; now.textContent = t('正在重启…');
-        try { await local('/toy/autoupdate/restart', {}); }
+        // The restart waits (up to 90 seconds) for a reply she is writing; say so while it does.
+        let waiting = true;
+        const watch = setInterval(async () => {
+          try { if ((await local('/toy/autoupdate/state')).waiting_for_reply && waiting) now.textContent = t('她正在写完一条回复，写完就重启'); }
+          catch (_) {}
+        }, 1500);
+        try { await local('/toy/autoupdate/restart', {}); now.textContent = t('正在重启…'); }
         catch (_) { now.disabled = later.disabled = false; now.textContent = t('没能重启，再试一次'); }
+        finally { waiting = false; clearInterval(watch); }
       };
       now.focus();
     } else {

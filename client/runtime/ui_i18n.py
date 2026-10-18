@@ -1349,6 +1349,7 @@ EN: dict[str, str] = {
     "稍后": "Later",
     "现在重启更新": "Restart and update now",
     "正在重启…": "Restarting…",
+    "她正在写完一条回复，写完就重启": "She is finishing a reply; restarting right after",
     "没能重启，再试一次": "Couldn't restart. Try again",
     "尚未设置": "Not set up yet",
     "正在启动…": "Starting…",
