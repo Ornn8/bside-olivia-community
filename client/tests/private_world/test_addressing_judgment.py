@@ -67,12 +67,29 @@ def terms(store, kind, now=NEXT_DAY + timedelta(days=1)):
     return {item['quote'] for item in store.addressing_profile(now=now, per_kind=50).get(kind, [])}
 
 
-def test_short_quotes_are_stored_by_shape_and_never_judged(tmp_path):
+def test_short_quotes_are_judged_too_and_show_the_shape_until_then(tmp_path):
+    # 2026-10-19: a reply of two characters (好吧) passed the shape check and showed as what the user calls her.
     store = make_store(tmp_path)
     store.record_addressing('reply:a:1', {'user_calls_linli': '小离，', 'linli_calls_user': '饭饭呀'}, occurred_at=DAY)
-    assert store.pending_addressing(20) == []
+    store.record_addressing('reply:a:2', {'user_calls_linli': '好吧'}, occurred_at=DAY + timedelta(seconds=1))
+    assert len(store.pending_addressing(20)) == 3
+    assert terms(store, 'user_calls_linli') == {'小离', '好吧'}
+    assert batch(store, FakePort({'小离': '小离', '饭饭呀': '饭饭', '好吧': None})) == 'judged'
     assert terms(store, 'user_calls_linli') == {'小离'} and terms(store, 'linli_calls_user') == {'饭饭'}
-    assert not needs_judgment('user_calls_linli', '亲爱的') and needs_judgment('user_calls_linli', '早安呀饭饭')
+    assert needs_judgment('user_calls_linli', '亲爱的') and needs_judgment('user_calls_linli', '早安呀饭饭')
+
+
+def test_the_judgment_reads_the_whole_message_the_quote_came_from(tmp_path):
+    # 2026-10-19: "我说我打棒球是棒球手" left 棒球手 as what the user calls her; the quote alone cannot tell.
+    store = make_store(tmp_path)
+    store.record_addressing('reply:b:1', {'user_calls_linli': '棒球手'}, occurred_at=DAY)
+    with store._db() as db:
+        db.execute('INSERT INTO life_exchange_user_text VALUES (?,?)', ('reply:b:1', '我打棒球，是棒球手，哈哈哈'))
+    port = FakePort({'我打棒球，是棒球手，哈哈哈': None})
+    assert batch(store, port) == 'judged'
+    item = port.requests[0][0]['items'][0]
+    assert item['message'] == '我打棒球，是棒球手，哈哈哈' and item['quote'] == '棒球手'
+    assert terms(store, 'user_calls_linli') == set()
 
 
 def test_the_users_own_name_is_never_judged(tmp_path):
@@ -118,15 +135,18 @@ def test_one_request_judges_every_waiting_quote(tmp_path):
     assert store.pending_addressing(20) == []
 
 
-def test_candidate_spans_are_prefixes_and_suffixes():
+def test_candidate_spans_cover_short_clauses_and_the_edges_of_long_ones():
     spans = judgment.candidate_spans('外边下雨了小猫咪')
-    assert {'外', '外边', '外边下雨了小', '咪', '猫咪', '小猫咪', '下雨了小猫咪'} <= set(spans)
-    assert '边下' not in spans and '外边下雨了小猫' not in spans  # not a prefix of at most 6, not a suffix
-    assert '外边下雨了小猫咪' in spans  # the whole quote, as it has 8 characters
-    assert '早安呀饭饭好久不见的你' not in judgment.candidate_spans('早安呀饭饭好久不见的你')
-    assert len(judgment.candidate_spans('早安呀饭饭好久不见的你')) == len(set(judgment.candidate_spans('早安呀饭饭好久不见的你')))
-    # Only word characters can be a term.
-    assert set(judgment.candidate_spans('早安，饭饭')) == {'早', '早安', '饭', '饭饭'}
+    assert {'外', '边下', '小猫咪', '下雨了小猫咪', '外边下雨了小猫咪'} <= set(spans)  # a short clause offers every span
+    assert '外边下雨了小猫' not in spans  # longer than six and not the whole clause
+    long = '早安呀饭饭好久不见的你今天过得怎么样'
+    assert '好久不见' not in judgment.candidate_spans(long) and '早安呀饭饭' in judgment.candidate_spans(long)
+    assert len(judgment.candidate_spans(long)) == len(set(judgment.candidate_spans(long)))
+    # Only word characters can be a term, and each clause has its own spans.
+    assert set(judgment.candidate_spans('早安，饭饭')) == {'早', '安', '早安', '饭', '饭饭'}
+    # A name inside a clause stands on its own (2026-10-19: 那头号粉丝要一直支持我哦, 好呀老姜).
+    assert '头号粉丝' in judgment.candidate_spans('那头号粉丝要一直支持我哦')
+    assert '老姜' in judgment.candidate_spans('好呀老姜，那我以后就这么叫你')
 
 
 def test_a_judged_quote_is_never_judged_again(tmp_path):
@@ -233,9 +253,10 @@ def test_stored_quotes_from_before_are_judged_in_the_same_daily_request(tmp_path
     insert_legacy(store, [('reply:oldshort:1', 'user_calls_linli', '小离', DAY - timedelta(days=3))])
     # The profile of an old install is the shape check until the daily request.
     assert terms(store, 'linli_calls_user') == shape_terms('linli_calls_user')
-    port = FakePort()
+    port = FakePort({**{normalize(quote): term for _kind, quote, term in CASES}, '小离': '小离'})
     assert batch(store, port) == 'judged'
-    assert len(port.requests) == 1 and len(port.requests[0][0]['items']) == len(CASES)
+    # Short stored quotes are judged as well since 2.4.10.
+    assert len(port.requests) == 1 and len(port.requests[0][0]['items']) == len(CASES) + 1
     assert terms(store, 'linli_calls_user') == {'饭饭', '小猫咪', '老姜'}
     assert terms(store, 'user_calls_linli') == {'小离', '宝贝', '离离'}
     assert store.setting(judgment.LEGACY_KEY) == '1'
