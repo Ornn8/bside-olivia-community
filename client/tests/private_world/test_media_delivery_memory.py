@@ -207,3 +207,32 @@ def test_failed_cover_keeps_only_published_speech_then_retry_adds_cover(tmp_path
         assert len(row['media_deliveries']) == count
         assert len(world.history()['moments']) == count
     assert {e['component'] for e in row['media_deliveries']} == {'speech', 'cover'}
+
+
+def test_deleting_the_letter_removes_its_media_moment_and_replies_go_on(tmp_path):
+    # 2026-10-19: deleting a letter left its media moment as {"delivery": null}; every later reply failed (TypeError).
+    from runtime.imports.letter_delete import Sources, apply_sql, sql_plan
+    row = letter()
+    store = DailyLifeStore(tmp_path/'world.sqlite')
+    assert store.record_media_delivery(make_delivery(row, component='cover', presentation='audio', occurred_at=NOW))
+    plan = sql_plan(store.path, Sources(row, 'user'))
+    apply_sql(store.path, plan)
+    with sqlite3.connect(store.path) as db:
+        assert db.execute("SELECT COUNT(*) FROM life_moments WHERE kind='media'").fetchone()[0] == 0
+    store.reply_candidates(now=NOW)
+    store.reply_context('你之前给我唱过歌吗？', now=NOW)
+    apply_sql(store.path, plan, restore=True)
+    assert 'source-1' in store.reply_context('你之前给我唱过歌吗？', now=NOW)
+
+
+def test_a_media_moment_emptied_by_an_older_deletion_is_skipped(tmp_path):
+    row = letter()
+    store = DailyLifeStore(tmp_path/'world.sqlite')
+    assert store.record_media_delivery(make_delivery(row, component='cover', presentation='audio', occurred_at=NOW))
+    with sqlite3.connect(store.path) as db:
+        db.execute("UPDATE life_moments SET payload=? WHERE kind='media'", ('{"delivery": null}',))
+        db.execute("INSERT INTO life_moments(source_id, occurred_at, kind, payload) SELECT 'image:x', occurred_at, 'image', "
+                   "'{\"image\": null}' FROM life_moments WHERE kind='media'")
+    candidates = store.reply_candidates(now=NOW)
+    assert not [r for r in candidates['records'] if r['field'] in {'media_deliveries', 'image_observations'}]
+    assert 'source-1' not in store.reply_context('你之前给我唱过歌吗？', now=NOW)

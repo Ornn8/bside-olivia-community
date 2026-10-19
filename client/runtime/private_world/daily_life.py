@@ -341,6 +341,13 @@ def _query_topic_chars(text: str) -> set[str]:
     return set(re.findall(r"[\u3400-\u9fff]", text)) - _QUERY_TOPIC_STOP_CHARS
 
 
+def _moment_items(rows, key):
+    """The media or photo records of these moments. Deleting a letter before 2.4.11 could leave one emptied
+    ({"delivery": null}), and every later reply then failed on it."""
+    items = (json.loads(row[0]).get(key) for row in rows)
+    return [item for item in items if isinstance(item, dict)]
+
+
 class DailyLifeStore:
     def __init__(self, path: Path):
         self.path = Path(path)
@@ -1321,10 +1328,10 @@ class DailyLifeStore:
             projects = [_project_evidence(p) for p in _live_threads(every, now)]
             observations = self._read_observations(db, now)
             last_reply = db.execute('SELECT MAX(replied_at) FROM life_rest_exchanges WHERE replied_at<=?', (_time(now),)).fetchone()[0]
-            deliveries = [json.loads(r[0])['delivery'] for r in db.execute(
-                "SELECT payload FROM life_moments WHERE kind='media' AND occurred_at<=? ORDER BY occurred_at DESC LIMIT 3", (_time(now),))]
-            images = [json.loads(r[0])['image'] for r in db.execute(
-                "SELECT payload FROM life_moments WHERE kind='image' AND occurred_at<=? ORDER BY occurred_at DESC LIMIT 3", (_time(now),))]
+            deliveries = _moment_items(db.execute(
+                "SELECT payload FROM life_moments WHERE kind='media' AND occurred_at<=? ORDER BY occurred_at DESC LIMIT 3", (_time(now),)), 'delivery')
+            images = _moment_items(db.execute(
+                "SELECT payload FROM life_moments WHERE kind='image' AND occurred_at<=? ORDER BY occurred_at DESC LIMIT 3", (_time(now),)), 'image')
         world = snapshot['world']
         schedule = {k: world['schedule'].get(k) for k in ('date', 'phase', 'classes', 'current_class', 'next_class')}
         schedule.update(timezone='Asia/Shanghai', meaning='课表是计划，不证明出席。current_class为空不代表今天没课，今天课程看classes，下一节看next_class。')
@@ -1359,10 +1366,10 @@ class DailyLifeStore:
             last_reply = db.execute(
                 "SELECT MAX(replied_at) FROM life_rest_exchanges WHERE replied_at<=?", (_time(now),)
             ).fetchone()[0]
-            media = [json.loads(row[0])['delivery'] for row in db.execute(
-                "SELECT payload FROM life_moments WHERE kind='media' AND occurred_at<=? ORDER BY occurred_at DESC, source_id DESC LIMIT 3", (_time(now),))]
-            images = [json.loads(row[0])['image'] for row in db.execute(
-                "SELECT payload FROM life_moments WHERE kind='image' AND occurred_at<=? ORDER BY occurred_at DESC, source_id DESC LIMIT 3", (_time(now),))]
+            media = _moment_items(db.execute(
+                "SELECT payload FROM life_moments WHERE kind='media' AND occurred_at<=? ORDER BY occurred_at DESC, source_id DESC LIMIT 3", (_time(now),)), 'delivery')
+            images = _moment_items(db.execute(
+                "SELECT payload FROM life_moments WHERE kind='image' AND occurred_at<=? ORDER BY occurred_at DESC, source_id DESC LIMIT 3", (_time(now),)), 'image')
         # Timetable and independently observed weather remain usable before the
         # first published activity, or when the life-generation model is down.
         tokens = _query_tokens(query)
