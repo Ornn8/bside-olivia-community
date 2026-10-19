@@ -336,6 +336,20 @@ def test_a_later_reopen_key_gives_lost_days_two_more_tries_once(tmp_path):
     assert '2026-10-07' not in due_days(DiaryStore(store.path), NOW)  # and the key never reopens it again
 
 
+def test_days_lost_again_after_the_second_key_are_reopened_once_more(tmp_path):
+    # An install that updated before the relay fix: the second key ran at once, then the same day was lost again.
+    store = DiaryStore(tmp_path / 'diary.db')
+    with store._db() as db:
+        db.executemany('INSERT INTO diary_settings VALUES (?,?)',
+                       [(diary.RETRY_ONCE_KEY, '1'), ('retry_rejected_20261019', '1')])
+    use_up(store, '2026-10-07', 'JSONDecodeError')            # the answer could not be read
+    due = due_days(store, NOW)
+    assert '2026-10-07' in due and attempts(store, '2026-10-07') == MAX_ATTEMPTS - 2
+    store.failed('2026-10-07', 'JSONDecodeError')
+    store.failed('2026-10-07', 'ValidationError')
+    assert '2026-10-07' not in due_days(DiaryStore(store.path), NOW)  # no key is left to reopen it
+
+
 def test_empty_days_stay_closed(tmp_path):
     store = DiaryStore(tmp_path / 'diary.db')
     store.skip('2026-10-07', 'EMPTY_DAY')

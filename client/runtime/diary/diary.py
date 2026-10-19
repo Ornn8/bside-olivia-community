@@ -33,8 +33,10 @@ REOPEN_REASONS = ('ProviderProtocolError', 'ProviderEmptyResponse', 'JSONDecodeE
 RETRY_ONCE_KEY = 'retry_rejected_once'
 # Each key reopens the lost days of the catch-up window once, with that many tries. The second came after the
 # supplier dropped Sonnet's and Opus's system text (2026-10-17..19): their diaries came back unusable until the
-# relay was fixed, and the first key had already been used.
-RETRY_ONCE_KEYS = ((RETRY_ONCE_KEY, 1), ('retry_rejected_20261019', 2))
+# relay was fixed, and the first key had already been used. The third: installs that updated before that fix used
+# the second key at once and then lost the same days again; Opus answers that cannot be read as JSON are now
+# written once more by another model at the relay (2026-10-19 evening).
+RETRY_ONCE_KEYS = ((RETRY_ONCE_KEY, 1), ('retry_rejected_20261019', 2), ('retry_rejected_20261020', 2))
 SHORT_DAY_CHARS = 40        # a day with less user text gets a short note
 MAX_SOURCE_CHARS = 24000    # one day's messages offered to the writer
 CONTEXT_DAYS = 3
