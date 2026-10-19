@@ -304,6 +304,12 @@ def scan_runtime_dependencies(root: Path, files: list[Path]) -> tuple[list[str],
                             ("runtime/media/remote_materials.py", "inputs['spoken_scene_asset'] = 'official-reply-action-base-v1'"),
                         }):
                     continue
+                # The client window's own profile folder on this PC (its permissions are repaired), not a host.
+                if (label == "known_official_host"
+                        and (relative(path, root), line.strip()) == (
+                            "installer/version_launcher.py",
+                            'return [Path(appdata) / "miHoYo" / "Olivia-steam"] if appdata else []')):
+                    continue
                 if pattern.search(line):
                     findings.append(f"{relative(path, root)}:{line_no}:{label}")
     return findings, [name for name, _ in RUNTIME_DEPENDENCY_PATTERNS], len(runtime)
