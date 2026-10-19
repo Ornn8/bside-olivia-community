@@ -351,43 +351,6 @@ def test_paused_memory_is_reported_in_the_tab_and_resumes_from_more(browser):
     assert page.errors == []
 
 
-def test_settings_keeps_its_status_lines_and_opens_the_window_on_the_memory_tab(browser):
-    service = Service("zh")
-    page = boot(browser, service, hash="#/settings")
-    page.wait_for_selector("[data-olivia-group=letters]")
-    page.evaluate("document.querySelector('[data-olivia-group=letters]').open = true")
-    page.get_by_role("button", name="打开", exact=True).first.click()
-    settings = page.locator("[data-olivia-companion-settings-dialog]")
-    panel = settings.locator("[data-olivia-companion-panel=memory]")
-    expect(settings.get_by_role("heading", name="长期记忆", level=2)).to_be_visible()
-    expect(panel).to_contain_text("状态：可用 · 6 条记忆")
-    expect(panel.get_by_role("button")).to_have_text(["打开信件与记忆"])
-    assert settings.locator("[data-olivia-memory-browser]").count() == 0
-    assert not [call for call in service.calls(MEMORY_PATH) if call[0].get("browse")], "no records are read for the launcher"
-    panel.get_by_role("button", name="打开信件与记忆").click()
-    window = page.locator("[data-letter-deletion]")
-    expect(window).to_be_visible()
-    expect(_tab(window, "记忆")).to_have_attribute("aria-selected", "true")
-    expect(window.locator(".om-row")).to_have_count(6)
-    # closing the window returns to the settings dialog
-    window.get_by_role("button", name="关闭").click()
-    expect(page.locator("[data-letter-deletion]")).to_have_count(0)
-    expect(settings).to_be_visible()
-    assert page.errors == []
-
-
-def test_settings_launcher_shows_a_paused_service(browser):
-    service = Service("zh", memory_capability={"state": "available", "reason_code": "MEMORY_ADMIN_PAUSED", "count": 6})
-    page = boot(browser, service, hash="#/settings")
-    page.wait_for_selector("[data-olivia-group=letters]")
-    page.evaluate("document.querySelector('[data-olivia-group=letters]').open = true")
-    page.get_by_role("button", name="打开", exact=True).first.click()
-    panel = page.locator("[data-olivia-companion-panel=memory]")
-    expect(panel).to_contain_text("状态：已暂停")
-    expect(panel.get_by_role("button", name="打开信件与记忆")).to_be_visible()
-    assert page.errors == []
-
-
 @pytest.mark.parametrize("width", [390, 360])
 def test_narrow_window_has_no_horizontal_overflow_and_reads_one_pane_at_a_time(browser, width):
     service = Service("zh")

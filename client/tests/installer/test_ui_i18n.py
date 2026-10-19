@@ -684,30 +684,31 @@ def test_english_header_account_update_and_call_show_no_chinese():
         browser.close()
 
 
-def test_english_memory_dialog_shows_no_chinese():
+def test_settings_letters_group_has_no_memory_entry():
+    # Memories are opened from the top bar's letters-and-memories window only (owner 2026-10-19).
     sync_playwright = pytest.importorskip("playwright.sync_api").sync_playwright
     with sync_playwright() as p:
         browser = _launch(p)
         page = _boot(browser, language="en")
         page.evaluate("document.querySelector('[data-olivia-group=letters]').open = true")
-        page.get_by_role("button", name="Open", exact=True).first.click()
-        page.wait_for_timeout(2000)
-        assert page.get_by_text("Long-term memory").first.is_visible()
-        assert _unexpected(_chinese(page, "[data-olivia-companion-settings-dialog]")) == []
+        group = page.locator("[data-olivia-group=letters]")
+        assert group.get_by_role("button", name="Open", exact=True).count() == 0
+        assert group.get_by_text("Long-term memory: view, search").count() == 0
+        assert _unexpected(_chinese(page, "[data-olivia-group=letters]")) == []
         browser.close()
 
 
-def test_english_memory_dialog_opens_the_letters_and_memories_window():
+def test_english_top_bar_window_opens_on_memories_without_chinese():
     sync_playwright = pytest.importorskip("playwright.sync_api").sync_playwright
     from tests.installer.letters_memories_fixture import Service, boot
     with sync_playwright() as p:
         browser = _launch(p)
-        page = boot(browser, Service("en"), language="en", hash="#/settings")
-        page.wait_for_selector("[data-olivia-group=letters]")
-        page.evaluate("document.querySelector('[data-olivia-group=letters]').open = true")
-        page.get_by_role("button", name="Open", exact=True).first.click()
-        page.get_by_role("button", name="Open letters and memories").click()
+        page = boot(browser, Service("en"), language="en")
+        page.wait_for_selector("[data-letter-deletion-entry]")
+        page.click("[data-letter-deletion-entry]")
         window = page.locator("[data-letter-deletion]")
+        window.wait_for()
+        window.get_by_role("tab", name="Memories").click()
         window.locator(".om-row").first.wait_for()
         assert window.get_by_role("tab", name="Memories").get_attribute("aria-selected") == "true"
         assert _unexpected(_chinese(page, "[data-letter-deletion]")) == []
