@@ -595,6 +595,10 @@ def _relaunch_unelevated(root: Path) -> bool:
     """
     if os.name != "nt" or not _is_elevated():
         return False
+    launcher = root / "Olivia.exe"
+    explorer = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "explorer.exe"
+    if not launcher.is_file() or not explorer.is_file():
+        return False
     _repair_permissions_once(root)
     marker = root / "data" / "logs" / ELEVATED_RELAUNCH_NAME
     try:
@@ -602,10 +606,6 @@ def _relaunch_unelevated(root: Path) -> bool:
             return False
     except OSError:
         pass
-    launcher = root / "Olivia.exe"
-    explorer = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "explorer.exe"
-    if not launcher.is_file() or not explorer.is_file():
-        return False
     try:
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text(json.dumps({"at": time.time()}), encoding="utf-8")

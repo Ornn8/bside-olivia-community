@@ -130,3 +130,14 @@ def test_startup_import_failures_name_their_module_without_text():
     assert launcher._startup_exception_fields(error) == {"exception_type": "ImportError", "import_module": "runtime.alpha"}
     assert launcher._startup_exception_fields(ImportError("DLL load failed while importing _ssl"))["dll_load_failed"] == "1"
     assert launcher._startup_exception_fields(PermissionError(13, "denied"))["permission_denied"] == "1"
+
+
+def test_an_elevated_run_outside_an_install_repairs_nothing(tmp_path, monkeypatch):
+    # CI runners are administrators: a launcher test without Olivia.exe must not run icacls or log a repair.
+    root = _root(tmp_path / "install")
+    (root / "Olivia.exe").unlink()
+    _fake_system(monkeypatch, tmp_path, elevated=True)
+    calls = _fake_icacls(monkeypatch)
+    assert launcher._relaunch_unelevated(root) is False
+    assert calls == []
+    assert not (root / "data" / "logs" / "launcher.jsonl").exists()
