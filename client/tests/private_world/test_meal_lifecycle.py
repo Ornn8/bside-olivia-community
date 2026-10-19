@@ -268,3 +268,33 @@ def test_user_words_reach_the_meal_decision_before_any_meal_record(tmp_path):
     lunch_call = next(state for state, questions in port.calls if state['slot'] == 'lunch')
     assert [a.get('user_text') for a in lunch_call['exchange_actions']] == ['开饭啦，给你擦擦嘴角，快吃饭乖']
     assert 'user_text是对方的话' in lunch_call['exchange_rule']
+
+
+def test_a_plan_missed_while_closed_is_kept_or_skipped_then_never_moved_next_to_lunch(tmp_path):
+    # 10-19: breakfast planned for after a 9:00-10:40 class, the app closed all morning, and on opening at
+    # 11:01 breakfast was planned again for 11:31, half an hour before lunch.
+    from runtime.private_world.meal_lifecycle import options
+    old = {'slot': 'breakfast', 'status': 'planned', 'food': '煎蛋三明治', 'scheduled_for': at(10, 40).isoformat(),
+           'meal_stage': 'planned'}
+    choices = options('breakfast', old, at(11, 1))   # 21 minutes past the plan: the clock was not running
+    assert set(choices) == {'recovered_0_plan', 'skipped'}
+    eaten = choices['recovered_0_plan']
+    assert eaten['food'] == '煎蛋三明治' and eaten['recovered'] and eaten['started_at'] == at(10, 40).isoformat()
+    assert choices['skipped']['recovered']
+    assert not any(c.get('scheduled_for') for c in choices.values())
+
+
+def test_a_plan_that_just_came_due_is_still_eaten_now(tmp_path):
+    from runtime.private_world.meal_lifecycle import options
+    old = {'slot': 'breakfast', 'status': 'planned', 'food': '煎蛋三明治', 'scheduled_for': at(10, 40).isoformat(),
+           'meal_stage': 'planned'}
+    old = dict(old, scheduled_for=at(10, 20).isoformat())
+    assert any(key.startswith('eat_') for key in options('breakfast', old, at(10, 25)))
+
+
+def test_no_meal_is_planned_close_to_the_next_one(tmp_path):
+    from runtime.private_world.meal_lifecycle import options
+    late = options('breakfast', None, at(10, 10), prospective=True)
+    assert not [c for k, c in late.items() if k.startswith('plan_')]   # 10:40 would be under 90 min before lunch
+    early = options('breakfast', None, at(8, 30), prospective=True)
+    assert [c for k, c in early.items() if k.startswith('plan_')]      # 9:00 still leaves room before lunch
