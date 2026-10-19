@@ -68,21 +68,26 @@ def _fake_icacls(monkeypatch, returncode=0):
 def test_an_elevated_start_gives_files_back_their_permissions_once_per_version(tmp_path, monkeypatch):
     root = _root(tmp_path / "install")
     (tmp_path / "runtime").mkdir()
+    profile = tmp_path / "Roaming" / "miHoYo" / "Olivia-steam"
+    profile.mkdir(parents=True)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))
     _state(root, "2.4.11")
     _fake_system(monkeypatch, tmp_path, elevated=True)
     calls = _fake_icacls(monkeypatch)
     assert launcher._relaunch_unelevated(root) is True
+    # The window's cache in the roaming folder too: unreadable, it made the window exit at once.
     assert [command[1:] for command in calls] == [[str(root), "/reset", "/T", "/C", "/Q"],
-                                                  [str(tmp_path / "runtime"), "/reset", "/T", "/C", "/Q"]]
+                                                  [str(tmp_path / "runtime"), "/reset", "/T", "/C", "/Q"],
+                                                  [str(profile), "/reset", "/T", "/C", "/Q"]]
     assert calls[0][0].endswith("icacls.exe")
     # A later administrator start of the same version is not slowed down again.
     (root / "data" / "logs" / launcher.ELEVATED_RELAUNCH_NAME).unlink()
     launcher._relaunch_unelevated(root)
-    assert len(calls) == 2
+    assert len(calls) == 3
     _state(root, "2.4.12")
     (root / "data" / "logs" / launcher.ELEVATED_RELAUNCH_NAME).unlink()
     launcher._relaunch_unelevated(root)
-    assert len(calls) == 4
+    assert len(calls) == 6
 
 
 def test_a_normal_start_that_cannot_import_its_files_asks_once_for_a_repair(tmp_path, monkeypatch):

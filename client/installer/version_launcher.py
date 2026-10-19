@@ -645,7 +645,7 @@ def _repair_permissions(root: Path) -> bool:
     then fails to import it (2026-10-15; a user's ImportError on 2026-10-19)."""
     icacls = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "icacls.exe"
     repaired = True
-    for target in (root, root.parent / "runtime"):
+    for target in (root, root.parent / "runtime", *_client_profile_dirs()):
         if not target.is_dir():
             continue
         try:
@@ -658,6 +658,14 @@ def _repair_permissions(root: Path) -> bool:
     _append_launcher_event(root, "permissions_repaired" if repaired else "permissions_repair_incomplete",
                            timestamp=time.time())
     return repaired
+
+
+def _client_profile_dirs() -> list[Path]:
+    """The window's own cache and logs live in the user's roaming folder, not in the install. Written while
+    running as administrator they become unreadable too, and the window then exits at once (0xC0000409,
+    a user on 2026-10-19 after the install itself had been repaired)."""
+    appdata = os.environ.get("APPDATA")
+    return [Path(appdata) / "miHoYo" / "Olivia-steam"] if appdata else []
 
 
 def _active_version(root: Path) -> str:
