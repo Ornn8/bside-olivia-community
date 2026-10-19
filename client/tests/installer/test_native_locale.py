@@ -484,3 +484,14 @@ def test_real_bundle_loader_runs_with_the_real_zh_module(tmp_path):
     assert out[0]['title'] == '曲库' and out[0]['write'] == '写信' and out[0]['ago'] == '7分钟前'
     assert out[0]['date'] == 'Oct月3日'
     assert out[1] == {'lang': 'en', 'title': 'Music', 'write': 'Write a letter', 'ago': '7m ago', 'date': 'Oct 3'}
+
+
+def test_a_wrapped_literal_after_a_keyword_keeps_the_keyword_apart():
+    from installer.patch_native_locale import _GLUED, WRAP, _wrap_literal
+    source = 'Ws=e=>{if(e==null)return"时间未知";return x}'
+    wrapped = _wrap_literal(source, '时间未知', 'Unknown time', 1, True)
+    assert 'return oliviaNativeText("时间未知","Unknown time")' in wrapped
+    # Bundles patched before the fix are repaired the next time the patch runs.
+    broken = 'if(e==null)returnoliviaNativeText("时间未知","Unknown time");x=foo(oliviaNativeText("a","b"))'
+    repaired = _GLUED.sub(lambda match: match.group(1) + ' ' + WRAP, broken)
+    assert 'return oliviaNativeText(' in repaired and 'foo(oliviaNativeText(' in repaired

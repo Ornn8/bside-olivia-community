@@ -14,6 +14,7 @@ PAPER_MARKER='/*olivia-letter-paper-v1*/'
 SCROLL_MARKER='/*olivia-letter-scroll-v1*/'
 PREVIOUS_MARKER='/*olivia-letter-stickers-v4*/'
 PHOTO_MARKER='/*olivia-letter-photos-v2*/'
+VIDEO_TEXT_MARKER='/*olivia-letter-video-text-v1*/'
 LEGACY_PHOTO_MARKER='/*olivia-letter-photos-v1*/'
 METADATA_MARKER='/*olivia-letter-stickers-v3*/'
 LAYOUT_MARKER='/*olivia-letter-stickers-v2*/'
@@ -198,6 +199,31 @@ def _patch_with_failure_prop(source: str) -> str:
     return source
 
 
+# A video reply (a cover, a song, her speaking) showed only the video: the letter she wrote with it could no
+# longer be read once the video arrived (2026-10-19). Her letter now follows the video on its own paper.
+VIDEO_TEXT_ANCHOR = '8,["disabled"]),o(m)?(r(),F($s,{key:0,class:"mail-responsive-card"}'
+VIDEO_TEXT_PAPER = (',i.mail.received?.type==="video"&&i.mail.received?.content?(r(),_("div",{key:"olivia-video-letter",'
+    'class:"mail-responsive-card olivia-video-letter"},[k(ks,({bodyText:i.mail.received.bodyText,signature:i.mail.received.signature,'
+    'stickerId:i.mail.received.stickerId,modelValue:i.mail.received.content,class:"mail-card-content","is-visible":!0,'
+    'readonly:"",timestamp:i.mail.received.timestamp??null,type:"text"}),null,8,'
+    '["bodyText","signature","stickerId","modelValue","timestamp"])])):Y("",!0)')
+
+
+def _patch_video_text(source: str) -> str:
+    """Optional: a client whose bundle differs keeps the video-only paper rather than failing to start."""
+    if VIDEO_TEXT_MARKER in source or '__name:"MailBoxContentBody"' not in source:
+        return source
+    start = source.index('__name:"MailBoxContentBody"')
+    end = source.find('__name:', start + 10)
+    end = len(source) if end < 0 else end
+    component = source[start:end]
+    if component.count(VIDEO_TEXT_ANCHOR) != 1:
+        return source
+    head = '8,["disabled"])'
+    component = component.replace(VIDEO_TEXT_ANCHOR, head + VIDEO_TEXT_PAPER + VIDEO_TEXT_ANCHOR[len(head):], 1)
+    return VIDEO_TEXT_MARKER + source[:start] + component + source[end:]
+
+
 def patch_letter_stickers(path: Path | str) -> str:
     path=Path(path)
     from installer.full_patch import DEFAULT_STICKER_FILES
@@ -214,7 +240,7 @@ def patch_letter_stickers(path: Path | str) -> str:
                   and name.endswith(('.png','.gif')) and name not in expected}
         obsolete.update(f'assets/letter-stickers/paper-{part}.svg' for part in ('top','middle','bottom')
                         if f'assets/letter-stickers/paper-{part}.svg' in archive.namelist())
-        changed=_patch_with_failure_prop(source).encode('utf-8')
+        changed=_patch_video_text(_patch_with_failure_prop(source)).encode('utf-8')
         if not obsolete and changed==source.encode('utf-8') and all(n in archive.namelist() and archive.read(n)==data for n,data in assets.items()):
             return 'ALREADY_PATCHED'
         with tempfile.TemporaryDirectory(prefix='.letter-stickers-',dir=path.parent) as folder:

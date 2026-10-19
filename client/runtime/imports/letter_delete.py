@@ -76,6 +76,9 @@ def prune(value, sources):
     return result
 
 
+MOMENT_RECORDS = {'media': 'delivery', 'image': 'image'}
+
+
 def _quote(name):
     return '"' + name.replace('"', '""') + '"'
 
@@ -134,7 +137,10 @@ def sql_plan(path, sources):
                         if isinstance(decoded, dict) and decoded.get('user_id', sources.user) != sources.user:
                             continue
                         cleaned = prune(decoded, sources)
-                        if cleaned is None:
+                        if cleaned is None or (table == 'life_moments' and column == 'payload' and isinstance(cleaned, dict)
+                                               and before.get('kind') in MOMENT_RECORDS
+                                               and not isinstance(cleaned.get(MOMENT_RECORDS[before['kind']]), dict)):
+                            # A media or photo moment is its one record: with the record gone, the moment goes too.
                             after = None
                             break
                         if cleaned != decoded:

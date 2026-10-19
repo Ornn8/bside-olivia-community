@@ -69,7 +69,15 @@ JAVASCRIPT = r'''
     };
     dialog.addEventListener('cancel',e=>{e.preventDefault();close()});document.body.append(dialog);dialog.showModal();await load();timer=setInterval(load,4000);
   }
-  function mount(){document.querySelectorAll(original).forEach(card=>{let button=card.previousElementSibling;if(!button?.classList.contains('piano-entry')){button=node('button',t('钢琴小样 · 上传 MIDI / 查看录音'));button.className='piano-entry';button.type='button';button.onclick=open;card.before(button)}button.hidden=!caps})}
+  // This client never shows the native MIDI cards, so the library page (#/studio) also gets an entry next to 导入本地演奏.
+  function mountNavigation(){
+    const nav=document.querySelector('[data-olivia-main-navigation]');let entry=document.querySelector('[data-olivia-piano-entry]');
+    if(!caps||!nav||window.location.hash.split('?')[0]!=='#/studio'){entry?.remove();return}
+    if(!entry){entry=node('button',t('钢琴小样'));entry.type='button';entry.dataset.oliviaPianoEntry='';entry.onclick=open;nav.append(entry)}
+    const local=nav.querySelector('[data-olivia-local-songs-entry]');
+    if(local&&entry.previousElementSibling!==local){entry.className=local.className;entry.style.cssText=local.style.cssText;local.after(entry)}
+  }
+  function mount(){document.querySelectorAll(original).forEach(card=>{let button=card.previousElementSibling;if(!button?.classList.contains('piano-entry')){button=node('button',t('钢琴小样 · 上传 MIDI / 查看录音'));button.className='piano-entry';button.type='button';button.onclick=open;card.before(button)}button.hidden=!caps});mountNavigation()}
   const observer=new MutationObserver(mount);observer.observe(document.documentElement,{childList:true,subtree:true});mount();
   async function capability(){try{const value=await request('/toy/midi/capabilities');caps=value.enabled===true&&value.price_ranges_cents?.midi&&value.price_ranges_cents?.original?value:null}catch{caps=null}if(!caps)close();mount()}
   capability();setInterval(capability,60000);

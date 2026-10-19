@@ -455,7 +455,7 @@ def _run_action(args: argparse.Namespace) -> int:
     except Exception as exc:
         if args.action != "start":
             raise
-        _start_failed()
+        _start_failed(exc)
         _append_launcher_event(args.install_root, "startup_failed", code="START_ACTION_FAILED",
                                timestamp=time.time(), **_startup_exception_fields(exc))
         print(json.dumps({"status": "ERROR", "code": "START_ACTION_FAILED"}))
@@ -468,6 +468,14 @@ def _startup_exception_fields(error: BaseException) -> dict[str, str]:
     fields = {"exception_type": type(error).__name__}
     if isinstance(error, ModuleNotFoundError) and error.name and re.fullmatch(r"[A-Za-z0-9_.]{1,150}", error.name):
         fields["missing_module"] = error.name
+    elif isinstance(error, ImportError):
+        # "cannot import name x from y" names y; a native module that cannot load says "DLL load failed".
+        if error.name and re.fullmatch(r"[A-Za-z0-9_.]{1,150}", error.name):
+            fields["import_module"] = error.name
+        if str(error).startswith("DLL load failed"):
+            fields["dll_load_failed"] = "1"
+    if isinstance(error, PermissionError):
+        fields["permission_denied"] = "1"
     return fields
 
 
@@ -475,7 +483,8 @@ def _parse_arguments(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="olivia-version-launcher")
     parser.add_argument("--install-root", type=Path, required=True)
     parser.add_argument(
-        "action", choices=("start", "proactive-login", "configure", "uninstall", "update-restart")
+        "action", choices=("start", "proactive-login", "configure", "uninstall", "update-restart",
+                           "repair-permissions")
     )
     parser.add_argument("arguments", nargs=argparse.REMAINDER)
     return parser.parse_args(argv)
@@ -486,6 +495,11 @@ def _run_main(
     *,
     own_windows_tree: bool = False,
 ) -> int:
+    if args.action == "repair-permissions":
+        root = Path(args.install_root).expanduser().resolve()
+        if os.name != "nt" or not _is_elevated():
+            return 3
+        return 0 if _repair_permissions(root) else 2
     if args.action == "update-restart":
         return _update_restart(args.install_root, Path(args.arguments[0]), int(args.arguments[1]))
     instance = None
@@ -521,11 +535,14 @@ def _run_main(
 
 
 _START_FAILED = False
+_START_ERROR: BaseException | None = None
 
 
-def _start_failed() -> None:
-    global _START_FAILED
+def _start_failed(error: BaseException | None = None) -> None:
+    global _START_FAILED, _START_ERROR
     _START_FAILED = True
+    if error is not None:
+        _START_ERROR = error
 
 
 def _probation_rollback(root: Path) -> bool:
@@ -578,16 +595,17 @@ def _relaunch_unelevated(root: Path) -> bool:
     """
     if os.name != "nt" or not _is_elevated():
         return False
+    launcher = root / "Olivia.exe"
+    explorer = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "explorer.exe"
+    if not launcher.is_file() or not explorer.is_file():
+        return False
+    _repair_permissions_once(root)
     marker = root / "data" / "logs" / ELEVATED_RELAUNCH_NAME
     try:
         if time.time() - marker.stat().st_mtime < 120:
             return False
     except OSError:
         pass
-    launcher = root / "Olivia.exe"
-    explorer = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "explorer.exe"
-    if not launcher.is_file() or not explorer.is_file():
-        return False
     try:
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text(json.dumps({"at": time.time()}), encoding="utf-8")
@@ -605,13 +623,143 @@ def _cli(argv: list[str] | None = None) -> int:
     code = _run_main(args, own_windows_tree=True)
     if args.action == "start" and code and _START_FAILED:
         root = Path(args.install_root).expanduser().resolve()
-        if _probation_rollback(root):
+        if _probation_rollback(root) or _repair_after_denied_start(root):
             try:
                 _create_outside_job(root, [str(_restart_python(root)), str(root / "launcher" / "version_launcher.py"),
                                            "--install-root", str(root), "start"])
             except (OSError, subprocess.SubprocessError, RuntimeError):
                 pass
     return code
+
+
+PERMISSIONS_REPAIR_NAME = "permissions-repair.json"
+# One administrator prompt per this many seconds, however often a broken start is retried.
+PERMISSIONS_PROMPT_SECONDS = 600
+
+
+def _repair_permissions(root: Path) -> bool:
+    """Administrator only: give the install and its runtime their inherited permissions back.
+
+    A file Python writes through a temporary folder keeps that folder's owner-only permissions, so a file
+    written while Olivia ran as administrator stays readable by administrators only and every normal start
+    then fails to import it (2026-10-15; a user's ImportError on 2026-10-19)."""
+    icacls = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "icacls.exe"
+    repaired = True
+    for target in (root, root.parent / "runtime", *_client_profile_dirs()):
+        if not target.is_dir():
+            continue
+        try:
+            result = subprocess.run([str(icacls), str(target), "/reset", "/T", "/C", "/Q"], capture_output=True,
+                                    timeout=900, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            repaired = repaired and result.returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            repaired = False
+    _write_permissions_marker(root, repaired_at=time.time(), version=_active_version(root))
+    _append_launcher_event(root, "permissions_repaired" if repaired else "permissions_repair_incomplete",
+                           timestamp=time.time())
+    return repaired
+
+
+def _client_profile_dirs() -> list[Path]:
+    """The window's own cache and logs live in the user's roaming folder, not in the install. Written while
+    running as administrator they become unreadable too, and the window then exits at once (0xC0000409,
+    a user on 2026-10-19 after the install itself had been repaired)."""
+    appdata = os.environ.get("APPDATA")
+    return [Path(appdata) / "miHoYo" / "Olivia-steam"] if appdata else []
+
+
+def _active_version(root: Path) -> str:
+    try:
+        state = json.loads((root / STATE_NAME).read_text(encoding="utf-8"))
+        return str(state["active_components"]["local_backend"]["version"])[:40]
+    except (OSError, ValueError, KeyError, TypeError):
+        return ""
+
+
+def _read_permissions_marker(root: Path) -> dict:
+    try:
+        value = json.loads((root / "data" / "logs" / PERMISSIONS_REPAIR_NAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _write_permissions_marker(root: Path, **fields: object) -> None:
+    marker = root / "data" / "logs" / PERMISSIONS_REPAIR_NAME
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(json.dumps({**_read_permissions_marker(root), **fields}), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _repair_permissions_once(root: Path) -> None:
+    """An administrator start repairs once per installed version, so starts with UAC off stay fast."""
+    marker = _read_permissions_marker(root)
+    if marker.get("version") == _active_version(root) and marker.get("repaired_at"):
+        return
+    _repair_permissions(root)
+
+
+def _permission_like(error: BaseException | None) -> bool:
+    return isinstance(error, (ImportError, PermissionError))
+
+
+def _repair_after_denied_start(root: Path) -> bool:
+    """A normal start that could not import or read its own files asks Windows once for an administrator
+    repair (the prompt the user sees), then starts again."""
+    if os.name != "nt" or _is_elevated() or not _permission_like(_START_ERROR):
+        return False
+    prompted = _read_permissions_marker(root).get("prompted_at")
+    if isinstance(prompted, (int, float)) and time.time() - prompted < PERMISSIONS_PROMPT_SECONDS:
+        return False
+    _write_permissions_marker(root, prompted_at=time.time())
+    _append_launcher_event(root, "permissions_repair_requested", timestamp=time.time())
+    code = _run_elevated(str(_restart_python(root)), subprocess.list2cmdline(
+        [str(root / "launcher" / "version_launcher.py"), "--install-root", str(root), "repair-permissions"]))
+    if code is None:
+        _append_launcher_event(root, "permissions_repair_declined", timestamp=time.time())
+        return False
+    return code == 0
+
+
+def _run_elevated(executable: str, parameters: str, timeout: float = 900) -> int | None:
+    """Run one command through the Windows administrator prompt; None when declined or unavailable."""
+    import ctypes
+    from ctypes import wintypes
+
+    class ShellExecuteInfo(ctypes.Structure):
+        _fields_ = [("cbSize", wintypes.DWORD), ("fMask", ctypes.c_ulong), ("hwnd", wintypes.HWND),
+                    ("lpVerb", wintypes.LPCWSTR), ("lpFile", wintypes.LPCWSTR),
+                    ("lpParameters", wintypes.LPCWSTR), ("lpDirectory", wintypes.LPCWSTR),
+                    ("nShow", ctypes.c_int), ("hInstApp", wintypes.HINSTANCE), ("lpIDList", ctypes.c_void_p),
+                    ("lpClass", wintypes.LPCWSTR), ("hkeyClass", wintypes.HKEY), ("dwHotKey", wintypes.DWORD),
+                    ("hIconOrMonitor", wintypes.HANDLE), ("hProcess", wintypes.HANDLE)]
+
+    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    shell32.ShellExecuteExW.argtypes = [ctypes.POINTER(ShellExecuteInfo)]
+    shell32.ShellExecuteExW.restype = wintypes.BOOL
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    info = ShellExecuteInfo()
+    info.cbSize = ctypes.sizeof(info)
+    info.fMask = 0x00000040 | 0x00000100  # SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC
+    info.lpVerb, info.lpFile, info.lpParameters, info.nShow = "runas", executable, parameters, 0
+    if not shell32.ShellExecuteExW(ctypes.byref(info)) or not info.hProcess:
+        return None
+    try:
+        if kernel32.WaitForSingleObject(info.hProcess, int(timeout * 1000)) != 0:
+            return None
+        code = wintypes.DWORD()
+        if not kernel32.GetExitCodeProcess(info.hProcess, ctypes.byref(code)):
+            return None
+        return int(code.value)
+    finally:
+        kernel32.CloseHandle(info.hProcess)
 
 
 def _restart_event(root: Path, step: str, **fields: object) -> None:

@@ -88,6 +88,9 @@ LITERALS = (
 )
 
 WRAP = 'oliviaNativeText('
+# `return"时间未知"` became `returnoliviaNativeText(...)` (2.4.x): every missing time threw a ReferenceError while the
+# letter rendered. A keyword glued to the call gets its space back; new wraps keep one.
+_GLUED = re.compile(r'\b(return|case|typeof|void|throw|else|yield|await|delete|new|in|of)' + re.escape(WRAP))
 
 
 def _js(value: str) -> str:
@@ -112,7 +115,10 @@ def _wrap_literal(source: str, chinese: str, english: str, expected: int, added_
     found = len(bare.findall(source)) + source.count(wrapped)
     if found != expected and not (added_by_patch and found == 0):
         raise ValueError('NATIVE_LOCALE_LITERAL_INVALID')
-    return bare.sub(lambda _match: wrapped, source)
+    def wrap(match):
+        before = source[match.start() - 1] if match.start() else ''
+        return (' ' if before.isalnum() or before in '_$' else '') + wrapped
+    return bare.sub(wrap, source)
 
 
 def patch_source(source: str) -> str:
@@ -123,6 +129,7 @@ def patch_source(source: str) -> str:
         source = _rewrite_pair(source, before, after)
     for chinese, english, expected, added_by_patch in LITERALS:
         source = _wrap_literal(source, chinese, english, expected, added_by_patch)
+    source = _GLUED.sub(lambda match: match.group(1) + ' ' + WRAP, source)
     if MARKER not in source:
         source = MARKER + PRELUDE + source
     elif source.count(PRELUDE) != 1:

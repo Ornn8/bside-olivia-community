@@ -64,3 +64,47 @@ def test_native_audio_panel_hides_when_disabled_and_uploads_midi(tmp_path, monke
         page.get_by_text('关闭', exact=True).click()
         assert page.locator('dialog').count() == 0
         browser.close()
+
+
+def test_library_page_gets_a_piano_entry_next_to_local_import(tmp_path, monkeypatch):
+    # The client never renders the native MIDI cards (their flag is off), so 2.3.0's entry was never visible.
+    playwright = pytest.importorskip('playwright.sync_api')
+    edge = Path(os.environ.get('ProgramFiles(x86)', '')) / 'Microsoft/Edge/Application/msedge.exe'
+    if not edge.is_file():
+        pytest.skip('A local browser is required for native panel interaction evidence')
+    monkeypatch.setenv('TEMP', str(tmp_path))
+    monkeypatch.setenv('TMP', str(tmp_path))
+    with playwright.sync_playwright() as manager:
+        browser = manager.chromium.launch(executable_path=str(edge), headless=True)
+        page = browser.new_page(viewport={'width': 1100, 'height': 850})
+        def respond(route):
+            path = route.request.url.split('http://127.0.0.1:8765')[-1]
+            if path == '/toy/midi/capabilities':
+                data = {'enabled': True, 'max_seconds': 120, 'max_midi_bytes': 524288,
+                        'price_ranges_cents': {'midi': [7, 13], 'original': [11, 29]}, 'pieces': []}
+            elif path.startswith('/toy/midi/listJobs'):
+                data = {'list': []}
+            else:
+                route.fulfill(status=404);return
+            route.fulfill(status=200, content_type='application/json', body=json.dumps({'code': 0, 'data': data}))
+        page.route('http://127.0.0.1:8765/**', respond)
+        page.goto('about:blank#/studio')
+        page.set_content('<script data-olivia-companion-settings data-api-base="http://127.0.0.1:8765/"></script>'
+                         '<nav data-olivia-main-navigation><button>曲库</button></nav>')
+        page.add_script_tag(content=JAVASCRIPT)
+        page.evaluate("window.location.hash='#/studio'")
+        page.locator('[data-olivia-piano-entry]').wait_for(state='visible')
+        # The local-import entry arrives later: the piano entry moves after it and takes its look.
+        page.evaluate("""() => { const b = document.createElement('button'); b.textContent = '导入本地演奏';
+            b.className = 'nav-pill'; b.dataset.oliviaLocalSongsEntry = '';
+            document.querySelector('[data-olivia-main-navigation]').append(b); }""")
+        page.wait_for_function("document.querySelector('[data-olivia-piano-entry]').previousElementSibling"
+                               "?.hasAttribute('data-olivia-local-songs-entry')")
+        assert page.locator('[data-olivia-piano-entry]').get_attribute('class') == 'nav-pill'
+        assert page.locator('[data-olivia-main-navigation] button').all_inner_texts() == ['曲库', '导入本地演奏', '钢琴小样']
+        page.locator('[data-olivia-piano-entry]').click()
+        page.locator('dialog').wait_for(state='visible')
+        page.get_by_text('关闭', exact=True).click()
+        page.evaluate("window.location.hash='#/collection'; document.body.append(document.createElement('i'))")
+        page.locator('[data-olivia-piano-entry]').wait_for(state='detached')
+        browser.close()

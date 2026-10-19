@@ -56,3 +56,19 @@ def test_flow_anchor_mismatch_is_rejected(anchor, duplicate):
     source = legacy() + anchor if duplicate else legacy().replace(anchor, '')
     with pytest.raises(ValueError, match='STICKER_FLOW_ANCHOR_INVALID'):
         _patch_flow(source)
+
+
+def test_video_reply_keeps_her_letter_on_its_own_paper():
+    from installer.patch_letter_stickers import VIDEO_TEXT_ANCHOR, VIDEO_TEXT_MARKER, _patch_video_text
+    body = ('x;__name:"MailBoxContentBody",setup(){return[k($s,{class:"mail-responsive-card"},{},8,["disabled"]),'
+            'o(m)?(r(),F($s,{key:0,class:"mail-responsive-card"},{}))]};__name:"Next"')
+    patched = _patch_video_text(body)
+    assert patched.startswith(VIDEO_TEXT_MARKER)
+    assert 'i.mail.received?.type==="video"&&i.mail.received?.content?' in patched
+    assert 'modelValue:i.mail.received.content' in patched and 'type:"text"' in patched
+    assert patched.index('olivia-video-letter') < patched.index(VIDEO_TEXT_ANCHOR[len('8,["disabled"])'):])
+    # Other patchers count and rewrite every `F(ks,{`; the added paper must not add one.
+    assert patched.count('F(ks,{') == body.count('F(ks,{')
+    assert _patch_video_text(patched) == patched
+    # A bundle without the anchor keeps the video-only paper instead of failing to start.
+    assert _patch_video_text(body.replace('8,["disabled"]),o(m)', '8,["disabled"]);o(m)')) == body.replace('8,["disabled"]),o(m)', '8,["disabled"]);o(m)')
