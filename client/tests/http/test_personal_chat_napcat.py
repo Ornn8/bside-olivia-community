@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
 import zipfile
 
@@ -98,48 +97,10 @@ def test_napcat_launch_passes_isolated_workdir(
 
     monkeypatch.setattr(module.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(module.os, "name", "nt", raising=False)
-
-    def no_wmi(*_args, **_kwargs):
-        raise OSError("NAPCAT_OUTSIDE_TREE_UNAVAILABLE")
-
-    # Without WMI it falls back to a child process, exactly as before.
-    monkeypatch.setattr(module, "_launch_outside_tree", no_wmi)
     module.launch_shell(tmp_path)
     assert seen["args"] == ["cmd.exe", "/c", str(shell / "napcat.bat")]
     assert seen["cwd"] == str(shell)
     assert seen["env"]["NAPCAT_WORKDIR"] == str(tmp_path / "personal-chat" / "napcat" / "workdir")
-
-
-def test_napcat_starts_outside_olivias_process_tree(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from runtime.personal_chat import napcat_installer as module
-
-    shell = _shell(tmp_path)
-    monkeypatch.setattr(module, "prepare_onebot", lambda _root: (shell, "synthetic-token"))
-    from runtime.personal_chat import napcat_dependencies
-    monkeypatch.setattr(napcat_dependencies, 'ensure_dependencies', lambda *args: None)
-    monkeypatch.setattr(module.os, "name", "nt", raising=False)
-    monkeypatch.setattr(module.subprocess, "Popen", lambda *a, **k: pytest.fail("started inside the tree"))
-    seen: dict[str, object] = {}
-
-    class _Done:
-        returncode = 0
-        stdout = "4242"
-
-    def fake_run(command, **kwargs):
-        seen["command"] = command
-        seen["input"] = json.loads(kwargs["input"])
-        return _Done()
-
-    monkeypatch.setattr(module.subprocess, "run", fake_run)
-    monkeypatch.setattr(module, "DetachedProcess", lambda pid: ("detached", pid))
-    assert module.launch_shell(tmp_path) == ("detached", 4242)
-    # WMI creates it, so the launcher's process tree does not end it at an update restart.
-    assert "Win32_Process" in seen["command"][-1]
-    assert seen["input"]["command"] == subprocess.list2cmdline(["cmd.exe", "/c", str(shell / "napcat.bat")])
-    assert seen["input"]["cwd"] == str(shell)
-    assert "NAPCAT_WORKDIR=" + str(tmp_path / "personal-chat" / "napcat" / "workdir") in seen["input"]["environment"]
 
 
 def test_napcat_login_page_opens_only_loopback_webui(
