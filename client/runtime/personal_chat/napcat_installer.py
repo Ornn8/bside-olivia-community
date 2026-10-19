@@ -474,7 +474,53 @@ def login_status(data_root: Path, *, refresh: bool = False) -> dict:
             'verification_required': bool(data.get('loginError'))}
 
 
-def launch_shell(data_root: Path) -> subprocess.Popen:
+class DetachedProcess:
+    """NapCat started outside Olivia's own process tree: as much of Popen as the watchdog and stop_shell use."""
+
+    def __init__(self, pid: int) -> None:
+        import ctypes
+
+        self.pid = pid
+        self._kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        self._kernel.OpenProcess.restype = ctypes.c_void_p
+        self._kernel.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+        self._kernel.WaitForSingleObject.restype = ctypes.c_uint32
+        self._kernel.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+        # SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION; the handle also pins the PID against reuse.
+        self._handle = self._kernel.OpenProcess(0x00100000 | 0x1000, False, pid)
+
+    def poll(self) -> int | None:
+        if not self._handle:
+            return 0
+        return None if self._kernel.WaitForSingleObject(self._handle, 0) == 0x102 else 0
+
+
+def _launch_outside_tree(arguments: list[str], cwd: Path, environment: dict[str, str]) -> DetachedProcess:
+    """Olivia's launcher ends its whole process tree when it exits, so an update restart used to end QQ
+    too and log the account in again, which pushes the same account off another computer. WMI creates
+    the process outside that tree (the launcher's Job allows no breakaway)."""
+    powershell = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+    result = subprocess.run(
+        [str(powershell), "-NoProfile", "-NonInteractive", "-Command",
+         "[Console]::InputEncoding=[System.Text.Encoding]::UTF8; "
+         "$p=[Console]::In.ReadToEnd() | ConvertFrom-Json; "
+         "$s=New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property "
+         "@{CreateFlags=[uint32]528;ShowWindow=[uint16]0;EnvironmentVariables=[string[]]$p.environment}; "
+         "$r=Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments "
+         "@{CommandLine=[string]$p.command;CurrentDirectory=[string]$p.cwd;ProcessStartupInformation=$s}; "
+         "if ($r.ReturnValue -ne 0) {exit 1}; [Console]::Out.Write([string]$r.ProcessId)"],
+        input=json.dumps({"command": subprocess.list2cmdline(arguments), "cwd": str(cwd),
+                          "environment": [f"{key}={value}" for key, value in environment.items()]},
+                         ensure_ascii=False),
+        capture_output=True, encoding="utf-8", timeout=30,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    if result.returncode or not result.stdout.strip().isdigit():
+        raise OSError("NAPCAT_OUTSIDE_TREE_UNAVAILABLE")
+    return DetachedProcess(int(result.stdout.strip()))
+
+
+def launch_shell(data_root: Path) -> subprocess.Popen | DetachedProcess:
     if os.name != "nt":
         raise NapCatSetupError("NAPCAT_WINDOWS_REQUIRED")
     shell, _token = prepare_onebot(data_root)
@@ -487,6 +533,10 @@ def launch_shell(data_root: Path) -> subprocess.Popen:
     environment = dict(os.environ)
     environment["NAPCAT_WORKDIR"] = str(_workdir(data_root))
     try:
+        return _launch_outside_tree(["cmd.exe", "/c", str(batch)], shell, environment)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        pass  # Without WMI NapCat stays in Olivia's tree, as before: a restart logs QQ in again.
+    try:
         return subprocess.Popen(
             ["cmd.exe", "/c", str(batch)],
             cwd=str(shell),
@@ -497,7 +547,7 @@ def launch_shell(data_root: Path) -> subprocess.Popen:
         raise NapCatSetupError("NAPCAT_START_FAILED") from exc
 
 
-def ensure_shell(data_root: Path) -> subprocess.Popen | None:
+def ensure_shell(data_root: Path) -> subprocess.Popen | DetachedProcess | None:
     prepare_onebot(data_root)
     if webui_available(data_root):
         return None

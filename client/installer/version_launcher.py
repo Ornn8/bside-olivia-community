@@ -181,6 +181,7 @@ def _replace_running_start(
     running = _running_client_processes(installation)
     if not running:
         return None
+    _keep_napcat(installation)
     _terminate_processes(running)
     deadline = time.monotonic() + wait_seconds
     while time.monotonic() < deadline:
@@ -823,7 +824,8 @@ def _belongs_to_installation(root: Path, executable: str, command_line: str,
                              pid: int, self_pid: int) -> bool:
     import ntpath
 
-    if pid == self_pid:
+    if pid == self_pid or _napcat_process(root, executable):
+        # QQ (NapCat) is left running across the restart, so the account is not logged in again.
         return False
     prefix = ntpath.normcase(ntpath.normpath(str(root))).rstrip("\\")
     if executable and ntpath.normcase(ntpath.normpath(executable)).startswith(prefix + "\\"):
@@ -953,10 +955,31 @@ def _wait_restart_processes(root: Path, kernel, handles, owner_pid: int | None =
     _restart_event(root, "stopped")
 
 
+NAPCAT_KEEP_NAME = "napcat-keep.json"
+
+
+def _keep_napcat(root: Path) -> None:
+    """A new start follows at once: the stopping launcher leaves QQ (NapCat) running for it to reuse."""
+    marker = root / "data" / "logs" / NAPCAT_KEEP_NAME
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(json.dumps({"at": time.time()}), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _napcat_process(root: Path, executable: str) -> bool:
+    import ntpath
+
+    napcat = ntpath.normcase(ntpath.normpath(str(root / "data" / "personal-chat" / "napcat"))).rstrip("\\")
+    return bool(executable) and ntpath.normcase(ntpath.normpath(executable)).startswith(napcat + "\\")
+
+
 def _update_restart(root: Path, ready: Path, owner_pid: int | None = None) -> int:
     handles = []
     try:
         _restart_event(root, "helper_started")
+        _keep_napcat(root)
         kernel, handles = _restart_processes(root)
         if owner_pid is not None and owner_pid not in {pid for pid, _ in handles}:
             raise RuntimeError("UPDATE_RESTART_OWNER_UNAVAILABLE")

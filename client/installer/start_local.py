@@ -1274,6 +1274,27 @@ def _launch(args: argparse.Namespace, root: Path, backend: Path, entrypoint: Pat
         # A healthy backend reused from an earlier launcher has no local handle.
         if server is not None:
             _stop_backend_server(server)
+        _stop_napcat_unless_kept(root, data_root)
+
+
+def _stop_napcat_unless_kept(root: Path, data_root: Path) -> None:
+    """QQ (NapCat) runs outside the launcher's process tree so that an update restart keeps the account
+    logged in. A plain quit ends it, as before; a restart that starts again at once leaves a marker."""
+    marker = root / "data" / "logs" / "napcat-keep.json"
+    try:
+        kept = time.time() - float(json.loads(marker.read_text(encoding="utf-8")).get("at", 0)) < 180
+        marker.unlink()
+    except (OSError, ValueError, TypeError, AttributeError):
+        kept = False
+    if kept or os.name != "nt":
+        return
+    try:
+        from runtime.personal_chat.napcat_installer import find_shell, stop_shell
+
+        if find_shell(data_root) is not None:
+            stop_shell(data_root)
+    except Exception:
+        pass  # Quitting never fails because QQ could not be closed.
 
 
 if __name__ == "__main__":
