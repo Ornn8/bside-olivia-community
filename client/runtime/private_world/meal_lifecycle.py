@@ -6,6 +6,11 @@ import json
 LOCAL = timezone(timedelta(hours=8))
 HOURS = {'breakfast': 8, 'lunch': 12, 'dinner': 18}
 TERMINAL = {'eaten', 'skipped'}
+# A plan this far past its time was missed while the app was closed (the clock ticks every few minutes while it
+# runs): she kept it or skipped it then.
+MISSED_PLAN = timedelta(minutes=10)
+# A meal is not planned closer than this to the next main meal (10-19: breakfast re-planned for 11:31).
+NEXT_MEAL_GAP = timedelta(minutes=90)
 
 
 def initialize(db):
@@ -57,6 +62,15 @@ def _cutoff(slot, now):
         timedelta(days=1) if slot == 'dinner' else timedelta())
 
 
+def _latest_plan(slot, now):
+    """The latest time this meal may still start or be planned for: a gap before the next main meal."""
+    local = now.astimezone(LOCAL)
+    following = {'breakfast': 'lunch', 'lunch': 'dinner'}.get(slot)
+    if following is None:
+        return _cutoff(slot, now) - timedelta(hours=2)
+    return min(_cutoff(slot, now), local.replace(hour=HOURS[following], minute=0, second=0, microsecond=0) - NEXT_MEAL_GAP)
+
+
 def _free_time(start, classes):
     for course in sorted(classes, key=lambda item: datetime.fromisoformat(item['start'])):
         begin, end = datetime.fromisoformat(course['start']), datetime.fromisoformat(course['end'])
@@ -79,13 +93,18 @@ def options(slot, old, now, *, classes=(), prospective=False, plan=None):
     due = local.replace(hour=HOURS[slot], minute=0, second=0, microsecond=0)
     if local < due or old and old['status'] in TERMINAL:
         return {}
+    missed = None
     if old and old['status'] == 'planned' and old.get('scheduled_for'):
-        if now < datetime.fromisoformat(old['scheduled_for']):
+        planned_at = datetime.fromisoformat(old['scheduled_for'])
+        if now < planned_at:
             return {}
         if now >= _cutoff(slot, now):
             # An expired breakfast/lunch plan must not start alongside the
             # next main meal after a long offline gap.
             return {'skipped': _candidate(slot, '', 'skipped', now, now)}
+        if now >= planned_at + MISSED_PLAN and not prospective and old.get('meal_stage') not in {
+                'ordered', 'preparing', 'travelling', 'collecting'}:
+            missed = planned_at
     if old and old['status'] == 'eating':
         start = datetime.fromisoformat(old.get('started_at') or old['occurred_at'])
         if now < start + timedelta(minutes=20):
@@ -110,7 +129,14 @@ def options(slot, old, now, *, classes=(), prospective=False, plan=None):
     if old and old.get('food') and old['food'] not in foods:
         foods.append(old['food'])
     choices = {}
-    if overdue:
+    if missed is not None:
+        # The plan's time came while the app was closed: she ate as planned or skipped it then, marked as
+        # reconstructed. It is never planned again next to the following meal.
+        for i, food in enumerate([old['food']] if old.get('food') else foods):
+            choices[f'recovered_{i}_plan'] = _candidate(slot, food, 'eaten', missed + timedelta(minutes=25), now,
+                                                        started=missed, recovered=True)
+        choices['skipped'] = _candidate(slot, '', 'skipped', missed, now, recovered=True)
+    elif overdue:
         # Offline recovery authors the character's missing day, never a claim
         # that a real user ate. These times are explicitly marked reconstructed.
         for i, food in enumerate(foods):
@@ -121,11 +147,12 @@ def options(slot, old, now, *, classes=(), prospective=False, plan=None):
         choices['skipped'] = _candidate(slot, '', 'skipped', due+timedelta(hours=2), now, recovered=True)
     else:
         for i, food in enumerate(foods):
-            choices['eat_'+str(i)] = _candidate(slot, food, 'eating', now, now, started=now)
+            if now <= _latest_plan(slot, now):
+                choices['eat_'+str(i)] = _candidate(slot, food, 'eating', now, now, started=now)
             # A class can delay an authored future meal beyond the offline
             # reconstruction window. It does not establish an earlier meal.
             planned = _free_time(now + timedelta(minutes=30), classes)
-            if planned < _cutoff(slot, now):
+            if planned <= _latest_plan(slot, now):
                 choices['plan_'+str(i)] = _candidate(slot, food, 'planned', now, now,
                                                     scheduled=planned)
         choices['skipped'] = _candidate(slot, '', 'skipped', now, now)
@@ -232,7 +259,7 @@ async def advance(store, port, now):
                 candidates = {'continue_eating': old}
                 if now > start:
                     candidates['finish_now'] = _candidate(slot, old['food'], 'eaten', now, now, started=start)
-            elif old['status'] == 'skipped' and (actions or autonomous) and now < _cutoff(slot, now):
+            elif old['status'] == 'skipped' and (actions or autonomous) and now <= _latest_plan(slot, now):
                 candidates = {'keep_skipped': old}
                 for name, candidate in options(slot, None, now, classes=classes, prospective=True, plan=plan).items():
                     if name.startswith(('eat_', 'plan_')):
@@ -251,9 +278,9 @@ async def advance(store, port, now):
         if not candidates:
             continue
         if (set(candidates) == {'skipped'} and not candidates['skipped'].get('recovered')
-                and (not old or old['status'] == 'planned') and now < _cutoff(slot, now)):
+                and (not old or old['status'] == 'planned') and now <= _latest_plan(slot, now)):
             # Class or sleep covers every way to eat right now. That is a reason
-            # to wait, not a decision that she skips the meal.
+            # to wait, not a decision that she skips the meal, while the meal can still start.
             continue
         with store._db() as db:
             retry = db.execute('SELECT failures,retry_after FROM life_meal_retry WHERE meal_key=?', (key,)).fetchone()

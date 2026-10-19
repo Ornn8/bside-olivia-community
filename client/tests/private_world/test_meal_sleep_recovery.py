@@ -43,26 +43,18 @@ def meal(store, now, slot='breakfast'):
                 if item['date'] == now.date().isoformat() and item['slot'] == slot)
 
 
-def test_breakfast_can_be_planned_after_class_and_starts_at_its_actual_time(tmp_path):
+def test_breakfast_is_not_moved_after_a_class_that_runs_into_lunch(tmp_path):
+    # 10-19: a breakfast planned for after class was re-planned for 11:31, half an hour before lunch. A meal
+    # starts or is planned at the latest 90 minutes before the next one; after that it is eaten earlier or skipped.
     store = DailyLifeStore(tmp_path / 'world.db')
-
-    def choose(state, options):
-        if state['time'] == at(30, 9, 59).astimezone(timezone.utc).isoformat():
-            plans = [(key, value) for key, value in options.items() if value['status'] == 'planned']
-            assert plans, 'class conflict must leave a future meal choice'
-            assert all(datetime.fromisoformat(value['scheduled_for']) == at(30, 11, 40) for _, value in plans)
-            return plans[0][0]
-        return next(key for key, value in options.items() if value['status'] == 'eating')
-
-    port = Port(meal=choose)
+    port = Port(meal=lambda state, options: next(iter(options)))
     asyncio.run(advance(store, port, at(30, 9, 59)))
-    assert meal(store, at(30, 9, 59))['status'] == 'planned'
-    asyncio.run(advance(store, port, at(30, 10, 30)))
-    assert len(port.meal_calls) == 1
     asyncio.run(advance(store, port, at(30, 11, 40)))
-    current = meal(store, at(30, 11, 40))
-    assert current['status'] == 'eating' and datetime.fromisoformat(current['started_at']) == at(30, 11, 40)
-    assert meal(store, at(30, 10))['status'] == 'planned'
+    for _, _, questions in port.meal_calls:
+        for value in questions['meal']['criteria'].values():
+            when = value.get('scheduled_for') or (value.get('started_at') if value.get('status') == 'eating' else None)
+            assert not when or datetime.fromisoformat(when) <= at(30, 10, 30)
+    assert meal(store, at(30, 11, 40))['status'] in {'eaten', 'skipped'}
 
 
 @pytest.mark.parametrize('slot,hour,next_meal_hour', [('breakfast', 8, 12), ('lunch', 12, 18)])
@@ -73,18 +65,17 @@ def test_old_unstarted_plan_does_not_start_at_the_next_main_meal(slot, hour, nex
     assert choices and all(value['status'] == 'skipped' for value in choices.values())
 
 
-def test_skipped_meal_reconsidered_after_class_without_a_message_and_once_after_restart(tmp_path):
+def test_skipped_breakfast_is_not_reconsidered_next_to_lunch_even_after_restart(tmp_path):
     store = DailyLifeStore(tmp_path / 'world.db')
     initial = Port(meal=lambda state, options: 'skipped', path='skip')
-    asyncio.run(advance(store, initial, at(30, 9, 59)))
-    old = meal(store, at(30, 9, 59))
-    keep = Port(meal=lambda state, options: 'keep_skipped')
+    asyncio.run(advance(store, initial, at(30, 8, 30)))
+    old = meal(store, at(30, 8, 30))
+    assert old['status'] == 'skipped'
+    keep = Port(meal=lambda state, options: next(iter(options)))
     asyncio.run(advance(store, keep, at(30, 11, 40)))
-    assert len(keep.meal_calls) == 1
-    assert any(value.get('status') == 'eating' for value in keep.meal_calls[0][2]['meal']['criteria'].values())
+    assert keep.meal_calls == [] or all(call[1]['slot'] != 'breakfast' for call in keep.meal_calls)
     restarted = DailyLifeStore(store.path)
     asyncio.run(advance(restarted, keep, at(30, 11, 41)))
-    assert len(keep.meal_calls) == 1
     assert meal(restarted, at(30, 11, 41)) == old
 
 

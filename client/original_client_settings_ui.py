@@ -5671,12 +5671,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     if (window.__oliviaNativeView) mountProactiveSetting(reply);
     mountStickerPacks(reply);
     const chat = settingsGroup("chat", "QQ", t("绑定后可以在 QQ 里和林离聊天"));
-    const letters = settingsGroup("letters", t("信件与记忆"), t("备份信件与聊天，查看长期记忆"));
-    const memoryRow = document.createElement("div");
-    memoryRow.className = "olivia-group-row";
-    memoryRow.append(text("span", t("长期记忆：查看、搜索和更正林离记住的事"), "text-text-body text-body-m"),
-      button(t("打开"), () => openDialog(false, "memory")));
-    letters.append(memoryRow);
+    // Memories live in the top bar's letters-and-memories window; settings keeps only import and backup.
+    const letters = settingsGroup("letters", t("信件与记忆"), t("备份信件与聊天"));
     mountLocalLetterImport(letters);
     const help = settingsGroup("help", t("更新与帮助"), t("补丁更新和诊断包"));
     const update = document.createElement("div");

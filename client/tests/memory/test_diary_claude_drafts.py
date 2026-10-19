@@ -318,6 +318,24 @@ def test_days_lost_to_refused_replies_are_tried_once_more_and_only_once(tmp_path
     assert attempts(store, '2026-09-20') == MAX_ATTEMPTS and attempts(store, '2026-10-06') == MAX_ATTEMPTS
 
 
+def test_a_later_reopen_key_gives_lost_days_two_more_tries_once(tmp_path):
+    # An install that used the first reopen earlier, then lost days again while a supplier dropped the system text.
+    store = DiaryStore(tmp_path / 'diary.db')
+    with store._db() as db:
+        db.execute('INSERT INTO diary_settings VALUES (?,?)', (diary.RETRY_ONCE_KEY, '1'))
+    use_up(store, '2026-10-07', 'ValueError')                 # the reply had no diary in it
+    use_up(store, '2026-10-06', 'ProviderUnavailable')        # nothing was reachable: not this fault
+    due = due_days(store, NOW)
+    assert '2026-10-07' in due and '2026-10-06' not in due
+    assert attempts(store, '2026-10-07') == MAX_ATTEMPTS - 2
+    store.failed('2026-10-07', 'ValueError')
+    with store._db() as db:
+        db.execute('UPDATE diary_attempts SET last_at=0 WHERE day=?', ('2026-10-07',))
+    assert '2026-10-07' in due_days(DiaryStore(store.path), NOW)     # the second try is still there after a restart
+    store.failed('2026-10-07', 'ValueError')
+    assert '2026-10-07' not in due_days(DiaryStore(store.path), NOW)  # and the key never reopens it again
+
+
 def test_empty_days_stay_closed(tmp_path):
     store = DiaryStore(tmp_path / 'diary.db')
     store.skip('2026-10-07', 'EMPTY_DAY')

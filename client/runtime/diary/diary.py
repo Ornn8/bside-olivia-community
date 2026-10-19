@@ -31,6 +31,10 @@ UNSERVED_CODES = {'PROVIDER_QUOTA_EXHAUSTED', 'PROVIDER_BUSY', 'PROVIDER_AUTH_FA
 REOPEN_REASONS = ('ProviderProtocolError', 'ProviderEmptyResponse', 'JSONDecodeError', 'ValidationError', 'ValueError',
                   'TimeoutError')
 RETRY_ONCE_KEY = 'retry_rejected_once'
+# Each key reopens the lost days of the catch-up window once, with that many tries. The second came after the
+# supplier dropped Sonnet's and Opus's system text (2026-10-17..19): their diaries came back unusable until the
+# relay was fixed, and the first key had already been used.
+RETRY_ONCE_KEYS = ((RETRY_ONCE_KEY, 1), ('retry_rejected_20261019', 2))
 SHORT_DAY_CHARS = 40        # a day with less user text gets a short note
 MAX_SOURCE_CHARS = 24000    # one day's messages offered to the writer
 CONTEXT_DAYS = 3
@@ -677,25 +681,28 @@ class DiaryStore:
                        'last_at=excluded.last_at,reason=excluded.reason', (day, time.time(), reason))
 
     def retry_rejected(self, days):
-        """Once, ever: a day whose tries were all used up on unusable replies or on a call that ran out of time gets
-        one more try.
+        """Once per key in RETRY_ONCE_KEYS: a day whose tries were all used up on unusable replies or on a call that ran
+        out of time gets that key's tries again.
 
         Earlier versions refused replies that were only a little off the contract, and gave a slow writer three
         minutes, so whole days were lost. The reason kept for a day tells such a day from one that failed because
         nothing was reachable. The marker is written in the same step, so no later start repeats this, and a day
         that fails again stays closed.
         """
+        reopened = []
         with self._db() as db:
-            if db.execute('SELECT 1 FROM diary_settings WHERE key=?', (RETRY_ONCE_KEY,)).fetchone():
-                return []
-            reopened = [row[0] for row in db.execute(
-                'SELECT day FROM diary_attempts WHERE length(day)=10 AND day>=? AND day<=? AND attempts>=? '
-                'AND reason IN (%s) AND day NOT IN (SELECT day FROM diary_entries) '
-                'AND day NOT IN (SELECT day FROM diary_deleted)' % ','.join('?' * len(REOPEN_REASONS)),
-                (min(days), max(days), MAX_ATTEMPTS, *REOPEN_REASONS))] if days else []
-            db.executemany("UPDATE diary_attempts SET attempts=?,last_at=0,reason='RETRY_ONCE' WHERE day=?",
-                           [(MAX_ATTEMPTS - 1, day) for day in reopened])
-            db.execute('INSERT OR IGNORE INTO diary_settings VALUES (?,?)', (RETRY_ONCE_KEY, '1'))
+            for key, tries in RETRY_ONCE_KEYS:
+                if db.execute('SELECT 1 FROM diary_settings WHERE key=?', (key,)).fetchone():
+                    continue
+                days_now = [row[0] for row in db.execute(
+                    'SELECT day FROM diary_attempts WHERE length(day)=10 AND day>=? AND day<=? AND attempts>=? '
+                    'AND reason IN (%s) AND day NOT IN (SELECT day FROM diary_entries) '
+                    'AND day NOT IN (SELECT day FROM diary_deleted)' % ','.join('?' * len(REOPEN_REASONS)),
+                    (min(days), max(days), MAX_ATTEMPTS, *REOPEN_REASONS))] if days else []
+                db.executemany("UPDATE diary_attempts SET attempts=?,last_at=0,reason='RETRY_ONCE' WHERE day=?",
+                               [(MAX_ATTEMPTS - tries, day) for day in days_now])
+                db.execute('INSERT OR IGNORE INTO diary_settings VALUES (?,?)', (key, '1'))
+                reopened += days_now
         return reopened
 
     def context(self, now):
