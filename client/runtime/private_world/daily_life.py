@@ -725,6 +725,34 @@ class DailyLifeStore:
                 "SELECT kind, quote_hash, quote FROM life_addressing_judgments WHERE status='pending' "
                 "ORDER BY seen_at DESC, quote_hash LIMIT ?", (limit,))]
 
+    def addressing_context(self, kind: str, quote: str, limit: int = 300) -> str | None:
+        """The whole message a quote came from, newest first: the user's words for what the user calls her, her
+        reply for what she calls the user. None when that exchange's text was not kept."""
+        with self._db() as db:
+            row = db.execute('SELECT source_id FROM life_addressing WHERE kind=? AND quote=? '
+                             'ORDER BY occurred_at DESC LIMIT 1', (kind, quote)).fetchone()
+            if row is None:
+                return None
+            table, column = (('life_exchange_user_text', 'user_text') if kind == 'user_calls_linli'
+                             else ('life_exchange_world_gate', 'reply_text'))
+            found = db.execute(f'SELECT {column} FROM {table} WHERE source_id=?', (row[0],)).fetchone()
+        text = found[0] if found else None
+        return text.strip()[:limit] if isinstance(text, str) and text.strip() else None
+
+    def recent_addressing_messages(self, after: str | None, limit: int) -> list:
+        """(source_id, occurred_at, user_text, reply_text) of the newest exchanges after `after`, newest first."""
+        with self._db() as db:
+            return [tuple(row) for row in db.execute(
+                "SELECT m.source_id, m.occurred_at, u.user_text, g.reply_text FROM life_moments m "
+                "LEFT JOIN life_exchange_user_text u ON u.source_id=m.source_id "
+                "LEFT JOIN life_exchange_world_gate g ON g.source_id=m.source_id "
+                "WHERE m.kind='exchange' AND m.occurred_at>? ORDER BY m.occurred_at DESC LIMIT ?", (after or '', limit))]
+
+    def record_judged_addressing(self, rows: list) -> None:
+        """rows: (source_id, kind, term, occurred_at) found by the daily judgment in a whole message."""
+        with self._db() as db:
+            db.executemany('INSERT OR IGNORE INTO life_addressing VALUES (?,?,?,?)', rows)
+
     def queue_legacy_addressing(self, per_kind: int = 20) -> None:
         """Queue the newest distinct stored quotes of the address kinds (once, from before the judgment)."""
         from .addressing import JUDGED_KINDS, QUOTE_MAX, needs_judgment, normalize, quote_key
