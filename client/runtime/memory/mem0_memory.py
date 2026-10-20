@@ -1368,7 +1368,70 @@ class Mem0ConversationMemoryAdapter:
                 self._originals.put_vectors(user_id, remote_embedding.MODEL,
                                             [(source, digest, vector) for (source, digest, _), vector in zip(missing, vectors)])
                 indexed += len(vectors)
+            indexed += self._index_fact_vectors(user_id, limit=limit)
         return indexed + self._index_local_vectors(user_id, limit=limit)
+
+    # Stored facts are short; on 2026-10-20 checks related query/fact pairs scored about 0.6-0.75 with the cloud
+    # model and unrelated ones about 0.4-0.6, so the floor is lower than for whole exchanges.
+    FACT_SCORE_FLOOR = 0.55
+    FACT_HITS = 8
+    FACT_CACHE_SECONDS = 120.0
+    SHORT_QUERY_CHARS = 12
+
+    def _fact_records(self, user_id):
+        """{memory_id: record} of the stored facts, kept for a short while; a write clears it."""
+        cached = getattr(self, '_fact_cache', None)
+        if cached and cached[0] == user_id and time.monotonic() - cached[1] < self.FACT_CACHE_SECONDS:
+            return cached[2]
+        records = self._list_records(user_id=user_id, limit=1000)
+        if records is None:
+            return {}
+        facts = {record.memory_id: record for record in records if record.text}
+        self._fact_cache = (user_id, time.monotonic(), facts)
+        return facts
+
+    def _index_fact_vectors(self, user_id, *, limit):
+        """Give the stored facts cloud vectors too, so they are found by meaning like exchanges are."""
+        from . import remote_embedding
+        facts = self._fact_records(user_id)
+        missing = self._originals.memory_vectors_missing(
+            user_id, remote_embedding.MODEL, {key: record.text for key, record in facts.items()}, limit=limit)
+        vectors = remote_embedding.embed([text for _, _, text in missing]) if missing else None
+        if not vectors:
+            return 0
+        self._originals.put_memory_vectors(user_id, remote_embedding.MODEL,
+                                           [(key, digest, vector) for (key, digest, _), vector in zip(missing, vectors)])
+        return len(vectors)
+
+    def _vector_query(self, query, user_id):
+        """A short message (「那个呢」「后来呢」) is read together with the user's message before it."""
+        text = query.strip()
+        if len(text) > self.SHORT_QUERY_CHARS:
+            return text
+        try:
+            previous = self._originals.latest_user_text(user_id).strip()
+        except (OSError, sqlite3.Error):
+            previous = ''
+        return previous[-300:] + '\n' + text if previous and previous != text else text
+
+    def _fact_vector_hits(self, query, user_id):
+        """Stored facts ranked by the cloud model, ahead of the local model's own ranking."""
+        from . import remote_embedding
+        try:
+            if not remote_embedding.available():
+                return ()
+            facts = self._fact_records(user_id)
+            if not facts or self._originals.memory_vector_coverage(user_id, remote_embedding.MODEL, facts) < 0.9:
+                return ()
+            vector = remote_embedding.embed_query(query)
+            if vector is None:
+                return ()
+            hits = self._originals.nearest_memories(user_id, remote_embedding.MODEL, vector, limit=self.FACT_HITS)
+            return tuple(replace(facts[key], score=max(0.0, min(1.0, float(score))),
+                                 metadata={**facts[key].metadata, 'retrieval_route': 'semantic_cloud'})
+                         for key, score in hits if key in facts and score >= self.FACT_SCORE_FLOOR)
+        except Exception:
+            return ()
 
     def _index_local_vectors(self, user_id, *, limit):
         embed = self._embedder()
@@ -1440,7 +1503,12 @@ class Mem0ConversationMemoryAdapter:
         semantic, error = self._search_context_result(query, user_id=user_id, limit=20)
         self._last_error_code = error
         semantic = tuple(replace(record, user_id=user_id) for record in semantic)
-        semantic = semantic + self._original_vector_hits(query, user_id, excluded)
+        vector_query = self._vector_query(query, user_id)
+        cloud_facts = tuple(replace(record, user_id=user_id) for record in self._fact_vector_hits(vector_query, user_id))
+        if cloud_facts:
+            first = {record.memory_id for record in cloud_facts}
+            semantic = cloud_facts + tuple(record for record in semantic if record.memory_id not in first)
+        semantic = semantic + self._original_vector_hits(vector_query, user_id, excluded)
         source_status = [("semantic", "unavailable" if error else "available")]
         try:
             records = self._originals.search(query, user_id, semantic, limit=limit, exclude_source_ids=excluded, expanded=limit > 8)
@@ -1740,6 +1808,7 @@ class Mem0ConversationMemoryAdapter:
         origin: str = "user",
     ) -> MemoryWriteResult:
         self._evidence_cache.clear()
+        self._fact_cache = None
         if self._originals.letter_deleted(self._normalized_user_id(user_id), source_id):
             return MemoryWriteResult(MemoryWriteStatus.SKIPPED, source_id)
         try:
