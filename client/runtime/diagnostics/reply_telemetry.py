@@ -48,14 +48,37 @@ TIMINGS = ContextVar('reply_timings', default=None)
 TIMING_NAMES = frozenset({'queue_wait', 'memory_ready', 'media_in', 'world', 'emotion',
     'interpretation', 'history', 'decision', 'writer', 'quality', 'voice_wait', 'send_ack',
     'world_local', 'world_selection', 'writer_search', 'writer_http', 'jev_http', 'jev_settlement'})
+# Shadow measurements (cloud embedding, 2026-10-20): scores 0-1 and small counts that ride with a reply's timings,
+# sent only once the service says it accepts them. Values measured after a reply wait for the next one.
+SHADOW_NAMES = frozenset({'shadow_memory_overlap', 'shadow_memory_new', 'shadow_short_query', 'shadow_reply_repeat',
+                          'shadow_reply_echo', 'shadow_fact_duplicate'})
+_shadow_pending = {}
+_shadow_lock = threading.Lock()
 _collector = None
+
+
+def shadow(name, value):
+    """Record one shadow measurement; it goes out with the next finished reply. Never raises."""
+    try:
+        if name in SHADOW_NAMES and type(value) in (int, float) and math.isfinite(value):
+            with _shadow_lock:
+                _shadow_pending[name] = round(min(86400.0, max(0.0, float(value))), 4)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def take_shadow():
+    with _shadow_lock:
+        values = dict(_shadow_pending)
+        _shadow_pending.clear()
+    return values
 
 
 def safe_timings(value):
     if not isinstance(value, dict):
         return {}
     return {key: round(float(number), 4) for key, number in value.items()
-            if key in TIMING_NAMES and type(number) in (int, float)
+            if (key in TIMING_NAMES or key in SHADOW_NAMES) and type(number) in (int, float)
             and 0 <= number <= 86400 and math.isfinite(number)}
 
 
@@ -97,6 +120,7 @@ class Collector:
         self.schema = 1
         self.policy_version_supported = False
         self.decision_rejection_reason_supported = False
+        self.shadow_timings_supported = False
         self.model = lambda: 'unknown'
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._db() as db:
@@ -149,6 +173,7 @@ class Collector:
             self.schema = 1
             self.policy_version_supported = False
             self.decision_rejection_reason_supported = False
+            self.shadow_timings_supported = False
             if digest: self.emit('app', 'ok')
             return True
 
@@ -283,7 +308,7 @@ class Collector:
                             or state == 'SENDING' and bool(row.get('error_code'))
                             or state == 'FAILED' and (attempt >= 2 or row.get('generation_retryable') is False))
                         if event and not current['timing_recorded'] and terminal:
-                            timings = safe_timings(row.get('reply_timing_seconds'))
+                            timings = {**safe_timings(row.get('reply_timing_seconds')), **take_shadow()}
                             if timings:
                                 event['timing_seconds'] = timings
                                 current['timing_recorded'] = True
@@ -346,7 +371,10 @@ class Collector:
                 if schema != 3:
                     event.pop('timing_seconds', None)
                 elif 'timing_seconds' in event:
-                    event['timing_seconds'] = safe_timings(event['timing_seconds'])
+                    event['timing_seconds'] = {key: value for key, value in safe_timings(event['timing_seconds']).items()
+                                               if key not in SHADOW_NAMES or self.shadow_timings_supported}
+                    if not event['timing_seconds']:
+                        event.pop('timing_seconds')
                 if schema in (2, 3):
                     for key, value in V2_DEFAULTS.items():
                         event.setdefault(key, value)
@@ -369,7 +397,8 @@ class Collector:
             result = await send(events)
             expected = [e['event_id'] for e in events]
             if (not isinstance(result, dict) or not {'accepted'} <= set(result) <= {
-                    'accepted', 'supported_schemas', 'policy_version_supported', 'decision_rejection_reason_supported'}
+                    'accepted', 'supported_schemas', 'policy_version_supported', 'decision_rejection_reason_supported',
+                    'shadow_timings_supported'}
                     or result.get('accepted') != expected):
                 raise ValueError('bad acknowledgment')
             supported = result.get('supported_schemas', [])
@@ -377,17 +406,21 @@ class Collector:
                 raise ValueError('bad capabilities')
             if 'decision_rejection_reason_supported' in result and type(result['decision_rejection_reason_supported']) is not bool:
                 raise ValueError('bad capabilities')
+            if 'shadow_timings_supported' in result and type(result['shadow_timings_supported']) is not bool:
+                raise ValueError('bad capabilities')
             if (not isinstance(supported, list) or any(type(value) is not int for value in supported)):
                 raise ValueError('bad capabilities')
             self.ack(expected)
             self.policy_version_supported = result.get('policy_version_supported') is True
             self.decision_rejection_reason_supported = result.get('decision_rejection_reason_supported') is True
+            self.shadow_timings_supported = result.get('shadow_timings_supported') is True
             self.schema = 3 if 3 in supported else 2 if 2 in supported else 1
             self.last_error = None
         except (OSError, sqlite3.Error, ValueError, RuntimeError, TimeoutError):
             self.schema = 1
             self.policy_version_supported = False
             self.decision_rejection_reason_supported = False
+            self.shadow_timings_supported = False
             self.last_error = 'TELEMETRY_UPLOAD_FAILED'
 
 

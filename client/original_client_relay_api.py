@@ -226,7 +226,7 @@ def mount_relay_api(app, setup):
     # The query tells the server this client reads supported_schemas in the ACK;
     # released clients require the exact {'accepted': [...]} reply.
     mount_telemetry(app, setup, stored_key,
-                    lambda key, payload: relay_request(RELAY_BASE, key, 'POST', '/telemetry/events?schemas=1,2,3&policy_version=1&decision_rejection_reason=1', payload))
+                    lambda key, payload: relay_request(RELAY_BASE, key, 'POST', '/telemetry/events?schemas=1,2,3&policy_version=1&decision_rejection_reason=1&shadow=1', payload))
     from runtime.reply.jev_billing import configure_account
     configure_account(stored_key)
     from runtime.memory.remote_embedding import configure as configure_embeddings

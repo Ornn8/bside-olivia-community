@@ -53,6 +53,7 @@ def mount(app, setup, stored_key, remote):
                         collector.schema = 1
                         collector.policy_version_supported = False
                         collector.decision_rejection_reason_supported = False
+                        collector.shadow_timings_supported = False
                         destination = current
                     async def send(events):
                         return await remote(key, {'schema': collector.schema, 'events': events})

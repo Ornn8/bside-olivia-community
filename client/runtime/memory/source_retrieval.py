@@ -8,6 +8,7 @@ import hashlib
 import json
 import re
 import sqlite3
+import time
 from pathlib import Path
 
 from .conversation_memory_port import ConversationMemoryRecord
@@ -59,6 +60,10 @@ class SourceRetrieval:
         db.execute('CREATE TABLE IF NOT EXISTS source_vectors '
                    '(user TEXT, source TEXT, model TEXT, digest TEXT, vector BLOB, PRIMARY KEY(user,source,model))')
         db.execute('CREATE TABLE IF NOT EXISTS vector_models (user TEXT, model TEXT, PRIMARY KEY(user,model))')
+        db.execute('CREATE TABLE IF NOT EXISTS reply_vectors '
+                   '(user TEXT, source TEXT, model TEXT, stamp REAL, vector BLOB, PRIMARY KEY(user,source,model))')
+        db.execute('CREATE TABLE IF NOT EXISTS memory_vectors '
+                   '(user TEXT, memory_id TEXT, model TEXT, digest TEXT, vector BLOB, PRIMARY KEY(user,memory_id,model))')
         db.execute('CREATE TABLE IF NOT EXISTS vector_pending '
                    '(user TEXT, model TEXT, source TEXT, stamp TEXT, PRIMARY KEY(user,model,source))')
         db.execute('CREATE INDEX IF NOT EXISTS vector_pending_order ON vector_pending(user,model,stamp DESC,source)')
@@ -838,6 +843,73 @@ class SourceRetrieval:
                 if snippet:
                     result.append((source, score, snippet))
         return result
+
+    def memory_vectors_missing(self, user, model, memories, limit=64):
+        """memories: {memory_id: text} of the stored facts. Vectors of facts that are gone are dropped; the facts
+        without a current vector are returned as (memory_id, digest, text)."""
+        with closing(self.connect()) as db, db:
+            have = dict(db.execute('SELECT memory_id,digest FROM memory_vectors WHERE user=? AND model=?', (user, model)))
+            db.executemany('DELETE FROM memory_vectors WHERE user=? AND model=? AND memory_id=?',
+                           [(user, model, memory_id) for memory_id in have if memory_id not in memories])
+        missing = [(memory_id, _digest(text), text) for memory_id, text in memories.items()
+                   if text and have.get(memory_id) != _digest(text)]
+        return missing[:max(0, limit)]
+
+    def put_memory_vectors(self, user, model, items):
+        """items: (memory_id, digest, vector) with a unit-length float vector."""
+        from array import array
+        with closing(self.connect()) as db, db:
+            db.executemany('INSERT OR REPLACE INTO memory_vectors VALUES (?,?,?,?,?)',
+                           [(user, memory_id, model, digest, array('f', vector).tobytes())
+                            for memory_id, digest, vector in items])
+
+    def memory_vector_coverage(self, user, model, memory_ids):
+        """Share of the given facts holding a vector for this model."""
+        ids = set(memory_ids)
+        if not ids:
+            return 0.0
+        with closing(self.connect()) as db:
+            have = {row[0] for row in db.execute('SELECT memory_id FROM memory_vectors WHERE user=? AND model=?', (user, model))}
+        return len(ids & have) / len(ids)
+
+    def nearest_memories(self, user, model, vector, *, limit=8):
+        """(memory_id, score) of the facts closest to a unit-length query vector."""
+        from array import array
+        from heapq import nlargest
+        query = array('f', vector)
+        with closing(self.connect()) as db:
+            rows = db.execute('SELECT memory_id,vector FROM memory_vectors WHERE user=? AND model=?', (user, model)).fetchall()
+        def scores():
+            for memory_id, blob in rows:
+                if len(blob) != len(query) * query.itemsize:
+                    continue
+                stored = array('f')
+                stored.frombytes(blob)
+                yield sum(a * b for a, b in zip(query, stored)), memory_id
+        return [(memory_id, score) for score, memory_id in nlargest(limit, scores())]
+
+    def recent_reply_vectors(self, user, model, *, limit=30, exclude_source=None):
+        """Vectors of her newest replies, newest first."""
+        from array import array
+        with closing(self.connect()) as db:
+            rows = db.execute('SELECT vector FROM reply_vectors WHERE user=? AND model=? AND source!=? '
+                              'ORDER BY stamp DESC LIMIT ?', (user, model, exclude_source or '', limit)).fetchall()
+        return [array('f', blob) for (blob,) in rows]
+
+    def put_reply_vector(self, user, model, source, vector, *, keep=60):
+        from array import array
+        with closing(self.connect()) as db, db:
+            db.execute('INSERT OR REPLACE INTO reply_vectors VALUES (?,?,?,?,?)',
+                       (user, source, model, time.time(), array('f', vector).tobytes()))
+            db.execute('DELETE FROM reply_vectors WHERE user=? AND model=? AND source NOT IN (SELECT source FROM '
+                       'reply_vectors WHERE user=? AND model=? ORDER BY stamp DESC LIMIT ?)', (user, model, user, model, keep))
+
+    def latest_user_text(self, user):
+        """The newest original the user wrote, for reading a short message in the light of the one before."""
+        with closing(self.connect()) as db:
+            row = db.execute("SELECT text FROM originals WHERE user=? AND actor='user' AND text!='' "
+                             "ORDER BY stamp DESC, rowid DESC LIMIT 1", (user,)).fetchone()
+        return row[0] if row else ''
 
     def get_sources(self, user, source_ids, exclude_source_ids=()):
         """Read complete source groups atomically; never restore forgotten data."""

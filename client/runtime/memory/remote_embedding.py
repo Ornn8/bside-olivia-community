@@ -121,6 +121,12 @@ def prefetch(text):
     threading.Thread(target=run, name='olivia-embed-prefetch', daemon=True).start()
 
 
+def cached_query(text):
+    """The query's vector only if it is already here (prefetched or used before); never waits or calls out."""
+    with _lock:
+        return _queries.get(text[:500])
+
+
 def embed_query(text):
     """The query's vector within QUERY_TIMEOUT, or None; prefetched and repeated queries hit a cache."""
     text = text[:500]
