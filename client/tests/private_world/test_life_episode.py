@@ -230,6 +230,24 @@ def test_consecutive_identical_rest_records_group_without_deleting_evidence(tmp_
         assert db.execute("SELECT count(*) FROM life_moments WHERE kind='daily'").fetchone()[0] == 4
 
 
+def test_same_activity_records_group_with_the_latest_note(tmp_path):
+    store = DailyLifeStore(tmp_path / 'world.db')
+    for index, (minute, note) in enumerate(((0, '翻开第一章。'), (28, '看到第二章。'), (92, '第二章快看完。'), (100, '第三章开头。'))):
+        store.publish_day(f'day:b{index}', dict(activity='阅读：图书馆借的记忆心理学', location='家里', note=note), [],
+                          occurred_at=at(20)+timedelta(minutes=minute), activity_kind='reading')
+    store.publish_day('day:p0', dict(activity='练琴', location='家里', note='弹音阶。'), [],
+                      occurred_at=at(20)+timedelta(minutes=110), activity_kind='practice')
+    store.publish_day('day:b4', dict(activity='阅读：图书馆借的记忆心理学', location='家里', note='接着看。'), [],
+                      occurred_at=at(20)+timedelta(minutes=120), activity_kind='reading')
+    rows = store.snapshot(at(23))['world']['today_activities']
+    assert [(r['activity'], r.get('record_count', 1)) for r in rows] == [
+        ('阅读：图书馆借的记忆心理学', 4), ('练琴', 1), ('阅读：图书馆借的记忆心理学', 1)]
+    assert rows[0]['source_ids'] == ['day:b0', 'day:b1', 'day:b2', 'day:b3'] and rows[0]['note'] == '第三章开头。'
+    assert rows[0]['last_recorded_at'] == (at(20)+timedelta(minutes=100)).astimezone(life_episode.timezone.utc).isoformat()
+    with store._db() as db:
+        assert db.execute("SELECT count(*) FROM life_moments WHERE kind='daily'").fetchone()[0] == 6
+
+
 def test_class_plan_alone_cannot_author_an_attended_episode():
     with pytest.raises(ValueError,match='LIFE_EPISODE_CLASS_NOT_CURRENT'):
         episode(Port(),kind='class')
