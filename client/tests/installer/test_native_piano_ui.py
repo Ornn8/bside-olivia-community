@@ -101,10 +101,21 @@ def test_library_page_gets_a_piano_entry_next_to_local_import(tmp_path, monkeypa
         page.wait_for_function("document.querySelector('[data-olivia-piano-entry]').previousElementSibling"
                                "?.hasAttribute('data-olivia-local-songs-entry')")
         assert page.locator('[data-olivia-piano-entry]').get_attribute('class') == 'nav-pill'
-        assert page.locator('[data-olivia-main-navigation] button').all_inner_texts() == ['曲库', '导入本地演奏', '钢琴小样']
+        assert page.locator('[data-olivia-main-navigation] button').all_inner_texts() == ['曲库', '导入本地演奏', '导入 MIDI']
         page.locator('[data-olivia-piano-entry]').click()
         page.locator('dialog').wait_for(state='visible')
         page.get_by_text('关闭', exact=True).click()
         page.evaluate("window.location.hash='#/collection'; document.body.append(document.createElement('i'))")
         page.locator('[data-olivia-piano-entry]').wait_for(state='detached')
+        # The usual order in the app: 导入本地演奏 is already there, so the entry lands right after it and must
+        # still take its look (2.4.11 kept it unstyled).
+        page.set_content('<script data-olivia-companion-settings data-api-base="http://127.0.0.1:8765/"></script>'
+                         '<nav data-olivia-main-navigation><button>曲库</button>'
+                         '<button class="nav-pill" style="min-height: 36px;" data-olivia-local-songs-entry>导入本地演奏</button></nav>')
+        page.evaluate("window.location.hash='#/studio'")
+        page.add_script_tag(content=JAVASCRIPT)
+        page.locator('[data-olivia-piano-entry]').wait_for(state='visible')
+        page.wait_for_function("document.querySelector('[data-olivia-piano-entry]').className === 'nav-pill'")
+        assert 'min-height: 36px' in page.locator('[data-olivia-piano-entry]').get_attribute('style')
+        assert page.locator('[data-olivia-main-navigation] button').all_inner_texts() == ['曲库', '导入本地演奏', '导入 MIDI']
         browser.close()

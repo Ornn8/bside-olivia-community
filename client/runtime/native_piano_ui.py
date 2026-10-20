@@ -73,9 +73,15 @@ JAVASCRIPT = r'''
   function mountNavigation(){
     const nav=document.querySelector('[data-olivia-main-navigation]');let entry=document.querySelector('[data-olivia-piano-entry]');
     if(!caps||!nav||window.location.hash.split('?')[0]!=='#/studio'){entry?.remove();return}
-    if(!entry){entry=node('button',t('钢琴小样'));entry.type='button';entry.dataset.oliviaPianoEntry='';entry.onclick=open;nav.append(entry)}
+    if(!entry){entry=node('button',t('导入 MIDI'));entry.type='button';entry.dataset.oliviaPianoEntry='';entry.title=t('钢琴小样 · 上传 MIDI / 查看录音');entry.onclick=open;nav.append(entry)}
     const local=nav.querySelector('[data-olivia-local-songs-entry]');
-    if(local&&entry.previousElementSibling!==local){entry.className=local.className;entry.style.cssText=local.style.cssText;local.after(entry)}
+    // Look like 导入本地演奏 whatever order the two were mounted in: appended right after it, the entry used to
+    // keep no style at all (2.4.11, plain dark text on the dark page).
+    if(local){
+      if(entry.className!==local.className)entry.className=local.className;
+      if(entry.style.cssText!==local.style.cssText)entry.style.cssText=local.style.cssText;
+      if(entry.previousElementSibling!==local)local.after(entry);
+    }
   }
   function mount(){document.querySelectorAll(original).forEach(card=>{let button=card.previousElementSibling;if(!button?.classList.contains('piano-entry')){button=node('button',t('钢琴小样 · 上传 MIDI / 查看录音'));button.className='piano-entry';button.type='button';button.onclick=open;card.before(button)}button.hidden=!caps});mountNavigation()}
   const observer=new MutationObserver(mount);observer.observe(document.documentElement,{childList:true,subtree:true});mount();

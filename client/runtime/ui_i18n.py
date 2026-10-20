@@ -1308,6 +1308,7 @@ EN: dict[str, str] = {
     "本次通话 {price}": "This call: {price}",
     "暂时没能完成，请稍后再试": "That couldn't be completed. Please try again shortly",
     "钢琴小样": "Piano demo",
+    "导入 MIDI": "Import MIDI",
     "上传你的 MIDI，录成一段可以播放和下载的 MP3。": "Upload your MIDI and have it recorded as an MP3 you can play and download.",
     "MIDI 小样 ¥{min}–{max}": "MIDI demo ¥{min}–{max}",
     "；原创小样 ¥{min}–{max}": "; original demo ¥{min}–{max}",
