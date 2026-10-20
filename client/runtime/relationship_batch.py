@@ -160,22 +160,22 @@ async def tick(server, now=None, request=request_batch):
         sync_messages(target, rows)
         return queue, queue.pending(now) if queue.due(now) else None
     queue, batch = await asyncio.to_thread(prepare)
+    # Terms of address are judged on their own daily cadence from the same loop. Neither request affects the other.
+    await _judge_nicknames(server, rows, now)
     if batch is None:
         return 'waiting'
-    outcome = await _submit(server, queue, batch, target, request, now)
-    # The queued nickname quotes are judged on the same cadence, right after. Neither request affects the other.
-    await _judge_nicknames(server, now)
-    return outcome
+    return await _submit(server, queue, batch, target, request, now)
 
 
-async def _judge_nicknames(server, now):
-    """One request for the quotes of address waiting in the daily life store (at most one a day); never raises."""
+async def _judge_nicknames(server, rows, now):
+    """How the two address each other, read from the newest exchanges at most once a day; never raises."""
     life = getattr(getattr(server, 'daily_life_runtime', None), 'store', None)
-    if life is None:
+    adapter = getattr(server, 'letters_adapter', None)
+    if life is None or adapter is None:
         return
     try:
-        from runtime.private_world.addressing_judgment import run_daily_batch
-        if await run_daily_batch(life, now) == 'unavailable':
+        from runtime.private_world.addressing_judgment import run_daily
+        if await run_daily(life, rows, adapter.gateway, now) == 'unavailable':
             server._safe_log('addressing_judgment_deferred')
     except Exception:
         try:

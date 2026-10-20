@@ -4,8 +4,8 @@ import re
 
 # Who calls whom. The user's own name (user_self) is not an address and keeps only the shape check.
 JUDGED_KINDS = ('user_calls_linli', 'linli_calls_user')
-# Every quote of an address kind is judged once (see addressing_judgment): a two-character reply such as 好吧
-# passed the shape check and showed as her name (2026-10-19), so length no longer exempts a quote.
+# A quote of an address kind is kept as written and shown through the shape check only until the daily judgment
+# (addressing_judgment) has run once: a two-character reply such as 好吧 passed the shape check (2026-10-19).
 CLEAN_MAX = 0
 # Beyond this a quote is a whole passage, not a name with some words around it: shape check only.
 QUOTE_MAX = 40
