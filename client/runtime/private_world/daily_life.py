@@ -1518,12 +1518,21 @@ class DailyLifeStore:
             item = {'source_id': row[0], 'occurred_at': row[1],
                 'activity': payload.get('activity'), 'activity_kind': payload.get('activity_kind'),
                 'note': payload.get('note')}
-            if (prior_daily is not None and item['activity_kind'] == 'rest'
-                    and all(prior_daily.get(key) == item.get(key) for key in ('activity_kind', 'activity', 'note'))
-                    and datetime.fromisoformat(item['occurred_at']) - datetime.fromisoformat(prior_daily.get('last_recorded_at', prior_daily['occurred_at'])) <= timedelta(minutes=45)):
+            gap = (datetime.fromisoformat(item['occurred_at'])
+                   - datetime.fromisoformat(prior_daily.get('last_recorded_at', prior_daily['occurred_at']))) if prior_daily else None
+            # Every reply may record her current activity again. Identical rest records group within 45 minutes;
+            # any other activity that is still the same one (a note on how far she got may change) groups within
+            # 90 minutes, so an evening of reading one book is one row, not one per message (2026-10-20).
+            rest = (item['activity_kind'] == 'rest' and gap <= timedelta(minutes=45)
+                    and all(prior_daily.get(key) == item.get(key) for key in ('activity_kind', 'activity', 'note'))) if gap is not None else False
+            same = (item['activity_kind'] != 'rest' and gap <= timedelta(minutes=90) and bool(item.get('activity'))
+                    and all(prior_daily.get(key) == item.get(key) for key in ('activity_kind', 'activity'))) if gap is not None else False
+            if rest or same:
                 prior_daily.setdefault('source_ids', [prior_daily['source_id']]).append(item['source_id'])
                 prior_daily['last_recorded_at'] = item['occurred_at']
                 prior_daily['record_count'] = len(prior_daily['source_ids'])
+                if same and item.get('note'):
+                    prior_daily['note'] = item['note']
             else:
                 today_activities.append(item)
                 prior_daily = item
