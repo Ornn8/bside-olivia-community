@@ -300,7 +300,9 @@ async def decide(port, data, instructions):
             'next_activity仅是所选事项尚未结束时的相关下一步打算，不是已发生，课程仅可next_class。'
             '不适用的meal/project_outcome/next_activity字段忽略，不据此生成事实。')}
     state['choice_contract'] += ('historical_rest仅历史夜间负荷，当前精力看rhythm.rest/recovery；旧休息不强制延续。'
-        '可以按意愿恢复轻活动，不强制随机换活动，已有不适仍需照顾。')
+        '可以按意愿恢复轻活动，不强制随机换活动，已有不适仍需照顾。'
+        'context.current_activity_run是她正在做的这件事连续了多少分钟：练琴、看书、写作这类专注的事一段通常30到90分钟，'
+        '超过后选同类的另一个部分或对象、休息，或别的活动，不要一直停在同一个部分；课程和作息照旧。')
     state['project_time_contract'] = project_timing.CONTRACT
     questions = {
         'activity': {'instructions': '遵守choice_contract选择本次活动。', 'criteria': options},
