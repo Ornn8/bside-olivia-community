@@ -8,6 +8,7 @@ import hashlib
 import json
 import re
 import sqlite3
+import time
 from pathlib import Path
 
 from .conversation_memory_port import ConversationMemoryRecord
@@ -59,6 +60,8 @@ class SourceRetrieval:
         db.execute('CREATE TABLE IF NOT EXISTS source_vectors '
                    '(user TEXT, source TEXT, model TEXT, digest TEXT, vector BLOB, PRIMARY KEY(user,source,model))')
         db.execute('CREATE TABLE IF NOT EXISTS vector_models (user TEXT, model TEXT, PRIMARY KEY(user,model))')
+        db.execute('CREATE TABLE IF NOT EXISTS reply_vectors '
+                   '(user TEXT, source TEXT, model TEXT, stamp REAL, vector BLOB, PRIMARY KEY(user,source,model))')
         db.execute('CREATE TABLE IF NOT EXISTS memory_vectors '
                    '(user TEXT, memory_id TEXT, model TEXT, digest TEXT, vector BLOB, PRIMARY KEY(user,memory_id,model))')
         db.execute('CREATE TABLE IF NOT EXISTS vector_pending '
@@ -884,6 +887,22 @@ class SourceRetrieval:
                 stored.frombytes(blob)
                 yield sum(a * b for a, b in zip(query, stored)), memory_id
         return [(memory_id, score) for score, memory_id in nlargest(limit, scores())]
+
+    def recent_reply_vectors(self, user, model, *, limit=30, exclude_source=None):
+        """Vectors of her newest replies, newest first."""
+        from array import array
+        with closing(self.connect()) as db:
+            rows = db.execute('SELECT vector FROM reply_vectors WHERE user=? AND model=? AND source!=? '
+                              'ORDER BY stamp DESC LIMIT ?', (user, model, exclude_source or '', limit)).fetchall()
+        return [array('f', blob) for (blob,) in rows]
+
+    def put_reply_vector(self, user, model, source, vector, *, keep=60):
+        from array import array
+        with closing(self.connect()) as db, db:
+            db.execute('INSERT OR REPLACE INTO reply_vectors VALUES (?,?,?,?,?)',
+                       (user, source, model, time.time(), array('f', vector).tobytes()))
+            db.execute('DELETE FROM reply_vectors WHERE user=? AND model=? AND source NOT IN (SELECT source FROM '
+                       'reply_vectors WHERE user=? AND model=? ORDER BY stamp DESC LIMIT ?)', (user, model, user, model, keep))
 
     def latest_user_text(self, user):
         """The newest original the user wrote, for reading a short message in the light of the one before."""

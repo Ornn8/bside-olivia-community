@@ -1055,6 +1055,31 @@ def _record_search_key(
     )
 
 
+def _embedding_memory_mode():
+    """'off', 'shadow' or 'on' from the service's policy; shadow when it cannot be read."""
+    try:
+        from runtime.cloud_policy import get_policy
+        mode = get_policy('embedding_memory').get('mode')
+    except Exception:  # noqa: BLE001
+        return 'shadow'
+    return mode if mode in ('off', 'shadow', 'on') else 'shadow'
+
+
+_SHADOW_POOL = None
+
+
+def _after_delivery(work, *args):
+    """Shadow work after an exchange is stored: one background thread, never on the reply path, never raises."""
+    global _SHADOW_POOL
+    try:
+        if _SHADOW_POOL is None:
+            from concurrent.futures import ThreadPoolExecutor
+            _SHADOW_POOL = ThreadPoolExecutor(1, thread_name_prefix='olivia-memory-shadow')
+        _SHADOW_POOL.submit(work, *args)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 class Mem0ConversationMemoryAdapter:
     enabled = True
 
@@ -1401,7 +1426,40 @@ class Mem0ConversationMemoryAdapter:
             return 0
         self._originals.put_memory_vectors(user_id, remote_embedding.MODEL,
                                            [(key, digest, vector) for (key, digest, _), vector in zip(missing, vectors)])
+        try:
+            from runtime.diagnostics.reply_telemetry import shadow
+            closest = 0.0
+            for (key, _, _), vector in zip(missing, vectors):
+                others = [score for other, score in self._originals.nearest_memories(
+                    user_id, remote_embedding.MODEL, vector, limit=2) if other != key]
+                closest = max([closest, *others])
+            if closest:
+                shadow('shadow_fact_duplicate', closest)
+        except Exception:  # noqa: BLE001
+            pass
         return len(vectors)
+
+    def _shadow_reply(self, user_id, source_id, user_message, assistant_message):
+        """Shadow: her reply's closest of her last 30 replies (repeats), and its closeness to his message (echo)."""
+        try:
+            from . import remote_embedding
+            from runtime.diagnostics.reply_telemetry import shadow
+            reply = (assistant_message or '').strip()
+            if not reply or not remote_embedding.available():
+                return
+            texts = [reply[:1500]] + ([user_message.strip()[:1500]] if (user_message or '').strip() else [])
+            vectors = remote_embedding.embed(texts)
+            if not vectors:
+                return
+            mine = vectors[0]
+            previous = self._originals.recent_reply_vectors(user_id, remote_embedding.MODEL, exclude_source=source_id)
+            if previous:
+                shadow('shadow_reply_repeat', max(sum(a * b for a, b in zip(mine, other)) for other in previous))
+            if len(vectors) > 1:
+                shadow('shadow_reply_echo', max(0.0, sum(a * b for a, b in zip(mine, vectors[1]))))
+            self._originals.put_reply_vector(user_id, remote_embedding.MODEL, source_id, mine)
+        except Exception:  # noqa: BLE001
+            pass
 
     def _vector_query(self, query, user_id):
         """A short message (「那个呢」「后来呢」) is read together with the user's message before it."""
@@ -1414,8 +1472,9 @@ class Mem0ConversationMemoryAdapter:
             previous = ''
         return previous[-300:] + '\n' + text if previous and previous != text else text
 
-    def _fact_vector_hits(self, query, user_id):
-        """Stored facts ranked by the cloud model, ahead of the local model's own ranking."""
+    def _fact_vector_hits(self, query, user_id, *, wait=True):
+        """Stored facts ranked by the cloud model, ahead of the local model's own ranking. With wait=False only a
+        query vector already at hand is used, so the lookup costs no time."""
         from . import remote_embedding
         try:
             if not remote_embedding.available():
@@ -1423,7 +1482,7 @@ class Mem0ConversationMemoryAdapter:
             facts = self._fact_records(user_id)
             if not facts or self._originals.memory_vector_coverage(user_id, remote_embedding.MODEL, facts) < 0.9:
                 return ()
-            vector = remote_embedding.embed_query(query)
+            vector = remote_embedding.embed_query(query) if wait else remote_embedding.cached_query(query)
             if vector is None:
                 return ()
             hits = self._originals.nearest_memories(user_id, remote_embedding.MODEL, vector, limit=self.FACT_HITS)
@@ -1503,9 +1562,24 @@ class Mem0ConversationMemoryAdapter:
         semantic, error = self._search_context_result(query, user_id=user_id, limit=20)
         self._last_error_code = error
         semantic = tuple(replace(record, user_id=user_id) for record in semantic)
-        vector_query = self._vector_query(query, user_id)
-        cloud_facts = tuple(replace(record, user_id=user_id) for record in self._fact_vector_hits(vector_query, user_id))
+        mode = _embedding_memory_mode()
+        # In shadow the reply is built exactly as before; the cloud ranking reuses the query vector already
+        # fetched for the exchanges, so measuring adds no wait.
+        vector_query = self._vector_query(query, user_id) if mode == 'on' else query
+        cloud_facts = () if mode == 'off' else tuple(
+            replace(record, user_id=user_id) for record in self._fact_vector_hits(vector_query, user_id, wait=mode == 'on'))
         if cloud_facts:
+            try:
+                from runtime.diagnostics.reply_telemetry import shadow
+                local = {record.memory_id for record in semantic}
+                found = {record.memory_id for record in cloud_facts}
+                shadow('shadow_memory_overlap', len(found & local) / len(found))
+                shadow('shadow_memory_new', len(found - local))
+                if self._vector_query(query, user_id) != query.strip():
+                    shadow('shadow_short_query', 1)
+            except Exception:  # noqa: BLE001
+                pass
+        if mode == 'on' and cloud_facts:
             first = {record.memory_id for record in cloud_facts}
             semantic = cloud_facts + tuple(record for record in semantic if record.memory_id not in first)
         semantic = semantic + self._original_vector_hits(vector_query, user_id, excluded)
@@ -1809,6 +1883,7 @@ class Mem0ConversationMemoryAdapter:
     ) -> MemoryWriteResult:
         self._evidence_cache.clear()
         self._fact_cache = None
+        _after_delivery(self._shadow_reply, self._normalized_user_id(user_id), source_id, user_message, assistant_message)
         if self._originals.letter_deleted(self._normalized_user_id(user_id), source_id):
             return MemoryWriteResult(MemoryWriteStatus.SKIPPED, source_id)
         try:

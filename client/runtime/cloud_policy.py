@@ -39,6 +39,9 @@ DEFAULTS = {
                 'PERSONAL_CHAT_PROVIDER_BUSY': '【系统提示】服务暂时无法受理这条回复，请稍后再试。',
                 'DEFAULT': '【系统提示】这条消息的回复生成失败，暂时没能回复。可以稍后重新发一下。'},
     'media_share': {'photo_daily_limit': None, 'video_daily_limit': None},
+    # Finding stored facts by meaning with the cloud model (2026-10-20): 'shadow' measures without changing the
+    # reply, 'on' uses it, 'off' skips it.
+    'embedding_memory': {'mode': 'shadow'},
 }
 VERSION_PATTERN = r'[A-Za-z0-9][A-Za-z0-9_.-]{0,63}'
 CODE_PATTERN = r'[A-Z][A-Z0-9_]{0,95}'
@@ -117,6 +120,11 @@ def _validate_key(key, value, strict):
                 not isinstance(code, str) or not re.fullmatch(CODE_PATTERN, code) for code in codes)):
             raise ValueError('CLIENT_POLICY_INVALID')
         return {'no_retry_codes': list(dict.fromkeys(codes))}
+    if key == 'embedding_memory':
+        mode = value.get('mode', default['mode'])
+        if mode not in ('off', 'shadow', 'on'):
+            raise ValueError('CLIENT_POLICY_INVALID')
+        return {'mode': mode}
     if key == 'notices':
         if len(value) > 128 or any(not isinstance(code, str) or not re.fullmatch(CODE_PATTERN, code)
                 or not isinstance(text, str) or not 1 <= len(text.strip()) <= 500
