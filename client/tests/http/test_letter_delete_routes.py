@@ -215,6 +215,13 @@ def test_partial_cleanup_is_recoverable_and_not_purged(server, tmp_path, monkeyp
     assert entry['status'] == 'prepared'
     assert runtime.purge(server, entry['deleted_at'] + 90 * 86400) == 0
     assert not server._conversation_memory_ready_for_reply()
+    # Left alone, an interrupted deletion stops holding letters after a while; one being written still does.
+    entry['deleted_at'] -= server.INCOMPLETE_LETTER_TRASH_HOLD_SECONDS + 1
+    assert not server._letter_trash_holds_replies()
+    with server._history_memory_admin_gate:
+        assert server._letter_trash_holds_replies()
+    entry['deleted_at'] += server.INCOMPLETE_LETTER_TRASH_HOLD_SECONDS + 1
+    assert server._letter_trash_holds_replies()
     monkeypatch.setattr(runtime, '_apply_points', apply_points)
     identity = next(iter(server.store.letter_trash))
     assert call(server, 'restore', {'id': identity})['code'] == 0
