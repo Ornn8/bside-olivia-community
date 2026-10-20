@@ -55,6 +55,9 @@ progress不用于扩写世界：不得添写天气、住处、课程出勤、用
 character_development是同一时间截面的有限发展投影，仅影响对应key的倾向；未成熟的trying不是喜欢，baseline为avoid的重大差异最多有限尝试。不改写核心、生平、其他偏好、当前事实或关系权限。'''
 LIFE_PROMPT += '\nbath_finished只创作此刻确实完成的一次洗澡，地点home且focus为空；不是睡前时段自动已洗，也不是把计划或用户洗澡写成她的经历。没有这次实际行动选择其他活动。'
 LIFE_PROMPT += '\nbath_started是她此刻实际开始洗澡，home且focus为空，尚未洗完；已有rhythm.authored_bath时不再开始第二次澡，只在本次真实结束时选bath_finished，时间过去不自动完成。'
+LIFE_PROMPT += ('\ncurrent_activity_run是她正在做的这件事从何时起连续了多少分钟。练琴、看书、写作、做作业这类专注的事，'
+                '一段通常30到90分钟：超过后换一个部分或对象、停下来休息一会儿，或去做别的事（吃点东西、散步、收拾、洗澡），'
+                '不要一直停在同一个部分；上课以课表为准，睡眠和洗澡按作息。')
 LIFE_PROMPT += '\nshopping是她此刻在shop实际进行的一次购物，具体是否买到由本次过程决定；不等同errand出门准备或购物计划，不补造交易、品牌、用户或他人购物。'
 
 PROMPT = LIFE_PROMPT + '\ndevelopment默认为空数组，不为凑成长制造评价。它仅评价development_basis.sources中已经正式发布的旧活动，不能评价本次新决定或未来安排；最多3项，严格为source_id,key,stance,quote,reason，key只能来自development_topics，quote是旧world.note连续原文，主题可自然使用同义表达，reason是160字内的有限体验评价。\n结合旧活动具体内容及其已批准appraisal，判断她对活动本身的正面或负面体验，stance为positive或negative；情绪高兴/沮丧、做得成功/失败、用户爱好、被催促或被迫活动、一般疲惫，均不能机械换成喜欢/讨厌该活动。证据不足填空数组。trait只评价受控领域中这次具体行为的体验，不自夸性格或宣布已改变；taste只可评价已明确eaten的食物。成长由程序按多日证据慢慢累计，单次不成熟，不把模糊结果具体化。'
@@ -78,8 +81,39 @@ def _recent_window(data: dict) -> dict:
     return {**data, 'world': world}
 
 
+# A run of the same activity: records closer together than this belong to one stretch.
+RUN_GAP_MINUTES = 90
+
+
+def current_activity_run(data: dict) -> dict | None:
+    """How long she has been on the activity she is doing now, from today's records (2026-10-21: one piano section
+    for over two hours, because the decision never saw how long the current activity had lasted)."""
+    rows = [row for row in (data.get('world') or {}).get('today_activities') or []
+            if isinstance(row, dict) and isinstance(row.get('activity'), str) and row.get('occurred_at')]
+    if not rows:
+        return None
+    try:
+        now = datetime.fromisoformat(data['time'])
+        last = rows[-1]
+        start = datetime.fromisoformat(last['occurred_at'])
+        end = datetime.fromisoformat(last.get('last_recorded_at') or last['occurred_at'])
+        for row in reversed(rows[:-1]):
+            if row['activity'] != last['activity']:
+                break
+            if (start - datetime.fromisoformat(row.get('last_recorded_at') or row['occurred_at'])).total_seconds() > RUN_GAP_MINUTES * 60:
+                break
+            start = datetime.fromisoformat(row['occurred_at'])
+    except (ValueError, TypeError, KeyError):
+        return None
+    if (now - end).total_seconds() > RUN_GAP_MINUTES * 60:
+        return None
+    return {'activity': last['activity'], 'since': start.isoformat(),
+            'minutes': max(0, int((now - start).total_seconds() // 60))}
+
+
 def decision_context(data: dict) -> dict:
     from .project_timing import prepare_context
+    run = current_activity_run(data)
     data = prepare_context(_recent_window(data))
     try:
         declarations = json.loads(data['persona'])
@@ -111,6 +145,7 @@ def decision_context(data: dict) -> dict:
                ['class'] if current_schedule['current_class'] else
                [kind for kind in KINDS if kind != 'class'])
     return {**data, 'places': places, 'allowed_activity_kinds': allowed,
+            **({'current_activity_run': run} if run else {}),
             'world': {**{key: value for key, value in data['world'].items() if key != 'today_activities'}, 'schedule': current_schedule}}
 
 
