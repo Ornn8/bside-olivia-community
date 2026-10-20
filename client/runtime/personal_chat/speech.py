@@ -8,7 +8,6 @@ import time
 from runtime import output_language
 from runtime.ui_i18n_backend import tr
 
-_capabilities = {}
 
 BEDTIME_OFFER_INSTRUCTION = {
     'bedtime': """<bedtime_audio_offer>
@@ -33,23 +32,10 @@ spoken_text按target_seconds写够长度，字数不算标点：正常讲故事�
 
 
 async def supported(environment):
-    """Cache server readiness; older deployments keep ordinary chat working."""
-    from runtime.remote_generation import RemoteGeneration
-    url, token = environment.get('OLIVIA_GPU_API_URL',''), environment.get('OLIVIA_GPU_API_KEY','')
-    if not url or not token:
-        return False
-    key = (url, hashlib.sha256(token.encode()).hexdigest())
-    cached = _capabilities.get(key)
-    if cached and cached[0] > time.monotonic():
-        return cached[1]
-    try:
-        caps = await asyncio.wait_for(RemoteGeneration(url,token).request('capabilities',{}),3)
-        enabled = caps.get('speech_experience') is True
-    except Exception:
-        enabled = False
-    _capabilities.clear()
-    _capabilities[key]=(time.monotonic()+60,enabled)
-    return enabled
+    """Whether the service makes long speech now; a recent good answer survives a failed read."""
+    from runtime.media_capabilities import current
+    caps = await current(environment)
+    return bool(caps) and caps.get('speech_experience') is True
 
 
 def validate_intent(value):

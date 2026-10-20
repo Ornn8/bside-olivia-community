@@ -10,7 +10,6 @@ import time
 
 from runtime.ui_i18n_backend import tr
 
-_cache = {}
 
 
 def capability(response):
@@ -39,21 +38,8 @@ def capability(response):
 
 
 async def capabilities(environment):
-    from runtime.remote_generation import RemoteGeneration
-    url, token = environment.get('OLIVIA_GPU_API_URL', ''), environment.get('OLIVIA_GPU_API_KEY', '')
-    if not url or not token:
-        return None
-    key = (url, hashlib.sha256(token.encode()).hexdigest())
-    cached = _cache.get(key)
-    if cached and cached[0] > time.monotonic():
-        return cached[1]
-    try:
-        result = capability(await asyncio.wait_for(RemoteGeneration(url, token).request('capabilities', {}), 3))
-    except Exception:
-        result = None
-    _cache.clear()
-    _cache[key] = (time.monotonic() + 60, result)
-    return result
+    from runtime.media_capabilities import current
+    return capability(await current(environment))
 
 
 def validate_midi(name, data, max_bytes):
