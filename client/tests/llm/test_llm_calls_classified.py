@@ -34,6 +34,7 @@ USER_FACING = {
 # Calls that only feed the program. The user never reads their output, so they stay in Chinese.
 INTERNAL = {
     "letter_triage.py": "route classifier",
+    "runtime/private_world/addressing_judgment.py": "the daily reading of what they call each other; only verbatim terms are kept",
     "private_world_candidate.py": "world candidate analysis",
     "runtime/image_reply.py": "photo plan and the English picture description",
     "runtime/image_understanding.py": "describes the picture the user sent (a direct call to the relay)",
