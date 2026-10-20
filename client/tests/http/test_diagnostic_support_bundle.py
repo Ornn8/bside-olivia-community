@@ -564,6 +564,20 @@ def test_launcher_tail_keeps_startup_timings_but_not_paths():
     assert record == {"event": "backend_phase", "preparation_seconds": 16.5}
 
 
+def test_launcher_tail_keeps_failure_codes_without_text():
+    from runtime.diagnostics.support_bundle import _project_tail_record
+    record = _project_tail_record({"event": "startup_failed", "code": "START_ACTION_FAILED", "exception_type": "ModuleNotFoundError",
+                                   "missing_module": "aiohttp", "timestamp": 1790787742.2}, runtime=False)
+    assert record == {"event": "startup_failed", "error_code": "START_ACTION_FAILED",
+                      "exception_type": "ModuleNotFoundError", "missing_module": "aiohttp"}
+    assert _project_tail_record({"event": "update_rolled_back", "version": "2.4.11"}, runtime=False) == {
+        "event": "update_rolled_back", "version": "2.4.11"}
+    # Free text, paths and the runtime log are not carried.
+    assert _project_tail_record({"event": "startup_failed", "code": "C:/Users/someone failed",
+                                 "exception_type": "x y", "version": "../x"}, runtime=False) == {"event": "startup_failed"}
+    assert _project_tail_record({"event": "letter_completed", "code": "SOME_CODE"}, runtime=True) == {"event": "letter_completed"}
+
+
 def test_startup_animation_does_not_cover_other_windows():
     from pathlib import Path
     script = (Path(__file__).resolve().parents[2] / "installer" / "startup_animation.ps1").read_text(encoding="utf-8")

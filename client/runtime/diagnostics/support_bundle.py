@@ -595,6 +595,15 @@ def _project_tail_record(value: object, *, runtime: bool) -> dict[str, object]:
             record[name] = _status(value.strip().lower())
     if "error_code" in source:
         record["error_code"] = _code(source["error_code"])
+    elif not runtime and isinstance(source.get("code"), str) and _CODE_RE.fullmatch(source["code"]):
+        # The launcher writes its failure codes as "code" (START_EXIT_NONZERO, UPDATE_COMPONENT_UNAVAILABLE...);
+        # without them a failed update looked like a bare "startup_failed".
+        record["error_code"] = source["code"]
+    if not runtime:
+        for name in ("exception_type", "missing_module", "version"):
+            value = source.get(name)
+            if isinstance(value, str) and _TOKEN_RE.fullmatch(value) and len(value) <= 64:
+                record[name] = value
     # Startup timing: a bounded step name and durations, never paths or content.
     if "phase" in source:
         phase = source["phase"]
