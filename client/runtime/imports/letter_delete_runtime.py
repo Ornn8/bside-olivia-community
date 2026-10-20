@@ -278,6 +278,7 @@ def operate(server, action, body):
                              'with_diary': item.get('with_diary', False)} for item in later), key=lambda item: item['deleted_at'])
             for item in undo:
                 item['status'] = 'restoring'
+                item['restoring_at'] = time.time()
             server._persist_store_state()
             for item in undo:
                 _apply(server, adapter, item, restore=True)

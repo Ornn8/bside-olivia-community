@@ -1852,8 +1852,34 @@ def _missing_memory_component() -> str | None:
     return None
 
 
+# A deletion or restore being written holds replies, so none reads half-removed memories. One that was
+# interrupted and left alone held every later letter for good (2026-10-20: a user could send nothing after
+# deleting a letter, MEMORY_UNAVAILABLE each time). It now holds them only for this long; the backup stays in
+# 「最近删除」 for a retry or a restore.
+INCOMPLETE_LETTER_TRASH_HOLD_SECONDS = 600
+_incomplete_letter_trash_noted = False
+
+
+def _letter_trash_holds_replies(now: float | None = None) -> bool:
+    global _incomplete_letter_trash_noted
+    now = time.time() if now is None else now
+    incomplete = [item for item in store.letter_trash.values() if item.get('status') in {'prepared', 'restoring'}]
+    if not incomplete:
+        return False
+    if _history_memory_admin_gate.locked():
+        return True  # a deletion or restore is running now
+    for item in incomplete:
+        since = item.get('restoring_at') if item.get('status') == 'restoring' else item.get('deleted_at')
+        if isinstance(since, (int, float)) and not isinstance(since, bool) and now - since < INCOMPLETE_LETTER_TRASH_HOLD_SECONDS:
+            return True
+    if not _incomplete_letter_trash_noted:
+        _incomplete_letter_trash_noted = True
+        _safe_log('letter_trash_incomplete', count=len(incomplete))
+    return False
+
+
 def _conversation_memory_ready_for_reply() -> bool:
-    if any(item.get('status') in {'prepared', 'restoring'} for item in store.letter_trash.values()):
+    if _letter_trash_holds_replies():
         return False
     bootstrap = getattr(
         letters_adapter.memory_prompt_builder,
