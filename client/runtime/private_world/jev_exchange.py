@@ -841,9 +841,8 @@ async def _extract(port, data, instructions, request_id, level, update_slots, bo
         for field, name, catalog in (('address_linli_quote', 'user_calls_linli', user),
                                      ('address_self_quote', 'user_self', user),
                                      ('address_user_quote', 'linli_calls_user', reply)):
-            # Only a short span is a name; a whole sentence would reach the writer as her own words. A longer
-            # quote of an address kind goes on as written: the daily judgment (addressing_judgment) picks the
-            # term from it, and the shape check stands in until then.
+            # Only a short span is a name; a whole sentence would reach the writer as her own words. These quotes
+            # are shown only until the daily judgment (addressing_judgment) has named the terms once.
             from .addressing import address_term, needs_judgment, normalize
             quote = catalog.get(answers.get(field))
             term = normalize(quote) if needs_judgment(name, quote) else address_term(quote)
