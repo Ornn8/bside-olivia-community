@@ -1,9 +1,13 @@
 """Cloud text embeddings for memory recall, through the Olivia relay.
 
 The relay's model ranks earlier exchanges by meaning far better than the local
-bge-small (recall@5 0.92 vs 0.82 on the frozen recall set), costs the user
-nothing, and needs the Olivia account key. Every failure returns None so recall
-falls back to the local model; nothing here may block or fail a reply.
+bge-small, costs the user nothing, and needs the Olivia account key. Every
+failure returns None so recall falls back to the local model; nothing here may
+block or fail a reply.
+
+olivia-embed-2 (Qwen, since 2.4.14) embeds the user's message as a query and
+what is searched as documents. Vectors of the earlier model live in another
+space, so they are retired and the exchanges embedded again.
 """
 import json
 import os
@@ -11,10 +15,12 @@ import threading
 import time
 import urllib.request
 
-MODEL = 'olivia-embed-1'
-# Cosine scores from this model sit higher and closer together than bge's: on
-# the recall set no correct top-12 hit scored below 0.65.
-SCORE_FLOOR = 0.6
+MODEL = 'olivia-embed-2'
+RETIRED_MODELS = ('olivia-embed-1',)
+# Mapped from the Gemini floor 0.6 by equal selectivity on 300 real
+# earlier-turn selections (2026-10-22): it keeps the same share of all
+# candidates, and 95% of the ones the judgment picked (Gemini 96%).
+SCORE_FLOOR = 0.47
 MAX_BATCH = 64
 MAX_TEXT = 2000
 QUERY_TIMEOUT = float(os.environ.get('OLIVIA_REMOTE_EMBEDDING_QUERY_TIMEOUT', '4'))
@@ -49,12 +55,12 @@ def available():
     return _key() is not None and time.monotonic() - _failed_at >= _COOLDOWN
 
 
-def _post(key, texts, timeout):
+def _post(key, texts, timeout, input_type):
     from runtime import ui_language
     from runtime.official_endpoints import API_BASE
     from runtime.tls import client_tls_context
     from runtime.reply.companion_decision import _NoRedirect
-    body = json.dumps({'model': MODEL, 'input': texts}, ensure_ascii=False).encode()
+    body = json.dumps({'model': MODEL, 'input': texts, 'input_type': input_type}, ensure_ascii=False).encode()
     request = urllib.request.Request(API_BASE + '/embeddings', data=body, method='POST',
                                      headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json', **ui_language.headers()})
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect(),
@@ -72,8 +78,10 @@ def _post(key, texts, timeout):
     return vectors
 
 
-def embed(texts, *, timeout=INDEX_TIMEOUT):
-    """Unit vectors for texts (each cut to MAX_TEXT), or None when the cloud is unusable."""
+def embed(texts, *, timeout=INDEX_TIMEOUT, input_type='document'):
+    """Unit vectors for texts (each cut to MAX_TEXT), or None when the cloud is unusable.
+
+    input_type 'query' is for the user's message being looked up; everything that is searched is a 'document'."""
     global _failed_at
     key = _key()
     if key is None or not texts or time.monotonic() - _failed_at < _COOLDOWN:
@@ -82,7 +90,7 @@ def embed(texts, *, timeout=INDEX_TIMEOUT):
     try:
         vectors = []
         for start in range(0, len(texts), MAX_BATCH):
-            vectors += _post(key, texts[start:start + MAX_BATCH], timeout)
+            vectors += _post(key, texts[start:start + MAX_BATCH], timeout, input_type)
         return vectors
     except Exception as exc:
         # A slow answer only skips this read. A refusal or an outage backs off,
@@ -111,7 +119,7 @@ def prefetch(text):
 
     def run():
         try:
-            result = embed([text], timeout=PREFETCH_TIMEOUT)
+            result = embed([text], timeout=PREFETCH_TIMEOUT, input_type='query')
             if result:
                 _remember(text, result[0])
         finally:
@@ -138,7 +146,7 @@ def embed_query(text):
         pending.wait(QUERY_TIMEOUT)
         with _lock:
             return _queries.get(text)
-    result = embed([text], timeout=QUERY_TIMEOUT)
+    result = embed([text], timeout=QUERY_TIMEOUT, input_type='query')
     if not result:
         return None
     _remember(text, result[0])

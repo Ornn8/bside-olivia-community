@@ -800,6 +800,19 @@ class SourceRetrieval:
                            (user, source, model, digest, array('f', vector).tobytes()))
                 db.execute('DELETE FROM vector_pending WHERE user=? AND model=? AND source=?', (user, model, source))
 
+    def retire_vector_models(self, user, models):
+        """Forget every vector and queued embedding of these models for the user; returns the rows removed."""
+        models = tuple(models)
+        if not models:
+            return 0
+        marks = ','.join('?' * len(models))
+        removed = 0
+        with closing(self.connect()) as db, db:
+            db.execute('BEGIN IMMEDIATE')
+            for table in ('source_vectors', 'memory_vectors', 'reply_vectors', 'vector_pending', 'vector_models'):
+                removed += db.execute(f'DELETE FROM {table} WHERE user=? AND model IN ({marks})', (user, *models)).rowcount
+        return removed
+
     def vector_coverage(self, user, model):
         """Share of exchanges holding a vector for this model (stale ones count)."""
         with closing(self.connect()) as db:
