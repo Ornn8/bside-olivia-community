@@ -30,7 +30,7 @@ class Writer:
     async def complete_structured_scoped(self, messages, **kwargs):
         packet = json.loads(messages[1]['content'])
         self.packets.append(packet)
-        said = ' / '.join(part for m in packet['messages'] for part in (m['user'], m['linli']) if part)
+        said = ' / '.join(part for m in packet['messages'] for part in (m['他写给你的'], m['你写给他的']) if part)
         return SimpleNamespace(text=json.dumps({'title': '那天', 'mood': '平静', 'body': '今天的信：' + said, 'facts': []},
                                                ensure_ascii=False))
 

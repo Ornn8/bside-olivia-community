@@ -57,6 +57,19 @@ def present_user(request, monkeypatch):
         monkeypatch.setattr(daily_life, "_user_idle", lambda exchanges, now: False)
 
 
+@pytest.fixture(autouse=True)
+def diary_told_by_her(request, monkeypatch):
+    # Every diary entry is read once more to confirm it is told from her side. Stand-in
+    # writers answer that call like any other, so tests skip it unless they opt in.
+    if request.node.get_closest_marker("real_narrator_check") is None:
+        from runtime.diary import diary
+
+        async def told(*args, **kwargs):
+            return True
+
+        monkeypatch.setattr(diary, "told_by_her", told)
+
+
 def pytest_configure(config) -> None:
     """Create the parent of pytest's configured basetemp before fixtures run.
 
@@ -71,6 +84,7 @@ def pytest_configure(config) -> None:
         os.environ["NODE_OPTIONS"] = (current + " " + option).strip()
 
     config.addinivalue_line("markers", "real_user_idle: use the real absent-user check for life cadence")
+    config.addinivalue_line("markers", "real_narrator_check: read each diary entry once more for whose side it is told from")
     configured = config.getoption("basetemp")
     if configured:
         Path(configured).parent.mkdir(parents=True, exist_ok=True)

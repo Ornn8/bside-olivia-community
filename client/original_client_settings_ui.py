@@ -4814,7 +4814,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       .od-comment{background:#222327;border-radius:10px;padding:10px 14px;line-height:1.6}
       .od-comment small{display:block;color:#8f9398;font-size:12px}
       .od-main textarea{width:100%;box-sizing:border-box;min-height:72px;background:#111214;color:#ded9d1;border:1px solid #4a4c51;border-radius:10px;padding:10px;font:inherit;resize:vertical}
-      .od-actions{display:flex;gap:12px;justify-content:space-between;align-items:center;margin-top:10px}
+      .od-actions{display:flex;gap:12px;justify-content:space-between;align-items:center;margin-top:10px}.od-actions>:last-child{margin-left:auto}
       .od-empty{color:#acb0b4;line-height:1.8;padding:40px 0;text-align:center}
       .od-status{color:#acb0b4;font-size:13px;min-height:20px}
     `;return style;
@@ -4930,7 +4930,17 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         try{await routeRequest('/toy/diary/delete',{day:entry.day},{confirmed:true});showList();}
         catch(_){remove.disabled=false;status.textContent=t('没有删除成功，可以重新尝试。');}
       });
-      actions.append(remove,send);comments.append(input,actions,status);
+      let rewriteArmed=false;
+      const rewrite=button(t('重写这篇'),async()=>{
+        // Two clicks: the first says what a rewrite replaces and what it uses.
+        if(!rewriteArmed){rewriteArmed=true;rewrite.textContent=t('确认重写');status.textContent=t('她会照着这天的信和聊天重新写一篇，和平时写日记一样用你选的日记模型写初稿和改稿。这篇和它记下的事会换成新写的，你的留言会留着。再点一次确认重写。');return;}
+        rewrite.disabled=true;
+        try{await routeRequest('/toy/diary/rewrite',{day:entry.day},{confirmed:true});
+          main.replaceChildren(text('p',t('已经交给她重写了，写好后会出现在日记本里。'),'od-empty'),button(t('返回日记本'),()=>showList()));}
+        catch(_){rewrite.disabled=false;status.textContent=t('没有开始重写，可以重新尝试。');}
+      });
+      // Only a day's entry is written again; a month's memoir keeps its own flow.
+      actions.append(remove,...(/^\d{4}-\d{2}-\d{2}$/.test(entry.day)?[rewrite]:[]),send);comments.append(input,actions,status);
       main.replaceChildren(article,comments);
       main.scrollTop=0;
     };
