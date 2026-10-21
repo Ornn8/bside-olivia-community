@@ -42,6 +42,7 @@ def test_diary_list_read_comment_and_delete():
             if(path.startsWith('/toy/diary?'))return {entries,total:entries.length,unseen:entries.filter(e=>!e.seen).length,enabled:true};
             if(path.startsWith('/toy/diary/entry')){const e=entries.find(x=>path.endsWith(x.day));e.seen=true;return {...e,body,comments,photo:'/toy/media/photo-'+('a'.repeat(32))+'.png'};}
             if(path==='/toy/diary/comment'){comments.push({text:payload.text,written_at:'2026-10-08T01:00:00Z'});entries[0].commented=true;return {};}
+            if(path==='/toy/diary/rewrite')return {rewriting:payload.day};
             if(path==='/toy/diary/delete'){entries=entries.filter(e=>e.day!==payload.day);return {deleted:payload.day};}
             throw Error('unexpected '+path);
           };
@@ -68,11 +69,22 @@ def test_diary_list_read_comment_and_delete():
         page.evaluate("document.querySelector('.od-photo').src+='?missing=1'")
         photo.wait_for(state='detached')
         assert page.locator('.od-body').is_visible()
+        page.get_by_role('button', name='重写这篇').click()
+        page.get_by_text('再点一次确认重写').wait_for()
+        assert page.evaluate('window.writes.length') == 1  # the first click only explains
+        page.locator('.od-actions').scroll_into_view_if_needed()
+        page.screenshot(path=str(output / 'diary-rewrite.png'))
+        page.get_by_role('button', name='确认重写').click()
+        page.get_by_text('已经交给她重写了').wait_for()
+        page.get_by_role('button', name='返回日记本').click()
+        page.get_by_text('下周三的乐理').click()
+        page.get_by_text('其实心里有点心疼').wait_for()
         page.get_by_role('button', name='删除这篇').click()
         page.get_by_role('button', name='确认删除').click()
         page.get_by_text('早安').wait_for()
         assert page.get_by_text('下周三的乐理').count() == 0
         writes = page.evaluate('window.writes')
-        assert [w[0] for w in writes] == ['/toy/diary/comment', '/toy/diary/delete']
+        assert [w[0] for w in writes] == ['/toy/diary/comment', '/toy/diary/rewrite', '/toy/diary/delete']
+        assert writes[1][1] == {'day': '2026-10-07'}
         assert errors == []
         browser.close()

@@ -4011,7 +4011,16 @@ def _diary_public_entry(entry):
     return entry
 
 
+_diary_lock = asyncio.Lock()
+
+
 async def _diary_tick(now=None) -> None:
+    # The quarter-hour loop and a rewrite the user asked for never write the same day at once.
+    async with _diary_lock:
+        await _diary_tick_once(now)
+
+
+async def _diary_tick_once(now=None) -> None:
     from runtime.diary.diary import due_days, write_day, day_life, unserved
     from runtime.private_world.daily_life_runtime import life_persona
     if diary_store is None or not diary_store.enabled():
@@ -4019,6 +4028,8 @@ async def _diary_tick(now=None) -> None:
     now = now or datetime.now(timezone.utc)
     from runtime.call.store import diary_rows as call_diary_rows
     rows = [*store.letters, *store.personal_chats, *call_diary_rows(sys.modules[__name__])]
+    from runtime.diary.diary import _optional
+    _optional(lambda: diary_store.fix_fact_directions(rows), None)
     for day in due_days(diary_store, now)[:2]:
         try:
             stage, videos, outfit = _diary_extras(day)
@@ -4037,6 +4048,15 @@ async def _diary_tick(now=None) -> None:
             diary_store.skip(day, 'EMPTY_DAY')
         elif outcome == 'written':
             _safe_log('diary_written')
+
+
+async def _diary_rewrite_now() -> None:
+    """A day the user asked to have written again is written right away instead of at the next quarter hour."""
+    try:
+        with model_use('diary'):
+            await _diary_tick()
+    except (OSError, RuntimeError, ValueError, TypeError, sqlite3.Error):
+        _safe_log('diary_check_unavailable')
 
 
 _memoir_state = {'running': False, 'done': 0, 'failed': 0, 'total': 0}
@@ -5101,6 +5121,12 @@ async def route(
             if p == '/toy/diary/delete' and set(body) == {'day'}:
                 diary_store.delete(str(body['day']))
                 return ok({'deleted': str(body['day'])})
+            if p == '/toy/diary/rewrite' and set(body) == {'day'}:
+                diary_store.request_rewrite(str(body['day']))
+                task = asyncio.create_task(_diary_rewrite_now())
+                media_tasks.add(task)
+                task.add_done_callback(media_tasks.discard)
+                return ok({'rewriting': str(body['day'])})
             return err(400, 'DIARY_REQUEST_INVALID', {'error_code': 'DIARY_REQUEST_INVALID'})
         except KeyError:
             return err(404, 'DIARY_ENTRY_NOT_FOUND', {'error_code': 'DIARY_ENTRY_NOT_FOUND'})

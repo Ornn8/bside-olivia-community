@@ -249,6 +249,7 @@ ROUTES: dict[str, dict[str, Any]] = {
     "/toy/diary/settings": _route(["POST"], "letters.read", evidence="local-extension"),
     "/toy/diary/comment": _route(["POST"], "letters.read", evidence="local-extension"),
     "/toy/diary/delete": _route(["POST"], "letters.read", evidence="local-extension"),
+    "/toy/diary/rewrite": _route(["POST"], "letters.read", evidence="local-extension"),
     "/toy/relationship": _route(["GET"], "letters.read", read_only=True, evidence="local-extension"),
     "/toy/relationship/route": _route(["POST"], "letters.read", evidence="local-extension"),
     "/toy/image/ack": _route(["POST"], "settings.video_reply", evidence="local-extension"),

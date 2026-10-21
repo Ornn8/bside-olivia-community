@@ -95,3 +95,36 @@ assert server._diary_public_entry({'photo':str(root / 'elsewhere.png')})['photo'
 photo.unlink()
 assert read()['photo'] is None and read()['body'] == 'b'
 ''')
+
+
+def test_rewrite_route_needs_confirmation_and_queues_the_day(tmp_path):
+    run_isolated(tmp_path, r'''
+import asyncio
+from datetime import datetime, timezone
+from pathlib import Path
+import local_server as server
+from runtime.diary.diary import DiaryStore
+
+store = DiaryStore(Path(server._os.environ['OLIVIA_LOCAL_DATA_ROOT']) / 'diary-rewrite-route.sqlite3')
+store.save('2026-10-07', {'title': '写反了', 'mood': '平静', 'body': '他的视角。', 'facts': []},
+           now=datetime(2026, 10, 8, tzinfo=timezone.utc), model='m', short=False)
+server.diary_store = store
+started = []
+
+async def rewrite_now():
+    started.append(store.rewrite_days())
+
+server._diary_rewrite_now = rewrite_now
+
+async def call(body, confirmed=True):
+    result = await server.route('POST', '/toy/diary/rewrite', body, {}, companion_confirmed=confirmed)
+    await asyncio.sleep(0)
+    return result
+
+assert asyncio.run(call({'day': '2026-10-07'}, confirmed=False))['code'] == 403
+assert asyncio.run(call({'day': '2026-10-01'}))['code'] == 404
+assert asyncio.run(call({'day': '2026-10-07', 'extra': 1}))['code'] == 400
+assert store.entry('2026-10-07') is not None and started == []
+assert asyncio.run(call({'day': '2026-10-07'}))['data'] == {'rewriting': '2026-10-07'}
+assert store.entry('2026-10-07') is None and started == [['2026-10-07']]
+''')

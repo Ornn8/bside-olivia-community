@@ -42,7 +42,7 @@ def test_late_generation_excludes_next_morning_in_both_passes(tmp_path):
                          persona='static', now=at(17, '09:00')))
     assert len(writer.packets) == 2
     for packet in writer.packets:
-        assert [m['user'] for m in packet['messages']] == ['start', 'late yesterday']
+        assert [m['他写给你的'] for m in packet['messages']] == ['start', 'late yesterday']
         assert 'morning noodles' not in json.dumps(packet)
 
 
@@ -84,7 +84,7 @@ def test_catch_up_two_days_has_no_other_day_memories(tmp_path):
         writer = Writer()
         asyncio.run(write_day(store, writer, day, rows, persona='static', now=at(17, '09:00')))
         for packet in writer.packets:
-            assert [m['user'] for m in packet['messages']] == [text]
+            assert [m['他写给你的'] for m in packet['messages']] == [text]
             assert packet['recent_entries'] == packet['due_facts'] == []
 
 
@@ -150,7 +150,7 @@ def test_real_tick_catches_up_two_days_separately(tmp_path, monkeypatch):
     monkeypatch.setattr(daily_life_runtime, 'life_persona', lambda path: 'static')
     asyncio.run(server._diary_tick(at(17, '09:00')))
     assert [p['date'] for p in writer.packets] == ['2026-10-15'] * 2 + ['2026-10-16'] * 2
-    assert [[m['user'] for m in p['messages']] for p in writer.packets] == [['fifteen']] * 2 + [['sixteen']] * 2
+    assert [[m['他写给你的'] for m in p['messages']] for p in writer.packets] == [['fifteen']] * 2 + [['sixteen']] * 2
 
 
 @pytest.mark.parametrize('value', ['invalid', '2026-10-17T07:50:00', float('inf')])
