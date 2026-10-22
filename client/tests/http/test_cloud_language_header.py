@@ -322,6 +322,7 @@ OTHER_CLIENTS = {
     "mem0_capability_install.py": "model and package mirrors",
     "original_client_update_api.py": "signed component updates from the update source",
     "runtime/auto_update.py": "the signed update manifest on the public site",
+    "runtime/cloud_contact.py": "a contact's fixed photo from the public site, checked by size and sha256",
     "runtime/cloud_service.py": "the optional account connection to an address the user entered",
     "runtime/imports/official_letters.py": "the original game's own service",
     "runtime/media/music_reply.py": "the music generator running on this computer",
