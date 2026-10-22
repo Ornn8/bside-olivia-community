@@ -21,6 +21,8 @@ from runtime.reply.jev_billing import account_key_missing
 
 
 _RUNTIME = web.AppKey("personal_chat", dict)
+# WeChat was retired (owner 2026-10-22): an earlier WeChat binding stays on disk, readable, but is never started.
+CHANNELS = frozenset({"qq"})
 ACTIVATE_SAVED_CONFIG = web.AppKey("personal_chat_activate_saved_config", object)
 _CONSUMER_TIMEOUT_SECONDS = 15
 _VOICE_RENDER_TIMEOUT_SECONDS = 20 * 60
@@ -1286,19 +1288,19 @@ def selected_channels(server):
     if root is not None:
         saved = read_json(root / 'personal-chat' / 'setup-choice.json')
         if isinstance(saved.get('channels'), list):
-            return set(saved['channels']) & {'qq', 'wechat'}
+            return set(saved['channels']) & CHANNELS
     port = getattr(server, 'private_world_port', None)
     access = status(server.store.letters, port.snapshot() if port is not None else None)
     if 'invitation_id' in access:
-        return set(access['channels'])
+        return set(access['channels']) & CHANNELS
     if root is None:
         return set()
     # Preserve previously saved bindings even when old invitation rows are absent.
     configured = read_json(root / 'personal-chat' / 'config.json')
     if configured:
-        return set(configured) & {'qq', 'wechat'}
+        return set(configured) & CHANNELS
     saved = read_json(root / 'personal-chat' / 'existing-access.json')
-    return set(saved.get('channels', [])) & {'qq', 'wechat'}
+    return set(saved.get('channels', [])) & CHANNELS
 
 
 def install_personal_chat(app, server):

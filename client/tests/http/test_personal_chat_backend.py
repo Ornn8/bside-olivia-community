@@ -456,7 +456,8 @@ def test_first_qq_binding_starts_listener_without_restart(tmp_path, monkeypatch)
     asyncio.run(scenario())
 
 
-def test_two_channel_lifecycle_uses_one_service_and_stops_owned_tasks(tmp_path, monkeypatch):
+def test_a_kept_wechat_binding_never_starts_and_qq_runs_alone(tmp_path, monkeypatch):
+    # WeChat is retired (2026-10-22): a binding saved before stays on disk but is never started.
     from runtime.reply.proactive_letters import write_json
     write_json(tmp_path / 'personal-chat/existing-access.json', {'channels': ['qq', 'wechat']})
     from aiohttp import web
@@ -517,13 +518,12 @@ def test_two_channel_lifecycle_uses_one_service_and_stops_owned_tasks(tmp_path, 
         await runner.setup()
         for _ in range(20):
             await asyncio.sleep(.005)
-            if len(server.store.personal_chats) == 2 and all(r.get("delivery_status") == "DELIVERED" for r in server.store.personal_chats):
+            if len(server.store.personal_chats) == 1 and all(r.get("delivery_status") == "DELIVERED" for r in server.store.personal_chats):
                 break
         await runner.cleanup()
-        assert sorted(seen) == ["qq", "wechat"]
-        assert sorted(stopped) == ["qq", "wechat"]
-        assert server.store.letters == [] and len(server.store.personal_chats) == 2
-        assert server.store.settings == {} and list(server.store.personal_chat_cursors.values()) == ["synthetic-cursor"]
+        assert seen == ["qq"] and stopped == ["qq"]
+        assert server.store.letters == [] and len(server.store.personal_chats) == 1
+        assert server.store.settings == {} and list(server.store.personal_chat_cursors.values()) == []
         assert app[backend._RUNTIME]["roundtrips"] == {"qq": 1}
         assert "qq" in app[backend._RUNTIME]["e2e_verified_at"]
         assert app[backend._RUNTIME]["delivery_health"]["qq"] == "E2E_VERIFIED"

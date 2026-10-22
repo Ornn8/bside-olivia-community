@@ -68,7 +68,7 @@ from letter_triage import (
     _singing_video_configured,
 )
 from runtime.media.media_paths import configured_media_path
-from runtime import output_language, ui_language
+from runtime import output_language
 from runtime.ui_i18n_backend import tr
 from runtime.media.local_song_library import LocalSongLibrary, LocalSongError
 from music_reply import (
@@ -3541,7 +3541,7 @@ def _proactive_instruction(intent, *, planning, mode='text'):
                  '只说这件记下的事本身，不编造当时的细节。'))
     if intent.get('kind') == 'contact_invitation':
         task += '\n' + (proactive_config.template('contact_invitation') or (
-                 '本次关系资格已由应用确认。自然地提出交换联系方式，并明确询问用户想要QQ还是微信；'
+                 '本次关系资格已由应用确认。自然地提出加个QQ，并明确询问用户愿不愿意；'
                  '不要提分数、解锁、系统门槛，不声称已经添加或用户已经同意，不编造账号或二维码。'
                  '可以围绕偶尔想随口聊两句来写，不要求用户转移所有通信，保留写信的习惯。'))
     guidance = profile_from_rows([{'initiative_tier': intent.get('relationship_tier', 'reserved'),
@@ -3748,11 +3748,6 @@ async def _proactive_complete(intent: dict, *, planning: bool, turn: dict, mode:
     return text
 
 
-def _names_wechat(body: str) -> bool:
-    """The invitation must name both apps; an English letter names WeChat in Latin letters."""
-    return '微信' in body or ui_language.is_english() and 'wechat' in body.lower()
-
-
 async def _publish_proactive(intent: dict, plan: dict, *, turn: dict) -> dict | None:
     """Write and publish one proactive letter; the letter, or None when nothing was published."""
     global _proactive_busy
@@ -3772,7 +3767,7 @@ async def _publish_proactive(intent: dict, plan: dict, *, turn: dict) -> dict | 
     try:
         fixed = intent['contact']['body'] if contact else None  # The cloud's own text: no model writes it.
         body = fixed or await _proactive_complete(intent, planning=False, mode=plan['format'], turn=turn)
-        if intent.get('kind') == 'contact_invitation' and ('QQ' not in body.upper() or not _names_wechat(body)):
+        if intent.get('kind') == 'contact_invitation' and 'QQ' not in body.upper():
             raise ValueError('PROACTIVE_CONTACT_INVITATION_INCOMPLETE')
         signature = None
         from runtime.reply.letter_presentation import split_signature

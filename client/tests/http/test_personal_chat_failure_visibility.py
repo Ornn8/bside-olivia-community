@@ -31,7 +31,7 @@ def test_generation_failure_keeps_safe_cause_and_survives_connected_restart(tmp_
     assert 'qq' not in published[-1]['errors']
 
 
-@pytest.mark.parametrize('channel', ['qq', 'wechat'])
+@pytest.mark.parametrize('channel', ['qq'])  # WeChat is retired; QQ runs the same flow
 @pytest.mark.parametrize('notice_ack', [True, False])
 def test_exhausted_generation_notifies_once_across_restart_and_keeps_next_message_working(
         tmp_path, monkeypatch, channel, notice_ack):
