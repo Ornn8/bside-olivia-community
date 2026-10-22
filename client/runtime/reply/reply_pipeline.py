@@ -527,6 +527,7 @@ class ReplyPipeline:
                     cached=metadata.get('companion_decision'),
                     speech_enabled=(chat_metadata or {}).get('speech_enabled') is True,
                     piano_experience=(chat_metadata or {}).get('piano_experience'),
+                    offer_experience=(chat_metadata or {}).get('offer_experience'),
                     bedtime_offer=(context.mode is ReplyMode.FUTURE_IM and (chat_metadata or {}).get('channel') == 'qq'
                                    and (chat_metadata or {}).get('bedtime_offer_enabled') is True
                                    and not (chat_metadata or {}).get('proactive')),
@@ -619,9 +620,24 @@ class ReplyPipeline:
                     speech_note = ''
                 except ValueError:
                     piano_note = '没有唯一匹配的已上传 MIDI。自然地问对方指的是哪一首，或请对方上传 MIDI；不编造曲目，不承诺已经录好。'
+        offer_note = ''
+        media_offer = (companion_decision or {}).get('media_offer')
+        # A story being recorded, a bedtime offer or a piano piece in this turn comes first.
+        if (not degraded and not reconsidered_silence and not speech_request and not piano_note
+                and (companion_decision or {}).get('speech_offer') not in ('bedtime', 'clarify')
+                and media_offer in ('piano', 'call') and (chat_metadata or {}).get('channel') == 'qq'):
+            from runtime.media_offers import INSTRUCTION as OFFER_INSTRUCTION
+            offer_note = OFFER_INSTRUCTION[media_offer]
+        style_note = ''
+        if (not degraded and ordinary_chat and (chat_metadata or {}).get('channel') == 'qq'
+                and isinstance((chat_metadata or {}).get('recent_replies'), list)):
+            # Stock phrases she has overused lately, and the user is always 你 in her narration (2026-10-22).
+            from .style_reminders import note as style_reminder
+            style_note = style_reminder(chat_metadata['recent_replies'])
         from runtime.piano_collection import environment_context
         collection_note = environment_context() if context.mode is ReplyMode.TEXT_LETTER else ''
-        final_notes = tuple(note for note in (decision_note, generation_note, speech_note, piano_note, collection_note) if note)
+        final_notes = tuple(note for note in (decision_note, generation_note, speech_note, piano_note, offer_note,
+                                              style_note, collection_note) if note)
         # Content-only legacy requests keep their adapter-owned assembly path.
         if decision_note and isinstance(prepared, ReplyRequest) and prepared.messages is None:
             prepared = replace(prepared, messages=prepared.normalized_messages())

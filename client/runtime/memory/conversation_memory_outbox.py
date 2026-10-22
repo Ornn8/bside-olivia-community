@@ -173,8 +173,9 @@ class CanonicalMemoryOutbox:
     async def scan_once(self) -> OutboxScanResult:
         async with self._scan_lock:
             try:
-                letters = self._read_letters()
-                received = self._read_received_rows()
+                payload = self._read_state()  # parsed once for both readers
+                letters = self._read_letters(payload)
+                received = self._read_received_rows(payload)
                 terminal_sources = self._terminal_sources()
             except ConversationMemoryOutboxError as exc:
                 return OutboxScanResult("unavailable", error_code=exc.code)
@@ -395,14 +396,26 @@ class CanonicalMemoryOutbox:
             raise ConversationMemoryOutboxError("MEMORY_OUTBOX_STORAGE_UNAVAILABLE") from exc
         return row is not None and bool(row[0])
 
-    def _read_received_rows(self):
-        """Read durable user intake without changing canonical delivery eligibility."""
+    def _read_state(self):
+        """The parsed letter state file; None when there is none yet."""
         try:
-            payload = json.loads(self.state_path.read_text(encoding='utf-8'))
+            payload = json.loads(self.state_path.read_text(encoding="utf-8"))
         except FileNotFoundError:
-            return ()
+            return None
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-            raise ConversationMemoryOutboxError('MEMORY_OUTBOX_STATE_UNAVAILABLE') from exc
+            raise ConversationMemoryOutboxError(
+                "MEMORY_OUTBOX_STATE_UNAVAILABLE"
+            ) from exc
+        if not isinstance(payload, Mapping):
+            raise ConversationMemoryOutboxError("MEMORY_OUTBOX_STATE_INVALID")
+        return payload
+
+    def _read_received_rows(self, payload=False):
+        """Read durable user intake without changing canonical delivery eligibility."""
+        if payload is False:
+            payload = self._read_state()
+        if payload is None:
+            return ()
         if not isinstance(payload, Mapping):
             raise ConversationMemoryOutboxError('MEMORY_OUTBOX_STATE_INVALID')
         rows = []
@@ -413,15 +426,11 @@ class CanonicalMemoryOutbox:
             rows.extend(row for row in values if isinstance(row, Mapping))
         return tuple(rows)
 
-    def _read_letters(self) -> tuple[Mapping[str, object], ...]:
-        try:
-            payload = json.loads(self.state_path.read_text(encoding="utf-8"))
-        except FileNotFoundError:
+    def _read_letters(self, payload=False) -> tuple[Mapping[str, object], ...]:
+        if payload is False:
+            payload = self._read_state()
+        if payload is None:
             return ()
-        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-            raise ConversationMemoryOutboxError(
-                "MEMORY_OUTBOX_STATE_UNAVAILABLE"
-            ) from exc
         if not isinstance(payload, Mapping):
             raise ConversationMemoryOutboxError("MEMORY_OUTBOX_STATE_INVALID")
         letters = payload.get("letters", ())

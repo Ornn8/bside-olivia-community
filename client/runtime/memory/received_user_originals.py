@@ -124,6 +124,25 @@ def received_originals(rows, *, include_undelivered=False):
     return tuple(result)
 
 
+def _known(adapter, user_id):
+    """What the index already holds, read once per scan; None writes every record as before."""
+    state = getattr(adapter, 'received_index_state', None)
+    if not callable(state):
+        return None
+    try:
+        known = state(user_id=user_id)
+    except Exception:
+        return None
+    return known if isinstance(known, tuple) and len(known) == 2 else None
+
+
+def _already_indexed(record, known):
+    """The same text is indexed and every exchange alias is recorded, so writing it again changes nothing."""
+    texts, aliases = known
+    return (texts.get(record.source_id) == record.user_message
+            and all((exchange, record.source_id) in aliases for exchange in record.exchange_sources))
+
+
 def index_received_rows(adapter, rows, *, user_id, memory_lifecycle=None):
     """Synchronous local writes, suitable for asyncio.to_thread; returns indexed refs."""
     from .conversation_memory_identity import normalize_conversation_memory_user_id
@@ -133,8 +152,11 @@ def index_received_rows(adapter, rows, *, user_id, memory_lifecycle=None):
         return ()
     if memory_lifecycle is not None and memory_lifecycle.is_paused():
         return ()
+    known = _known(adapter, user_id)
     indexed = []
     for record in received_originals(rows):
+        if known is not None and _already_indexed(record, known):
+            continue
         def operation():
             return write(user_id=user_id, source_id=record.source_id,
                 user_message=record.user_message, occurred_at=record.occurred_at,

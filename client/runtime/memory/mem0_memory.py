@@ -630,6 +630,11 @@ class DeferredConversationMemoryAdapter:
             index = getattr(delegate, 'index_received_user', None)
             return index(**kwargs) if callable(index) else False
 
+    def received_index_state(self, **kwargs):
+        with self._using_current() as delegate:
+            state = getattr(delegate, 'received_index_state', None)
+            return state(**kwargs) if callable(state) else None
+
     def retract_received_user(self, **kwargs):
         with self._using_current() as delegate:
             retract = getattr(delegate, 'retract_received_user', None)
@@ -1198,6 +1203,9 @@ class Mem0ConversationMemoryAdapter:
         if removed:
             self._evidence_cache.clear()
         return removed
+
+    def received_index_state(self, *, user_id):
+        return self._originals.received_state(self._normalized_user_id(user_id))
 
     def index_received_user(self, *, user_id, source_id, user_message, occurred_at, exchange_sources=()):
         user = self._normalized_user_id(user_id)
