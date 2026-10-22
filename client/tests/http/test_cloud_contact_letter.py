@@ -37,8 +37,8 @@ async def complete(messages, *, request_id, scope):
     calls.append(dict(messages=tuple(dict(m) for m in messages), request_id=request_id, contact=contact_context.current()))
     if failing:
         raise RuntimeError('LLM_UNAVAILABLE')
-    if request_id.endswith(':plan'):
-        return SimpleNamespace(text='{"title":"模型取的标题"}')
+    if request_id.endswith(':title'):
+        return SimpleNamespace(text='{"title":"「模型取的标题」"}')
     return SimpleNamespace(text='今晚想和你说两句。\n[[signature:林离]]')
 server.letters_adapter.gateway = SimpleNamespace(complete_scoped=complete, timeout_seconds_for_scope=lambda *a, **kw: 10)
 ROOT_DIR = server._state_root()
@@ -69,14 +69,16 @@ def letters_of(contact_id):
 '''
 
 
-def test_a_letter_is_written_from_the_brief_and_length_with_a_title_from_the_model(tmp_path):
+def test_a_letter_is_written_from_the_brief_and_length_and_titled_from_its_own_text(tmp_path):
     run_isolated(tmp_path, SETUP + r'''
 async def main():
     contact_id = await carry(1, letter_length={'min': 200, 'max': 400})
-    assert [call['request_id'].rsplit(':', 1)[-1] for call in calls] == ['plan', 'body']
+    assert [call['request_id'].rsplit(':', 1)[-1] for call in calls] == ['body', 'title']
     assert all(call['contact'] == contact_id for call in calls)  # Every call ran in the contact's context.
-    plan, body = [' '.join(m['content'] for m in call['messages']) for call in calls]
-    assert cloud_contact.TITLE_RULE in plan and '提醒她今晚月亮很亮，不要催她回复' in plan
+    body, title = [' '.join(m['content'] for m in call['messages']) for call in calls]
+    # The title is asked of the finished letter alone: no brief, no context, a small request.
+    assert [m['content'] for m in calls[1]['messages']] == [server.LETTER_TITLE_RULE, '今晚想和你说两句。']
+    assert '提醒她今晚月亮很亮' not in title and len(title) < len(body) / 5
     assert cloud_contact.LETTER_RULE in body and '提醒她今晚月亮很亮，不要催她回复' in body
     assert '字数要求：正文200到400字。' in body
     assert '判断林离是否有具体' not in body and '没有自然的具体话题就defer' not in body   # Not her own decision to write.
@@ -110,7 +112,7 @@ def test_the_titles_the_model_cannot_give_fall_back_to_the_usual_one(tmp_path):
     run_isolated(tmp_path, SETUP + r'''
 original = complete
 async def odd(messages, *, request_id, scope):
-    if request_id.endswith(':plan'):
+    if request_id.endswith(':title'):
         calls.append(dict(request_id=request_id))
         return SimpleNamespace(text='not json at all')
     return await original(messages, request_id=request_id, scope=scope)

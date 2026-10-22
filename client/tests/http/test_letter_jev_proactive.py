@@ -58,8 +58,12 @@ def request(self, encoded):
         'latency_ms':1,'api_calls':1,'usage':{'input_tokens':1}}
 JevProactivePort._request = request
 original_complete = complete
+titles = []
 async def body(messages, **kwargs):
     assert not kwargs['request_id'].endswith(':plan')  # No legacy semantic plan.
+    if kwargs['request_id'].endswith(':title'):  # Asked of the finished letter alone.
+        titles.append([m['content'] for m in messages])
+        return SimpleNamespace(text='{"title":"在家读书的晚上"}')
     wire = '\n'.join(m['content'] for m in messages)
     assert '<proactive_decision>' in wire
     if case == 'body_changed':
@@ -77,9 +81,11 @@ async def main():
     if case in {'send', 'no_old_letter', 'next_opportunity'}:
         assert len(published) == 1, (case, server._proactive_reason, requests)
         assert published[0]['proactive_decision']['decision']['action'] == 'send'
+        assert published[0]['title'] == '在家读书的晚上' and titles == [[server.LETTER_TITLE_RULE, '慢慢来就好。']]
         assert len(calls) == 1 and len(requests) == (2 if case == 'next_opportunity' else 1)
     else:
         assert not published, (case, published)
+        assert titles == []
         assert len(calls) == (1 if case == 'body_changed' else 0)
         assert len(requests) == (0 if case == 'pause' else 1)
     if case == 'defer':

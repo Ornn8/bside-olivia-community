@@ -3782,8 +3782,9 @@ async def _publish_proactive(intent: dict, plan: dict, *, turn: dict) -> dict | 
             from runtime.personal_chat.contact_invitation import status
             if status(store.letters, private_world_port.snapshot())['state'] != 'eligible':
                 return
+        title = plan['title'] or await _letter_title(intent, body)  # rechecked with the draft below
         letter = {'letter_id': str(uuid.uuid4()), 'origin': 'proactive', 'content': '',
-                  'title': plan['title'], 'material': {}, 'created_at': int(time.time()),
+                  'title': title, 'material': {}, 'created_at': int(time.time()),
                   'letter_status': 'PROCESSING', 'is_read': 0, 'reply_text': '',
                   'proactive_candidate_id': intent['id'], 'reply_mode': 'text',
                   'proactive_source_id': intent.get('source_id'),
@@ -3873,7 +3874,7 @@ async def _deliver_contact_letter(event: dict):
                 title = event['title'] or cloud_contact.DEFAULT_TITLE
             else:
                 turn = await _prepare_proactive_turn(intent, now=now)
-                title = event['title'] or await _contact_title(intent, turn)
+                title = event['title']  # None: taken from the finished letter
             letter = await _publish_proactive(intent, {'decision': 'send', 'format': 'text', 'title': title}, turn=turn)
         if letter is None:
             return Outcome('retry', 'CONTACT_LETTER_NOT_PUBLISHED')
@@ -3881,17 +3882,31 @@ async def _deliver_contact_letter(event: dict):
     return Outcome('delivered', cloud_contact.join_codes(await _contact_letter_media(letter, skipped)))
 
 
-async def _contact_title(intent: dict, turn: dict) -> str:
-    """A short title from the model for a letter whose title the cloud left open."""
+LETTER_TITLE_RULE = ('给下面这封她刚写好的信取个标题。只输出 JSON：{"title":"标题"}。标题2到12个字，跟信用同一种语言'
+                     '（英文信用英文，不超过6个词）；说出这封信里最具体的那件事或那份心情，像她自己会给这封信起的名字。'
+                     '不要泛泛的、放到哪封信上都成立的标题，不写日期、称呼、落款和引号。')
+
+
+async def _letter_title(intent: dict, body: str) -> str:
+    """A title taken from the finished letter: one small request over its body alone, not the whole context.
+    Any failure keeps the letter and gives it the usual title."""
     from runtime import cloud_contact
+    gateway = letters_adapter.gateway
+    scope = GatewayRequestScope.PROACTIVE_PLANNING
     try:
-        plan = json.loads(await _proactive_complete(intent, planning=True, turn=turn))
+        result = await asyncio.wait_for(gateway.complete_scoped(
+            ({'role': 'system', 'content': LETTER_TITLE_RULE}, {'role': 'user', 'content': body[:4000]}),
+            request_id='proactive:' + intent['id'] + ':title', scope=scope),
+            timeout=gateway.timeout_seconds_for_scope(scope, default=60))
+        plan = json.loads(result.text.strip())
         title = plan.get('title') if isinstance(plan, dict) else None
-        if isinstance(title, str) and 1 <= len(title.strip()) <= 40:
-            return title.strip()
-    except (ValueError, TypeError, GatewayError, asyncio.TimeoutError):
+        if isinstance(title, str):
+            title = title.strip().strip('"\'“”「」《》').strip()
+            if 1 <= len(title) <= 40 and '\n' not in title:
+                return title
+    except Exception:
         pass
-    return cloud_contact.DEFAULT_TITLE
+    return tr(cloud_contact.DEFAULT_TITLE)
 
 
 async def _contact_tick() -> None:
@@ -4002,7 +4017,7 @@ async def _jev_proactive_tick() -> None:
             _observe_letter_initiative('deferred')
             return
         _proactive_reason = 'writing'
-        await _publish_proactive(intent, {'decision': 'send', 'format': 'text', 'title': tr('想和你说说话')}, turn=turn)
+        await _publish_proactive(intent, {'decision': 'send', 'format': 'text', 'title': None}, turn=turn)
         _refresh_proactive_context()
         scan_pending(root)
         _proactive_reason = 'waiting'
