@@ -10,6 +10,7 @@ import uuid
 from runtime.tls import client_tls_context as gpu_tls_context
 from urllib.parse import urlsplit
 from aiohttp import ClientSession, ClientTimeout, ClientError, ClientSSLError, ClientConnectorError, TCPConnector
+from runtime import contact_context
 from runtime.cloud_service import endpoint, CloudError
 from runtime.official_endpoints import canonical_api_origin
 from runtime import ui_language
@@ -42,6 +43,7 @@ class RemoteGeneration:
         headers['X-Olivia-Daily-Video-Moment'] = '1'
         headers['X-Olivia-Piano'] = '1'
         headers.update(ui_language.headers())
+        headers.update(contact_context.headers())
         payload = None
         if action == 'submit':
             if set(data) != {'request_id', 'kind', 'input'} or data['kind'] not in ('tts', 'cover', 'image', 'video', 'original', 'lipsync', 'separate', 'cover_video', 'original_video', 'daily_video', 'piano') or not isinstance(data['input'], dict):
@@ -346,7 +348,8 @@ class RemoteGeneration:
             async with ClientSession(timeout=ClientTimeout(total=600), trust_env=False, connector=TCPConnector(ssl=gpu_tls_context())) as session:
                 with path.open('rb') as source:
                     async with session.post(self.url + '/v1/assets', data=source,
-                        headers={'Authorization': 'Bearer ' + self.token, 'X-Asset-Suffix': path.suffix.lower(), **ui_language.headers()},
+                        headers={'Authorization': 'Bearer ' + self.token, 'X-Asset-Suffix': path.suffix.lower(),
+                                 **ui_language.headers(), **contact_context.headers()},
                         allow_redirects=False) as response:
                         if response.status != 201: raise CloudError('GPU_UPLOAD_FAILED', 502)
                         raw = await response.content.read(4097)
@@ -415,7 +418,7 @@ class RemoteGeneration:
             # Shared scenes must be deployed once; never silently re-upload large reference videos.
             if field in ('scene_asset', 'spoken_scene_asset') and shared is None: raise CloudError('GPU_SHARED_SCENE_MISSING', 503)
             data[field] = shared or await self.upload(path)
-        submission = saved.get('submission') or {'request_id': uuid.uuid4().hex, 'kind': kind, 'input': data}
+        submission = saved.get('submission') or {'request_id': contact_context.request_prefix() + uuid.uuid4().hex, 'kind': kind, 'input': data}
         if receipt and not saved:
             receipt.parent.mkdir(parents=True, exist_ok=True)
             temporary_receipt = receipt.with_suffix('.tmp')

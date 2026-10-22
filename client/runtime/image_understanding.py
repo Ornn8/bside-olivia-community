@@ -216,7 +216,7 @@ async def commit_image_memory(server, row):
 async def _commit_image_memory(server, row):
     if row.get('image_delivery_status') == 'DELIVERED':
         row.setdefault('image_delivered_at', datetime.now(timezone.utc).isoformat())
-        if not row.get('image_description') and row.get('prepared_image'):
+        if not row.get('image_description') and row.get('prepared_image') and not row.get('contact_asset'):
             row['image_world_status'] = 'PENDING'
             now = datetime.now(timezone.utc).timestamp()
             attempts = row.get('image_description_attempts', row.get('image_description_failures', 0))

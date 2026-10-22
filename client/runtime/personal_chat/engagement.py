@@ -165,6 +165,12 @@ def initiating_channel(server, qq_ready, now=None):
     settings = getattr(server, '_proactive_settings', None)
     if callable(settings) and settings().get('enabled'):
         available.add('letter')
+    from runtime import proactive_config
+    policy = proactive_config.rule('channel_policy')
+    if policy != 'preferred':
+        # The cloud may name the channel to try first instead of following the owner's habit.
+        return next((name for name in (('qq', 'letter') if policy == 'qq_first' else ('letter', 'qq'))
+                     if name in available), None)
     counts = channel_counts(server, now)
     from runtime.reply.daily_proactive import server_daily
     now = time.time() if now is None else now

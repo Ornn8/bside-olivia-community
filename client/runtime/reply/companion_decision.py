@@ -22,6 +22,7 @@ import uuid
 from jsonschema import Draft202012Validator, ValidationError
 
 from runtime.reply.jev_billing import billing_headers, settle_receipt
+from runtime.contact_context import headers as contact_headers
 
 
 MODEL = 'jev-1.13.0'
@@ -453,6 +454,7 @@ class JevDecisionPort:
             headers.update(billing_headers())
             if self._token:
                 headers['Authorization'] = 'Bearer ' + self._token
+        headers.update(contact_headers())
         return headers
 
     def _packet(self, turn):

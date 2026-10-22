@@ -22,8 +22,8 @@ def live_profile(server, now=None):
 
 
 def unprompted(row):
-    """Contact she starts on her own, as opposed to a reply."""
-    return row.get('origin') == 'proactive'
+    """Contact she starts on her own, as opposed to a reply or a contact the cloud asked for."""
+    return row.get('origin') == 'proactive' and not row.get('contact_id')
 
 
 @contextmanager

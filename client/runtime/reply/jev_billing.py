@@ -13,6 +13,7 @@ import time
 import urllib.error
 import urllib.request
 
+from runtime import contact_context
 from runtime.diagnostics.jev_pricing import CURRENT_PRICE_VERSION, PRICE_VERSION, settlement_rates
 
 
@@ -59,6 +60,8 @@ def billing_scope(turn_id):
     if os.environ.get('OLIVIA_JEV_BILLING_ENABLED') != '1' or CURRENT.get() is not None:
         yield
         return
+    # Every judgment made for a cloud contact settles under the contact's own id.
+    turn_id = contact_context.current() or turn_id
     if not isinstance(turn_id, str) or not re.fullmatch(r'[A-Za-z0-9_.:-]{1,128}', turn_id):
         raise ValueError('JEV_BILLING_TURN_INVALID')
     try:
