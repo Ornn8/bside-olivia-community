@@ -177,7 +177,8 @@ def _contact_access(server) -> dict[str, object]:
 def _store_setup_choice(server, choice: str) -> list[str]:
     if choice not in {"qq", "wechat", "both"}:
         raise RuntimeError("PERSONAL_CHAT_CHANNEL_CHOICE_INVALID")
-    channels = _selected_channels(server) | ({'qq', 'wechat'} if choice == 'both' else {choice})
+    # WeChat is retired (2026-10-22): a choice that names it sets up QQ, the one chat app left.
+    channels = _selected_channels(server) | {'qq'}
     _atomic_text(_root(server) / 'personal-chat' / 'setup-choice.json',
                  json.dumps({'channels': sorted(channels)}) + '\n')
     return sorted(channels)

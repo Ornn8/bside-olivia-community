@@ -416,6 +416,7 @@ EN: dict[str, str] = {
     "回应依据暂时无法读取。": "What the reply was based on can't be loaded right now.",
     "最近的 QQ 回复尚无可核验的状态快照，不能用当前状态代替。": "The latest QQ reply has no verifiable state snapshot, so the current state can't stand in for it.",
     "近况暂时无法读取，请稍后重试。": "Her update can't be loaded right now. Please try again later.",
+    "近况暂时读不到，下面是 {time} 时的状态。": "Her update can't be loaded right now; below is how things were at {time}.",
     "重试": "Retry",
     "预留中": "On hold",
     "等待结算": "Awaiting settlement",

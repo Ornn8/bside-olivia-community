@@ -73,11 +73,18 @@ window.fetch=async(url,options)=>{
         assert 'private-' not in json.dumps(report)
         assert page.get_by_role('tab').count() == 3
         assert '近况暂时无法读取，请稍后重试。' in page.locator('#world').inner_text()
+        # The retained view is marked as old at the top, not only in the status line at the bottom.
+        notice = page.locator('#world').get_by_text('近况暂时读不到，下面是', exact=False)
+        assert notice.is_visible()
+        assert page.evaluate("()=>{const n=[...document.querySelectorAll('#world p')].find(e=>e.textContent.includes('近况暂时读不到'));"
+                             "const o=document.querySelector('#world .olivia-world-overview');"
+                             "return Boolean(n&&o&&(n.compareDocumentPosition(o)&Node.DOCUMENT_POSITION_FOLLOWING))}")
         page.screenshot(path=str(tmp_path/'world-failed-retained.png'), full_page=True)
         page.evaluate('window.failureMode=null')
         page.get_by_role('button', name='更新近况', exact=True).click()
         page.wait_for_function("!document.querySelector('#world').innerText.includes('近况暂时无法读取，请稍后重试。')")
         assert page.get_by_role('tab').count() == 3
+        assert '近况暂时读不到' not in page.locator('#world').inner_text()
         page.screenshot(path=str(tmp_path/'world-recovered.png'), full_page=True)
         # An initial GET failure has no previous view to retain, but uses the
         # same shipped transport helpers and reports its actual stage.

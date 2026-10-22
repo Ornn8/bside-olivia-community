@@ -60,7 +60,8 @@ def test_saved_choice_controls_listener_on_each_app_start(tmp_path, monkeypatch,
         await runner.setup()
         await asyncio.sleep(.02)
         await runner.cleanup()
-        assert connected == ([choice] if choice in {'qq', 'wechat'} else [])
+        # WeChat is retired: choosing it sets up QQ, and the WeChat listener never starts.
+        assert connected == (['qq'] if choice in {'qq', 'wechat'} else [])
     asyncio.run(run_once())
     asyncio.run(run_once())
 
@@ -74,4 +75,4 @@ def test_credentials_do_not_unlock_contacts_and_missing_selected_channel_never_f
                     dict(letter_id='choice', letter_status='COMPLETED', created_at=2,
                          contact_invitation_id='invite', content='微信',
                          contact_choice={'choice': 'wechat', 'quote': '微信'})]
-    assert backend.selected_channels(server) == {'wechat'}
+    assert backend.selected_channels(server) == {'qq'}

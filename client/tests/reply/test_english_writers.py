@@ -87,14 +87,12 @@ def test_the_default_signature_is_linli_in_english_and_unchanged_in_chinese():
 
 # --- the contact invitation names both apps -----------------------------------------------------------------------------
 
-def test_an_english_invitation_may_name_wechat_in_latin_letters():
+def test_the_invitation_names_only_qq_now_that_wechat_is_retired():
     import local_server
-    assert local_server._names_wechat("QQ 还是 微信？")
-    assert not local_server._names_wechat("Would you like QQ or WeChat?")
-    english()
-    assert local_server._names_wechat("Would you like QQ or WeChat?")
-    assert local_server._names_wechat("QQ 还是 微信？")
-    assert not local_server._names_wechat("Would you like QQ?")
+    assert not hasattr(local_server, "_names_wechat")
+    import inspect
+    source = inspect.getsource(local_server._proactive_instruction)
+    assert "加个QQ" in source and "微信" not in source
 
 
 # --- daily video words ---------------------------------------------------------------------------------------------------

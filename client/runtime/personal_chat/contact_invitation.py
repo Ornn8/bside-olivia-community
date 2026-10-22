@@ -98,8 +98,9 @@ def status(rows, snapshot):
                         selected = "both" if len(channels) == 2 else choice
                     else:
                         selected = choice
+        # WeChat is retired: whichever app was chosen, QQ is the one that can be set up.
         return {"state": selected or "invited", "invitation_id": invitation["letter_id"],
-                "channels": ["qq", "wechat"] if selected == "both" else [selected] if selected in {"qq", "wechat"} else []}
+                "channels": ["qq"] if selected in {"qq", "wechat", "both"} else []}
     inflight = next((r for r in rows
                      if r.get("origin") == "proactive"
                      and r.get("proactive_kind") == "contact_invitation"

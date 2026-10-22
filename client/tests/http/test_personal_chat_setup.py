@@ -201,25 +201,24 @@ def test_qq_start_returns_while_dependencies_are_preparing(tmp_path, monkeypatch
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize('initial,additional', [('wechat', 'qq'), ('qq', 'wechat')])
-def test_selected_channel_can_add_other_channel_without_losing_binding(tmp_path, initial, additional):
+@pytest.mark.parametrize('initial,additional', [('wechat', 'qq'), ('qq', 'wechat'), ('both', 'both')])
+def test_every_channel_choice_sets_up_qq_now_that_wechat_is_retired(tmp_path, initial, additional):
     from runtime.personal_chat import setup
     server = _Server(tmp_path)
     server.store.letters = [dict(letter_id='invite', origin='proactive', proactive_kind='contact_invitation',
         letter_status='COMPLETED', published_at=1, contact_setup_choice=initial),
         dict(letter_id='reply', letter_status='COMPLETED', published_at=2,
              contact_invitation_id='invite', content=initial, contact_choice={'choice': initial, 'quote': initial})]
-    assert setup._selected_channels(server) == {initial}
-    assert setup._store_setup_choice(server, additional) == ['qq', 'wechat']
-    assert setup._selected_channels(server) == {'qq', 'wechat'}
-    assert setup._selected_channels(_Server(tmp_path)) == {'qq', 'wechat'}
-    assert setup._store_setup_choice(server, additional) == ['qq', 'wechat']
+    assert setup._selected_channels(server) == {'qq'}
+    assert setup._store_setup_choice(server, additional) == ['qq']
+    assert setup._selected_channels(server) == {'qq'}
+    assert setup._selected_channels(_Server(tmp_path)) == {'qq'}
     # Narrative/model-derived choices cannot roll back explicit settings.
     server.store.letters.append(dict(letter_id='later-reply', letter_status='COMPLETED',
         published_at=9999999999,
         contact_invitation_id='invite', content='later',
         contact_choice={'choice': 'later', 'quote': 'later'}))
-    assert setup._selected_channels(server) == {'qq', 'wechat'}
+    assert setup._selected_channels(server) == {'qq'}
 
 
 def test_wechat_qr_is_rendered_locally_and_rejects_foreign_targets() -> None:
@@ -305,25 +304,25 @@ def test_completed_invitation_can_choose_channel_directly_in_settings(tmp_path: 
                 json={"choice": "wechat"},
             )
             assert selected.status == 200
-            assert (await selected.json())["channels"] == ["wechat"]
+            assert (await selected.json())["channels"] == ["qq"]  # WeChat is retired
 
             after = await client.get(setup.STATUS_PATH, headers=headers)
             body = await after.json()
-            assert body["contact_state"] == "wechat"
-            assert body["selected_channels"] == ["wechat"]
+            assert body["contact_state"] == "qq"
+            assert body["selected_channels"] == ["qq"]
 
     asyncio.run(scenario())
-    assert setup._selected_channels(_Server(tmp_path)) == {'wechat'}
+    assert setup._selected_channels(_Server(tmp_path)) == {'qq'}
 
 
-def test_fresh_user_can_choose_both_without_relationship_or_invitation(tmp_path):
+def test_fresh_user_can_choose_without_relationship_or_invitation(tmp_path):
     from runtime.personal_chat import setup
     server = _Server(tmp_path)
     assert setup._contact_access(server)['state'] == 'available'
-    assert setup._store_setup_choice(server, 'both') == ['qq', 'wechat']
+    assert setup._store_setup_choice(server, 'both') == ['qq']  # WeChat is retired
     restarted = _Server(tmp_path)
-    assert setup._selected_channels(restarted) == {'qq', 'wechat'}
-    assert setup._contact_access(restarted)['state'] == 'both'
+    assert setup._selected_channels(restarted) == {'qq'}
+    assert setup._contact_access(restarted)['state'] == 'qq'
     assert not restarted.store.letters
 
 
@@ -332,7 +331,9 @@ def test_existing_bindings_survive_missing_invitation_after_upgrade(tmp_path):
     folder = tmp_path / 'personal-chat'
     folder.mkdir()
     (folder / 'config.json').write_text(json.dumps({'qq': {}, 'wechat': {}}))
-    assert setup._selected_channels(_Server(tmp_path)) == {'qq', 'wechat'}
+    # The WeChat binding stays on disk; only QQ is used now that WeChat is retired.
+    assert setup._selected_channels(_Server(tmp_path)) == {'qq'}
+    assert set(json.loads((folder / 'config.json').read_text())) == {'qq', 'wechat'}
 
 
 def test_qq_setup_tests_loopback_and_never_persists_plaintext_token(

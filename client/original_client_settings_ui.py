@@ -1546,6 +1546,10 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       }), draft, hint);
     };
     const status = text("p", t("读取近况…"), "text-text-secondary text-body-m");
+    // A failed reload keeps the last status on screen; this line, at the top, says how old it is.
+    const notice = text("p", "", "text-text-secondary text-body-m");
+    notice.hidden = true;
+    let shownAt = null;
     let busy = false;
     let attempted = false;
     const momentRow = (moment) => {
@@ -1766,6 +1770,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const draw = (payload) => {
       if (!payload || payload.schema_version !== "olivia.daily-life.v1" || !Array.isArray(payload.projects)
           || !Array.isArray(payload.shared) || !Array.isArray(payload.moments)) throw new Error("DAILY_LIFE_INVALID");
+      const drawnAt = payload.rhythm?.local_time || new Date().toISOString();
       const now = section(t("此刻的林离"), payload.stale ? t("这是她最近留下的近况，不代表此刻仍在做同一件事。") : t("她愿意与你分享的一小段生活。"));
       if (payload.rhythm) {
         now.append(text("p", payload.rhythm.activity, "text-text-title text-title-s"),
@@ -2048,9 +2053,11 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         }else basis.append(text('p',frozen?.status==='unavailable'?t('回应依据暂时无法读取。'):t('最近的 QQ 回复尚无可核验的状态快照，不能用当前状态代替。')));
         status.className='olivia-world-status';status.setAttribute('role','status');
         const scroll=panel.scrollTop;
-        panel.replaceChildren(top,overview,tabs,...views,basis,status);
+        panel.replaceChildren(top,notice,overview,tabs,...views,basis,status);
         panel.scrollTop=scroll;
       } else panel.replaceChildren(heading, status, button(t("更新近况"), () => load(true)), now, projects, shared, episodeHistory, moments, historyPanel(), relationship);
+      shownAt = drawnAt;
+      notice.hidden = true;
     };
     const load = async (refresh = false) => {
       if (busy || !alive()) return;
@@ -2078,6 +2085,10 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         reportDailyLifeFailure(_error, stage, 'daily_life', method);
         if (alive()) {
           status.textContent = t("近况暂时无法读取，请稍后重试。");
+          if (shownAt) {
+            notice.textContent = t("近况暂时读不到，下面是 {time} 时的状态。", {time: when(shownAt)});
+            notice.hidden = false;
+          }
           if (panel.children.length <= 2) panel.replaceChildren(heading, status, button(t("重试"), () => load()));
         }
       } finally {

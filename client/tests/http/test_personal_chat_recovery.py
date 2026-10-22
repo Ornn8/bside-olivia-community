@@ -1,4 +1,4 @@
-"""A transient generation failure must not stop the real transport loop."""
+"""WeChat is retired (2026-10-22): a binding saved before stays on disk but its transport never starts."""
 import asyncio
 import json
 from types import SimpleNamespace
@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from aiohttp import web
 
 
-def test_generation_timeout_retries_then_receives_next_wechat_message(tmp_path, monkeypatch):
+def test_a_wechat_only_binding_starts_no_transport(tmp_path, monkeypatch):
     import local_server, original_client_setup_api
     from runtime.personal_chat import backend, wechat
     folder = tmp_path / 'personal-chat'
@@ -17,52 +17,24 @@ def test_generation_timeout_retries_then_receives_next_wechat_message(tmp_path, 
     (folder / 'existing-access.json').write_text(json.dumps({'channels': ['wechat']}))
     monkeypatch.delenv('OLIVIA_PERSONAL_CHAT_CONFIG', raising=False)
     monkeypatch.setattr(original_client_setup_api, '_dpapi_unprotect', lambda value: value)
-    calls = []
-    async def read(*args):
-        if calls.count('poll') >= 2:
-            await args[-1].wait()
-            return None
-        calls.append('poll')
-        return {'msgs': [{'message_id': str(calls.count('poll')), 'from_user_id': 'owner', 'to_user_id': 'bot',
-            'message_type': 1, 'message_state': 2, 'context_token': 'synthetic',
-            'item_list': [{'type': 1, 'text_item': {'text': '今天有点累'}}]}], 'get_updates_buf': 'next'}
-    async def generate(*args):
-        calls.append('generate')
-        if calls.count('generate') == 1:
-            raise asyncio.TimeoutError()
-        return '慢慢说，我听着呢。'
-    async def request(*args, **kwargs):
-        path = args[2]
-        if path.endswith("notifystart") or path.endswith("notifystop"):
-            return {}
-        calls.append('send')
-        return {"message_id": f"synthetic-{calls.count('send')}"}
-    async def commit(*args):
-        calls.append('commit')
-    monkeypatch.setattr(wechat, 'wechat_request', request)
-    monkeypatch.setattr(backend, 'commit', commit)
-    monkeypatch.setattr(wechat, '_read_until_stopped', read)
-    monkeypatch.setattr(backend, 'generate', generate)
-    # The real transport is used, with only the burst delay disabled.
-    run_wechat = wechat.run_wechat
+    started = []
+
     async def transport(credentials, handler, stop, **kwargs):
-        return await run_wechat(credentials, handler, stop, merge_seconds=0, **kwargs)
+        started.append('wechat')
+        await stop.wait()
     monkeypatch.setattr(wechat, 'run_wechat', transport)
     server = SimpleNamespace(store=local_server.Store(), _state_root=lambda: tmp_path,
         _require_store_state_available=lambda: None, _persist_store_state=lambda: None,
         _safe_log=lambda *args, **kwargs: None)
+
     async def run():
         app = web.Application()
         backend.install_personal_chat(app, server)
         runner = web.AppRunner(app)
         await runner.setup()
-        for _ in range(200):
-            await asyncio.sleep(.01)
-            if calls.count('send') == 2:
-                break
-        assert app[backend._RUNTIME]['status']['wechat'] == 'CONNECTED'
-        assert calls.count('generate') == 3 and calls.count('send') == 2
-        assert [r['delivery_status'] for r in server.store.personal_chats] == ['DELIVERED', 'DELIVERED']
-        assert [r['generation_attempts'] for r in server.store.personal_chats] == [2, 1]
+        await asyncio.sleep(.05)
+        assert started == [] and backend.selected_channels(server) == set()
+        assert app.get(backend._RUNTIME) is None
         await runner.cleanup()
     asyncio.run(run())
+    assert (folder / 'config.json').is_file() and secret.is_file()  # nothing the user saved is deleted

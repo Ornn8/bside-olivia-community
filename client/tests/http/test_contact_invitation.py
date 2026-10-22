@@ -53,7 +53,7 @@ def test_delivery_choice_restart_and_decline_are_separate():
               'contact_choice': {'choice': 'wechat', 'quote': '微信吧'}}
     rows.append(answer)
     restored = json.loads(json.dumps(rows))
-    assert status(restored, LOW)['channels'] == ['wechat']
+    assert status(restored, LOW)['channels'] == ['qq']  # WeChat is retired: the choice sets up QQ
     assert candidate(restored, HIGH, 4000) is None
     answer.update(content='先不了', contact_choice={'choice': 'later', 'quote': '先不了'})
     assert status(rows, HIGH)['channels'] == []
@@ -72,7 +72,7 @@ def test_delayed_old_letter_cannot_undo_later_settings_choice():
     answer = dict(row('old', 2000), published_at=4000, content='先不了',
                   contact_invitation_id='invite', contact_choice={'choice':'later','quote':'先不了'})
     restored = json.loads(json.dumps([invitation, answer]))
-    assert status(restored, LOW)['channels'] == ['qq', 'wechat']
+    assert status(restored, LOW)['channels'] == ['qq']
 
 
 def test_channel_acceptance_adds_without_removing_existing_channel():
@@ -81,7 +81,7 @@ def test_channel_acceptance_adds_without_removing_existing_channel():
                       contact_setup_choice='wechat', contact_setup_choice_at=1500)
     answer = dict(row('new', 2000), content='QQ也加上', contact_invitation_id='invite',
                   contact_choice={'choice':'qq','quote':'QQ也加上'})
-    assert status([invitation, answer], LOW)['channels'] == ['qq', 'wechat']
+    assert status([invitation, answer], LOW)['channels'] == ['qq']
 
 
 def test_choice_order_follows_user_letters_not_reply_completion_order():
@@ -91,7 +91,7 @@ def test_choice_order_follows_user_letters_not_reply_completion_order():
                contact_invitation_id='invite', contact_choice={'choice':'later','quote':'先不了'})
     new = dict(row('new', 3000), published_at=4000, content='微信吧',
                contact_invitation_id='invite', contact_choice={'choice':'wechat','quote':'微信吧'})
-    assert status([invitation, old, new], LOW)['channels'] == ['wechat']
+    assert status([invitation, old, new], LOW)['channels'] == ['qq']
 
 
 @pytest.mark.parametrize('now', [2001, 30 * 86400])
