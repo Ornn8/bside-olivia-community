@@ -7,6 +7,7 @@ from runtime.memory import remote_embedding
 from runtime.memory.source_retrieval import SourceRetrieval
 
 NOW = datetime(2026, 10, 8, 12, tzinfo=timezone.utc)
+REAL_POST = remote_embedding._post  # the autouse fixture replaces it
 
 
 @pytest.fixture(autouse=True)
@@ -18,8 +19,8 @@ def fresh(monkeypatch):
     monkeypatch.delenv('OLIVIA_REMOTE_EMBEDDING', raising=False)
     calls = []
 
-    def post(key, texts, timeout):
-        calls.append((key, list(texts), timeout))
+    def post(key, texts, timeout, input_type):
+        calls.append((key, list(texts), timeout, input_type))
         return [[1.0, 0.0] if '海' in text else [0.0, 1.0] for text in texts]
     monkeypatch.setattr(remote_embedding, '_post', post)
     return calls
@@ -39,7 +40,7 @@ def test_needs_an_olivia_key_and_can_be_switched_off(monkeypatch, fresh):
 def test_batches_and_cuts_long_texts(fresh):
     vectors = remote_embedding.embed(['海' * 3000] + ['山'] * 70)
     assert len(vectors) == 71
-    assert [len(texts) for _, texts, _ in fresh] == [64, 7]
+    assert [len(texts) for _, texts, _, _ in fresh] == [64, 7]
     assert len(fresh[0][1][0]) == remote_embedding.MAX_TEXT
 
 
@@ -68,7 +69,7 @@ def test_prefetch_overlaps_other_work_and_the_query_waits_for_it(monkeypatch, fr
     release = threading.Event()
     calls = []
 
-    def slow_post(key, texts, timeout):
+    def slow_post(key, texts, timeout, input_type):
         calls.append(timeout)
         release.wait(5)
         return [[1.0, 0.0]]
@@ -152,3 +153,60 @@ def test_recall_falls_back_to_local_when_cloud_is_unusable_or_incomplete(tmp_pat
     monkeypatch.setattr(remote_embedding, '_post', slow)
     hits = adapter._original_vector_hits('今天考试怎么样', 'u', ())
     assert hits and hits[0].source_id == 'reply:b:1' and local == ['search']
+
+
+def test_the_message_is_a_query_and_what_is_searched_a_document(fresh):
+    remote_embedding.embed(['我们去看海', '好呀'])
+    remote_embedding.embed_query('还记得看海吗')
+    assert [call[3] for call in fresh] == ['document', 'query']
+
+
+def test_prefetch_asks_for_a_query(monkeypatch, fresh):
+    import threading
+    done = threading.Event()
+    kinds = []
+
+    def post(key, texts, timeout, input_type):
+        kinds.append(input_type)
+        done.set()
+        return [[1.0, 0.0]]
+    monkeypatch.setattr(remote_embedding, '_post', post)
+    remote_embedding.prefetch('想你了')
+    assert done.wait(5) and kinds == ['query']
+
+
+def test_request_names_the_qwen_model_and_the_input_type(monkeypatch):
+    import io
+    import json
+    import urllib.request
+    sent = []
+
+    class Opener:
+        def open(self, request, timeout):
+            sent.append(json.loads(request.data))
+            body = {'data': [{'index': i, 'embedding': [3.0, 4.0]} for i in range(len(sent[-1]['input']))]}
+            return io.BytesIO(json.dumps(body).encode())
+    monkeypatch.setattr(urllib.request, 'build_opener', lambda *_: Opener())
+    vectors = REAL_POST('olivia-synthetic', ['看海', '考试'], 5, 'query')
+    assert sent == [{'model': 'olivia-embed-2', 'input': ['看海', '考试'], 'input_type': 'query'}]
+    assert vectors == [[0.6, 0.8], [0.6, 0.8]]
+
+
+def test_switching_models_retires_the_old_vectors(tmp_path, fresh):
+    local = []
+    adapter = _adapter(tmp_path, local)
+    index = adapter._originals
+    old = 'olivia-embed-1'
+    missing = index.vectors_missing('u', old, limit=64)
+    index.put_vectors('u', old, [(s, d, [1.0, 0.0]) for s, d, _ in missing])
+    index.put_reply_vector('u', old, 'reply:a:1', [1.0, 0.0])
+    assert index.vector_coverage('u', old) == 1.0
+    adapter.index_original_vectors('u', limit=64)
+    assert index.vector_coverage('u', old) == 0.0 and index.recent_reply_vectors('u', old) == []
+    assert index.vector_coverage('u', remote_embedding.MODEL) == 1.0
+    # A new exchange is queued for the current model only.
+    index.put('u', 'reply:c:1', '晚上吃面', '别放香菜', NOW - timedelta(days=1))
+    import sqlite3
+    with sqlite3.connect(index.path) as db:
+        assert db.execute('SELECT COUNT(*) FROM vector_pending WHERE model=?', (old,)).fetchone()[0] == 0
+    assert [s for s, _, _ in index.vectors_missing('u', remote_embedding.MODEL, limit=64)] == ['reply:c:1']

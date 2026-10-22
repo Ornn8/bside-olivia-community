@@ -1386,6 +1386,14 @@ class Mem0ConversationMemoryAdapter:
         from . import remote_embedding
         user_id = self._normalized_user_id(user_id)
         indexed = 0
+        retired = getattr(self, '_retired_vector_users', None)
+        if retired is None:
+            retired = self._retired_vector_users = set()
+        if user_id not in retired:
+            # Vectors of an earlier cloud model are never read again; dropping them also stops new exchanges from
+            # being queued for that model.
+            self._originals.retire_vector_models(user_id, remote_embedding.RETIRED_MODELS)
+            retired.add(user_id)
         if remote_embedding.available():
             missing = self._originals.vectors_missing(user_id, remote_embedding.MODEL, limit=limit)
             vectors = remote_embedding.embed([text for _, _, text in missing]) if missing else None
@@ -1396,9 +1404,9 @@ class Mem0ConversationMemoryAdapter:
             indexed += self._index_fact_vectors(user_id, limit=limit)
         return indexed + self._index_local_vectors(user_id, limit=limit)
 
-    # Stored facts are short; on 2026-10-20 checks related query/fact pairs scored about 0.6-0.75 with the cloud
-    # model and unrelated ones about 0.4-0.6, so the floor is lower than for whole exchanges.
-    FACT_SCORE_FLOOR = 0.55
+    # Stored facts are short, so the floor is lower than for whole exchanges. Gemini's 0.55 (2026-10-20) mapped to
+    # Qwen by equal selectivity on short real turns (2026-10-22): the same share of candidates, 97% of picked ones.
+    FACT_SCORE_FLOOR = 0.41
     FACT_HITS = 8
     FACT_CACHE_SECONDS = 120.0
     SHORT_QUERY_CHARS = 12

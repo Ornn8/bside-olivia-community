@@ -26,24 +26,24 @@ def index(tmp_path):
 
 def test_fact_vectors_follow_the_stored_facts(index):
     facts = {'m1': '他不吃香菜', 'm2': '他的狗叫豆子'}
-    missing = index.memory_vectors_missing('u', 'olivia-embed-1', facts)
+    missing = index.memory_vectors_missing('u', remote_embedding.MODEL, facts)
     assert {m for m, _, _ in missing} == {'m1', 'm2'}
-    index.put_memory_vectors('u', 'olivia-embed-1', [(m, d, vec(t)) for m, d, t in missing])
-    assert index.memory_vector_coverage('u', 'olivia-embed-1', facts) == 1.0
-    assert index.memory_vectors_missing('u', 'olivia-embed-1', facts) == []
+    index.put_memory_vectors('u', remote_embedding.MODEL, [(m, d, vec(t)) for m, d, t in missing])
+    assert index.memory_vector_coverage('u', remote_embedding.MODEL, facts) == 1.0
+    assert index.memory_vectors_missing('u', remote_embedding.MODEL, facts) == []
     # An edited fact is embedded again; a forgotten one loses its vector.
     changed = {'m1': '他不吃香菜和葱'}
-    assert [m for m, _, _ in index.memory_vectors_missing('u', 'olivia-embed-1', changed)] == ['m1']
-    assert index.memory_vector_coverage('u', 'olivia-embed-1', {'m2': ''}) == 0.0
-    hits = index.nearest_memories('u', 'olivia-embed-1', vec('晚上吃面，别放香菜'), limit=2)
+    assert [m for m, _, _ in index.memory_vectors_missing('u', remote_embedding.MODEL, changed)] == ['m1']
+    assert index.memory_vector_coverage('u', remote_embedding.MODEL, {'m2': ''}) == 0.0
+    hits = index.nearest_memories('u', remote_embedding.MODEL, vec('晚上吃面，别放香菜'), limit=2)
     assert hits[0][0] == 'm1'
 
 
 def test_reply_vectors_keep_the_newest(index):
     for n in range(5):
-        index.put_reply_vector('u', 'olivia-embed-1', f'reply:{n}:1', vec('晚安' if n % 2 else '照片'), keep=3)
-    assert len(index.recent_reply_vectors('u', 'olivia-embed-1')) == 3
-    assert len(index.recent_reply_vectors('u', 'olivia-embed-1', exclude_source='reply:4:1')) == 2
+        index.put_reply_vector('u', remote_embedding.MODEL, f'reply:{n}:1', vec('晚安' if n % 2 else '照片'), keep=3)
+    assert len(index.recent_reply_vectors('u', remote_embedding.MODEL)) == 3
+    assert len(index.recent_reply_vectors('u', remote_embedding.MODEL, exclude_source='reply:4:1')) == 2
 
 
 @pytest.mark.parametrize('value,mode', [({'mode': 'on'}, 'on'), ({'mode': 'off'}, 'off'), ({}, 'shadow')])
@@ -61,7 +61,7 @@ def stub(index, facts):
 
 def test_shadow_lookup_never_waits_for_a_vector(index, monkeypatch):
     facts = {'m1': '他不吃香菜'}
-    index.put_memory_vectors('u', 'olivia-embed-1', [('m1', 'd', vec(facts['m1']))])
+    index.put_memory_vectors('u', remote_embedding.MODEL, [('m1', 'd', vec(facts['m1']))])
     monkeypatch.setattr(remote_embedding, 'available', lambda: True)
     monkeypatch.setattr(remote_embedding, 'embed_query', lambda text: pytest.fail('shadow must not call out'))
     monkeypatch.setattr(remote_embedding, 'cached_query', lambda text: None)

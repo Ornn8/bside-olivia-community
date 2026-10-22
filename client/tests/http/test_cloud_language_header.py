@@ -263,9 +263,9 @@ def test_embedding_requests_carry_the_header_in_english_only(monkeypatch):
             return Reply()
 
     monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: Opener())
-    remote_embedding._post("olivia-synthetic-key", ["a"], 5)
+    remote_embedding._post("olivia-synthetic-key", ["a"], 5, "document")
     ui_language.set_language("en")
-    remote_embedding._post("olivia-synthetic-key", ["a"], 5)
+    remote_embedding._post("olivia-synthetic-key", ["a"], 5, "document")
     zh, en = sent
     assert "X-olivia-ui-language" not in zh and not any(name.lower() == HEADER.lower() for name in zh)
     assert {name.lower() for name in en} - {name.lower() for name in zh} == {HEADER.lower()}
