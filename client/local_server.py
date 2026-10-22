@@ -1496,25 +1496,25 @@ def _submit_store_state():
         "letter_maintenance": getattr(store, "letter_maintenance", {}),
         "letter_trash": getattr(store, "letter_trash", {}),
     }
-    # Capture mutable state on the caller thread; serialize/write snapshots in
-    # submission order so a slow older save cannot overwrite a newer one.
-    return _store_writer.submit(_write_store_snapshot, root, copy.deepcopy(payload))
+    # Capture mutable state on the caller thread as its JSON text (a deep copy of a heavy account's store took
+    # longer than writing it); write the saves in submission order so a slow older one cannot overwrite a newer one.
+    return _store_writer.submit(_write_store_snapshot, root, json.dumps(payload, ensure_ascii=False, sort_keys=True))
 
 
-def _write_store_snapshot(root, payload):
+def _write_store_snapshot(root, serialized):
     global _store_state_error_code
     try:
         root.mkdir(parents=True, exist_ok=True)
     except OSError:
         _store_state_error_code = StoreStateUnavailable.code
         raise StoreStateUnavailable(StoreStateUnavailable.code) from None
-    serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
     try:
         _atomic_write_store_file(root / "state.json", serialized)
     except StoreStateUnavailable:
         _store_state_error_code = StoreStateUnavailable.code
         raise
     _store_state_error_code = None
+    payload = json.loads(serialized)  # the rows as saved, independent of the live store
     committer = globals().get('private_world_relationship_committer')
     if committer is not None and root == _state_root():
         try:

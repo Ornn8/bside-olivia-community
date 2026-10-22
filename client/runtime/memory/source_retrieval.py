@@ -147,6 +147,15 @@ class SourceRetrieval:
             self._alias_received(db, user, exchange_source, receipts)
             return True
 
+    def received_state(self, user):
+        """Received user speech already indexed (source -> text) and the exchange aliases already recorded, in
+        one read: a memory scan then writes only what is new instead of reopening the index for every message."""
+        with closing(self.connect()) as db:
+            texts = dict(db.execute("SELECT source, text FROM originals WHERE user=? AND actor='user' "
+                                    "AND source LIKE 'received-user:%'", (user,)))
+            aliases = set(db.execute('SELECT exchange_source, receipt_source FROM source_aliases WHERE user=?', (user,)))
+        return texts, aliases
+
     def put_received(self, user, source, text, stamp, *, exchange_source=None):
         """Index durable received user speech without implying assistant delivery."""
         if (not isinstance(source, str) or not source.startswith('received-user:')

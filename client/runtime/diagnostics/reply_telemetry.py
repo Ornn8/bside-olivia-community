@@ -110,9 +110,25 @@ def error_group(code):
     return 'other'
 
 
+# Every row field observe() reads. A row whose values are unchanged since they were written is skipped, so a store
+# save no longer reads and rewrites one telemetry record per recent row (seconds per reply for heavy accounts).
+OBSERVED_FIELDS = ('letter_id', 'origin', 'channel', 'delivery_status', 'letter_status', 'generation_attempts',
+                   'diagnostic_attempt', 'diagnostic_model', 'error_code', 'generation_failure_context',
+                   'decision_rejection_reason', 'generation_retryable', 'reply_timing_seconds', 'image_status',
+                   'media_status', 'voice_prepare_status', 'speech_delivery_status', 'image_error_code',
+                   'media_error_code', 'voice_prepare_error_code', 'speech_delivery_error_code', 'share_video_event',
+                   'share_video_result', 'share_video_photo_fallback', 'image_delivery_status')
+
+
+def _observed_values(row):
+    return tuple(json.dumps(value, sort_keys=True, default=str) if isinstance(value, (dict, list)) else value
+                 for value in (row.get(key) for key in OBSERVED_FIELDS))
+
+
 class Collector:
     def __init__(self, root, *, version='unknown', clock=time.time):
         self.path = Path(root) / 'reply-telemetry.sqlite3'
+        self._observed = {}  # trace -> _observed_values of the record last written
         self.clock = clock
         self.version = version if re.fullmatch(r'\d+\.\d+\.\d+(?:[+.-][a-zA-Z0-9.-]{1,40})?', version) else 'unknown'
         self.lock = threading.RLock()
@@ -169,6 +185,7 @@ class Collector:
                 self._put(db, 'salt', salt)
                 db.execute('DELETE FROM queue')
                 db.execute('DELETE FROM observed')
+            self._observed.clear()
             self.owner, self.since, self.salt = digest, since, salt
             self.schema = 1
             self.policy_version_supported = False
@@ -189,6 +206,7 @@ class Collector:
                     self._put(db, key, value)
                 db.execute('DELETE FROM queue')
                 db.execute('DELETE FROM observed')
+            self._observed.clear()
             self.enabled, self.since, self.salt = enabled, since, salt
             if enabled: self.emit('app', 'ok')
 
@@ -272,6 +290,7 @@ class Collector:
 
     def observe(self, rows):
         if not self.enabled: return
+        written = {}
         try:
             with self.lock, self._db() as db:
                 if not self.enabled: return
@@ -282,6 +301,9 @@ class Collector:
                     if not source: continue
                     channel = 'proactive' if row.get('origin') == 'proactive' else row.get('channel', 'letter')
                     trace = self.trace(source)
+                    values = _observed_values(row)
+                    if self._observed.get(trace) == values: continue
+                    written[trace] = values
                     previous = db.execute('SELECT value FROM observed WHERE trace=?', (trace,)).fetchone()
                     previous = json.loads(previous[0]) if previous else {}
                     state = row.get('delivery_status') or row.get('letter_status')
@@ -349,6 +371,8 @@ class Collector:
                             self._insert(db, self._event('media', 'ok', daily_video_result='photo_fallback', **fields))
                     db.execute('INSERT OR REPLACE INTO observed VALUES (?,?,?)', (trace, self.clock(), json.dumps(current)))
                 self._prune(db)
+            with self.lock:
+                self._observed.update(written)  # only once the records are committed
         except (OSError, sqlite3.Error, ValueError, TypeError):
             self.last_error = 'TELEMETRY_WRITE_FAILED'
 
