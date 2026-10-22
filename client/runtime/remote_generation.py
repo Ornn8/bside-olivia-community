@@ -23,6 +23,9 @@ def connection_error(exc):
     return CloudError('GPU_CONNECTION_FAILED')
 
 
+NIGHT_POLL_SECONDS = 30  # a task held for the night batch is checked every half minute
+
+
 class RemoteGeneration:
     def __init__(self, url='', token=''):
         self.url = canonical_api_origin(endpoint(url)) if url else ''
@@ -446,12 +449,16 @@ class RemoteGeneration:
         progress('generation', task)
         if task.get('stage') == 'skipped':
             return task
-        deadline = None if kind in {'video', 'lipsync', 'original_video', 'cover_video', 'daily_video'} else time.monotonic() + timeout
+        # Kinds the service runs only in its night batch wait for it (2026-10-22: a cover asked for by day was
+        # cancelled after an hour and reported as failed, although the night batch would have made it).
+        night = set((caps.get('night_batch') or {}).get('kinds') or ())
+        deadline = (None if kind in {'video', 'lipsync', 'original_video', 'cover_video', 'daily_video'} or kind in night
+                    else time.monotonic() + timeout)
         while task['status'] in ('queued', 'running') or task.get('stage') == 'uploading':
             if deadline is not None and time.monotonic() >= deadline:
                 await self.request('cancel', {'task_id': task['task_id']})
                 raise CloudError('GPU_TASK_TIMEOUT', 504)
-            await asyncio.sleep(1)
+            await asyncio.sleep(NIGHT_POLL_SECONDS if task.get('night_hold') else 1)
             task = await self._status(task['task_id'])
             progress('generation', task)
         if receipt and task['status'] in ('failed', 'cancelled') and kind not in ('daily_video', 'piano') and not data.get('speech_mode'):

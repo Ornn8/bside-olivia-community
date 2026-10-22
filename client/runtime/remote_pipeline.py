@@ -1,5 +1,6 @@
 """Explicit remote routing for existing synchronous generation stages."""
 import asyncio
+import json
 from contextvars import ContextVar
 from concurrent.futures import ThreadPoolExecutor
 import os
@@ -36,7 +37,25 @@ def generate(kind, data, output, *, environment=None, assets=None):
         # Speech content and selected output remain facts; rendering controls live on the server.
         data={key:value for key,value in data.items() if key not in ('voice_plan','adaptive_delivery','enforce_content_gate')}
     progress = PROGRESS_CALLBACK.get()
-    if progress is not None:
+    night = set((caps.get('night_batch') or {}).get('kinds') or ())
+    # While the order waits for the night batch, a marker beside the output tells the letter when it starts.
+    marker = Path(output).with_name(Path(output).stem + '-night.json') if kind in night else None
+
+    def report(phase, task):
+        hold = task.get('night_hold') if isinstance(task, dict) else None
+        try:
+            if isinstance(hold, dict) and type(hold.get('starts_at')) is int:
+                if not marker.exists():
+                    marker.write_text(json.dumps({'starts_at': hold['starts_at']}), encoding='utf-8')
+            else:
+                marker.unlink(missing_ok=True)
+        except OSError:
+            pass
+        if progress is not None:
+            progress(phase, task)
+    if marker is not None:
+        api.progress = report
+    elif progress is not None:
         api.progress = progress
     ffmpeg = env.get('OLIVIA_FFMPEG_EXE')
     metadata = {}
@@ -44,8 +63,14 @@ def generate(kind, data, output, *, environment=None, assets=None):
         duration = _media_duration_seconds(path, required_streams=('0:a:0', '0:v:0') if kind in ('video', 'lipsync') else ('0:a:0',), ffmpeg_path=Path(ffmpeg) if ffmpeg else None)
         if duration is None or duration <= 0: raise CloudError('GPU_OUTPUT_INVALID', 502)
         metadata['duration_seconds'] = duration
-    receipt = Path(output).with_name(Path(output).stem + '-remote-order.private.json') if kind in ('video', 'lipsync') else None
-    task = run_sync(lambda: asyncio.run(api.generate(kind, data, output, assets=assets,
-        validate=validate, **({'receipt_path': receipt} if receipt is not None else {}))))
+    # A night-batch order can wait for hours: its receipt lets a restart resume it instead of ordering again.
+    receipt = (Path(output).with_name(Path(output).stem + '-remote-order.private.json')
+               if kind in ('video', 'lipsync') or kind in night else None)
+    try:
+        task = run_sync(lambda: asyncio.run(api.generate(kind, data, output, assets=assets,
+            validate=validate, **({'receipt_path': receipt} if receipt is not None else {}))))
+    finally:
+        if marker is not None:
+            marker.unlink(missing_ok=True)
     return {**metadata, 'remote_task_id': task['task_id'],
             'audio_provider': 'remote', 'visual_provider': 'remote' if kind in ('video','lipsync') else ''}

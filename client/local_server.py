@@ -1390,6 +1390,23 @@ def _atomic_write_store_file(path: Path, serialized: str) -> None:
         )
 
 
+def _has_saved_night_order(letter) -> bool:
+    """A song stage ordered for the service's night batch: its receipt survives a restart, so the job resumes it."""
+    root = _local_data_root(_os.environ)
+    lid = str(letter.get('letter_id', ''))
+    if root is None or not _re.fullmatch(r'[A-Za-z0-9_-]{1,80}', lid):
+        return False
+    media = root / 'media'
+    for path in (*media.glob(lid + '*-remote-order.private.json'), *media.glob(lid + '*/*-remote-order.private.json')):
+        try:
+            saved = json.loads(path.read_text(encoding='utf-8'))
+            if saved['submission']['kind'] in {'cover', 'original', 'separate'} and isinstance(saved.get('task_id'), str):
+                return True
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+    return False
+
+
 def _has_saved_video_order(letter) -> bool:
     root = _local_data_root(_os.environ)
     lid = str(letter.get('letter_id', ''))
@@ -1456,7 +1473,7 @@ def _load_store_state() -> None:
                         needs_persist = True
                     if item.get("media_status") == "PROCESSING":
                         from runtime.remote_pipeline import enabled as remote_enabled
-                        if remote_enabled(_os.environ) and _has_saved_video_order(item):
+                        if remote_enabled(_os.environ) and (_has_saved_video_order(item) or _has_saved_night_order(item)):
                             item.update(media_status='QUEUED', media_error_code=None, media_retryable=False)
                         else:
                             item.update(media_status="UNAVAILABLE", media_error_code="MEDIA_JOB_INTERRUPTED", media_retryable=True)
@@ -4544,6 +4561,16 @@ async def route(
                         state["stage"] = stage
                 except (OSError, ValueError):
                     pass
+            if state["status"] in {"PENDING", "QUEUED", "PROCESSING"}:
+                for marker in (*root.glob(letter["letter_id"] + "*-night.json"),
+                               *root.glob(letter["letter_id"] + "*/*-night.json")):
+                    try:
+                        starts_at = json.loads(marker.read_text(encoding="utf-8")).get("starts_at")
+                    except (OSError, ValueError, AttributeError):
+                        continue
+                    if type(starts_at) is int:
+                        state.update(stage="night_queued", starts_at=starts_at)
+                        break
         return ok(state)
     if p == "/toy/cover/lyrics":
         if companion_confirmed is not True:
