@@ -158,6 +158,45 @@ async def deliver_default_voice(server, row, send):
         await persist_chat(server)
 
 
+_CALL_AVAILABLE = {'checked_at': 0.0, 'available': False}
+
+
+async def _open_offers(server, piano_caps):
+    """Which of her own suggestions (piano, call) the judgment may weigh in this turn."""
+    from runtime import media_offers
+    state_root = getattr(server, '_state_root', None)
+    root = state_root() if callable(state_root) else None
+    if root is None:
+        return []
+    now = datetime.now().timestamp()
+
+    def latest(values):
+        stamps = []
+        for value in values:
+            try:
+                stamps.append(datetime.fromisoformat(str(value)).timestamp())
+            except ValueError:
+                continue
+        return max(stamps, default=None)
+    rows = [*getattr(server.store, 'midi_jobs', []), *getattr(server.store, 'personal_chats', [])]
+    last_used = {'piano': latest(r['piano_completed_at'] for r in rows if r.get('piano_completed_at')),
+                 'call': latest(r['started_at'] for r in getattr(server.store, 'calls', None) or []
+                                if isinstance(r, dict) and r.get('started_at') and not r.get('missed'))}
+    kinds = media_offers.open_kinds(root, now, available={'piano': bool(piano_caps), 'call': True}, last_used=last_used)
+    if 'call' in kinds:
+        # Calls need the cloud's call service; its answer is reused for six hours.
+        if now - _CALL_AVAILABLE['checked_at'] > 6 * 3600:
+            try:
+                from runtime.call.http import config as call_config
+                _CALL_AVAILABLE['available'] = (await call_config(server)).get('available') is True
+            except Exception:
+                _CALL_AVAILABLE['available'] = False
+            _CALL_AVAILABLE['checked_at'] = now
+        if not _CALL_AVAILABLE['available']:
+            kinds.remove('call')
+    return kinds
+
+
 def _qq_default_voice_timeout_seconds():
     from runtime.cloud_policy import get_policy
     fallback = get_policy('qq_default_voice')['wait_seconds']
@@ -550,6 +589,14 @@ async def _generate_billed(server, event, row):
             and tier_allows_video(getattr(server, 'video_reply_settings_store', None)) else [])
         await persist_chat(server)
     daily_candidates = row['daily_video_candidates'] if event.channel == 'qq' and not unprompted else []
+    if 'offer_kinds' not in row:
+        # Her own suggestion to play or call is weighed only in ordinary chat the user started (2026-10-22).
+        row['offer_kinds'] = (await _open_offers(server, piano_caps)
+                              if event.channel == 'qq' and not unprompted and not asked else [])
+        await persist_chat(server)
+    from runtime import media_offers
+    offer_experience = media_offers.experience(row['offer_kinds'] if piano_caps else
+                                               [kind for kind in row['offer_kinds'] if kind != 'piano'])
     semantic_kinds = ['text'] + (['audio_speech'] if voice_available else [])
     if image_offered:
         semantic_kinds.append('image')
@@ -596,8 +643,15 @@ async def _generate_billed(server, event, row):
     async def save_companion_decision(record):
         if not turn_is_current():
             raise RuntimeError('JEV_INPUT_SUPERSEDED')
+        fresh = row.get('companion_decision') is None
         row['companion_decision'] = deepcopy(record)
         await persist_chat(server)
+        state_root = getattr(server, '_state_root', None)
+        if fresh and record.get('offer_experience') and callable(state_root):
+            from runtime import media_offers
+            media_offers.note_asked(state_root(), record['offer_experience']['kinds'])
+            if record.get('media_offer') in media_offers.KINDS:
+                media_offers.note_offered(state_root(), record['media_offer'])
     async def record_context_recovery(items):
         if not turn_is_current():
             raise RuntimeError('JEV_INPUT_SUPERSEDED')
@@ -664,6 +718,7 @@ async def _generate_billed(server, event, row):
                                 'piano_midi': row.get('piano_midi') if piano_caps else None,
                                 'piano_pieces': piano_pieces,
                                 'bedtime_offer_enabled': speech_enabled,
+                                'offer_experience': offer_experience,
                                 'daily_video_candidates': daily_candidates,
                                 'incoming_observation_context': observation_context,
                                 'semantic_kinds': semantic_kinds,

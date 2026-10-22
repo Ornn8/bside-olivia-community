@@ -153,11 +153,12 @@ class FrozenCompanionTurn:
     bedtime_offer: bool = False
     daily_video_json: str | None = None
     piano_experience_json: str | None = None
+    offer_experience_json: str | None = None
 
     @classmethod
     def create(cls, *, messages, current_source_id, capabilities, environment,
                forbidden_kinds, as_of, input_revision=0, speech_enabled=False, bedtime_offer=False,
-               daily_video_experience=None, piano_experience=None):
+               daily_video_experience=None, piano_experience=None, offer_experience=None):
         try:
             if type(bedtime_offer) is not bool:
                 raise ValueError('invalid bedtime offer scope')
@@ -190,6 +191,12 @@ class FrozenCompanionTurn:
                 binding['speech_experience'] = True
             if piano_experience is not None:
                 binding['piano_experience'] = piano_experience
+            from runtime.media_offers import validate as validate_offer
+            offer_experience = validate_offer(offer_experience)
+            if offer_experience is not None:
+                if 'piano' in offer_experience['kinds'] and piano_experience is None:
+                    raise ValueError('piano offer requires piano capability')
+                binding['offer_experience'] = offer_experience
             if bedtime_offer:
                 if not speech_enabled:
                     raise ValueError('bedtime offer requires speech capability')
@@ -207,7 +214,8 @@ class FrozenCompanionTurn:
         return cls(encoded, tuple(sources), when, input_revision, digest, speech_enabled,
                    bedtime_offer=bedtime_offer,
                    daily_video_json=_json(daily) if daily is not None else None,
-                   piano_experience_json=_json(piano_experience) if piano_experience is not None else None)
+                   piano_experience_json=_json(piano_experience) if piano_experience is not None else None,
+                   offer_experience_json=_json(offer_experience) if offer_experience is not None else None)
 
     @property
     def input(self):
@@ -232,7 +240,8 @@ class FrozenCompanionTurn:
                 input_revision=record['input_revision'], speech_enabled='speech_request' in record,
                 bedtime_offer='speech_offer' in record,
                 daily_video_experience=record.get('daily_video_experience'),
-                piano_experience=record.get('piano_experience'))
+                piano_experience=record.get('piano_experience'),
+                offer_experience=record.get('offer_experience'))
             if turn.input_json != _json(value):
                 raise ValueError('stored input IDs changed')
             return turn
@@ -256,6 +265,8 @@ class FrozenCompanionDecision:
     input_json: str | None = field(default=None, repr=False)
     piano_json: str | None = None
     piano_experience_json: str | None = None
+    media_offer: str | None = None
+    offer_experience_json: str | None = None
 
     @classmethod
     def from_response(cls, turn, response):
@@ -267,6 +278,12 @@ class FrozenCompanionDecision:
                 raise ValueError('missing speech decision')
             if turn.bedtime_offer and 'speech_offer' not in response:
                 raise ValueError('missing bedtime decision')
+            offer = _offer_experience(turn)
+            if offer is not None:
+                if 'media_offer' not in response:
+                    raise ValueError('missing media offer decision')
+                from runtime.media_offers import validate_choice
+                validate_choice(response['media_offer'], offer)
             encoded = _json(response['plan'])
         except (ValueError, TypeError, KeyError, ValidationError, OverflowError):
             raise CompanionDecisionError('JEV_RESPONSE_INVALID') from None
@@ -277,7 +294,9 @@ class FrozenCompanionDecision:
                    speech_offer=_speech_offer(response['speech_offer']) if turn.bedtime_offer else None,
                    daily_video_json=turn.daily_video_json, input_json=turn.input_json,
                    piano_json=_json(_piano_request(response.get('piano_request'))) if turn.piano_experience_json is not None else None,
-                   piano_experience_json=turn.piano_experience_json)
+                   piano_experience_json=turn.piano_experience_json,
+                   media_offer=response['media_offer'] if turn.offer_experience_json is not None else None,
+                   offer_experience_json=turn.offer_experience_json)
 
     @classmethod
     def from_record(cls, turn, record, *, profile='full'):
@@ -285,7 +304,8 @@ class FrozenCompanionDecision:
         try:
             fields = {'schema_version', 'plan', 'model', 'input_digest', 'source_id_map', 'input_revision', 'as_of'}
             if (not isinstance(record, dict) or set(record) - {
-                    'metering', 'evaluation', 'speech_request', 'speech_offer', 'daily_video_experience', 'input', 'piano_request', 'piano_experience'} != fields
+                    'metering', 'evaluation', 'speech_request', 'speech_offer', 'daily_video_experience', 'input', 'piano_request', 'piano_experience',
+                    'media_offer', 'offer_experience'} != fields
                     or record['schema_version'] != 'companion-decision/1' or record['model'] != MODEL
                     or record['input_digest'] != turn.input_digest or record['as_of'] != turn.as_of
                     or type(record['input_revision']) is not type(turn.input_revision)
@@ -307,6 +327,13 @@ class FrozenCompanionDecision:
                 raise ValueError('missing bedtime decision')
             if 'speech_offer' in record:
                 _speech_offer(record['speech_offer'])
+            if _json(record.get('offer_experience')) != (turn.offer_experience_json or 'null'):
+                raise ValueError('offer capability mismatch')
+            if turn.offer_experience_json is not None:
+                from runtime.media_offers import validate_choice
+                validate_choice(record.get('media_offer'), _offer_experience(turn))
+            elif 'media_offer' in record:
+                raise ValueError('unrequested media offer decision')
             record_profile = record.get('evaluation', {}).get('profile', 'full')
             if profile not in ('full', 'single_delivery') or record_profile == 'single_delivery' and profile != record_profile:
                 raise ValueError('decision evaluation profile mismatch')
@@ -330,7 +357,9 @@ class FrozenCompanionDecision:
                    daily_video_json=turn.daily_video_json,
                    input_json=turn.input_json if 'input' in record else None,
                    piano_json=_json(record.get('piano_request')) if turn.piano_experience_json is not None else None,
-                   piano_experience_json=turn.piano_experience_json)
+                   piano_experience_json=turn.piano_experience_json,
+                   media_offer=record.get('media_offer') if turn.offer_experience_json is not None else None,
+                   offer_experience_json=turn.offer_experience_json)
 
     @property
     def plan(self):
@@ -356,6 +385,9 @@ class FrozenCompanionDecision:
             result['piano_request'] = json.loads(self.piano_json)
         if self.speech_offer is not None:
             result['speech_offer'] = self.speech_offer
+        if self.offer_experience_json is not None:
+            result['offer_experience'] = json.loads(self.offer_experience_json)
+            result['media_offer'] = self.media_offer
         if self.daily_video_json is not None:
             result['daily_video_experience'] = json.loads(self.daily_video_json)
         if self.input_json is not None:
@@ -460,6 +492,7 @@ class JevDecisionPort:
     def _packet(self, turn):
         return {'input': turn.input, **({'profile': self.profile} if self.profile != 'full' else {}),
                 **({'piano_experience': json.loads(turn.piano_experience_json)} if turn.piano_experience_json is not None else {}),
+                **({'offer_experience': json.loads(turn.offer_experience_json)} if turn.offer_experience_json is not None else {}),
                 **({'speech_experience': True} if turn.speech_enabled else {}),
                 **({'bedtime_offer': True} if turn.bedtime_offer else {}),
                 **({'daily_video_experience': turn.daily_video_experience} if turn.daily_video_json is not None else {})}
@@ -568,6 +601,10 @@ def _piano_request(value):
     return validate_intent(value)
 
 
+def _offer_experience(turn):
+    return json.loads(turn.offer_experience_json) if turn.offer_experience_json is not None else None
+
+
 def _speech_offer(value):
     if value not in ('none', 'bedtime', 'clarify'):
         raise ValueError('invalid bedtime decision')
@@ -577,7 +614,7 @@ def _speech_offer(value):
 def _validate_response(request, value):
     expected = {'schema_version', 'tasks', 'plan', 'contract_valid', 'status', 'fallback', 'action_executed',
                 'model', 'backend', 'production_approved', 'latency_ms', 'api_calls', 'usage'}
-    if (not isinstance(value, dict) or set(value) - {'evaluation', 'speech_request', 'speech_offer', 'piano_request'} != expected
+    if (not isinstance(value, dict) or set(value) - {'evaluation', 'speech_request', 'speech_offer', 'piano_request', 'media_offer'} != expected
             or value['schema_version'] != 'companion-shadow/1' or value['model'] != MODEL
             or value['backend'] != 'jev' or value['contract_valid'] is not True
             or value['status'] != 'valid_contract' or value['fallback'] is not False
