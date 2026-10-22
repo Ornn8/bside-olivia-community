@@ -1216,6 +1216,7 @@ EN: dict[str, str] = {
     "林离正在翻唱…": "Linli is singing the cover…",
     "正在保存歌曲音频…": "Saving the song audio…",
     "歌曲已完成，正在准备回信…": "The song is done. Getting the reply ready…",
+    "已排进今晚的制作队列，做好会自动送来。": "Queued for tonight's production run; it will arrive on its own when it's done.",
     "未能识别歌词，请补充原曲歌词后重新寄信。": "Couldn't recognize the lyrics. Please add the song's lyrics and send the letter again.",
     "翻唱组件尚未准备完整，请检查本地组件。": "Cover components aren't fully ready. Please check Local components.",
     "这次翻唱等待超时，可以手动重试。": "The cover timed out. You can retry manually.",

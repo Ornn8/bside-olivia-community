@@ -6156,7 +6156,7 @@ BOOTSTRAP_JAVASCRIPT = r'''
         const endpoint=new URL('/toy/media/progress',coverApi);endpoint.searchParams.set('letter_id',id);
         const response=await fetch(endpoint,{cache:'no-store',credentials:'omit'});if(!response.ok)return;
         const data=(await response.json()).data;const status=this.querySelector('.voice-status');if(!status||!data)return;
-        const labels={loading:t('正在准备翻唱…'),transcribing:t('正在识别原曲歌词…'),loading_model:t('正在加载翻唱模型…'),generating:t('林离正在翻唱…'),decoding:t('正在保存歌曲音频…'),completed:t('歌曲已完成，正在准备回信…')};
+        const labels={loading:t('正在准备翻唱…'),transcribing:t('正在识别原曲歌词…'),loading_model:t('正在加载翻唱模型…'),generating:t('林离正在翻唱…'),decoding:t('正在保存歌曲音频…'),completed:t('歌曲已完成，正在准备回信…'),night_queued:t('已排进今晚的制作队列，做好会自动送来。')};
         const errors={COVER_LYRICS_REQUIRED:t('未能识别歌词，请补充原曲歌词后重新寄信。'),COVER_RUNTIME_UNAVAILABLE:t('翻唱组件尚未准备完整，请检查本地组件。'),COVER_GENERATION_TIMEOUT:t('这次翻唱等待超时，可以手动重试。'),COVER_SOURCE_REQUIRED:t('这封信缺少原曲音频，请重新选择后寄信。')};
         const cloudErrors={GPU_TLS_FAILED:t('云端证书校验失败，请更新补丁并检查电脑时间。'),GPU_CONNECTION_TIMEOUT:t('云端连接超时，本次生成已停止等待。'),GPU_CONNECT_FAILED:t('无法连接云端，本次生成未完成。'),GPU_CONNECTION_FAILED:t('云端连接中断，本次生成未完成。'),GPU_AUTH_FAILED:t('云端 Key 验证失败，请检查 Olivia 账户。'),GPU_QUEUE_FULL:t('云端队列已满，本次任务未进入队列。'),GPU_TASK_TIMEOUT:t('云端任务等待超时，已停止等待。'),GPU_TASK_FAILED:t('云端生成失败。'),GPU_DOWNLOAD_FAILED:t('生成结果下载失败。'),GPU_SHARED_SCENE_MISSING:t('视频素材与云端不匹配，请联系管理员。'),MEDIA_JOB_INTERRUPTED:t('上次生成已中断，未自动重复提交。')};
         cloudErrors.GPU_INSUFFICIENT_BALANCE=t('Olivia 可用余额不足，请充值后重试。');
