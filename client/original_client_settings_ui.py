@@ -2055,7 +2055,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         const scroll=panel.scrollTop;
         panel.replaceChildren(top,notice,overview,tabs,...views,basis,status);
         panel.scrollTop=scroll;
-      } else panel.replaceChildren(heading, notice, status, button(t("更新近况"), () => load(true)), now, projects, shared, episodeHistory, moments, historyPanel(), relationship);
+      } else panel.replaceChildren(heading, status, button(t("更新近况"), () => load(true)), now, projects, shared, episodeHistory, moments, historyPanel(), relationship);
       shownAt = drawnAt;
       notice.hidden = true;
     };
