@@ -24,13 +24,13 @@ def test_render_reports_final_coverage_and_retains_frozen_candidates():
         source_status=(('original_index', 'available'),))
     builder = MemoryPromptBuilder(NullMemoryPort(), conversation_memory=None, max_tokens=300000)
     full = builder.render(recall, max_chars=20000)
-    narrow = builder.render(recall, max_chars=1500)
+    narrow = builder.render(recall, max_chars=1600)  # each original also carries its app-computed age
     assert len(full.references) == 4
     assert len(narrow.references) == 2
     assert narrow.recall_result is recall
     assert narrow.truncated
     assert 'omitted' in narrow.text
-    assert len(narrow.text) <= 1500
+    assert len(narrow.text) <= 1600
     assert {r.provenance['source_record_id'] for r in narrow.references} in ({'history:0'}, {'history:1'})
 
 
