@@ -719,6 +719,10 @@ async def _generate_billed(server, event, row):
                                 'piano_pieces': piano_pieces,
                                 'bedtime_offer_enabled': speech_enabled,
                                 'offer_experience': offer_experience,
+                                'recent_replies': [r['reply_text'] for r in server.store.personal_chats
+                                                   if r.get('binding_id') == event.binding_id
+                                                   and r.get('delivery_status') == 'DELIVERED'
+                                                   and isinstance(r.get('reply_text'), str)][-40:],
                                 'daily_video_candidates': daily_candidates,
                                 'incoming_observation_context': observation_context,
                                 'semantic_kinds': semantic_kinds,

@@ -628,10 +628,16 @@ class ReplyPipeline:
                 and media_offer in ('piano', 'call') and (chat_metadata or {}).get('channel') == 'qq'):
             from runtime.media_offers import INSTRUCTION as OFFER_INSTRUCTION
             offer_note = OFFER_INSTRUCTION[media_offer]
+        style_note = ''
+        if (not degraded and ordinary_chat and (chat_metadata or {}).get('channel') == 'qq'
+                and isinstance((chat_metadata or {}).get('recent_replies'), list)):
+            # Stock phrases she has overused lately, and the user is always 你 in her narration (2026-10-22).
+            from .style_reminders import note as style_reminder
+            style_note = style_reminder(chat_metadata['recent_replies'])
         from runtime.piano_collection import environment_context
         collection_note = environment_context() if context.mode is ReplyMode.TEXT_LETTER else ''
         final_notes = tuple(note for note in (decision_note, generation_note, speech_note, piano_note, offer_note,
-                                              collection_note) if note)
+                                              style_note, collection_note) if note)
         # Content-only legacy requests keep their adapter-owned assembly path.
         if decision_note and isinstance(prepared, ReplyRequest) and prepared.messages is None:
             prepared = replace(prepared, messages=prepared.normalized_messages())
