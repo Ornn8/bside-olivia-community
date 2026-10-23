@@ -1650,6 +1650,7 @@ def install_personal_chat(app, server):
             handle.ingest = ingest
             handle.pending = lambda channel: service.pending(channel) if channel in selected_channels(server) else ()
             def ready(channel, send):
+                runtime.setdefault('senders', {})[channel] = send  # the live connection, for qq_presence
                 service.resume_speech(channel, send)
                 service.resume_media(channel, send)
                 if channel in service.bindings and channel in selected_channels(server):

@@ -218,6 +218,10 @@ async def tick(server, runtime, initiative, now=None):
     if root is None or target is None or runtime['status'].get('qq') != 'CONNECTED' or target[0].channel != 'qq':
         return
     old, sender = target
+    # The connection that is up now; the chat's own target may still hold one that has since closed.
+    sender = (runtime.get('senders') or {}).get('qq') or sender
+    if callable(getattr(sender, 'is_available', None)) and not sender.is_available():
+        return
     prefs, path = settings(root), Path(root) / STATE_NAME
     state = _read(path, {})
     stamp, local = now.timestamp(), now.astimezone(SHANGHAI)
@@ -241,12 +245,12 @@ async def tick(server, runtime, initiative, now=None):
         if prefs['qzone'] and stamp - state.get('watched_at', 0) >= WATCH_EVERY and 8 <= local.hour < 24:
             state['watched_at'] = stamp
             await _watch(server, sender, state, old.owner_id, old.account_id, now)
-        state.pop('error', None)
     except asyncio.CancelledError:
         raise
     except Exception as exc:
         code = getattr(exc, 'args', [None])[0]
         state['error'] = code if isinstance(code, str) and code.isupper() else type(exc).__name__
+        state['error_at'] = stamp  # kept until the next failure, so a later quiet pass does not hide it
         try:
             server._safe_log('qq_presence_deferred', error_code=state['error'])
         except Exception:
