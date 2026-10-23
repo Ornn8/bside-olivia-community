@@ -4769,6 +4769,80 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     return panel;
   };
 
+  // Her QQ life around the chat (2.5.0): each part has its own switch, saved as it changes.
+  const mountQqExtras = (section) => {
+    if (!document.createElement) return;
+    const container = document.createElement("div");
+    container.setAttribute("data-olivia-qq-extras", "true");
+    container.className = "flex flex-col gap-3";
+    const style = document.createElement("style");
+    style.textContent = `
+      [data-olivia-qq-extras] .olivia-qq-option{display:flex;align-items:center;justify-content:space-between;gap:24px;
+        min-height:64px;padding:12px 0;border-bottom:1px solid #343536;cursor:pointer;box-sizing:border-box}
+      [data-olivia-qq-extras] .olivia-qq-copy{min-width:0;display:flex;flex-direction:column;gap:6px}
+      [data-olivia-qq-extras] .olivia-qq-switch{appearance:none;-webkit-appearance:none;position:relative;flex:0 0 44px;
+        width:44px;height:26px;margin:0;padding:0;border:1px solid #777772;border-radius:99px;background:#28292b;cursor:pointer}
+      [data-olivia-qq-extras] .olivia-qq-switch::before{content:'';position:absolute;top:3px;left:3px;width:18px;height:18px;
+        border-radius:50%;background:#b8b6ae;transition:transform 160ms ease-out}
+      [data-olivia-qq-extras] .olivia-qq-switch:checked{background:#d9d5c9;border-color:#d9d5c9}
+      [data-olivia-qq-extras] .olivia-qq-switch:checked::before{transform:translateX(18px);background:#28292b}
+      [data-olivia-qq-extras] .olivia-qq-switch:focus-visible{outline:2px solid #eee9dd;outline-offset:4px}
+      [data-olivia-qq-extras] .olivia-qq-switch:disabled{opacity:.45;cursor:default}
+      @media(prefers-reduced-motion:reduce){[data-olivia-qq-extras] .olivia-qq-switch::before{transition:none}}
+    `;
+    const options = [
+      ["qzone", t("QQ 空间"), t("她偶尔发说说，配当天发给你的照片；也会给你的说说点赞、评论，回复你的评论。")],
+      ["status", t("QQ 状态"), t("她的 QQ 状态跟着她正在做的事变化，比如练琴中、睡觉中。")],
+      ["like", t("名片点赞"), t("她每天给你的 QQ 名片点赞。")],
+      ["gestures", t("戳一戳和表情回应"), t("她偶尔在 QQ 里戳你一下，或给你的消息点个表情。")],
+    ];
+    const status = text("p", t("正在读取…"), "text-text-secondary text-caption-m");
+    status.setAttribute("role", "status");
+    const inputs = {};
+    let busy = false;
+    const persist = async (changed) => {
+      if (busy) return;
+      busy = true;
+      Object.values(inputs).forEach((input) => { input.disabled = true; });
+      status.textContent = t("正在保存…");
+      try {
+        const body = Object.fromEntries(Object.entries(inputs).map(([key, input]) => [key, input.checked]));
+        await routeRequest("/toy/qq/extras", body, {confirmed: true});
+        status.textContent = t("已保存。");
+      } catch (_error) {
+        changed.checked = !changed.checked;
+        status.textContent = t("没有保存成功，已恢复原设置，请稍后重试。");
+      } finally {
+        busy = false;
+        Object.values(inputs).forEach((input) => { input.disabled = false; });
+      }
+    };
+    const rows = options.map(([key, label, detail]) => {
+      const row = document.createElement("label");
+      row.className = "olivia-qq-option text-text-body text-body-m";
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.className = "olivia-qq-switch";
+      input.setAttribute("role", "switch");
+      input.setAttribute("aria-label", label);
+      input.disabled = true;
+      input.addEventListener("change", () => { void persist(input); });
+      inputs[key] = input;
+      const copy = document.createElement("span");
+      copy.className = "olivia-qq-copy";
+      copy.append(text("span", label, "text-text-body text-body-m"),
+        text("span", detail, "text-text-secondary text-caption-m font-regular"));
+      row.append(copy, input);
+      return row;
+    });
+    container.append(style, text("div", t("QQ 里的小动作"), "text-text-body text-title-m"), ...rows, status);
+    section.append(container);
+    routeRequest("/toy/qq/extras").then((value) => {
+      for (const [key, input] of Object.entries(inputs)) { input.checked = value[key] !== false; input.disabled = false; }
+      status.textContent = "";
+    }).catch(() => { status.textContent = t("暂时读取不到这些设置，请稍后再打开。"); });
+  };
+
   const goWorld = path => {
     const router=window.__oliviaNativeView?.router;
     if(router)void router.push(path);else window.location.hash='#'+path;
@@ -5704,6 +5778,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     if (window.__oliviaNativeView) mountProactiveSetting(reply);
     mountStickerPacks(reply);
     const chat = settingsGroup("chat", "QQ", t("绑定后可以在 QQ 里和林离聊天"));
+    mountQqExtras(chat);
     // Memories live in the top bar's letters-and-memories window; settings keeps only import and backup.
     const letters = settingsGroup("letters", t("信件与记忆"), t("备份信件与聊天"));
     mountLocalLetterImport(letters);

@@ -3,6 +3,7 @@
 First occurrence preserves classic IDs where the catalog repeats a name.
 Only exact known labels are interpreted; arbitrary CQ syntax stays text.
 """
+import re
 
 FACE_IDS = {
     "龙年快乐": "392",
@@ -327,3 +328,23 @@ FACE_IDS = {
     "略": "483",
     "比爱心": "484"
 }
+
+FACE_NAMES = {face_id: name for name, face_id in FACE_IDS.items()}
+
+# The faces that suit her, offered to the writer (owner 2026-10-24: real QQ faces). Any catalog label still works.
+HER_FACES = ('微笑', '害羞', '捂脸', '偷笑', '可爱', '憨笑', '呲牙', '托腮', '发呆', '坏笑', '撇嘴', '委屈', '难过',
+             '流泪', '大哭', '生气', '哼', '疑问', '惊讶', '期待', '比心', '亲亲', '贴贴', '拥抱', '爱心', '爱你',
+             '晚安', '困', '睡', '月亮', '太阳', '咖啡', '茶', '蛋糕', '吃糖', '玫瑰', '鼓掌', '拍手', '点赞', 'OK',
+             '打招呼', '挥手', '尴尬', '擦汗', '笑哭', '暗中观察', '吃瓜', '问号脸', '头秃', '我想开了', '心碎', '嘘')
+
+_LABEL = re.compile(r'\[([^\[\]\r\n]{1,32})\]')
+
+
+def face_labels(text):
+    """The catalog labels in a reply, in order: what QQ shows as faces."""
+    return ['[' + m.group(1) + ']' for m in _LABEL.finditer(text) if m.group(1).casefold() in FACE_IDS]
+
+
+def without_faces(text):
+    """The reply as it is spoken: a face is seen, never read aloud."""
+    return _LABEL.sub(lambda m: '' if m.group(1).casefold() in FACE_IDS else m.group(0), text)

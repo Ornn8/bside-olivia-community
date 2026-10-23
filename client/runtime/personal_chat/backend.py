@@ -214,8 +214,16 @@ def _discard_chat_audio(path):
         pass  # An unused generated artifact cannot block receipt or delivery.
 
 
+def _qq_extras(server):
+    from .qq_presence import DEFAULTS, settings
+    root = getattr(server, '_state_root', lambda: None)()
+    return settings(root) if root is not None else dict(DEFAULTS)
+
+
 async def prepare_chat_audio(server, text, path, *, timeout_seconds=None):
     """Submit chat speech independently of letter and photo media work."""
+    from .qq_faces import without_faces
+    text = without_faces(text).strip() or text  # a face label is seen in QQ, never read aloud
     from runtime.media.voice_direction import TextOnlyVoicePlan
     from runtime.media.media_paths import configured_media_path
     from runtime.remote_pipeline import enabled as remote_enabled
@@ -959,6 +967,13 @@ async def _generate_billed(server, event, row):
         sticker = decision['sticker'] if decision['sticker'] in sticker_choices else None
         if sticker and companion is None and contact is None and not unprompted:
             row['sticker_id'] = sticker
+        if (event.channel == 'qq' and companion is None and contact is None and not asked
+                and _qq_extras(server)['gestures']):
+            # Her QQ gestures from the same decision: a poke before the message, a face on his message.
+            if decision.get('poke') is True:
+                row['qq_poke'] = 'PENDING'
+            if decision.get('reaction') and not unprompted:
+                row['qq_reaction'] = decision['reaction']
         if not voice_available:
             mode = 'text'
             basis = voice_block
@@ -1729,7 +1744,19 @@ def install_personal_chat(app, server):
                         runtime['errors']['initiative'] = _failure_code(exc)
                     finally:
                         _publish_status(server, runtime)
+            async def presence_loop():
+                # Her QQ status, likes and 说说 (qq_presence); a pass never stops the listener.
+                from .qq_presence import tick as presence_tick
+                while not stop_event.is_set():
+                    await asyncio.sleep(60)
+                    try:
+                        await presence_tick(server, runtime, initiative)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        runtime['errors']['presence'] = _failure_code(exc)
             runtime['tasks'].append(asyncio.create_task(proactive_loop()))
+            runtime['tasks'].append(asyncio.create_task(presence_loop()))
             runtime["tasks"].append(asyncio.create_task(boot()))
         except Exception:
             server._safe_log("personal_chat_start_failed", error_code="PERSONAL_CHAT_CONFIG_UNAVAILABLE")

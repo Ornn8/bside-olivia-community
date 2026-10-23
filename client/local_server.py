@@ -5148,6 +5148,24 @@ async def route(
         except CloudError as exc:
             return err(exc.status,exc.code,{'error_code':exc.code})
 
+    if p == '/toy/qq/extras':
+        from runtime.personal_chat.qq_presence import settings as qq_extras, save_settings
+        root = _state_root()
+        if root is None:
+            return err(503, 'QQ_EXTRAS_UNAVAILABLE', {})
+        if method == 'POST':
+            if not companion_confirmed:
+                return err(403, 'COMPANION_CONFIRMATION_REQUIRED', {})
+            try:
+                return ok(await asyncio.to_thread(save_settings, root, body))
+            except ValueError:
+                return err(400, 'QQ_EXTRAS_INVALID', {})
+            except OSError:
+                return err(503, 'QQ_EXTRAS_UNAVAILABLE', {})
+        if method != 'GET':
+            return err(405, 'METHOD_NOT_ALLOWED', {})
+        return ok(await asyncio.to_thread(qq_extras, root))
+
     if p == '/toy/world/gifts':
         from runtime.remote_generation import RemoteGeneration
         from runtime.cloud_service import CloudError

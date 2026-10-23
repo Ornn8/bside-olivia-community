@@ -15,6 +15,7 @@ from runtime.cloud_policy import get_policy
 from runtime import proactive_config, ui_language
 from runtime.ui_i18n_backend import tr
 from runtime.reply.proactive_runtime import unprompted
+from .qq_faces import FACE_IDS, face_labels
 JEV_ERROR_CODES = _JEV_PORT_ERRORS | {
     'JEV_PLAN_UNSUPPORTED', 'JEV_CONTEXT_UNAVAILABLE', 'JEV_STORED_DECISION_INVALID',
     'JEV_SERVICE_UNAVAILABLE', 'JEV_CONTEXT_BUDGET_EXCEEDED', 'JEV_INPUT_SUPERSEDED',
@@ -59,7 +60,7 @@ def chat_text(reply_text):
 
 
 def _clear_draft(row):
-    for key in ('reply_text', 'prepared_audio', 'reply_audio_duration', 'voice_fallback', 'sticker_id',
+    for key in ('reply_text', 'prepared_audio', 'reply_audio_duration', 'voice_fallback', 'sticker_id', 'qq_poke', 'qq_reaction',
                 'letter_invitation', 'initiative_preference', 'pause_until', 'letter_preference',
                 'letter_until', 'followup_at', 'followup_quote', 'listening_preference', 'requested_format',
                 'presentation_status', 'delivery_basis', 'voice_ready', 'quality_status', 'reviewer_calls', 'rewrite_calls',
@@ -390,6 +391,39 @@ class PersonalChatService:
             await self._handle_one(event, send, proactive=True, followup=followup,
                                    proactive_revision=revision, proactive_eligible=eligible, contact=contact)
 
+    @staticmethod
+    async def _poke_first(row, send):
+        """A poke she chose goes just before her message; a lost poke never holds the message back."""
+        if row.get('qq_poke') != 'PENDING' or not callable(getattr(send, 'poke', None)):
+            return
+        try:
+            await send.poke()
+            row['qq_poke'] = 'SENT'
+        except Exception:
+            row['qq_poke'] = 'FAILED'
+
+    @staticmethod
+    async def _after_delivery(row, event, send):
+        """A face she wrote follows a voice message (faces are never spoken); her reaction lands on his last message."""
+        changed = False
+        labels = face_labels(row.get('reply_text', ''))
+        if row.get('delivered_format') == 'audio' and labels:
+            try:
+                await getattr(send, 'plain', send)(labels[0])
+                row['qq_face_after_voice'] = 'SENT'
+            except Exception:
+                row['qq_face_after_voice'] = 'FAILED'
+            changed = True
+        face, target = row.get('qq_reaction'), event.sources[-1][0]
+        if face and callable(getattr(send, 'react', None)) and not target.startswith(('poke-', 'proactive-', 'contact-')):
+            try:
+                await send.react(target, FACE_IDS[face.casefold()])
+                row['qq_reaction_status'] = 'SENT'
+            except Exception:
+                row['qq_reaction_status'] = 'FAILED'
+            changed = True
+        return changed
+
     def _unanswered(self, event):
         """A message of his on this binding is still waiting for her reply."""
         return any(row.get('binding_id') == event.binding_id and row.get('source_messages')
@@ -512,7 +546,7 @@ class PersonalChatService:
                 if row.get("generation_attempts", 0) >= 2:
                     raise RuntimeError("PERSONAL_CHAT_GENERATION_RETRY_EXHAUSTED")
                 validated_controls = row.get('user_controls_applied') is True
-                for key in ('prepared_audio', 'reply_audio_duration', 'voice_fallback', 'sticker_id',
+                for key in ('prepared_audio', 'reply_audio_duration', 'voice_fallback', 'sticker_id', 'qq_poke', 'qq_reaction',
                             'letter_invitation', 'initiative_preference', 'pause_until', 'letter_preference',
                             'letter_until', 'followup_at', 'listening_preference', 'requested_format', 'presentation_status',
                             'delivery_basis', 'voice_ready',
@@ -710,6 +744,7 @@ class PersonalChatService:
                            skip_reason=('USER_PRIORITY' if outdated() else 'CONTACT_SUPERSEDED'))
                 await persist_state(self.persist)
                 return
+            await self._poke_first(row, send)
             receipt = None
             try:
                 from runtime.diagnostics.reply_telemetry import timing
@@ -753,6 +788,8 @@ class PersonalChatService:
             row["private_world_semantic_key"] = "canonical." + hashlib.sha256(event.exchange_id.encode()).hexdigest()
             row.pop("error_code", None)
             await persist_state(self.persist)
+            if event.channel == 'qq' and await self._after_delivery(row, event, send):
+                await persist_state(self.persist)
             if (row.get('companion_decision') is None and row.get('proactive_decision') is None
                     and row.get('sticker_id') and not unprompted(row) and callable(getattr(send, 'image', None))):
                 from pathlib import Path
