@@ -77,9 +77,10 @@ def status_for(snapshot, now, chatting=False):
         return ('困', '还没睡') if chatting else ('睡', '睡觉中')
     if rhythm.get('phase') == 'bathing':
         return STATUS['bath_started']
-    current = snapshot.get('current') or {}
+    # A stale record is what she did earlier, not now (04:00 showed 练琴中 from the evening).
+    current = {} if snapshot.get('stale') else snapshot.get('current') or {}
     local = now.astimezone(SHANGHAI)
-    if current.get('activity_kind') == 'rest' and (local.hour >= 23 or local.hour < 7):
+    if current.get('activity_kind') in ('rest', None) and (local.hour >= 23 or local.hour < 7):
         return ('困', '还没睡') if chatting else ('睡', '睡觉中')
     return STATUS.get(current.get('activity_kind'))
 

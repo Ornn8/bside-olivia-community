@@ -91,6 +91,13 @@ def test_her_status_follows_what_she_is_doing(kind, phase, hour, expected):
     assert qq_presence.status_for(Life(kind, phase).snapshot(None), at(hour)) == expected
 
 
+def test_an_old_activity_is_not_shown_as_what_she_is_doing_now():
+    stale = {'current': {'activity_kind': 'practice'}, 'rhythm': {}, 'stale': True}
+    assert qq_presence.status_for(stale, at(4)) == ('睡', '睡觉中')
+    assert qq_presence.status_for(stale, at(15)) is None
+    assert qq_presence.status_for({'current': None, 'rhythm': {}}, at(2)) == ('睡', '睡觉中')
+
+
 def test_she_is_not_shown_asleep_while_she_is_chatting(tmp_path):
     assert qq_presence.status_for(Life('rest', 'sleep').snapshot(None), at(3), chatting=True) == ('困', '还没睡')
     assert qq_presence.status_for(Life('rest').snapshot(None), at(23, 30), chatting=True) == ('困', '还没睡')
