@@ -237,6 +237,10 @@ def _reply_projection(
     reply_text = str(letter.get("reply_text") or "") if published else ""
     if not reply_text:
         return int(OriginalClientReplyType.NONE), "", ""
+    from runtime.reply.letter_presentation import envelope_parts
+    parts = envelope_parts(reply_text)
+    if parts is not None:
+        reply_text = parts[0]  # a letter saved as a chat-style JSON object shows the letter it holds
 
     mode = _exact_reply_mode(letter.get("reply_mode"))
     media_status = str(letter.get("media_status") or "").strip().upper()
