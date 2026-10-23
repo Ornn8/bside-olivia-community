@@ -758,6 +758,7 @@ async def _generate_billed(server, event, row):
     read_window = None
     try:
         if unprompted and not ('text' in qq_media or 'audio_speech' in qq_media and voice_available) and not proactive_metadata:
+            row['proactive_skip'] = 'PERSONAL_CHAT_PROACTIVE_SKIP_NO_MEDIUM'
             return '[[skip]]'  # Without the cloud decision, no way to speak means no contact.
         read_window = READ_WINDOW.set(freeze_read_window(
             chain(getattr(server.store, 'letters', []), server.store.personal_chats),
@@ -827,6 +828,7 @@ async def _generate_billed(server, event, row):
             exc.failure_context = provider_failure_context(getattr(result, 'failure_context', {}))
             raise exc
         if contact is not None and contact['decision']['action'] == 'defer':
+            row['proactive_skip'] = 'PERSONAL_CHAT_PROACTIVE_SKIP_DEFERRED'
             return '[[skip]]'
         from .decision import decode
         try:
@@ -886,6 +888,7 @@ async def _generate_billed(server, event, row):
                            silence_reason='USER_REQUESTED_WAIT' if kind == 'wait_user' else 'USER_REQUESTED_NO_REPLY')
                 await persist_chat(server)
                 return None
+            row['proactive_skip'] = 'PERSONAL_CHAT_PROACTIVE_SKIP_WRITER'
             return '[[skip]]'
         text, mode = decision['text'].strip(), decision['delivery']
         from .decision import repeats_recent
@@ -964,6 +967,7 @@ async def _generate_billed(server, event, row):
             row.pop('sticker_id', None)
             row.pop('mailbox_notice_letter_id', None)
         if unprompted and not (mode == 'voice' or 'text' in qq_media):
+            row['proactive_skip'] = 'PERSONAL_CHAT_PROACTIVE_SKIP_TEXT'
             return '[[skip]]'  # Her own contact is never sent as text, unless the cloud allows it.
         if (asked and mode == 'text' and voice_available
                 and any(item.get('type') == 'voice' for item in row.get('contact_media') or [])):
@@ -1051,6 +1055,7 @@ async def _generate_billed(server, event, row):
                 row['delivery_basis'] = ('VOICE_RENDER_TIMEOUT' if voice_status == 'timeout'
                                          else 'VOICE_RENDER_FAILED')
                 if unprompted and 'text' not in qq_media:
+                    row['proactive_skip'] = 'PERSONAL_CHAT_PROACTIVE_SKIP_VOICE_FAILED'
                     return '[[skip]]'  # Her own contact is a voice message or nothing.
             finally:
                 if turn_is_current():

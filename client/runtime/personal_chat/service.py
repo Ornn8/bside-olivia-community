@@ -66,7 +66,7 @@ def _clear_draft(row):
                 'degraded_stages', 'default_voice_status', 'default_voice_seconds', 'default_voice_duration',
                 'voice_prepare_seconds', 'voice_prepare_status', 'voice_prepare_timeout_seconds',
                 'generation_retryable', 'generation_failure_context', 'generation_failures', 'generation_notice_code',
-                'silence_reason', 'skip_reason', 'user_controls_applied',
+                'silence_reason', 'skip_reason', 'proactive_skip', 'user_controls_applied',
                 'daily_video_request', 'daily_video_status', 'daily_video_error_code', 'daily_video_candidates',
                 'writer_checkpoint', 'generation_run_id', 'generation_attempt_id', 'generation_recovery',
                 'send_attempt_id', 'send_input_revision', 'delivery_receipt'):
@@ -653,7 +653,8 @@ class PersonalChatService:
                 if (unprompted(row) and row.get('requested_format') == 'voice'
                         and 'text' not in proactive_config.media('qq')):
                     # Her own contact is a voice message or nothing: never the text of a lost voice.
-                    row.update(delivery_status='SKIPPED', letter_status='SKIPPED', skip_reason='PROACTIVE_NO_REPLY')
+                    row.update(delivery_status='SKIPPED', letter_status='SKIPPED', skip_reason='PROACTIVE_NO_REPLY',
+                               proactive_skip='PERSONAL_CHAT_PROACTIVE_SKIP_VOICE_ONLY')
                     await persist_state(self.persist)
                     return
                 previous_text = row['reply_text']
