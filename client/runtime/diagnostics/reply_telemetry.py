@@ -315,6 +315,8 @@ class Collector:
                     if state == 'SENDING' and row.get('error_code'): status = 'unknown'
                     fields = dict(source=source, channel=channel, attempt=attempt, model=row.get('diagnostic_model', 'unknown'))
                     error = row.get('error_code')
+                    if status == 'skipped' and not error and row.get('proactive_skip') in ERROR_CODES:
+                        error = row['proactive_skip']  # which step let her own contact go unsent
                     context = row.get('generation_failure_context')
                     if error == 'JEV_CONTEXT_UNAVAILABLE' and isinstance(context, dict):
                         from .failure_context import CONTEXT_ERROR_CODES
