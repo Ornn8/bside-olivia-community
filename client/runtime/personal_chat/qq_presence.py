@@ -13,6 +13,7 @@ import asyncio
 import json
 import os
 import tempfile
+import traceback
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -251,6 +252,8 @@ async def tick(server, runtime, initiative, now=None):
         code = getattr(exc, 'args', [None])[0]
         state['error'] = code if isinstance(code, str) and code.isupper() else type(exc).__name__
         state['error_at'] = stamp  # kept until the next failure, so a later quiet pass does not hide it
+        frame = traceback.extract_tb(exc.__traceback__)[-1] if exc.__traceback__ else None
+        state['error_where'] = f'{Path(frame.filename).name}:{frame.name}:{frame.lineno}' if frame else None
         try:
             server._safe_log('qq_presence_deferred', error_code=state['error'])
         except Exception:
