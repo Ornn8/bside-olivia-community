@@ -161,3 +161,33 @@ def test_a_face_in_a_voice_reply_follows_the_voice_and_is_never_spoken(tmp_path,
     log, row = reply('晚安[月亮]，明天见', audio=str(audio))
     assert [entry[0] for entry in log] == ['audio', 'text'] and log[1] == ('text', '[月亮]')
     assert row['qq_face_after_voice'] == 'SENT'
+
+
+def test_the_exchange_runner_passes_every_gesture_to_the_live_connection():
+    from runtime.personal_chat.exchange_runner import ExchangeRunner
+    calls = []
+    class Live:
+        def is_available(self):
+            return True
+        def for_exchange(self, event):
+            return self
+        async def __call__(self, text):
+            calls.append(('text', text))
+    live = Live()
+    for name in ('poke', 'like', 'react', 'status', 'signature', 'qzone_post', 'cookies'):
+        async def record(*args, _name=name):
+            calls.append((_name, *args))
+        setattr(live, name, record)
+    async def handler(event, send):
+        pass
+    runner = ExchangeRunner(handler)
+    runner.ready('qq', live)
+    async def scenario():
+        await runner.send.poke()
+        await runner.send.status('8', '睡觉中')
+        await runner.send.like(10)
+        correlated = runner.send.for_exchange(PersonalMessage('qq', '100', '200', '42', 'hi'))
+        await correlated.react('42', '75')
+        await correlated.plain('[月亮]')
+    asyncio.run(scenario())
+    assert calls == [('poke',), ('status', '8', '睡觉中'), ('like', 10), ('react', '42', '75'), ('text', '[月亮]')]
