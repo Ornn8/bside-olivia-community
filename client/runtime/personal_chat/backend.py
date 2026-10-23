@@ -1040,7 +1040,9 @@ async def _generate_billed(server, event, row):
             # A cancelled older revision can still finish in its worker thread.
             # Give each render its own output so it cannot overwrite new audio.
             path = server._state_root() / 'media' / (event.exchange_id + '-' + secrets.token_hex(8) + '.wav')
-            timeout = (_qq_default_voice_timeout_seconds() if basis == 'QQ_DEFAULT_VOICE'
+            # A QQ reply never waits long for its voice: without one the words go as text
+            # (owner 2026-10-24 「没语音也可以聊天啊」, after a reply waited 20 minutes for a voice).
+            timeout = (_qq_default_voice_timeout_seconds() if basis == 'QQ_DEFAULT_VOICE' or event.channel == 'qq'
                        else _VOICE_RENDER_TIMEOUT_SECONDS)
             started = monotonic()
             voice_status = 'failed'

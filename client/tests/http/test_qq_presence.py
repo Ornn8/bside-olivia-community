@@ -91,15 +91,26 @@ def test_her_status_follows_what_she_is_doing(kind, phase, hour, expected):
     assert qq_presence.status_for(Life(kind, phase).snapshot(None), at(hour)) == expected
 
 
-def test_status_changes_only_when_her_activity_does_and_not_more_than_every_ten_minutes(tmp_path):
+def test_she_is_not_shown_asleep_while_she_is_chatting(tmp_path):
+    assert qq_presence.status_for(Life('rest', 'sleep').snapshot(None), at(3), chatting=True) == ('困', '还没睡')
+    assert qq_presence.status_for(Life('rest').snapshot(None), at(23, 30), chatting=True) == ('困', '还没睡')
+    rows = [{'channel': 'qq', 'delivery_status': 'DELIVERED', 'created_at': at(2, 50).timestamp(), 'letter_id': 'x'}]
+    srv, sender = server(tmp_path, life=Life('rest', 'sleep'), rows=rows), Sender()
+    qq_presence.save_settings(tmp_path, {'status': True, 'like': False, 'qzone': False, 'gestures': True})
+    run(srv, sender, at(3))
+    run(srv, sender, at(3, 40))
+    assert sender.log == [('status', qq_presence_face('困'), '还没睡'), ('status', qq_presence_face('睡'), '睡觉中')]
+
+
+def test_status_changes_only_when_her_activity_does_and_not_more_than_every_two_minutes(tmp_path):
     life = Life('practice')
     srv, sender = server(tmp_path, life=life), Sender()
     qq_presence.save_settings(tmp_path, {'status': True, 'like': False, 'qzone': False, 'gestures': True})
     run(srv, sender, at(15))
-    run(srv, sender, at(15, 5))
+    run(srv, sender, at(15, 1))
     life.kind = 'meal'
-    run(srv, sender, at(15, 6))
-    run(srv, sender, at(15, 11))
+    run(srv, sender, at(15, 1))
+    run(srv, sender, at(15, 3))
     assert sender.log == [('status', qq_presence_face('学习'), '练琴中'), ('status', qq_presence_face('干饭'), '吃饭中')]
 
 

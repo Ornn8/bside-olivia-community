@@ -25,7 +25,8 @@ STATUS = {'class': ('学习', '上课中'), 'practice': ('学习', '练琴中'),
           'meal': ('干饭', '吃饭中'), 'rest': ('困', '休息一下'), 'housework': ('转圈', '收拾屋子'),
           'walk': ('跳跳', '散步中'), 'errand': ('火车', '出门办事'), 'creative': ('学习', '写写画画'),
           'bath_started': ('转圈', '洗澡中'), 'bath_finished': ('茶', '刚洗完澡'), 'shopping': ('拿到红包', '逛街中')}
-STATUS_EVERY = 600
+STATUS_EVERY = 120
+CHATTING_SECONDS = 1800   # a reply this recent means she is awake, whatever her rhythm says
 POST_HOURS = (20, 23)          # her 说说 goes out in the evening, Shanghai time
 POST_RETRY = 3600
 WATCH_EVERY = 1800
@@ -66,17 +67,20 @@ def save_settings(root, value):
     return dict(value)
 
 
-def status_for(snapshot, now):
-    """(face name, wording) for what she is doing now, or None when the world cannot say."""
+def status_for(snapshot, now, chatting=False):
+    """(face name, wording) for what she is doing now, or None when the world cannot say.
+
+    chatting: she replied on QQ within the last half hour, so she is not asleep (2026-10-24: her status said
+    睡觉中 while she told him she was still awake)."""
     rhythm = snapshot.get('rhythm') or {}
     if rhythm.get('phase') == 'sleep':
-        return ('睡', '睡觉中')
+        return ('困', '还没睡') if chatting else ('睡', '睡觉中')
     if rhythm.get('phase') == 'bathing':
         return STATUS['bath_started']
     current = snapshot.get('current') or {}
     local = now.astimezone(SHANGHAI)
     if current.get('activity_kind') == 'rest' and (local.hour >= 23 or local.hour < 7):
-        return ('睡', '睡觉中')
+        return ('困', '还没睡') if chatting else ('睡', '睡觉中')
     return STATUS.get(current.get('activity_kind'))
 
 
@@ -231,7 +235,10 @@ async def tick(server, runtime, initiative, now=None):
     try:
         if prefs['status'] and life is not None and stamp - state.get('status_at', 0) >= STATUS_EVERY:
             from .qq_faces import FACE_IDS
-            wanted = status_for(life.snapshot(now), now)
+            chatting = any(row.get('channel') == 'qq' and row.get('delivery_status') == 'DELIVERED'
+                           and stamp - float(row.get('created_at', 0)) <= CHATTING_SECONDS
+                           for row in list(server.store.personal_chats)[-20:])
+            wanted = status_for(life.snapshot(now), now, chatting)
             if wanted and state.get('status') != list(wanted):
                 state['status_at'] = stamp
                 await sender.status(FACE_IDS[wanted[0]], wanted[1])
