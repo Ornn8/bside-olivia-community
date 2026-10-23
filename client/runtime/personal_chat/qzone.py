@@ -60,9 +60,11 @@ class Qzone:
             async with session.request(method, url, data=form, headers=headers, allow_redirects=False) as response:
                 if response.status != 200:
                     raise QzoneUnavailable('QZONE_HTTP_' + str(response.status))
-                body = await response.content.read(2 * 1024 * 1024 + 1)
-                if len(body) > 2 * 1024 * 1024:
-                    raise QzoneUnavailable('QZONE_RESPONSE_TOO_LARGE')
+                body = bytearray()
+                async for chunk in response.content.iter_chunked(65536):
+                    body.extend(chunk)
+                    if len(body) > 2 * 1024 * 1024:
+                        raise QzoneUnavailable('QZONE_RESPONSE_TOO_LARGE')
                 return _json(body.decode('utf-8', 'replace'))
         except aiohttp.ClientError:
             raise QzoneUnavailable('QZONE_NETWORK') from None

@@ -553,6 +553,9 @@ async def _generate_billed(server, event, row):
     observation_context = incoming_context(row)
     if event.media:
         observation_context += incoming_media.incoming_context(row)
+    if event.channel == 'qq':
+        from .bilibili import link_context
+        observation_context += await link_context(server, event, row)
     from runtime.piano import recent_context
     observation_context += recent_context(server, event.binding_id)
     from runtime.call.store import recent_context as call_context
