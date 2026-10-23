@@ -144,3 +144,19 @@ def test_photo_reference_falls_back_to_last_observed_place_when_world_is_outdate
         reference = image_reply._photo_reference(row, row['reply_text'])
         assert reference['world_current_location'] == expected
         assert ('world_location_basis' in reference) == (world.get('last_observation') is not None)
+
+
+def test_a_night_photo_with_an_outdated_world_puts_her_at_home():
+    """A 4 a.m. photo put her in the campus practice room while she said she was lying in bed (2026-10-24)."""
+    from datetime import datetime, timezone
+    from runtime import image_reply
+    from runtime.reply.character_emotion_context import freeze_expression_context, store_expression_context
+    last = {'activity': '练琴', 'evidence_kind': 'published_life', 'location': '学校琴房',
+            'occurred_at': '2026-10-23T12:00:00+00:00'}
+    for hour, expected, basis in ((20, '家里', 'night_at_home'), (8, '学校琴房', 'last_observation')):
+        row = {'reply_text': '还没睡呢。'}
+        world = {'stale': True, 'current': None, 'last_observation': last}
+        snapshot = freeze_expression_context('r1', datetime(2026, 10, 23, hour, tzinfo=timezone.utc), world=world)
+        store_expression_context(row, snapshot, row['reply_text'])
+        reference = image_reply._photo_reference(row, row['reply_text'])
+        assert reference['world_current_location'] == expected and reference['world_location_basis']['kind'] == basis

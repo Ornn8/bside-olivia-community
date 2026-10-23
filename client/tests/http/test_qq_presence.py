@@ -99,14 +99,14 @@ def test_an_old_activity_is_not_shown_as_what_she_is_doing_now():
 
 
 def test_she_is_not_shown_asleep_while_she_is_chatting(tmp_path):
-    assert qq_presence.status_for(Life('rest', 'sleep').snapshot(None), at(3), chatting=True) == ('困', '还没睡')
-    assert qq_presence.status_for(Life('rest').snapshot(None), at(23, 30), chatting=True) == ('困', '还没睡')
+    assert qq_presence.status_for(Life('rest', 'sleep').snapshot(None), at(3), chatting=True) == ('困', '刚被吵醒')
+    assert qq_presence.status_for(Life('rest').snapshot(None), at(23, 30), chatting=True) == ('困', '刚被吵醒')
     rows = [{'channel': 'qq', 'delivery_status': 'DELIVERED', 'created_at': at(2, 50).timestamp(), 'letter_id': 'x'}]
     srv, sender = server(tmp_path, life=Life('rest', 'sleep'), rows=rows), Sender()
     qq_presence.save_settings(tmp_path, {'status': True, 'like': False, 'qzone': False, 'gestures': True})
     run(srv, sender, at(3))
     run(srv, sender, at(3, 40))
-    assert sender.log == [('status', qq_presence_face('困'), '还没睡'), ('status', qq_presence_face('睡'), '睡觉中')]
+    assert sender.log == [('status', qq_presence_face('困'), '刚被吵醒'), ('status', qq_presence_face('睡'), '睡觉中')]
 
 
 def test_status_changes_only_when_her_activity_does_and_not_more_than_every_two_minutes(tmp_path):

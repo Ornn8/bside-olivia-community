@@ -70,18 +70,18 @@ def save_settings(root, value):
 def status_for(snapshot, now, chatting=False):
     """(face name, wording) for what she is doing now, or None when the world cannot say.
 
-    chatting: she replied on QQ within the last half hour, so she is not asleep (2026-10-24: her status said
-    睡觉中 while she told him she was still awake)."""
+    chatting: she replied on QQ within the last half hour: his message woke her (owner 2026-10-24: at that hour
+    she is asleep and gets woken)."""
     rhythm = snapshot.get('rhythm') or {}
     if rhythm.get('phase') == 'sleep':
-        return ('困', '还没睡') if chatting else ('睡', '睡觉中')
+        return ('困', '刚被吵醒') if chatting else ('睡', '睡觉中')
     if rhythm.get('phase') == 'bathing':
         return STATUS['bath_started']
     # A stale record is what she did earlier, not now (04:00 showed 练琴中 from the evening).
     current = {} if snapshot.get('stale') else snapshot.get('current') or {}
     local = now.astimezone(SHANGHAI)
     if current.get('activity_kind') in ('rest', None) and (local.hour >= 23 or local.hour < 7):
-        return ('困', '还没睡') if chatting else ('睡', '睡觉中')
+        return ('困', '刚被吵醒') if chatting else ('睡', '睡觉中')
     return STATUS.get(current.get('activity_kind'))
 
 

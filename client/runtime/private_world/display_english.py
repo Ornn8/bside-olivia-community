@@ -152,8 +152,8 @@ FOODS: dict[str, str] = {
 # --- rhythm, wellbeing, timetable -----------------------------------------------------------------------------------
 RHYTHM: dict[str, str] = {
     "林离洗澡中": "Taking a bath",
-    "计划休息的时段": "Planned rest time",
-    "夜里还醒着，在和对方聊天": "Still awake at night, chatting with you",
+    "睡觉的时段：这时收到对方的消息，就是把睡着的她吵醒了": "Her sleeping time: a message now wakes her up",
+    "夜里被吵醒后还醒着，在和对方聊天": "Woken in the night and still awake, chatting with you",
     "早餐时间": "Breakfast time",
     "午饭时间": "Lunch time",
     "晚饭时间": "Dinner time",

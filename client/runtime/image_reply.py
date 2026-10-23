@@ -179,6 +179,16 @@ def scene_location_id(room):
     return _LEGACY_SCENES.get(room, room)
 
 
+def _night(as_of):
+    """23:00 to 07:00 in Shanghai at the reply's time."""
+    from datetime import datetime, timedelta, timezone
+    try:
+        hour = datetime.fromisoformat(str(as_of).replace('Z', '+00:00')).astimezone(timezone(timedelta(hours=8))).hour
+    except (TypeError, ValueError):
+        return False
+    return hour >= 23 or hour < 7
+
+
 def _photo_reference(row, text):
     """Project only visible hints from this body's saved view, never live state."""
     from runtime.reply.character_emotion_context import checked_expression_context
@@ -197,6 +207,11 @@ def _photo_reference(row, text):
         if isinstance(location, str) and location.strip() and len(location) <= 60:
             reference['world_current_location'] = location
         reference['world_activity'] = {k: current[k] for k in ('activity', 'occurred_at') if k in current}
+    elif _night(view['as_of']):
+        # At night an outdated record is where she was, not where she is: she is at home (2026-10-24: a 4 a.m.
+        # photo put her in the campus practice room while she told him she was lying in bed).
+        reference['world_current_location'] = '家里'
+        reference['world_location_basis'] = {'kind': 'night_at_home'}
     else:
         # The writer hides an outdated activity as last_observation. A photo
         # still needs a place: use the last published one and say it is that.
