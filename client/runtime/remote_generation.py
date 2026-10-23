@@ -104,6 +104,15 @@ class RemoteGeneration:
                 raise CloudError('GPU_REQUEST_INVALID',400)
             payload=data
             path, method = '/v1/wardrobe', 'POST'
+        elif action == 'wardrobe_pin':
+            # He picks the exact look she wears; it must be one he owns.
+            from runtime.wardrobe import valid_look_id
+            if (not isinstance(data,dict) or set(data)!={'request_id','look_id'}
+                    or not isinstance(data['request_id'],str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,255}',data['request_id'])
+                    or not valid_look_id(data['look_id'])):
+                raise CloudError('GPU_REQUEST_INVALID',400)
+            payload=data
+            path, method = '/v1/wardrobe', 'POST'
         elif action == 'gifts_get' and data == {}:
             path, method = '/v1/gifts', 'GET'
         elif action == 'gifts_buy':
@@ -148,7 +157,7 @@ class RemoteGeneration:
             if action in ('pets_get', 'pets_post'):
                 from runtime.pets import validate_pets
                 return validate_pets(result)
-            if action in ('wardrobe_get','wardrobe_set','wardrobe_buy'):
+            if action in ('wardrobe_get','wardrobe_set','wardrobe_buy','wardrobe_pin'):
                 from runtime.wardrobe import validate_cloud_state
                 return validate_cloud_state(result)
             if action in ('billing_prices', 'billing_account'):

@@ -4673,7 +4673,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const feedback=document.createElement('div');feedback.className='ow-feedback';
     const status=text('p',t('正在读取衣橱…'));status.setAttribute('role','status');
     const retry=button(t('重新读取'),()=>{void load();});retry.className='ow-retry';retry.hidden=true;feedback.append(status,retry);
-    let selected=null,preview=null,busy=false,styles=[],daily=null,purchases=null;const tabs=[];
+    let selected=null,preview=null,busy=false,styles=[],daily=null,purchases=null,pinned=null,pinnable=false;const tabs=[];
     const purchaseNote=text('p','');intro.append(purchaseNote);
     const render=()=>{
       const saved=styles.find(style=>style.style_id===selected),outfit=styles.find(style=>style.style_id===preview);
@@ -4692,13 +4692,13 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           image.addEventListener('error',()=>{image.replaceWith(text('span',t('参考图暂未加载，请重新读取。'),'ow-image-error'));},{once:true});
           const caption=text('figcaption',item.label+(daily?.look_id===item.look_id?t(' · 今日穿搭'):''));figure.append(image,caption);gallery.append(figure);
           if(purchases){
-            const owned=purchases.owned.includes(item.look_id);
+            const owned=purchases.owned.includes(item.look_id),wearing=pinned===item.look_id;
             let armed=false;const cap=purchases.free_remaining>0?0:500;
-            const claim=button(owned?t('已拥有'):cap===0?t('免费领取'):t('¥5 解锁'),()=>{
+            const claim=owned&&pinnable?button(wearing?t('正在穿'):t('穿这件'),()=>{void wear(item);}):button(owned?t('已拥有'):cap===0?t('免费领取'):t('¥5 解锁'),()=>{
               if(!armed){armed=true;claim.textContent=cap===0?t('确认免费领取'):t('确认购买 · ¥5');status.textContent=cap===0?t('领取「{name}」会占用一个免费自选名额。', {name: item.label}):t('购买「{name}」将从余额扣除 ¥5，解锁后长期可用。', {name: item.label});return;}
               void acquire(item,cap);
             });
-            claim.disabled=busy||owned;claim.className='ow-purchase';figure.append(claim);
+            claim.disabled=busy||owned&&(!pinnable||wearing);claim.className='ow-purchase';figure.append(claim);
           }
         }
         gallery.hidden=!(outfit.looks||[]).length;
@@ -4714,9 +4714,20 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       busy=true;render();status.textContent=t('正在解锁…');
       try{
         const result=await routeRequest('/toy/world/wardrobe',{request_id:videoReplyRequestId(),look_id:item.look_id,max_charge_cents:cap},{confirmed:true});
-        purchases=result.purchases;daily=result.daily_outfit||null;selected=result.wardrobe.style_id;
+        purchases=result.purchases;daily=result.daily_outfit||null;selected=result.wardrobe.style_id;pinned=result.pinned_look||null;
         status.textContent=t('已解锁「{name}」，可以指定此风格供林离搭配。', {name: item.label});
       }catch(_){status.textContent=t('未确认解锁成功，请重新读取衣橱。余额不足请先充值；免费名额若已用完，需要另行确认 ¥5 购买。');retry.hidden=false;}
+      finally{busy=false;render();}
+    };
+    const wear=async item=>{
+      if(busy||!pinnable||pinned===item.look_id)return;
+      busy=true;render();status.textContent=t('正在换上…');
+      try{
+        const result=await routeRequest('/toy/world/wardrobe',{request_id:videoReplyRequestId(),look_id:item.look_id},{confirmed:true});
+        if(result.pinned_look!==item.look_id)throw Error('not worn');
+        pinned=result.pinned_look;daily=result.daily_outfit||null;selected=result.wardrobe.style_id;purchases=result.purchases||purchases;
+        status.textContent=t('林离今天穿「{name}」。重新指定风格后，搭配交还给林离。', {name: item.label});
+      }catch(_){status.textContent=t('没有换成功，请重新读取衣橱后再试。');retry.hidden=false;}
       finally{busy=false;render();}
     };
     rail.addEventListener('keydown',event=>{
@@ -4731,7 +4742,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       try{
         const result=await routeRequest('/toy/world/wardrobe',{request_id:videoReplyRequestId(),style_id:value},{confirmed:true});
         if(!styles.some(style=>style.style_id===result.wardrobe?.style_id))throw Error('invalid wardrobe');
-        selected=result.wardrobe.style_id;daily=result.daily_outfit||null;
+        selected=result.wardrobe.style_id;daily=result.daily_outfit||null;pinned=result.pinned_look||null;
         status.textContent=selected===value?t('风格已生效，林离会按新风格挑选搭配。'):t('当前风格已由其他客户端更新，请重新读取。');
       }catch(_){status.textContent=t('没有保存成功，当前风格仍是{style}。可以重新尝试。', {style: styles.find(style=>style.style_id===selected)?.label||t('原来的风格')});}
       finally{busy=false;render();}
@@ -4742,6 +4753,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         const result=await routeRequest('/toy/world/wardrobe');
         if(!Array.isArray(result.wardrobe_styles)||!result.wardrobe_styles.some(style=>style.style_id===result.wardrobe?.style_id))throw Error('invalid wardrobe');
         styles=result.wardrobe_styles;selected=preview=result.wardrobe.style_id;daily=result.daily_outfit||null;purchases=result.purchases||null;tabs.length=0;rail.replaceChildren();
+        pinnable='pinned_look' in result;pinned=result.pinned_look||null;  // older servers cannot dress her in one exact look
         for(const style of styles){
           const tab=button('',()=>browse(style.style_id));tab.className='ow-style';tab.dataset.style=style.style_id;tab.id='ow-style-'+style.style_id;
           tab.setAttribute('role','tab');tab.setAttribute('aria-controls',look.id);tab.setAttribute('aria-label',style.label);

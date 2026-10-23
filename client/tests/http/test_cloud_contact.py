@@ -445,6 +445,30 @@ def test_qq_then_letter_waits_for_qq_then_falls_back_to_the_letter(tmp_path):
     assert [channel for channel, *_ in cloud.delivered] == ['letter']
 
 
+def test_qq_then_letter_writes_the_letter_when_qq_stays_busy_for_the_whole_wait(tmp_path):
+    kept(tmp_path, event(channel='qq_then_letter', qq_wait_seconds=180))
+    cloud = Cloud(outcomes=[Outcome('busy')] * 3)
+    cloud.run(tmp_path, NOW)
+    cloud.run(tmp_path, NOW + 120)
+    assert [channel for channel, *_ in cloud.delivered] == ['qq', 'qq']
+    cloud.run(tmp_path, NOW + 240)
+    assert [channel for channel, *_ in cloud.delivered] == ['qq', 'qq', 'qq', 'letter']
+    assert cloud.delivered[-1][2] == 1  # The busy tries were not attempts.
+    assert cloud_contact.handled(tmp_path)[ID]['channel'] == 'letter'
+
+
+def test_an_answer_to_his_purchase_tries_qq_again_at_the_next_check(tmp_path):
+    kept(tmp_path, event(purpose='gift_goods', channel='qq_then_letter', qq_wait_seconds=180),
+         event(OTHER, channel='qq_then_letter', qq_wait_seconds=180))
+    cloud = Cloud(outcomes=[Outcome('busy')] * 2)
+    cloud.run(tmp_path, NOW)
+    assert {item['id']: item['retry_after'] for item in cloud_contact.pending(tmp_path)}[ID] == NOW
+    cloud.run(tmp_path, NOW + 30)
+    assert {item['id']: item['retry_after'] for item in cloud_contact.pending(tmp_path)}[ID] == NOW + 30
+    cloud.run(tmp_path, NOW + 60)
+    assert cloud_contact.handled(tmp_path)[ID]['status'] == 'delivered'
+
+
 def test_qq_then_letter_still_uses_qq_when_it_comes_back_inside_the_wait(tmp_path):
     kept(tmp_path, event(channel='qq_then_letter', qq_wait_seconds=180))
     cloud = Cloud(qq=False)

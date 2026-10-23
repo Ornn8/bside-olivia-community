@@ -35,6 +35,12 @@ def _boundary(item, index):
             item.get('read_boundary_sequence', item.get('received_sequence', index)))
 
 
+def _priority(contact):
+    """A cloud contact answering what he just bought: it goes out between his messages."""
+    from runtime.cloud_contact import PRIORITY_PURPOSES
+    return bool(contact) and contact.get('contact_purpose') in PRIORITY_PURPOSES
+
+
 def _sent_time(row):
     try:
         value = datetime.fromisoformat((row.get('read_boundary_sent_at') or row['user_sent_at']).replace('Z', '+00:00'))
@@ -376,10 +382,20 @@ class PersonalChatService:
         """contact: the fields of a cloud contact this exchange carries out (see runtime.cloud_contact)."""
         revision = self.user_revision
         async with self.batch_lock:
+            if _priority(contact) and not self._unanswered(event):
+                # His purchase is answered at the first gap between his messages, not once he stops writing.
+                revision = self.user_revision
             if not eligible() or revision != self.user_revision:
                 return
             await self._handle_one(event, send, proactive=True, followup=followup,
                                    proactive_revision=revision, proactive_eligible=eligible, contact=contact)
+
+    def _unanswered(self, event):
+        """A message of his on this binding is still waiting for her reply."""
+        return any(row.get('binding_id') == event.binding_id and row.get('source_messages')
+                   and not row.get('superseded_by')
+                   and row.get('delivery_status') in {'RECEIVED', 'GENERATING', 'GENERATED'}
+                   for row in self.rows)
 
     async def _handle_one(self, event, send, proactive=False, followup=None, proactive_revision=None,
                           proactive_eligible=None, contact=None):
@@ -408,8 +424,14 @@ class PersonalChatService:
             raise ValueError("PERSONAL_CHAT_OWNER_MISMATCH")
         if (not event.text.strip() and not proactive) or len(event.text) > 10000:
             raise ValueError("PERSONAL_CHAT_INPUT_INVALID")
+        priority = proactive and _priority(contact)
+
+        def outdated():
+            # He wrote meanwhile: her own message gives way, the answer to his purchase does not.
+            return proactive and not priority and proactive_revision != self.user_revision
+
         async with self.lock:
-            if proactive and proactive_revision != self.user_revision:
+            if proactive and outdated():
                 return
             row = next((r for r in self.rows if r.get("letter_id") == event.exchange_id), None)
             if row is not None:
@@ -517,13 +539,14 @@ class PersonalChatService:
                     row['voice_available'] = callable(getattr(send, 'audio', None))
                     row['image_available'] = callable(self.photo) and callable(getattr(send, 'image', None))
                     if proactive:
-                        if proactive_revision != self.user_revision:
+                        if outdated():
                             row.update(delivery_status='SKIPPED', letter_status='SKIPPED',
                                        error_code='PERSONAL_CHAT_USER_PRIORITY', skip_reason='USER_PRIORITY')
                             await persist_state(self.persist)
                             return
                         task = asyncio.create_task(self._generate(event, row, send))
-                        self.proactive_generation = task
+                        if not priority:  # a new message from him cancels only her own initiative
+                            self.proactive_generation = task
                         try:
                             text = await task
                         except asyncio.CancelledError:
@@ -612,7 +635,7 @@ class PersonalChatService:
             if not text:
                 raise ValueError('PERSONAL_CHAT_REPLY_INVALID')
             if proactive:
-                if proactive_revision != self.user_revision:
+                if outdated():
                     row.update(delivery_status='SKIPPED', letter_status='SKIPPED',
                                error_code='PERSONAL_CHAT_USER_PRIORITY', skip_reason='USER_PRIORITY')
                     await persist_state(self.persist)
@@ -665,7 +688,7 @@ class PersonalChatService:
                     updated = await self._refresh_draft(row, event)
                     if updated is not None:
                         return updated
-                elif proactive_revision != self.user_revision:
+                elif outdated():
                     row.update(delivery_status='SKIPPED', letter_status='SKIPPED',
                                error_code='PERSONAL_CHAT_USER_PRIORITY', skip_reason='USER_PRIORITY')
                     await persist_state(self.persist)
@@ -679,12 +702,12 @@ class PersonalChatService:
                 row['send_attempt_id'] = row.get('generation_attempt_id')
                 row['send_input_revision'] = row.get('input_revision', 0)
                 await persist_state(self.persist)
-            if proactive and (proactive_revision != self.user_revision
+            if proactive and (outdated()
                               or callable(proactive_eligible) and not proactive_eligible()):
                 row.update(delivery_status='SKIPPED', letter_status='SKIPPED',
-                           error_code=('PERSONAL_CHAT_USER_PRIORITY' if proactive_revision != self.user_revision
+                           error_code=('PERSONAL_CHAT_USER_PRIORITY' if outdated()
                                        else 'PERSONAL_CHAT_CONTACT_SUPERSEDED'),
-                           skip_reason=('USER_PRIORITY' if proactive_revision != self.user_revision else 'CONTACT_SUPERSEDED'))
+                           skip_reason=('USER_PRIORITY' if outdated() else 'CONTACT_SUPERSEDED'))
                 await persist_state(self.persist)
                 return
             receipt = None
