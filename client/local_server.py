@@ -3789,7 +3789,8 @@ async def _publish_proactive(intent: dict, plan: dict, *, turn: dict) -> dict | 
         signature = None
         from runtime.reply.letter_presentation import split_signature
         if not fixed:
-            body, signature = split_signature(body)
+            from runtime.reply.letter_presentation import unwrap_envelope
+            body, signature = split_signature(unwrap_envelope(body))
         if not body.strip():
             raise ValueError('PROACTIVE_RESPONSE_INVALID')
         if not contact and (not _proactive_turn_current(intent, turn) or not _proactive_opportunity_current(intent)):
