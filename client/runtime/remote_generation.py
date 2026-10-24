@@ -45,6 +45,8 @@ class RemoteGeneration:
         # video, so the service announces moment videos only to clients that say they can take one.
         headers['X-Olivia-Daily-Video-Moment'] = '1'
         headers['X-Olivia-Piano'] = '1'
+        # Her doodles come back as a photo of type 'doodle', which releases before 2.5.0 refuse (2026-10-24).
+        headers['X-Olivia-Doodle'] = '1'
         headers.update(ui_language.headers())
         headers.update(contact_context.headers())
         payload = None

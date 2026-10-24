@@ -37,6 +37,8 @@ def photo_reply_context(context, settings, *, channel='letter'):
         '用户明确索要自拍或随手拍时，可以自然答应，由后续照片流程制作；不要误称没有相机、没有身体或无法发照片。'
         '这是角色生活中的生成照片，不是真实世界的摄影证据。保持角色口吻，不向用户讲内部流程。'
         '照片尚未生成或投递，不要声称已经拍好、已经发送，也不要虚构尚未看到的图片细节。'
+        '她也会用手机画手绘小涂鸦：用户请她画画，或者晚安卡片这类时刻，可以答应画给他，画会和照片一样随回复投递；'
+        '画还没画好、没投递时，同样不要说已经画好发出了。'
         if enabled else
         ('本渠道支持发送照片，但用户当前未开启照片附件。用户索要照片时，说明需先在回信格式设置中开启图片选项。'
          '不要说QQ不支持图片、只能发文字或照片只能随信发送。不能承诺本次会附图。'
@@ -288,7 +290,9 @@ def _scene_matches_location(room, location):
     if any(hint in location for hint in ('家里', '家中', '住处', '公寓')):
         return scene_id in _HOME_ROOMS
     return False  # Uncatalogued locations must not force a preset reference.
-PHOTO_TYPES = ['selfie', 'mirror_selfie', 'portrait', 'snapshot']
+PHOTO_TYPES = ['selfie', 'mirror_selfie', 'portrait', 'snapshot', 'doodle']
+# Pictures without her in them: no outfit or wardrobe style applies (a doodle is her drawing, 2026-10-24).
+_NO_OUTFIT = ('snapshot', 'doodle')
 TOOL = {'type': 'function', 'function': {'name': 'plan_reply_photo', 'description': 'Decide whether a photo fits this reply and describe a single scene.',
     'parameters': {'type': 'object', 'additionalProperties': False, 'properties': {
         'attach': {'type': 'boolean'}, 'photo_type': {'type': 'string', 'enum': PHOTO_TYPES},
@@ -715,12 +719,12 @@ async def _server_photo(server, row, content, text, api, photo_id, settings, pro
         if 'daily_outfit' not in plan:
             raise ValueError('IMAGE_WARDROBE_NOT_APPLIED')
         outfit=validate_daily_outfit(plan['daily_outfit'])
-        if plan['photo_type']=='snapshot' and outfit is not None:
+        if plan['photo_type'] in _NO_OUTFIT and outfit is not None:
             raise ValueError('IMAGE_WARDROBE_NOT_APPLIED')
         if 'daily_outfit' in row and row['daily_outfit']!=outfit:
             raise ValueError('IMAGE_GENERATION_BINDING_CHANGED')
         row['daily_outfit']=outfit
-    elif style != DEFAULT_STYLE and plan['photo_type']!='snapshot' and plan.get('wardrobe_style') != style:
+    elif style != DEFAULT_STYLE and plan['photo_type'] not in _NO_OUTFIT and plan.get('wardrobe_style') != style:
         raise ValueError('IMAGE_WARDROBE_NOT_APPLIED')
     row['image_plan']={'attach':True,**plan}
     from runtime.image_understanding import describe_image
