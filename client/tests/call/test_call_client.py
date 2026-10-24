@@ -143,14 +143,21 @@ def test_a_new_call_knows_the_calls_before_it():
 def test_qq_sees_recent_call_and_missed_calls_after_the_last_chat():
     server = Server()
     assert call_store.recent_context(server, now=NOW) == ''
-    server.store.personal_chats.append({'life_received_at': (NOW - timedelta(hours=2)).isoformat()})
+    server.store.personal_chats.append({'life_received_at': (NOW - timedelta(hours=2)).isoformat(),
+                                        'delivery_status': 'DELIVERED'})
     call_store.record_missed(server, 'bathing', now=NOW - timedelta(hours=3))  # before the last chat: old news
     call_store.record_missed(server, 'bathing', now=NOW - timedelta(minutes=30))
     finished(server)
+    # His message being answered now is newer than the call: it does not hide the call.
+    server.store.personal_chats.append({'life_received_at': (NOW + timedelta(minutes=4)).isoformat()})
     text = call_store.recent_context(server, now=NOW + timedelta(minutes=5))
-    assert text.startswith('\n\n[语音电话]')
-    assert '给你打过电话，你当时在洗澡没接到。' in text and '打了2次' not in text
+    assert text.startswith(call_store.CONTEXT_HEADER) and '不要复述' in text and '不是对方这条消息里的话' in text
+    assert '对方在' in text and '给你打过电话，你当时在洗澡没接到。' in text and '打了2次' not in text
     assert '通过电话，约2分钟，聊了：聊了加班。' in text
+    # Once she has replied after the call, the next turns no longer carry it.
+    server.store.personal_chats[-1]['delivery_status'] = 'DELIVERED'
+    assert call_store.recent_context(server, now=NOW + timedelta(minutes=6)) == ''
+    server.store.personal_chats.pop()
     assert call_store.recent_context(server, now=NOW + timedelta(days=2)) == ''
 
 

@@ -52,7 +52,7 @@ from runtime.reply.reply_context import (
     WORLD_STATE_UNAVAILABLE,
 )
 from runtime.reply.reply_policy import IntimacyClaim
-from runtime.reply.reply_review_policy import evidence_severity, fact_sentence_spans
+from runtime.reply.reply_review_policy import evidence_severity, fact_sentence_spans, without_empty_paragraphs
 from runtime.reply.reply_reviewer import (
     JsonReviewerAdapter,
     ReviewReference,
@@ -1148,6 +1148,8 @@ def _apply_fact_sentence_edits(
     for i in reversed(range(len(spans))):
         start, end = spans[i]
         rewritten = rewritten[:start] + replacements[str(i)] + rewritten[end:]
+    if any(not value.strip() for value in replacements.values()):
+        rewritten = without_empty_paragraphs(rewritten)  # an emptied paragraph leaves no blank block
     if not rewritten.strip():
         raise ValueError("empty fact repair")
     return rewritten

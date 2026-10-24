@@ -38,6 +38,15 @@ def test_fact_windows_merge_overlapping_claims_keep_conditions_and_newlines():
     assert [candidate[start:end] for start, end in spans] == ['如果有空，我每周去码头，还会游泳。']
 
 
+def test_an_emptied_paragraph_from_a_fact_edit_leaves_one_paragraph_break():
+    candidate = '阿川，\n\n你上周在云湖哭了一夜。\n\n想你。'
+    start = candidate.index('你上周')
+    edits = [{'id': '0', 'replacement': ''}]
+    repaired = quality._apply_fact_sentence_edits(candidate, [(start, start + len('你上周在云湖哭了一夜。'))],
+                                                  json.dumps({'edits': edits}))
+    assert repaired == '阿川，\n\n想你。'
+
+
 @pytest.mark.parametrize('edits', [[], [{'id': '1', 'replacement': '其他句子'}],
     [{'id': '0', 'replacement': ''}, {'id': '0', 'replacement': '重复'}],
     [{'id': '0', 'replacement': None}], [{'id': '0', 'replacement': '好。', 'extra': 1}]])

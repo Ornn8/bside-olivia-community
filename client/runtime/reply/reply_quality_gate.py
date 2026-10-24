@@ -16,7 +16,8 @@ from runtime.reply.reply_reviewer import (
 )
 from runtime.reply.reply_reviewer import TrustedReviewEvidence
 from runtime.diagnostics.failure_context import REWRITE_ERROR_CODES
-from runtime.reply.reply_review_policy import SOFT_STYLE_CODES, fact_sentence_spans, preserves_quote_balance
+from runtime.reply.reply_review_policy import (SOFT_STYLE_CODES, fact_sentence_spans, preserves_quote_balance,
+                                               whole_paragraph_spans)
 
 
 # Modes without a delivery length contract, where whole sentences may be dropped.
@@ -29,7 +30,7 @@ def _without_unsupported_facts(text, violations, mode, intimacy_claims=()):
             item.code != 'MEMORY_FABRICATION' or not 0 <= item.start < item.end <= len(text)
             for item in violations):
         return None
-    spans = fact_sentence_spans(text, ((item.start, item.end) for item in violations))
+    spans = whole_paragraph_spans(text, fact_sentence_spans(text, ((item.start, item.end) for item in violations)))
     keep, cursor = [], 0
     for start, end in spans:
         keep.append(text[cursor:start])

@@ -132,6 +132,26 @@ def test_partial_fact_span_removes_its_whole_conditional_sentence():
     assert repaired == ('想你了。', ())
 
 
+def test_a_removed_whole_paragraph_leaves_no_blank_block():
+    first, fact, rest = '阿川，\n\n', '你上周在云湖哭了一夜。我一直记着。', '\n\n不过沙发上靠久了确实发软。\n\n想你。'
+    candidate = first + fact + rest
+    violations = tuple(ReviewerViolation('MEMORY_FABRICATION', 'hard', candidate.index(part), candidate.index(part) + len(part))
+                       for part in ('你上周在云湖哭了一夜。', '我一直记着。'))
+    repaired, _claims = _without_unsupported_facts(candidate, violations, ReplyMode.TEXT_LETTER)
+    assert repaired == '阿川，\n\n不过沙发上靠久了确实发软。\n\n想你。'
+    # A sentence that leaves text in its paragraph keeps the paragraph as it is.
+    candidate = '阿川，\n\n你上周在云湖哭了一夜。想你。\n\n晚安。'
+    start = candidate.index('你上周')
+    violation = ReviewerViolation('MEMORY_FABRICATION', 'hard', start, start + 3)
+    repaired, _claims = _without_unsupported_facts(candidate, (violation,), ReplyMode.TEXT_LETTER)
+    assert repaired == '阿川，\n\n想你。\n\n晚安。'
+    # The last paragraph removed: nothing is left dangling at the end.
+    candidate = '阿川，\n\n想你。\n\n你上周在云湖哭了一夜。'
+    start = candidate.index('你上周')
+    violation = ReviewerViolation('MEMORY_FABRICATION', 'hard', start, len(candidate))
+    assert _without_unsupported_facts(candidate, (violation,), ReplyMode.TEXT_LETTER)[0] == '阿川，\n\n想你。'
+
+
 def test_unchanged_contact_claim_is_mapped_and_still_checked_after_fact_removal():
     fact, contact = '你昨天去了云湖。', '我握住你的手。'
     violation = ReviewerViolation('MEMORY_FABRICATION', 'hard', 0, len(fact))
