@@ -72,3 +72,28 @@ def test_video_reply_keeps_her_letter_on_its_own_paper():
     assert _patch_video_text(patched) == patched
     # A bundle without the anchor keeps the video-only paper instead of failing to start.
     assert _patch_video_text(body.replace('8,["disabled"]),o(m)', '8,["disabled"]);o(m)')) == body.replace('8,["disabled"]),o(m)', '8,["disabled"]);o(m)')
+
+
+def test_users_pictures_lie_under_the_users_own_paper():
+    from installer.patch_letter_stickers import SENT_PHOTOS_MARKER, _patch_sent_photos
+    store = ('function p1(e){return{detailLoaded:!0,sent:{subject:t,content:e.content},received:{}}}'
+             'G(){return Ee&&(Ee.detailLoaded&&(ye.detailLoaded=!0),Ee.material&&(ye.material=Ee.material))}')
+    body = ('__name:"MailBoxContentBody",setup(){return[k($s,{},{default:V(()=>[F(ks,{}),'
+            'i.mail.received?.content&&i.mail.received?.imageRequestId?n("olivia-photo",{"letter-id":i.mail.received.imageRequestId},null,8,["letter-id"]):Y("",!0)]})),'
+            'o(m)?(r(),F($s,{key:0},{default:V(({isModal:T})=>[T?F(En,{},null,8,["model-value","timestamp","stamp-id"]):'
+            'F(En,{"stamp-id":(E=i.mail.material)==null?void 0:E.stampId},null,8,["modelValue","timestamp","stamp-id"]))]})):Y("",!0)]};__name:"Next"')
+    patched = _patch_sent_photos(store + body)
+    assert patched.startswith(SENT_PHOTOS_MARKER)
+    assert 'detailLoaded:!0,sentImages:e.sentImageUrls||[],sent:{' in patched
+    assert 'ye.detailLoaded=!0,ye.sentImages=Ee.sentImages' in patched, 'a list refresh keeps the loaded pictures'
+    sent_paper = patched[patched.index('o(m)?'):]
+    for index in range(4):
+        assert f'i.mail.sentImages?.[{index}]?n("olivia-photo",{{src:i.mail.sentImages[{index}],"data-index":"{index}"}}' in sent_paper
+    # Every slot renders one node, a print or a placeholder, so the paper's child count never changes.
+    assert sent_paper.count(':Y("",!0)') == 4 + 1
+    assert patched.count('"letter-id"') == (store + body).count('"letter-id"'), 'her photo is left as it was'
+    assert _patch_sent_photos(patched) == patched
+    # A bundle that differs keeps the plain paper instead of failing to start.
+    for missing in ('detailLoaded:!0,sent:{subject:t,', 'Ee.detailLoaded&&(ye.detailLoaded=!0)', '["modelValue","timestamp","stamp-id"]))]'):
+        source = (store + body).replace(missing, '')
+        assert _patch_sent_photos(source) == source

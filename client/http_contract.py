@@ -260,6 +260,7 @@ ROUTES: dict[str, dict[str, Any]] = {
     "/toy/cover/progress": _route(["GET"], "letters.read", evidence="local-extension"),
     "/toy/cover/lyrics": _route(["POST"], "letters.read", evidence="local-extension"),
     "/toy/cover/upload": _route(["POST"], "letters.send", evidence="local-extension"),
+    "/toy/letter/image/upload": _route(["POST"], "letters.send", evidence="local-extension"),
     "/health": _route(["GET"], "core.health", read_only=True, evidence="local"),
     "/toy/signIn": _route(["GET", "POST"], "core.session", read_only=True),
     "/toy/getUserInfo": _route(["GET", "POST"], "core.session", read_only=True),

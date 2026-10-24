@@ -224,6 +224,37 @@ def _patch_video_text(source: str) -> str:
     return VIDEO_TEXT_MARKER + source[:start] + component + source[end:]
 
 
+# Pictures the user puts in a letter (2.5.0) lie under the user's own paper the way her photo lies under hers:
+# the same <olivia-photo> print, given the picture directly. Four fixed slots keep the paper's child count stable.
+SENT_PHOTOS_MARKER = '/*olivia-letter-sent-photos-v1*/'
+SENT_PHOTOS_MAIL = {
+    'detailLoaded:!0,sent:{subject:t,': 'detailLoaded:!0,sentImages:e.sentImageUrls||[],sent:{subject:t,',
+    'Ee.detailLoaded&&(ye.detailLoaded=!0)': 'Ee.detailLoaded&&(ye.detailLoaded=!0,ye.sentImages=Ee.sentImages)',
+}
+SENT_PAPER_ANCHOR = '["modelValue","timestamp","stamp-id"]))]'
+SENT_PHOTOS = ''.join(f',i.mail.sentImages?.[{index}]?n("olivia-photo",{{src:i.mail.sentImages[{index}],'
+                      f'"data-index":"{index}"}},null,8,["src"]):Y("",!0)' for index in range(4))
+
+
+def _patch_sent_photos(source: str) -> str:
+    """Optional: a client whose bundle differs shows the user's paper without pictures rather than failing to start."""
+    if SENT_PHOTOS_MARKER in source or '__name:"MailBoxContentBody"' not in source:
+        return source
+    if any(source.count(anchor) != 1 for anchor in SENT_PHOTOS_MAIL):
+        return source
+    start = source.index('__name:"MailBoxContentBody"')
+    end = source.find('__name:', start + 10)
+    end = len(source) if end < 0 else end
+    component = source[start:end]
+    if component.count(SENT_PAPER_ANCHOR) != 1:
+        return source
+    component = component.replace(SENT_PAPER_ANCHOR, SENT_PAPER_ANCHOR[:-1] + SENT_PHOTOS + ']', 1)
+    source = source[:start] + component + source[end:]
+    for before, after in SENT_PHOTOS_MAIL.items():
+        source = source.replace(before, after, 1)
+    return SENT_PHOTOS_MARKER + source
+
+
 def patch_letter_stickers(path: Path | str) -> str:
     path=Path(path)
     from installer.full_patch import DEFAULT_STICKER_FILES
@@ -240,7 +271,7 @@ def patch_letter_stickers(path: Path | str) -> str:
                   and name.endswith(('.png','.gif')) and name not in expected}
         obsolete.update(f'assets/letter-stickers/paper-{part}.svg' for part in ('top','middle','bottom')
                         if f'assets/letter-stickers/paper-{part}.svg' in archive.namelist())
-        changed=_patch_video_text(_patch_with_failure_prop(source)).encode('utf-8')
+        changed=_patch_sent_photos(_patch_video_text(_patch_with_failure_prop(source))).encode('utf-8')
         if not obsolete and changed==source.encode('utf-8') and all(n in archive.namelist() and archive.read(n)==data for n,data in assets.items()):
             return 'ALREADY_PATCHED'
         with tempfile.TemporaryDirectory(prefix='.letter-stickers-',dir=path.parent) as folder:
