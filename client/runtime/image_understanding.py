@@ -291,18 +291,32 @@ def _allowed_qq_image_url(url):
                 for domain in ('qpic.cn', 'qq.com', 'gtimg.cn'))))
 
 
+def _sticker_sizes(url):
+    """A QQ mall sticker is named raw300.gif, but some packs only hold the 200 px files (2026-10-24: his sticker
+    answered 404 and she saw only a placeholder)."""
+    parsed = urlsplit(url)
+    if parsed.hostname != 'gxh.vip.qq.com' or not parsed.path.endswith('/raw300.gif'):
+        return [url]
+    stem = url[:url.rindex('/raw300.gif')]
+    return [url, stem + '/raw200.gif', stem + '/200x200.png']
+
+
 async def _download_qq_image(url, target):
     if not _allowed_qq_image_url(url):
         raise ValueError('QQ_IMAGE_URL_INVALID')
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
-        async with session.get(url, allow_redirects=False) as response:
-            if response.status != 200:
-                raise RuntimeError('QQ_IMAGE_DOWNLOAD_FAILED')
-            data = bytearray()
-            async for chunk in response.content.iter_chunked(65536):
-                data.extend(chunk)
-                if len(data) > 20 * 1024 * 1024:
-                    raise ValueError('QQ_IMAGE_TOO_LARGE')
+        for candidate in _sticker_sizes(url):
+            async with session.get(candidate, allow_redirects=False) as response:
+                if response.status != 200 and candidate != _sticker_sizes(url)[-1]:
+                    continue  # a missing size answers 404 or a redirect to a missing file
+                if response.status != 200:
+                    raise RuntimeError('QQ_IMAGE_DOWNLOAD_FAILED')
+                data = bytearray()
+                async for chunk in response.content.iter_chunked(65536):
+                    data.extend(chunk)
+                    if len(data) > 20 * 1024 * 1024:
+                        raise ValueError('QQ_IMAGE_TOO_LARGE')
+                break
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(data)
 
