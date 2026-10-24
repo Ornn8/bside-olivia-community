@@ -15,7 +15,7 @@ from runtime.cloud_policy import get_policy
 from runtime import proactive_config, ui_language
 from runtime.ui_i18n_backend import tr
 from runtime.reply.proactive_runtime import unprompted
-from .qq_faces import FACE_IDS, face_labels
+from .qq_faces import face_labels
 JEV_ERROR_CODES = _JEV_PORT_ERRORS | {
     'JEV_PLAN_UNSUPPORTED', 'JEV_CONTEXT_UNAVAILABLE', 'JEV_STORED_DECISION_INVALID',
     'JEV_SERVICE_UNAVAILABLE', 'JEV_CONTEXT_BUDGET_EXCEEDED', 'JEV_INPUT_SUPERSEDED',
@@ -60,7 +60,7 @@ def chat_text(reply_text):
 
 
 def _clear_draft(row):
-    for key in ('reply_text', 'prepared_audio', 'reply_audio_duration', 'voice_fallback', 'sticker_id', 'qq_poke', 'qq_reaction',
+    for key in ('reply_text', 'prepared_audio', 'reply_audio_duration', 'voice_fallback', 'sticker_id', 'qq_poke',
                 'letter_invitation', 'initiative_preference', 'pause_until', 'letter_preference',
                 'letter_until', 'followup_at', 'followup_quote', 'listening_preference', 'requested_format',
                 'presentation_status', 'delivery_basis', 'voice_ready', 'quality_status', 'reviewer_calls', 'rewrite_calls',
@@ -404,7 +404,7 @@ class PersonalChatService:
 
     @staticmethod
     async def _after_delivery(row, event, send):
-        """A face she wrote follows a voice message (faces are never spoken); her reaction lands on his last message."""
+        """A face she wrote follows a voice message: faces are never spoken."""
         changed = False
         labels = face_labels(row.get('reply_text', ''))
         if row.get('delivered_format') == 'audio' and labels:
@@ -413,14 +413,6 @@ class PersonalChatService:
                 row['qq_face_after_voice'] = 'SENT'
             except Exception:
                 row['qq_face_after_voice'] = 'FAILED'
-            changed = True
-        face, target = row.get('qq_reaction'), event.sources[-1][0]
-        if face and callable(getattr(send, 'react', None)) and not target.startswith(('poke-', 'proactive-', 'contact-')):
-            try:
-                await send.react(target, FACE_IDS[face.casefold()])
-                row['qq_reaction_status'] = 'SENT'
-            except Exception:
-                row['qq_reaction_status'] = 'FAILED'
             changed = True
         return changed
 
@@ -546,7 +538,7 @@ class PersonalChatService:
                 if row.get("generation_attempts", 0) >= 2:
                     raise RuntimeError("PERSONAL_CHAT_GENERATION_RETRY_EXHAUSTED")
                 validated_controls = row.get('user_controls_applied') is True
-                for key in ('prepared_audio', 'reply_audio_duration', 'voice_fallback', 'sticker_id', 'qq_poke', 'qq_reaction',
+                for key in ('prepared_audio', 'reply_audio_duration', 'voice_fallback', 'sticker_id', 'qq_poke',
                             'letter_invitation', 'initiative_preference', 'pause_until', 'letter_preference',
                             'letter_until', 'followup_at', 'listening_preference', 'requested_format', 'presentation_status',
                             'delivery_basis', 'voice_ready',

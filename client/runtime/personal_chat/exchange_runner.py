@@ -30,7 +30,7 @@ class ExchangeRunner:
             return deliver
 
         # Her QQ gestures too (poke … cookies, 2.5.0): a proxy without them would silently drop them.
-        for name in ('audio', 'image', 'video', 'file', 'resolve_media', 'poke', 'like', 'react', 'status',
+        for name in ('audio', 'image', 'video', 'file', 'resolve_media', 'poke', 'like', 'status',
                      'signature', 'qzone_post', 'cookies'):
             setattr(send, name, action(name))
         if event is not None:

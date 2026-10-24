@@ -51,9 +51,7 @@ INSTRUCTION += ('QQ里：输入中的[表情:名称]是他发来的QQ表情，�
                 '[分享卡片：来源 · 标题]是他分享的链接；[他戳了戳你]是他在QQ里戳了你一下，可以自然回应。'
                 'channel为qq时，正文里可以偶尔用一个QQ表情，直接写[名称]，只从这些里选：' + '、'.join(HER_FACES) + '。'
                 '一条最多一个，很多时候不用，不写[表情:名称]这种格式。'
-                '可选字段poke=true表示发消息前在QQ里戳他一下，只在亲近、玩闹或他先戳你时偶尔用；'
-                'reaction填上面列表里的一个表情名，表示给他刚发的消息点这个表情回应，比如他说晚安时点"月亮"；'
-                '不需要就省略这两个字段。\n')
+                '可选字段poke=true表示发消息前在QQ里戳他一下，只在亲近、玩闹或他先戳你时偶尔用；不需要就省略。\n')
 
 
 PROVENANCE_HEADER = re.compile(r'\[(?:历史消息|当前消息)\s*\{.*?\}\s*\]\s*', re.DOTALL)
@@ -199,9 +197,7 @@ def decode(raw, *, user, now, proactive=False, allow_user_silence=False, allow_s
             data['sticker'] = None
         if data.get('poke') is not True:
             data.pop('poke', None)
-        reaction = data.pop('reaction', None)
-        if isinstance(reaction, str) and reaction.strip('[] ') in HER_FACES:
-            data['reaction'] = reaction.strip('[] ')
+        data.pop('reaction', None)  # QQ refuses reactions in a private chat; an extra field is not an error
         if not isinstance(data['text'], str) or type(data['skip']) is not bool:
             raise ValueError("TEXT_OR_SKIP_TYPE")
         data['text'] = _reply_body(data['text'])

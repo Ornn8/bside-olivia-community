@@ -4794,7 +4794,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       ["qzone", t("QQ 空间"), t("她偶尔发说说，配当天发给你的照片；也会给你的说说点赞、评论，回复你的评论。")],
       ["status", t("QQ 状态"), t("她的 QQ 状态跟着她正在做的事变化，比如练琴中、睡觉中。")],
       ["like", t("名片点赞"), t("她每天给你的 QQ 名片点赞。")],
-      ["gestures", t("戳一戳和表情回应"), t("她偶尔在 QQ 里戳你一下，或给你的消息点个表情。")],
+      ["gestures", t("戳一戳"), t("她偶尔在 QQ 里戳你一下。")],
     ];
     const status = text("p", t("正在读取…"), "text-text-secondary text-caption-m");
     status.setAttribute("role", "status");

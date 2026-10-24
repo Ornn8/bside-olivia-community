@@ -255,11 +255,6 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
             raise ValueError('QQ_LIKE_INVALID')
         await qq_action('send_like', {'user_id': int(owner_id), 'times': times})
 
-    async def react(message_id, face_id):
-        if not re.fullmatch(r'-?[0-9]{1,20}', str(message_id)) or not re.fullmatch(r'[0-9]{1,5}', str(face_id)):
-            raise ValueError('QQ_REACTION_INVALID')
-        await qq_action('set_msg_emoji_like', {'message_id': str(message_id), 'emoji_id': str(face_id), 'set': True})
-
     async def status(face_id, wording):
         if not re.fullmatch(r'[0-9]{1,5}', str(face_id)) or not isinstance(wording, str) or not 1 <= len(wording) <= 16:
             raise ValueError('QQ_STATUS_INVALID')
@@ -293,7 +288,7 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
     send.image = send_image
     send.video = send_video
     send.file = send_file
-    send.poke, send.like, send.react, send.status = poke, like, react, status
+    send.poke, send.like, send.status = poke, like, status
     send.signature, send.qzone_post, send.cookies = signature, qzone_post, cookies
     async def resolve_media(kind, reference):
         if kind not in {'audio', 'video', 'file'} or not re.fullmatch(r'[A-Za-z0-9_.-]{1,256}', reference):
@@ -335,7 +330,7 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
             return await send_video(path, reply_to, eligible=eligible)
         correlated.video = correlated_video
         correlated.file = send_file
-        correlated.poke, correlated.react = poke, react
+        correlated.poke = poke
         correlated.plain = send  # without quoting his message
         correlated.resolve_media = resolve_media
         correlated.is_available = send.is_available

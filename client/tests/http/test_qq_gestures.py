@@ -51,24 +51,23 @@ def napcat(calls, answers):
 
 
 def test_each_gesture_names_its_own_action_and_the_owner():
-    outcomes, seen = napcat([lambda s: s.poke(), lambda s: s.like(10), lambda s: s.react('-12345', '75'),
+    outcomes, seen = napcat([lambda s: s.poke(), lambda s: s.like(10),
                              lambda s: s.status('8', '睡觉中'), lambda s: s.signature('今天弹了很久的肖邦')],
                             {})
-    assert outcomes == [None] * 5
+    assert outcomes == [None] * 4
     assert seen == [
         {'action': 'friend_poke', 'params': {'user_id': 200}},
         {'action': 'send_like', 'params': {'user_id': 200, 'times': 10}},
-        {'action': 'set_msg_emoji_like', 'params': {'message_id': '-12345', 'emoji_id': '75', 'set': True}},
         {'action': 'set_diy_online_status', 'params': {'face_id': '8', 'face_type': '1', 'wording': '睡觉中'}},
         {'action': 'set_self_longnick', 'params': {'longNick': '今天弹了很久的肖邦'}},
     ]
 
 
 def test_a_refused_gesture_is_an_error_and_bad_input_never_reaches_napcat():
-    outcomes, seen = napcat([lambda s: s.poke(), lambda s: s.like(11), lambda s: s.react('x', '75'),
+    outcomes, seen = napcat([lambda s: s.poke(), lambda s: s.like(11),
                              lambda s: s.status('8', '这是一个太长太长太长太长的状态文字'), lambda s: s.signature('两行\n签名')],
                             {'friend_poke': {'status': 'failed', 'retcode': 1200, 'data': None}})
-    assert outcomes == ['RuntimeError:QQ_ACTION_UNCONFIRMED', 'ValueError:QQ_LIKE_INVALID', 'ValueError:QQ_REACTION_INVALID',
+    assert outcomes == ['RuntimeError:QQ_ACTION_UNCONFIRMED', 'ValueError:QQ_LIKE_INVALID',
                         'ValueError:QQ_STATUS_INVALID', 'ValueError:QQ_SIGNATURE_INVALID']
     assert [item['action'] for item in seen] == ['friend_poke']
 
@@ -99,20 +98,14 @@ class Sender:
         self.log.append(('poke',))
         if 'poke' in self.fail:
             raise RuntimeError('QQ_ACTION_UNCONFIRMED')
-    async def react(self, message_id, face_id):
-        self.log.append(('react', message_id, face_id))
-        if 'react' in self.fail:
-            raise RuntimeError('QQ_ACTION_UNCONFIRMED')
 
 
-def reply(text, *, poke=False, reaction=None, audio=None, fail=(), message_id='42'):
+def reply(text, *, poke=False, audio=None, fail=(), message_id='42'):
     async def scenario():
         rows = []
         async def generate(event, row):
             if poke:
                 row['qq_poke'] = 'PENDING'
-            if reaction:
-                row['qq_reaction'] = reaction
             if audio:
                 row['prepared_audio'] = audio
             return text
@@ -133,18 +126,6 @@ def test_her_poke_goes_just_before_her_message():
 def test_a_lost_poke_never_holds_the_message_back():
     log, row = reply('戳你一下', poke=True, fail={'poke'})
     assert log[-1] == ('text', '戳你一下') and row['qq_poke'] == 'FAILED' and row['delivery_status'] == 'DELIVERED'
-
-
-def test_her_reaction_lands_on_his_message_after_her_reply():
-    log, row = reply('晚安呀', reaction='月亮')
-    assert log == [('text', '晚安呀'), ('react', '42', '75')] and row['qq_reaction_status'] == 'SENT'
-    log, row = reply('晚安呀', reaction='月亮', fail={'react'})
-    assert row['qq_reaction_status'] == 'FAILED' and row['delivery_status'] == 'DELIVERED'
-
-
-def test_no_reaction_on_a_poke_turn():
-    log, _ = reply('干嘛呀', reaction='疑问', message_id='poke-1792780000')
-    assert ('react', 'poke-1792780000', '32') not in log
 
 
 def test_a_face_in_a_voice_reply_follows_the_voice_and_is_never_spoken(tmp_path, monkeypatch):
@@ -174,7 +155,7 @@ def test_the_exchange_runner_passes_every_gesture_to_the_live_connection():
         async def __call__(self, text):
             calls.append(('text', text))
     live = Live()
-    for name in ('poke', 'like', 'react', 'status', 'signature', 'qzone_post', 'cookies'):
+    for name in ('poke', 'like', 'status', 'signature', 'qzone_post', 'cookies'):
         async def record(*args, _name=name):
             calls.append((_name, *args))
         setattr(live, name, record)
@@ -187,7 +168,7 @@ def test_the_exchange_runner_passes_every_gesture_to_the_live_connection():
         await runner.send.status('8', '睡觉中')
         await runner.send.like(10)
         correlated = runner.send.for_exchange(PersonalMessage('qq', '100', '200', '42', 'hi'))
-        await correlated.react('42', '75')
+        await correlated.poke()
         await correlated.plain('[月亮]')
     asyncio.run(scenario())
-    assert calls == [('poke',), ('status', '8', '睡觉中'), ('like', 10), ('react', '42', '75'), ('text', '[月亮]')]
+    assert calls == [('poke',), ('status', '8', '睡觉中'), ('like', 10), ('poke',), ('text', '[月亮]')]

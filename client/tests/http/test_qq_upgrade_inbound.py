@@ -93,9 +93,10 @@ def decode(**fields):
     return decision.decode(json.dumps(value, ensure_ascii=False), user='hi', now=datetime.now(timezone.utc))
 
 
-def test_her_poke_and_reaction_are_kept_only_when_well_formed():
+def test_her_poke_is_kept_only_when_well_formed_and_a_reaction_is_dropped():
+    # QQ refuses reactions in a private chat (acceptance 2026-10-24), so the writer is not offered one.
     assert decode(poke=True, reaction='月亮')['poke'] is True
-    assert decode(reaction='[月亮]')['reaction'] == '月亮'
+    assert 'reaction' not in decode(reaction='[月亮]') and 'reaction' not in decision.INSTRUCTION
     for value in ({'poke': 'yes'}, {'poke': False}, {'reaction': '不存在的表情'}, {'reaction': 5}):
         data = decode(**value)
         assert 'poke' not in data and 'reaction' not in data, value
@@ -110,4 +111,4 @@ def test_his_face_copied_back_becomes_the_face_itself():
 def test_the_instruction_lists_only_faces_the_catalog_can_send():
     from runtime.personal_chat.qq_faces import FACE_IDS, HER_FACES
     assert all(name.casefold() in FACE_IDS for name in HER_FACES)
-    assert '戳了戳你' in decision.INSTRUCTION and 'reaction' in decision.INSTRUCTION
+    assert '戳了戳你' in decision.INSTRUCTION and 'poke' in decision.INSTRUCTION

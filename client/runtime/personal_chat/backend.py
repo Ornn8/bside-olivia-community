@@ -972,11 +972,9 @@ async def _generate_billed(server, event, row):
             row['sticker_id'] = sticker
         if (event.channel == 'qq' and companion is None and contact is None and not asked
                 and _qq_extras(server)['gestures']):
-            # Her QQ gestures from the same decision: a poke before the message, a face on his message.
+            # Her QQ gesture from the same decision: a poke before the message.
             if decision.get('poke') is True:
                 row['qq_poke'] = 'PENDING'
-            if decision.get('reaction') and not unprompted:
-                row['qq_reaction'] = decision['reaction']
         if not voice_available:
             mode = 'text'
             basis = voice_block

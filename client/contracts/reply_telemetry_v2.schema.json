@@ -339,7 +339,6 @@
               "QQ_PRESENCE_ANSWER_INVALID",
               "QQ_QZONE_POST_INVALID",
               "QQ_QZONE_POST_UNCONFIRMED",
-              "QQ_REACTION_INVALID",
               "QQ_REPLY_INVALID",
               "QQ_REPLY_OWNER_MISMATCH",
               "QQ_SEND_UNCONFIRMED",
