@@ -1444,6 +1444,31 @@ def test_runtime_process_ownership_is_scoped_to_one_installation(tmp_path: Path)
     assert start_local._runtime_owns_executable(unrelated, root) is False
 
 
+def test_a_backend_of_another_olivia_install_is_recognized_by_its_layout(tmp_path: Path) -> None:
+    other = tmp_path / "other"
+    (other / "install" / "local_backend").mkdir(parents=True)
+    python = other / "runtime" / "python-3.12.10-embed-amd64" / "pythonw.exe"
+    assert start_local._olivia_install_executable(python) is True
+    assert start_local._olivia_install_executable(python.with_name("Olivia.exe")) is False
+    stray = tmp_path / "tools" / "runtime" / "python.exe"  # a "runtime" folder that is not an Olivia install
+    assert start_local._olivia_install_executable(stray) is False
+    assert start_local._olivia_install_executable(tmp_path / "Python312" / "python.exe") is False
+
+
+def test_a_blocked_port_is_logged_with_the_holder_name(tmp_path: Path, monkeypatch, capsys) -> None:
+    data_root = tmp_path / "data"
+    monkeypatch.setattr(start_local, "_listener_name", lambda port: "whistle.exe")
+    assert start_local._start_blocked(data_root, 8899, "PORT_CONFLICT") == 2
+    assert not data_root.exists()  # nothing is created for a start that did not happen
+    (data_root / "logs").mkdir(parents=True)
+    assert start_local._start_blocked(data_root, 8899, "STALE_BACKEND_RUNNING") == 2
+    [event] = [json.loads(line) for line in (data_root / "logs" / "launcher.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert {key: event[key] for key in ("event", "code", "port", "listener")} == {
+        "event": "startup_failed", "code": "STALE_BACKEND_RUNNING", "port": 8899, "listener": "whistle.exe"}
+    assert capsys.readouterr().out.split() == ["PORT_CONFLICT", "STALE_BACKEND_RUNNING"]
+    assert "{name}" in start_local._PORT_MESSAGES["zh"] and "{port}" in start_local._PORT_MESSAGES["en"]
+
+
 def test_launcher_allows_mem0_cold_start_before_opening_client(
     tmp_path: Path,
     monkeypatch,

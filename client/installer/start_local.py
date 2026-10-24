@@ -453,8 +453,96 @@ def _runtime_owns_executable(executable: Path, root: Path) -> bool:
     return False
 
 
+def _olivia_install_executable(executable: Path) -> bool:
+    """Python bundled with an Olivia installation (<folder>/runtime beside <folder>/install/local_backend), this one
+    or another: a backend left running by a second copy of Olivia holds the same port."""
+
+    if executable.name.casefold() not in {"python.exe", "pythonw.exe"}:
+        return False
+    for folder in executable.parents:
+        if folder.name.casefold() == "runtime":
+            return (folder.parent / "install" / "local_backend").is_dir() or (folder.parent / "local_backend").is_dir()
+    return False
+
+
+def _process_image(process_id: int) -> Path | None:
+    """The executable of a running process, or None when Windows does not tell."""
+
+    if os.name != "nt":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.QueryFullProcessImageNameW.argtypes = [
+        wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+    kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = kernel32.OpenProcess(0x1000, False, process_id)
+    if not handle:
+        return None
+    try:
+        buffer = ctypes.create_unicode_buffer(32768)
+        length = wintypes.DWORD(len(buffer))
+        if not kernel32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(length)):
+            return None
+        return Path(buffer.value)
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _listener_name(port: int) -> str:
+    """The file name (never the path) of the program listening on the port, for the log and the message."""
+
+    try:
+        process_id = _listening_process_id(port)
+        image = _process_image(process_id) if process_id is not None else None
+    except (OSError, ValueError, AttributeError):
+        image = None
+    name = image.name if image is not None else ""
+    return name[:60] if re.fullmatch(r"[^\\/:*?\"<>|]{1,60}", name or "") else "unknown"
+
+
+_PORT_MESSAGES = {
+    "zh": ("Olivia 打不开：她要用的端口 {port} 已经被别的程序（{name}）占用了。\r\n"
+           "请先关掉这个程序（或重启电脑）再打开 Olivia。"),
+    "en": ("Olivia can't start: port {port}, which she needs, is already used by another program ({name}).\r\n"
+           "Please close that program (or restart the computer), then open Olivia again."),
+    "zh_olivia": ("Olivia 打不开：另一个 Olivia 后台还在运行，而且关不掉。\r\n"
+                  "请重启电脑后再打开 Olivia。"),
+    "en_olivia": ("Olivia can't start: another Olivia backend is still running and could not be closed.\r\n"
+                  "Please restart the computer, then open Olivia again."),
+}
+
+
+def _start_blocked(data_root: Path, port: int, code: str) -> int:
+    """The port is held: say so in the log (with the holder's file name) and to the user; 2 like any failed start."""
+
+    name = _listener_name(port)
+    if (data_root / "logs").is_dir():  # a refused start creates nothing; an installed one has its logs folder
+        _append_launcher_event(data_root, "startup_failed", code=code, port=port, listener=name)
+    print(code)
+    if os.name == "nt" and not os.environ.get("PYTEST_CURRENT_TEST"):
+        try:
+            from runtime import ui_language
+            language = ui_language.read_saved(data_root / "config" / ui_language.FILE_NAME)
+        except Exception:
+            language = "zh"
+        key = ("en" if language == "en" else "zh") + ("_olivia" if code == "STALE_BACKEND_RUNNING" else "")
+        try:
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(None, _PORT_MESSAGES[key].format(port=port, name=name), "Olivia",
+                                             0x10 | 0x40000)
+        except (OSError, AttributeError):
+            pass
+    return 2
+
+
 def _terminate_runtime_process(process_id: int, root: Path) -> bool:
-    """Terminate a listener only when its executable belongs to this install."""
+    """Terminate a listener only when its executable is Python bundled with Olivia: this install's, or another
+    Olivia installation's (callers reach this only after the listener answered Olivia's own health contract)."""
 
     if os.name != "nt":
         return False
@@ -489,7 +577,8 @@ def _terminate_runtime_process(process_id: int, root: Path) -> bool:
             0,
             buffer,
             ctypes.byref(length),
-        ) or not _runtime_owns_executable(Path(buffer.value), root):
+        ) or not (_runtime_owns_executable(Path(buffer.value), root)
+                  or _olivia_install_executable(Path(buffer.value))):
             return False
         if not kernel32.TerminateProcess(handle, 0):
             return False
@@ -1062,13 +1151,11 @@ def _launch(args: argparse.Namespace, root: Path, backend: Path, entrypoint: Pat
             print("LOCAL_SERVER_UNRESPONSIVE")
             return 2
     if health == "PORT_CONFLICT":
-        print("PORT_CONFLICT")
-        return 2
+        return _start_blocked(data_root, args.port, "PORT_CONFLICT")
     expected_backend_id = _backend_id(backend, root)
     if health == "READY" and identity != expected_backend_id:
         if not _stop_stale_backend(args.port, root):
-            print("STALE_BACKEND_RUNNING")
-            return 2
+            return _start_blocked(data_root, args.port, "STALE_BACKEND_RUNNING")
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
             health = _health(args.port)
@@ -1076,8 +1163,7 @@ def _launch(args: argparse.Namespace, root: Path, backend: Path, entrypoint: Pat
                 break
             time.sleep(0.1)
         if health != "UNAVAILABLE" or not _port_is_bindable(args.port):
-            print("STALE_BACKEND_RUNNING")
-            return 2
+            return _start_blocked(data_root, args.port, "STALE_BACKEND_RUNNING")
     from installer.repair_image_dependency import ensure_bundled_image_dependency
     preparation_started = time.monotonic()
     _append_launcher_event(data_root, "startup_preparing")

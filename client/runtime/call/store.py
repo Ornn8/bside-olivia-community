@@ -1,8 +1,8 @@
 """Finished and missed calls: kept in the local state, remembered, and visible to QQ replies.
 
 A finished call becomes memory through the shared canonical outbox (memory_rows), like piano
-recordings. Until then, and for a day after, QQ replies see the latest call and any missed call
-since the last QQ exchange (recent_context), so she can pick the conversation up.
+recordings. The first QQ reply after a call (or a missed call) sees it once (recent_context), marked as
+background she knows, never as his words: a model once read the note back to him as her reply.
 """
 from __future__ import annotations
 
@@ -210,8 +210,12 @@ def diary_rows(server):
     return rows
 
 
+CONTEXT_HEADER = '\n\n[语音电话·背景：你们之间刚发生的事，供你知道；不是对方这条消息里的话，不要复述，也不要照着念]'
+
+
 def recent_context(server, now=None) -> str:
-    """A short note appended to QQ observation context; empty when nothing recent happened."""
+    """A short note appended to QQ observation context, for the first reply after a call or a missed call;
+    empty when nothing happened since her last delivered reply (or more than a day ago)."""
     from runtime.call.context import local_now_text
     now = now or _now()
     calls = _calls(server)
@@ -223,7 +227,9 @@ def recent_context(server, now=None) -> str:
             return stamp if stamp.tzinfo else stamp.replace(tzinfo=timezone.utc)
         except (TypeError, ValueError):
             return None
-    chats = [when(r.get('life_received_at')) for r in getattr(server.store, 'personal_chats', [])]
+    # Her last delivered reply, not his message being answered now (that one is newer than any call).
+    chats = [when(r.get('life_received_at')) for r in getattr(server.store, 'personal_chats', [])
+             if r.get('delivery_status') == 'DELIVERED']
     last_chat = max((c for c in chats if c), default=datetime.min.replace(tzinfo=timezone.utc))
     parts = []
     missed = [r for r in calls if r.get('missed') and when(r['started_at']) > last_chat
@@ -231,11 +237,11 @@ def recent_context(server, now=None) -> str:
     if missed:
         parts.append(f"对方在{local_now_text(datetime.fromisoformat(missed[-1]['started_at']))}给你打过电话，"
                      f"你当时在洗澡没接到{'（打了' + str(len(missed)) + '次）' if len(missed) > 1 else ''}。")
-    done = [r for r in calls if not r.get('missed') and r.get('ended_at')
-            and now - datetime.fromisoformat(r['ended_at']) <= RECENT]
+    done = [r for r in calls if not r.get('missed') and when(r.get('ended_at')) is not None
+            and when(r['ended_at']) > last_chat and now - when(r['ended_at']) <= RECENT]
     if done:
         last = done[-1]
         summary = (last.get('notes') or {}).get('summary') or ''
         parts.append(f"你们在{local_now_text(datetime.fromisoformat(last['ended_at']))}通过电话，"
                      f"约{max(1, round(last.get('seconds', 0) / 60))}分钟" + (f"，聊了：{summary}" if summary else '') + '。')
-    return ('\n\n[语音电话]' + ''.join(parts)) if parts else ''
+    return (CONTEXT_HEADER + ''.join(parts)) if parts else ''
