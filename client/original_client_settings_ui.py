@@ -4082,7 +4082,6 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         .olivia-compose-navigation .olivia-compose-picture button{position:absolute;top:-7px;right:-7px;width:20px;height:20px;min-height:20px;padding:0;background:#202124;font-size:12px;line-height:18px}
         .olivia-compose-picture-note{color:#b8b9bf;font-size:13px;line-height:1.4}
         .olivia-compose-picture-note:empty{display:none}
-        .olivia-compose-grid.olivia-compose-dropping{outline:2px dashed #b8b9bf;outline-offset:6px;border-radius:8px}
         .olivia-compose-grid>.olivia-compose-body,.olivia-compose-music{grid-row:2;grid-column:1;min-height:0;overflow:auto;width:100%!important;box-sizing:border-box}
         .olivia-compose-grid>.olivia-compose-body{overflow:hidden}
         .olivia-compose-grid .mail-box-write-dialog-content{width:100%;height:100%;min-width:0;min-height:0;margin:0;aspect-ratio:auto;box-sizing:border-box;padding:16px 142px 16px 16px;overflow:hidden}
@@ -4193,19 +4192,6 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       if(!Array.from(event.clipboardData.types||[]).includes('text/plain'))event.preventDefault();
       addPictures(pasted.map(pictureName));
     });
-    // Pictures dragged onto an ordinary letter, too. Listened for on the window before the page's own handlers,
-    // and only while this composer is open.
-    const dragTypes=['dragenter','dragover','drop'];
-    const onDrag=event=>{
-      if(!grid.isConnected){for(const type of dragTypes)window.removeEventListener(type,onDrag,true);return}
-      const over=state.mode==='letter'&&grid.contains(event.target)&&Array.from(event.dataTransfer?.types||[]).includes('Files');
-      if(!over){grid.classList.remove('olivia-compose-dropping');return}
-      event.preventDefault();
-      if(event.type==='drop'){grid.classList.remove('olivia-compose-dropping');addPictures(Array.from(event.dataTransfer.files||[]).map(pictureName))}
-      else{event.dataTransfer.dropEffect='copy';grid.classList.add('olivia-compose-dropping')}
-    };
-    for(const type of dragTypes)window.addEventListener(type,onDrag,true);
-    grid.addEventListener('dragleave',event=>{if(!grid.contains(event.relatedTarget))grid.classList.remove('olivia-compose-dropping')});
     pictures.append(addPicture,pictureNote);navigation.append(pictures);
     // The song pages carry their own material; an ordinary letter carries its pictures.
     state.attachmentForSend=()=>{

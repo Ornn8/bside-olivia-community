@@ -646,34 +646,15 @@ def _repair_native_navigation(root: Path) -> str:
     return str(result["status"])
 
 
-# The web view hands dropped files to the page only when Qt lets drops reach it, and the
-# client never turns that on; an application style sheet sets the view's acceptDrops property.
-_DROP_STYLE = "QCefView { qproperty-acceptDrops: true; }\n"
-
-
-def _drop_style(local: Path) -> Path | None:
-    path = local / "olivia-drop.qss"
-    try:
-        if not path.is_file() or path.read_bytes() != _DROP_STYLE.encode():
-            local.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(_DROP_STYLE.encode())
-    except OSError:
-        return None
-    return path
-
-
 def _client_command(client: Path, local: Path) -> list[str]:
     """The first-party launcher's profile argument, plus microphone access for voice calls.
 
     CEF denies getUserMedia unless the host grants it; these switches grant it to the
-    client's own local pages (echo cancellation still applies). Pictures dragged onto a
-    letter need the drop style sheet; without it the window simply refuses drops.
+    client's own local pages (echo cancellation still applies).
     """
 
-    command = [str(client), f'--user-data-dir={local / "cef"}', '--enable-media-stream',
-               '--use-fake-ui-for-media-stream']
-    style = _drop_style(local)
-    return command + [f'-stylesheet={style}'] if style else command
+    return [str(client), f'--user-data-dir={local / "cef"}', '--enable-media-stream',
+            '--use-fake-ui-for-media-stream']
 
 
 def _repair_local_login(root: Path) -> str:
