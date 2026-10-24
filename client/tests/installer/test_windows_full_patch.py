@@ -991,7 +991,10 @@ def test_start_local_matches_first_party_client_launch_contract(
         f'--user-data-dir={local / "cef"}',
         '--enable-media-stream',
         '--use-fake-ui-for-media-stream',
+        f'-stylesheet={local / "olivia-drop.qss"}',
     ]
+    # The style sheet lets the web view take dropped pictures.
+    assert (local / "olivia-drop.qss").read_text(encoding="utf-8") == "QCefView { qproperty-acceptDrops: true; }\n"
     assert environment["APPDATA"] == str(roaming)
     assert environment["LOCALAPPDATA"] == str(local)
     assert environment["SteamAppId"] == "4532590"

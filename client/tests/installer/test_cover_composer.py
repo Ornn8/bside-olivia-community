@@ -206,8 +206,11 @@ window.fetch=async(url,request)=>{
  const check=(ok,message)=>{if(!ok)throw Error(message)};
  const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
  const state=composerCovers.get(input),grid=document.querySelector('.olivia-compose-grid');
- const files=(...names)=>{const dt=new DataTransfer();for(const name of names)dt.items.add(new File([new Uint8Array(8)],name,{type:'image/png'}));return dt};
+ const typeOf=name=>({png:'image/png',webp:'image/webp',txt:'text/plain'})[name.split('.').pop()];
+ const files=(...names)=>{const dt=new DataTransfer();for(const name of names)dt.items.add(new File([new Uint8Array(8)],name,{type:typeOf(name)}));return dt};
  const drag=(type,dt)=>{const event=new DragEvent(type,{bubbles:true,cancelable:true,dataTransfer:dt});grid.dispatchEvent(event);return event};
+ // The host page may stop drag events on the way down; the composer hears them first.
+ for(const type of ['dragenter','dragover','drop'])document.addEventListener(type,event=>event.stopPropagation(),true);
  let dt=files('a.png','b.webp','notes.txt');
  check(drag('dragover',dt).defaultPrevented&&grid.classList.contains('olivia-compose-dropping'),'files over a letter are taken');
  check(drag('drop',dt).defaultPrevented&&!grid.classList.contains('olivia-compose-dropping'),'drop accepted');
@@ -216,6 +219,14 @@ window.fetch=async(url,request)=>{
  state.select('cover');dt=files('c.png');
  check(!drag('dragover',dt).defaultPrevented&&!drag('drop',dt).defaultPrevented,'song pages ignore dropped pictures');
  await wait(50);state.select('letter');check(state.images.length===2,'nothing added on a song page');
+ // A copied picture often has no file name; pasting it adds it, and text pasted with it still goes in.
+ const paste=dt=>{const event=new ClipboardEvent('paste',{bubbles:true,cancelable:true,clipboardData:dt});input.dispatchEvent(event);return event};
+ dt=new DataTransfer();dt.items.add(new File([new Uint8Array(8)],'',{type:'image/png'}));
+ check(paste(dt).defaultPrevented,'a pasted picture alone is taken');
+ await wait(50);check(state.images.length===3,'pasted picture added');
+ dt=new DataTransfer();dt.items.add(new File([new Uint8Array(8)],'',{type:'image/jpeg'}));dt.setData('text/plain','看这个');
+ check(!paste(dt).defaultPrevented,'text pasted with a picture still goes in');
+ await wait(50);check(state.images.length===4,'picture pasted with text added');
  document.getElementById('acceptance').textContent='PASS';
 })().catch(error=>document.getElementById('acceptance').textContent='FAIL:'+error.message);
 </script></html>''')

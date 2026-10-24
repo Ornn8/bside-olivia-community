@@ -4183,18 +4183,29 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       }
     };
     pictureFile.onchange=()=>{const chosen=Array.from(pictureFile.files||[]);pictureFile.value='';return addPictures(chosen)};
-    // Pictures dragged onto an ordinary letter are added as if chosen; anything else dropped there is ignored.
-    const carriesFiles=event=>state.mode==='letter'&&Array.from(event.dataTransfer?.types||[]).includes('Files');
-    grid.addEventListener('dragover',event=>{
-      if(!carriesFiles(event))return;
-      event.preventDefault();event.dataTransfer.dropEffect='copy';grid.classList.add('olivia-compose-dropping');
+    // A picture copied anywhere (QQ, a browser, a screenshot) and pasted into an ordinary letter is added as if chosen.
+    // Copied pictures often come without a file name; their type names them.
+    const pictureName=(file,index)=>/\.(png|jpe?g|webp)$/i.test(file.name)||!/^image\/(png|jpeg|webp)$/.test(file.type)?file:
+      new File([file],'picture-'+(index+1)+'.'+file.type.slice(6).replace('jpeg','jpg'),{type:file.type});
+    grid.addEventListener('paste',event=>{
+      const pasted=Array.from(event.clipboardData?.items||[]).filter(item=>item.kind==='file').map(item=>item.getAsFile()).filter(Boolean);
+      if(state.mode!=='letter'||!pasted.length)return;
+      if(!Array.from(event.clipboardData.types||[]).includes('text/plain'))event.preventDefault();
+      addPictures(pasted.map(pictureName));
     });
+    // Pictures dragged onto an ordinary letter, too. Listened for on the window before the page's own handlers,
+    // and only while this composer is open.
+    const dragTypes=['dragenter','dragover','drop'];
+    const onDrag=event=>{
+      if(!grid.isConnected){for(const type of dragTypes)window.removeEventListener(type,onDrag,true);return}
+      const over=state.mode==='letter'&&grid.contains(event.target)&&Array.from(event.dataTransfer?.types||[]).includes('Files');
+      if(!over){grid.classList.remove('olivia-compose-dropping');return}
+      event.preventDefault();
+      if(event.type==='drop'){grid.classList.remove('olivia-compose-dropping');addPictures(Array.from(event.dataTransfer.files||[]).map(pictureName))}
+      else{event.dataTransfer.dropEffect='copy';grid.classList.add('olivia-compose-dropping')}
+    };
+    for(const type of dragTypes)window.addEventListener(type,onDrag,true);
     grid.addEventListener('dragleave',event=>{if(!grid.contains(event.relatedTarget))grid.classList.remove('olivia-compose-dropping')});
-    grid.addEventListener('drop',event=>{
-      grid.classList.remove('olivia-compose-dropping');
-      if(!carriesFiles(event))return;
-      event.preventDefault();addPictures(Array.from(event.dataTransfer.files||[]));
-    });
     pictures.append(addPicture,pictureNote);navigation.append(pictures);
     // The song pages carry their own material; an ordinary letter carries its pictures.
     state.attachmentForSend=()=>{

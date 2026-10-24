@@ -316,7 +316,7 @@ def test_client_launch_runs_the_native_layout_guard_until_exit(
     assert calls == [
         (
             [str(client), f"--user-data-dir={local / 'cef'}", '--enable-media-stream',
-             '--use-fake-ui-for-media-stream'],
+             '--use-fake-ui-for-media-stream', f"-stylesheet={local / 'olivia-drop.qss'}"],
             client.parent,
             {"SYNTHETIC": "1"},
         )
