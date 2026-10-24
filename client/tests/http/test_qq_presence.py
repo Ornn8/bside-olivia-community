@@ -236,6 +236,9 @@ def test_qzone_token_and_responses():
         qzone.g_tk('skey=x')
     assert qzone._json('_preloadCallback({"code":0,"msglist":[]});') == {'code': 0, 'msglist': []}
     assert qzone._json('<script>frameElement.callback({"code":0});</script>') == {'code': 0}
+    page = ('<script type="text/javascript">\nvar cb;try{cb=frameElement.callback;}catch(e){}\n'
+            'frameElement.callback(\n{\n\t"code":0,\n\t"data":{"ret":0}\n}\n);\n</script>')
+    assert qzone._json(page) == {'code': 0, 'data': {'ret': 0}}  # the shape QQ空间 really answers (2026-10-24)
     with pytest.raises(qzone.QzoneUnavailable):
         qzone._json('<html>login</html>')
 

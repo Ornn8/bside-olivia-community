@@ -13,7 +13,8 @@ import aiohttp
 BASE = 'https://user.qzone.qq.com/proxy/domain'
 TIMEOUT = aiohttp.ClientTimeout(total=20)
 _CALLBACK = re.compile(r'^[^(]*\((.*)\)\s*;?\s*$', re.S)
-_FRAME = re.compile(r'frameElement\.callback\((\{.*?\})\)', re.S)
+# The like and comment answers are a small page that calls frameElement.callback(\n{...}\n) (acceptance 2026-10-24).
+_FRAME = re.compile(r'frameElement\.callback\(\s*(\{.*\})\s*\)', re.S)
 
 
 class QzoneUnavailable(RuntimeError):
