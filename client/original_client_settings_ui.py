@@ -4082,6 +4082,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         .olivia-compose-navigation .olivia-compose-picture button{position:absolute;top:-7px;right:-7px;width:20px;height:20px;min-height:20px;padding:0;background:#202124;font-size:12px;line-height:18px}
         .olivia-compose-picture-note{color:#b8b9bf;font-size:13px;line-height:1.4}
         .olivia-compose-picture-note:empty{display:none}
+        .olivia-compose-grid.olivia-compose-dropping{outline:2px dashed #b8b9bf;outline-offset:6px;border-radius:8px}
         .olivia-compose-grid>.olivia-compose-body,.olivia-compose-music{grid-row:2;grid-column:1;min-height:0;overflow:auto;width:100%!important;box-sizing:border-box}
         .olivia-compose-grid>.olivia-compose-body{overflow:hidden}
         .olivia-compose-grid .mail-box-write-dialog-content{width:100%;height:100%;min-width:0;min-height:0;margin:0;aspect-ratio:auto;box-sizing:border-box;padding:16px 142px 16px 16px;overflow:hidden}
@@ -4167,8 +4168,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       addPicture.hidden=state.images.length>=4;addPicture.disabled=state.imagesBusy>0;
     };
     state.clearPictures=()=>{state.images=[];pictureNote.textContent='';showPictures()};
-    pictureFile.onchange=async()=>{
-      const chosen=Array.from(pictureFile.files||[]);pictureFile.value='';
+    const addPictures=async chosen=>{
       for(const selected of chosen){
         if(state.images.length>=4){pictureNote.textContent=t('一封信最多附 4 张图片。');break}
         if(!/\.(png|jpe?g|webp)$/i.test(selected.name)){pictureNote.textContent=t('请选择 PNG、JPG 或 WebP 图片。');continue}
@@ -4182,6 +4182,19 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         finally{state.imagesBusy--;showPictures()}
       }
     };
+    pictureFile.onchange=()=>{const chosen=Array.from(pictureFile.files||[]);pictureFile.value='';return addPictures(chosen)};
+    // Pictures dragged onto an ordinary letter are added as if chosen; anything else dropped there is ignored.
+    const carriesFiles=event=>state.mode==='letter'&&Array.from(event.dataTransfer?.types||[]).includes('Files');
+    grid.addEventListener('dragover',event=>{
+      if(!carriesFiles(event))return;
+      event.preventDefault();event.dataTransfer.dropEffect='copy';grid.classList.add('olivia-compose-dropping');
+    });
+    grid.addEventListener('dragleave',event=>{if(!grid.contains(event.relatedTarget))grid.classList.remove('olivia-compose-dropping')});
+    grid.addEventListener('drop',event=>{
+      grid.classList.remove('olivia-compose-dropping');
+      if(!carriesFiles(event))return;
+      event.preventDefault();addPictures(Array.from(event.dataTransfer.files||[]));
+    });
     pictures.append(addPicture,pictureNote);navigation.append(pictures);
     // The song pages carry their own material; an ordinary letter carries its pictures.
     state.attachmentForSend=()=>{

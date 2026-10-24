@@ -189,3 +189,42 @@ document.getElementById('acceptance').textContent='PASS';
 </script>''',encoding='utf-8')
     result=subprocess.run([str(browser),'--headless','--disable-gpu','--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-component-update',f'--user-data-dir={tmp_path / "profile"}','--virtual-time-budget=1000','--dump-dom',page.as_uri()],capture_output=True,text=True,encoding='utf-8',errors='replace',timeout=90)
     assert '<pre id="acceptance">PASS</pre>' in result.stdout,result.stdout[-1800:]
+
+
+def test_letter_pictures_can_be_dragged_onto_an_ordinary_letter(tmp_path):
+    browser = Path('C:/Program Files/Google/Chrome/Application/chrome.exe')
+    if not browser.is_file():
+        pytest.skip('Headless Chromium unavailable')
+    document = composer_document().replace('</script></html>', '''
+const fixtureFetch=window.fetch;let uploads=0;
+window.fetch=async(url,request)=>{
+ if(new URL(url).pathname!=='/toy/letter/image/upload')return fixtureFetch(url,request);
+ const n=String(++uploads).padStart(32,'0');
+ return {ok:true,json:async()=>({code:0,data:{image_id:n,url:'http://127.0.0.1:8899/toy/media/letter-image-'+n+'.png'}})};
+};
+(async()=>{
+ const check=(ok,message)=>{if(!ok)throw Error(message)};
+ const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+ const state=composerCovers.get(input),grid=document.querySelector('.olivia-compose-grid');
+ const files=(...names)=>{const dt=new DataTransfer();for(const name of names)dt.items.add(new File([new Uint8Array(8)],name,{type:'image/png'}));return dt};
+ const drag=(type,dt)=>{const event=new DragEvent(type,{bubbles:true,cancelable:true,dataTransfer:dt});grid.dispatchEvent(event);return event};
+ let dt=files('a.png','b.webp','notes.txt');
+ check(drag('dragover',dt).defaultPrevented&&grid.classList.contains('olivia-compose-dropping'),'files over a letter are taken');
+ check(drag('drop',dt).defaultPrevented&&!grid.classList.contains('olivia-compose-dropping'),'drop accepted');
+ await wait(50);
+ check(state.images.length===2,'two pictures added, text refused');
+ state.select('cover');dt=files('c.png');
+ check(!drag('dragover',dt).defaultPrevented&&!drag('drop',dt).defaultPrevented,'song pages ignore dropped pictures');
+ await wait(50);state.select('letter');check(state.images.length===2,'nothing added on a song page');
+ document.getElementById('acceptance').textContent='PASS';
+})().catch(error=>document.getElementById('acceptance').textContent='FAIL:'+error.message);
+</script></html>''')
+    page = tmp_path / 'drop.html'
+    page.write_text(document, encoding='utf-8')
+    result = subprocess.run([str(browser), '--headless', '--disable-gpu', '--no-first-run',
+        '--disable-background-networking', '--disable-component-update',
+        f'--user-data-dir={tmp_path / "profile"}', '--virtual-time-budget=5000',
+        '--dump-dom', page.as_uri()], capture_output=True,
+        text=True, encoding='utf-8', errors='replace', timeout=45)
+    assert result.returncode == 0, result.stderr[-1500:]
+    assert '<pre id="acceptance">PASS</pre>' in result.stdout, result.stdout.split('<pre id="acceptance">')[-1][:500]
