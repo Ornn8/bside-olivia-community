@@ -162,7 +162,8 @@ def test_generation_requests_over_a_real_connection(monkeypatch):
 
     zh, en, en_other = asyncio.run(scenario())
     expected = {"Authorization": "Bearer olivia-synthetic-key", "X-Olivia-Wardrobe-Protocol": "daily-v2",
-                "X-Olivia-Wardrobe-Catalog": "dynamic-v1", "X-Olivia-Daily-Video-Moment": "1", "X-Olivia-Piano": "1"}
+                "X-Olivia-Wardrobe-Catalog": "dynamic-v1", "X-Olivia-Daily-Video-Moment": "1", "X-Olivia-Piano": "1",
+                "X-Olivia-Doodle": "1"}
     assert _olivia_headers(zh) == expected
     assert HEADER not in zh and not any(name.lower() == HEADER.lower() for name in zh)
     assert _olivia_headers(en) == {**expected, HEADER: "en"}
@@ -326,9 +327,11 @@ OTHER_CLIENTS = {
     "runtime/cloud_service.py": "the optional account connection to an address the user entered",
     "runtime/imports/official_letters.py": "the original game's own service",
     "runtime/media/music_reply.py": "the music generator running on this computer",
+    "runtime/personal_chat/bilibili.py": "public video pages and media, fetched on this computer",
     "runtime/personal_chat/napcat_installer.py": "QQ protocol software on this computer, public download",
     "runtime/personal_chat/probe.py": "QQ and WeChat transports",
     "runtime/personal_chat/qq.py": "QQ transport on this computer",
+    "runtime/personal_chat/qzone.py": "QQ space pages with the session QQ already holds",
     "runtime/personal_chat/setup.py": "QQ and WeChat transports",
     "runtime/personal_chat/wechat.py": "WeChat transport",
     "runtime/private_world/student_world.py": "a public weather service",
