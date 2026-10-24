@@ -247,7 +247,9 @@ async def tick(server, runtime, initiative, now=None):
         if prefs['like'] and state.get('liked') != today and local.hour >= 9:
             state['liked'] = today  # one try a day, kept or not
             await sender.like(10)
-        if (prefs['qzone'] and state.get('posted') != today and POST_HOURS[0] <= local.hour < POST_HOURS[1]
+        # OLIVIA_QZONE_POST_NOW=1 opens the evening window for an acceptance run on a test install.
+        evening = POST_HOURS[0] <= local.hour < POST_HOURS[1] or os.environ.get('OLIVIA_QZONE_POST_NOW') == '1'
+        if (prefs['qzone'] and state.get('posted') != today and evening
                 and stamp >= state.get('post_retry_at', 0) and life is not None):
             state['post_retry_at'] = stamp + POST_RETRY
             state['post_result'] = await _post(server, sender, state, list(server.store.personal_chats), now)
