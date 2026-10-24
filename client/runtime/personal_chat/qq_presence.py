@@ -142,6 +142,8 @@ async def _ask(server, rules, packet, *, request_id, field_names):
     return value
 
 
+from runtime.output_language import scaled  # English needs more characters than Chinese.
+
 def _clean(value, limit):
     return value.strip()[:limit] if isinstance(value, str) else ''
 
@@ -157,14 +159,14 @@ async def _post(server, sender, state, rows, now):
     answer = await _ask(server, POST_RULES, {'today': activities, 'photos': [{'id': key, 'shows': text}
                         for key, _, text in photos], 'now': now.astimezone(SHANGHAI).isoformat()},
                         request_id=f'qzone-post:{today}', field_names=('post',))
-    post = _clean(answer.get('post'), 300)
+    post = _clean(answer.get('post'), scaled(300))
     if not post:
         state['posted'] = today  # she chose not to post today
         return 'skipped'
     picture = [path for key, path, _ in photos if key == answer.get('photo')][:1]
     state['post_tid'] = await sender.qzone_post(post, picture)
     state['posted'] = today
-    signature = _clean(answer.get('signature'), 20)
+    signature = _clean(answer.get('signature'), min(scaled(20), 80))
     if signature and '\n' not in signature:
         try:
             await sender.signature(signature)
@@ -196,7 +198,7 @@ async def _watch(server, sender, state, owner, account, now):
             continue
         answer = await _ask(server, COMMENT_RULES, {'post': post['text'], 'pictures': post['pictures']},
                             request_id=f"qzone-comment:{post['tid']}", field_names=('comment',))
-        comment = _clean(answer.get('comment'), 60)
+        comment = _clean(answer.get('comment'), scaled(60))
         if comment:
             await zone.comment(owner, post['tid'], comment)
             state['comments_today'] += 1
@@ -210,7 +212,7 @@ async def _watch(server, sender, state, owner, account, now):
             answered.add(key)
             answer = await _ask(server, REPLY_RULES, {'post': post['text'], 'comment': item['text']},
                                 request_id=f"qzone-reply:{post['tid']}:{item['id']}", field_names=('reply',))
-            reply = _clean(answer.get('reply'), 60)
+            reply = _clean(answer.get('reply'), scaled(60))
             if reply:
                 await zone.comment(account, post['tid'], reply, reply_to=(item['id'], owner))
     state['answered_comments'] = sorted(answered)[-400:]

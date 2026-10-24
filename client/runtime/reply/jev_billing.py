@@ -108,17 +108,20 @@ def cloud_request_headers(body_digest):
             **MINIMUM_HEADER}
 
 
+def _settlement_opener():
+    """Keep-alive connections shared with the judgments: direct, no redirects, the client's TLS context."""
+    from .jev_http import shared_opener
+    return shared_opener()
+
+
 def _post_settlement(key, signed):
     from original_client_relay_api import RELAY_BASE
-    from runtime.remote_generation import gpu_tls_context
-    from .companion_decision import _NoRedirect
     from runtime import ui_language
     body = json.dumps(signed, ensure_ascii=False, separators=(',', ':'), allow_nan=False).encode()
     request = urllib.request.Request(RELAY_BASE + '/jev/settle', data=body, method='POST',
         headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json', **MINIMUM_HEADER,
                  **ui_language.headers()})
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect(),
-                                        urllib.request.HTTPSHandler(context=gpu_tls_context()))
+    opener = _settlement_opener()
     # A wallet commit can succeed while its acknowledgement is lost. Replay
     # the identical signed operation; the relay never debits it twice.
     for attempt in range(3):

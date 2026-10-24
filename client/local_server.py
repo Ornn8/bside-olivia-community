@@ -6747,6 +6747,9 @@ def _letter_replies_in_flight() -> int:
 
 
 async def _start_reply_tasks(_app: web.Application) -> None:
+    # Model calls on this loop share kept-alive relay connections (runtime/relay_session.py).
+    from runtime import relay_session
+    await relay_session.start()
     # An update restart waits for a letter reply that is being written (runtime/auto_update.py).
     from runtime.auto_update import track_replies
     track_replies('letters', _letter_replies_in_flight)
@@ -6919,6 +6922,11 @@ async def _stop_reply_tasks(_app: web.Application) -> None:
     media_tasks.clear()
     reply_jobs.clear()
     media_jobs.clear()
+    # Every task that could still use them has stopped: close the kept-alive relay connections.
+    from runtime import relay_session
+    from runtime.reply.jev_http import close_idle_connections
+    await relay_session.stop()
+    close_idle_connections()
 
 
 async def _stop_conversation_memory(_app: web.Application) -> None:
@@ -7240,6 +7248,11 @@ async def _run_reply_pipeline_for_letter(
             with timing('media_in', letter):
                 await understand_letter_images(sys.modules[__name__], letter)
             reply_input += incoming_context(letter)
+        from runtime.media.song_notice import song_kind, writer_note
+        if song_kind(letter, exact_mode) is not None:
+            # She is told the song came with the letter and, when songs are recorded at night, when it will be ready.
+            from runtime.media_capabilities import current as media_capabilities
+            reply_input += writer_note(letter, exact_mode, await media_capabilities(_os.environ))
         request = ReplyRequest(
             content=reply_input,
             received_user_text=content,

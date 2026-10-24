@@ -302,8 +302,10 @@ def test_the_anonymous_upload_carries_the_header_in_english_only(monkeypatch):
 
 # --- no call to the cloud is left out ------------------------------------------------------------------------------
 
+# relay_session.session( is the kept-alive session model calls borrow; its caller still sets the headers.
 CLIENT_PATTERN = re.compile(
     r"ClientSession\(|urlopen\(|build_opener\(|http\.client\.HTTP\w*Connection|\.ws_connect\(|urllib\.request\.Request\(|\bRequest\("
+    r"|relay_session\.session\("
 )
 
 # Files that call Olivia's own services (api.bside-moon.cn): each must put the language header on its requests.
@@ -335,6 +337,8 @@ OTHER_CLIENTS = {
     "runtime/personal_chat/setup.py": "QQ and WeChat transports",
     "runtime/personal_chat/wechat.py": "WeChat transport",
     "runtime/private_world/student_world.py": "a public weather service",
+    "runtime/relay_session.py": "kept-alive transport for llm_gateway; the caller sets every header",
+    "runtime/reply/jev_http.py": "kept-alive transport for JevDecisionPort and settlements; the callers set every header",
     "runtime/reply/companion_duties.py": "uses JevDecisionPort.request_headers",
     "runtime/reply/jev_questions.py": "uses JevDecisionPort.request_headers",
     "runtime/reply/semantic_shadow.py": "a loopback development endpoint",

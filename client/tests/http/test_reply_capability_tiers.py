@@ -57,7 +57,9 @@ def test_only_video_speech_gets_duration_constraint(monkeypatch, mode, video, bo
         {'letter_id':'duration-check', 'reply_video_enabled':video},
         '请详细回答。', mode, idempotency_key=None))
     assert ('40到50秒' in seen[0]) is bounded
-    if not bounded:
+    # A reply that sings also tells her about the song (runtime/media/song_notice.py).
+    assert ('[系统唱歌安排，非用户原话]' in seen[0]) is (mode == 'voice_song_video')
+    if not bounded and mode != 'voice_song_video':
         assert seen[0] == '请详细回答。'
 
 
