@@ -1438,6 +1438,27 @@ def test_start_replaces_a_running_client_instead_of_doing_nothing(
     assert events == [{"event": "launch_already_running"}, {"event": "launch_replaced_running"}]
 
 
+def test_start_shows_a_running_client_instead_of_restarting_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    installation, _legacy = _managed_installation(tmp_path)
+    first = version_launcher._try_acquire_start_instance(installation)
+    assert first is not None
+    shown = []
+    monkeypatch.setattr(version_launcher, "_running_client_processes", lambda root: [4242])
+    monkeypatch.setattr(version_launcher, "_show_running_client", lambda ids: shown.extend(ids) or True)
+    monkeypatch.setattr(version_launcher, "_terminate_processes", lambda ids: pytest.fail("restarted a shown client"))
+    try:
+        assert version_launcher._replace_running_start(installation, wait_seconds=0.3, poll_seconds=0.05) is None
+    finally:
+        first.close()
+    assert shown == [4242]
+    events = [json.loads(line) for line in (installation / "data" / "logs" / "launcher.jsonl")
+              .read_text(encoding="utf-8").splitlines()]
+    assert events == [{"event": "launch_showed_running"}]
+
+
 def test_start_gives_up_quietly_when_the_lease_is_not_released(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

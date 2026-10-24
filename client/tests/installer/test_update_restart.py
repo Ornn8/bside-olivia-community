@@ -184,3 +184,43 @@ def test_helper_orders_shutdown_before_normal_start(tmp_path, monkeypatch, fail_
     assert launcher._update_restart(tmp_path, ready) == (2 if fail_start else 0)
     assert steps == ["close", "wait", "start", *(["prompt"] if fail_start else []), "release"]
     assert ("UPDATE_RESTART_START_FAILED" if fail_start else "update_restart_ready") in log.read_text()
+
+
+def test_helper_waits_while_the_new_start_repairs_permissions_and_hands_itself_over(tmp_path, monkeypatch):
+    ready = tmp_path / "ready"
+    log = tmp_path / "data/logs/launcher.jsonl"
+    clock = [0.0]
+
+    class Kernel:
+        def CloseHandle(self, handle):
+            pass
+
+    def sleep(seconds):
+        ready.unlink(missing_ok=True)
+        clock[0] += 30  # every look at the log is half a minute later
+        if clock[0] >= 300 and "client_start" not in log.read_text():
+            # Minutes later the repair is done, the administrator start hands over to Explorer and ends,
+            # and the start it handed over to opens the client.
+            with log.open("a") as stream:
+                stream.write('{"event": "permissions_repaired"}\n{"event": "elevated_relaunch"}\n'
+                             '{"event": "backend_ready"}\n{"event": "client_start"}\n')
+
+    monkeypatch.setattr(launcher, "_restart_processes", lambda root: (Kernel(), [(123, "handle")]))
+    monkeypatch.setattr(launcher.time, "sleep", sleep)
+    monkeypatch.setattr(launcher.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(launcher, "_close_restart_windows", lambda pids: None)
+    monkeypatch.setattr(launcher, "_wait_restart_processes", lambda *args: None)
+    monkeypatch.setattr(launcher, "_restart_failure_prompt", lambda *_: pytest.fail("reported a working restart"))
+
+    class Process:
+        def poll(self):
+            return 0 if "elevated_relaunch" in log.read_text() else None
+
+    def start(command, **kwargs):
+        with log.open("a") as stream:
+            stream.write('{"event": "permissions_repair_started"}\n')
+        return Process()
+
+    monkeypatch.setattr(launcher.subprocess, "Popen", start)
+    assert launcher._update_restart(tmp_path, ready) == 0
+    assert "update_restart_ready" in log.read_text()

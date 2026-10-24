@@ -145,6 +145,47 @@ def _running_client_processes(installation: Path) -> list[int]:
     return found
 
 
+def _show_running_client(process_ids: list[int]) -> bool:
+    """Bring a running client's main window to the front (also out of the tray, where closing hides it).
+    False when none of the processes has a responsive top-level window: then the start replaces them."""
+
+    if os.name != "nt" or not process_ids:
+        return False
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    user32.GetWindow.argtypes = [wintypes.HWND, wintypes.UINT]
+    user32.GetWindow.restype = wintypes.HWND
+    user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+    user32.IsHungAppWindow.argtypes = [wintypes.HWND]
+    user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+    wanted = set(process_ids)
+    windows: list = []
+
+    @callback_type
+    def collect(window, _):
+        owner = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(window, ctypes.byref(owner))
+        # A main window: owned by the client, not owned by another window, with a title.
+        if owner.value in wanted and not user32.GetWindow(window, 4) and user32.GetWindowTextLengthW(window) > 0:
+            windows.append(window)
+        return True
+
+    user32.EnumWindows(collect, 0)
+    for window in windows:
+        if user32.IsHungAppWindow(window):
+            continue
+        user32.ShowWindow(window, 5)  # SW_SHOW: out of the tray
+        user32.ShowWindow(window, 9)  # SW_RESTORE: out of the taskbar
+        user32.SetForegroundWindow(window)
+        return True
+    return False
+
+
 def _terminate_processes(process_ids: list[int]) -> None:
     if os.name != "nt":
         return
@@ -180,6 +221,11 @@ def _replace_running_start(
 
     running = _running_client_processes(installation)
     if not running:
+        return None
+    if _show_running_client(running):
+        # Clicking Olivia while she is open shows her; replacing her made every click a restart
+        # (a user on 2026-10-24 clicked four times in seven minutes and got four restarts).
+        _append_launcher_event(installation, "launch_showed_running")
         return None
     _terminate_processes(running)
     deadline = time.monotonic() + wait_seconds
@@ -585,6 +631,22 @@ def _is_elevated() -> bool:
         return False
 
 
+def _uac_off() -> bool:
+    """User Account Control is off: every start runs as administrator anyway, so a repair or a relaunch changes
+    nothing (reads the setting only)."""
+    if os.name != "nt":
+        return False
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System") as key:
+            value, _kind = winreg.QueryValueEx(key, "EnableLUA")
+        return value == 0
+    except (OSError, ImportError):
+        return False
+
+
 def _relaunch_unelevated(root: Path) -> bool:
     """Hand a start made as administrator to Explorer, which starts Olivia as the normal user.
 
@@ -593,7 +655,7 @@ def _relaunch_unelevated(root: Path) -> bool:
     after that failed (2026-10-15). Where every start is elevated (UAC off) the second try within two
     minutes runs as it is.
     """
-    if os.name != "nt" or not _is_elevated():
+    if os.name != "nt" or not _is_elevated() or _uac_off():
         return False
     launcher = root / "Olivia.exe"
     explorer = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "explorer.exe"
@@ -644,6 +706,10 @@ def _repair_permissions(root: Path) -> bool:
     written while Olivia ran as administrator stays readable by administrators only and every normal start
     then fails to import it (2026-10-15; a user's ImportError on 2026-10-19)."""
     icacls = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "icacls.exe"
+    # Written first, so a second administrator start meanwhile does not walk the install again, and an
+    # update restart waiting for the client knows the start is busy (_update_restart).
+    _write_permissions_marker(root, started_at=time.time(), version=_active_version(root))
+    _append_launcher_event(root, "permissions_repair_started", timestamp=time.time())
     repaired = True
     for target in (root, root.parent / "runtime", *_client_profile_dirs()):
         if not target.is_dir():
@@ -696,7 +762,8 @@ def _write_permissions_marker(root: Path, **fields: object) -> None:
 def _repair_permissions_once(root: Path) -> None:
     """An administrator start repairs once per installed version, so starts with UAC off stay fast."""
     marker = _read_permissions_marker(root)
-    if marker.get("version") == _active_version(root) and marker.get("repaired_at"):
+    # started_at too: clicks while a long repair ran each started another full repair (a user on 2026-10-24).
+    if marker.get("version") == _active_version(root) and (marker.get("repaired_at") or marker.get("started_at")):
         return
     _repair_permissions(root)
 
@@ -760,6 +827,9 @@ def _run_elevated(executable: str, parameters: str, timeout: float = 900) -> int
         return int(code.value)
     finally:
         kernel32.CloseHandle(info.hProcess)
+
+
+RESTART_REPAIR_SECONDS = 20 * 60
 
 
 def _restart_event(root: Path, step: str, **fields: object) -> None:
@@ -980,10 +1050,17 @@ def _update_restart(root: Path, ready: Path, owner_pid: int | None = None) -> in
             close_fds=True, creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
         )
         deadline = time.monotonic() + 120
+        repairing = False
         while time.monotonic() < deadline:
             with log.open("rb") as stream:
                 stream.seek(offset)
                 events = stream.read().decode("utf-8", errors="replace").splitlines()
+            if not repairing and any('"event": "permissions_repair_started"' in item for item in events):
+                # An administrator start first walks the install's permissions (minutes on a big install).
+                repairing = True
+                deadline = time.monotonic() + RESTART_REPAIR_SECONDS
+            # An administrator start hands itself to Explorer and ends: the start goes on in a new process.
+            handed_over = any('"event": "elevated_relaunch"' in item for item in events)
             for line in events:
                 try:
                     event = json.loads(line)
@@ -992,11 +1069,11 @@ def _update_restart(root: Path, ready: Path, owner_pid: int | None = None) -> in
                 if (event.get("event") == "client_start"
                     and any('"event": "backend_ready"' in item for item in events)):
                     time.sleep(2)
-                    if process.poll() is not None:
+                    if process.poll() is not None and not handed_over:
                         raise RuntimeError("UPDATE_RESTART_START_FAILED")
                     _restart_event(root, "ready")
                     return 0
-            if process.poll() is not None:
+            if process.poll() is not None and not handed_over:
                 raise RuntimeError("UPDATE_RESTART_START_FAILED")
             time.sleep(0.2)
         raise RuntimeError("UPDATE_RESTART_START_TIMEOUT")

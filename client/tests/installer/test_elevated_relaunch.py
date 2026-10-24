@@ -18,6 +18,7 @@ def _fake_system(monkeypatch, tmp_path, elevated):
     monkeypatch.setenv("SystemRoot", str(system))
     monkeypatch.setattr(launcher.os, "name", "nt")
     monkeypatch.setattr(launcher, "_is_elevated", lambda: elevated)
+    monkeypatch.setattr(launcher, "_uac_off", lambda: False)  # whatever the machine running the tests has
     started = []
     monkeypatch.setattr(launcher.subprocess, "Popen", lambda command, **_: started.append(command))
     # Never touch real permissions from a test.
@@ -88,6 +89,33 @@ def test_an_elevated_start_gives_files_back_their_permissions_once_per_version(t
     (root / "data" / "logs" / launcher.ELEVATED_RELAUNCH_NAME).unlink()
     launcher._relaunch_unelevated(root)
     assert len(calls) == 6
+
+
+def test_with_uac_off_an_administrator_start_runs_as_it_is(tmp_path, monkeypatch):
+    root = _root(tmp_path / "install")
+    _state(root, "2.5.1")
+    started = _fake_system(monkeypatch, tmp_path, elevated=True)
+    calls = _fake_icacls(monkeypatch)
+    monkeypatch.setattr(launcher, "_uac_off", lambda: True)
+    # Every start is elevated there: a repair or a relaunch changes nothing and only delays her.
+    assert launcher._relaunch_unelevated(root) is False
+    assert started == [] and calls == []
+
+
+def test_a_repair_already_started_for_this_version_is_not_started_again(tmp_path, monkeypatch):
+    root = _root(tmp_path / "install")
+    _state(root, "2.5.1")
+    _fake_system(monkeypatch, tmp_path, elevated=True)
+    calls = _fake_icacls(monkeypatch)
+    # A second click while the first administrator start is still walking the install.
+    launcher._write_permissions_marker(root, started_at=time.time(), version="2.5.1")
+    launcher._repair_permissions_once(root)
+    assert calls == []
+    _state(root, "2.5.2")
+    launcher._repair_permissions_once(root)
+    assert calls and launcher._read_permissions_marker(root)["version"] == "2.5.2"
+    events = (root / "data" / "logs" / "launcher.jsonl").read_text(encoding="utf-8")
+    assert events.index("permissions_repair_started") < events.index("permissions_repaired")
 
 
 def test_a_normal_start_that_cannot_import_its_files_asks_once_for_a_repair(tmp_path, monkeypatch):
