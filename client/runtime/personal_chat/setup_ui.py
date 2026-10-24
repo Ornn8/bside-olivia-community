@@ -130,6 +130,16 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
       [data-olivia-personal-chat-setup] .olivia-chat-verify{display:flex;gap:8px;margin-top:10px}
       [data-olivia-personal-chat-setup] details{margin-top:12px}
       [data-olivia-personal-chat-setup] summary{cursor:pointer;color:var(--color-text-secondary,#aaa);font-size:12px}
+      [data-olivia-personal-chat-setup] .olivia-chat-step{margin-top:12px;padding:14px 16px;border:1px solid rgba(127,127,127,.22);border-radius:14px}
+      [data-olivia-personal-chat-setup] .olivia-chat-step.is-waiting{opacity:.55}
+      [data-olivia-personal-chat-setup] .olivia-chat-step-head{display:flex;align-items:center;gap:10px}
+      [data-olivia-personal-chat-setup] .olivia-chat-step-num{width:24px;height:24px;border-radius:50%;display:grid;place-items:center;font-size:13px;font-weight:700;background:rgba(127,127,127,.18);color:var(--color-text-body,#eee);flex:none}
+      [data-olivia-personal-chat-setup] .olivia-chat-step.is-done .olivia-chat-step-num{background:#3a9d6e;color:#fff}
+      [data-olivia-personal-chat-setup] .olivia-chat-pill{margin-left:auto;font-size:12px;padding:1px 10px;border-radius:999px;background:rgba(127,127,127,.16);color:var(--color-text-secondary,#aaa);white-space:nowrap}
+      [data-olivia-personal-chat-setup] .olivia-chat-pill.is-ok{background:rgba(58,157,110,.16);color:#3a9d6e}
+      [data-olivia-personal-chat-setup] .olivia-chat-step-body{margin-left:34px}
+      [data-olivia-personal-chat-setup] .olivia-chat-link{border:0;background:none;padding:0;margin-top:8px;color:#6fa3ef;font:inherit;font-size:13px;cursor:pointer}
+      [data-olivia-personal-chat-setup] .olivia-chat-link:hover{text-decoration:underline}
       @media (max-width:650px){[data-olivia-personal-chat-setup] .olivia-chat-fields{grid-template-columns:1fr}}
     `;
     document.head?.append(style);
@@ -144,12 +154,11 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
 
     const root = document.createElement("section");
     root.dataset.oliviaPersonalChatSetup = "true";
-    const copy = node("div", t("在这里绑定 QQ。Olivia 可以一键准备本地 QQ 组件，不需要手填 OneBot 参数。请使用 QQ 小号扫码登录，再填写你用来聊天的个人 QQ 号。"), "olivia-chat-copy");
     const content = document.createElement("div");
     let qqOwnerDraft = "";
     let qqSaving = false;
     let renderedStatus = null;
-    root.append(copy, content);
+    root.append(content);
     anchor.append(root);
 
     const renderError = (parent, error) => {
@@ -160,9 +169,9 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
       }
       const code = error?.code || error?.message || String(error || t("连接失败"));
       target.textContent = ({
-        QQ_SETUP_INVALID: t("请填写有效的个人 QQ 号；已有保存的 QQ 号时，也可以留空并使用已保存QQ连接。"),
+        QQ_SETUP_INVALID: t("请填一个有效的 QQ 号。"),
         PERSONAL_CHAT_GENERATION_INTERRUPTED: t("这次回复生成被中断。连接恢复后，可以重新发送这条消息。"),
-        QQ_BOT_AND_OWNER_MUST_DIFFER: t("这里请填写你用来和机器人聊天的个人 QQ 号，不能填写刚扫码登录的机器人 QQ 号。"),
+        QQ_BOT_AND_OWNER_MUST_DIFFER: t("这里填你自己的 QQ 号，不是林离登录的那个小号。"),
         JEV_BILLING_ACCOUNT_UNAVAILABLE: t("还没有连接 Olivia 账户 Key，或 Key 无法读取。请在设置的“回信服务 → Olivia 账户”获取或导入 Key，点“连接并保存”后再聊天。"),
         OLIVIA_KEY_REQUIRED: t("还没有连接 Olivia 账户 Key，请在设置的“回信服务 → Olivia 账户”获取或导入 Key，点“连接并保存”后再聊天。"),
         JEV_BALANCE_INSUFFICIENT: t("Olivia 账户余额不足，请在“回信服务 → Olivia 账户”充值后再聊天。"),
@@ -257,7 +266,7 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
 
     const renderAdvancedQQ = (box) => {
       const details = document.createElement("details");
-      const summary = node("summary", t("高级：连接已有 NapCat / OneBot"));
+      const summary = node("summary", t("连接已有的 NapCat / OneBot"));
       details.append(summary);
       const fields = node("div", null, "olivia-chat-fields");
       const account = input(t("林离的 QQ 号"));
@@ -284,6 +293,171 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
       return details;
     };
 
+    const step = (number, title, pill, {done = false, waiting = false} = {}) => {
+      const box = node("div", null, "olivia-chat-step" + (done ? " is-done" : "") + (waiting ? " is-waiting" : ""));
+      const head = node("div", null, "olivia-chat-step-head");
+      head.append(node("span", done ? "✓" : String(number), "olivia-chat-step-num"), node("span", title, "olivia-chat-name"));
+      if (pill) head.append(node("span", pill, "olivia-chat-pill" + (done ? " is-ok" : "")));
+      const body = node("div", null, "olivia-chat-step-body");
+      box.append(head, body);
+      return {box, body};
+    };
+
+    const link = (label, handler) => {
+      const button = action(label, handler);
+      button.className = "olivia-chat-link";
+      return button;
+    };
+
+    // 1 her QQ: download the component once, then scan to log in.
+    const renderLogin = (status) => {
+      const napcat = status.napcat || {};
+      const ready = napcat.state === "ONEBOT_READY";
+      const {box, body} = step(1, t("林离的 QQ"), ready ? t("已登录") : t("未登录"), {done: ready});
+      const copy = (value) => body.append(node("div", value, "olivia-chat-copy"));
+      if (ready) {
+        copy(t("用一个 QQ 小号登录，林离就用这个号和你聊天。"));
+      } else if (!napcat.installed && !["DOWNLOADING", "INSTALLER_OPENED"].includes(napcat.state)) {
+        copy(t("用一个 QQ 小号当林离的 QQ。第一次要先下载 QQ 组件（约 430 MB，只需一次）。"));
+        const actions = node("div", null, "olivia-chat-actions");
+        actions.append(action(t("下载并准备"), async () => {
+          try {
+            await request(NAPCAT_INSTALL, {method: "POST", body: {}});
+            await refresh(true);
+          } catch (error) { renderError(body, error); }
+        }));
+        body.append(actions);
+      } else if (napcat.state === "DOWNLOADING") {
+        copy(t("正在下载 QQ 组件，下载完会自动继续…"));
+      } else if (napcat.state === "STARTING") {
+        copy(t("正在启动 QQ，第一次会久一点，不用重复点。"));
+      } else if (["ONEBOT_PROBING", "ONEBOT_CONFIG_PENDING"].includes(napcat.state)) {
+        copy(t("已登录，正在连接…"));
+      } else if (napcat.state === "AWAITING_QQ_LOGIN") {
+        const login = status.qq_login || {};
+        copy(login.logged_in ? t("已登录，正在连接…")
+          : login.scanned ? t("已扫码，请在手机 QQ 上点确认。")
+          : login.qr_data ? t("用手机 QQ 登录林离要用的那个小号，扫下面的二维码。")
+          : t("二维码还没出来，点“刷新二维码”。"));
+        if (login.qr_data) {
+          const qr = node("img", null, "olivia-chat-qr");
+          qr.alt = t("QQ 登录二维码");
+          qr.src = login.qr_data;
+          body.append(qr);
+        }
+        if (login.verification_required) copy(t("QQ 要求额外验证，点“打开登录窗口”完成。"));
+        const actions = node("div", null, "olivia-chat-actions");
+        actions.append(action(t("刷新二维码"), async () => {
+          try {
+            await request(NAPCAT_LOGIN, {method: "POST", body: {}});
+            await refresh(true);
+          } catch (error) { renderError(body, error); }
+        }));
+        actions.append(link(t("扫不了？打开登录窗口"), async (button) => {
+          try {
+            await request(NAPCAT_BROWSER, {method: "POST", body: {}});
+            button.textContent = t("已打开，再点一次可重开");
+          } catch (error) { renderError(body, error); }
+        }));
+        body.append(actions);
+      } else {
+        copy(t("用一个 QQ 小号当林离的 QQ，点下面的按钮扫码登录。"));
+        const actions = node("div", null, "olivia-chat-actions");
+        actions.append(action(t("扫码登录"), async (button) => {
+          try {
+            button.textContent = t("正在启动…");
+            await request(NAPCAT_START, {method: "POST", body: {}});
+            await refresh(true);
+          } catch (error) { button.textContent = t("扫码登录"); renderError(body, error); }
+        }));
+        body.append(actions);
+      }
+      if (napcat.error) renderError(body, {code: napcat.error});
+      return box;
+    };
+
+    // 2 your QQ: the number she talks to; a saved one is shown, not asked again.
+    const renderOwner = (status, state) => {
+      const ready = status.napcat?.state === "ONEBOT_READY";
+      const saved = status.qq?.owner_masked;
+      const restart = ["READY_RESTART", "CONFIGURED_RESTART"].includes(state);
+      const live = ["CONNECTED", "LISTENING"].includes(state);
+      const done = ready && Boolean(saved) && (live || restart);
+      const {box, body} = step(2, t("你的 QQ"), done ? t("已保存") : "", {done, waiting: !ready});
+      if (!ready) {
+        body.append(node("div", t("先完成上一步。"), "olivia-chat-copy"));
+        return box;
+      }
+      const canReuse = status.qq?.can_reuse_owner === true;
+      const editor = node("div");
+      const owner = input(t("你自己的 QQ 号"));
+      owner.value = qqOwnerDraft;
+      owner.inputMode = "numeric";
+      owner.setAttribute("aria-label", t("你自己的 QQ 号"));
+      owner.style.marginTop = "10px";
+      owner.addEventListener("input", () => { qqOwnerDraft = owner.value; });
+      const save = (body) => async (button) => {
+        qqSaving = true;
+        owner.disabled = true;
+        const label = button.textContent;
+        button.textContent = t("正在保存…");
+        try {
+          await request(QQ_CONFIGURE, {method: "POST", body});
+          qqSaving = false;
+          await refresh(false);
+        } catch (error) { renderError(editor, error); }
+        finally {
+          qqSaving = false;
+          owner.disabled = false;
+          button.textContent = label;
+        }
+      };
+      const saveButton = action(t("保存"), async (button) => save({managed: true, owner: owner.value.trim()})(button));
+      saveButton.disabled = !owner.value.trim();
+      owner.addEventListener("input", () => { saveButton.disabled = qqSaving || !owner.value.trim(); });
+      const controls = node("div", null, "olivia-chat-actions");
+      controls.append(saveButton);
+      editor.append(owner, controls);
+
+      if (saved) {
+        const line = node("div", t("你的 QQ：{owner}", {owner: saved}) + (restart ? " · " + t("重启 Olivia 后生效。") : ""), "olivia-chat-copy");
+        line.setAttribute("role", "status");
+        body.append(line);
+        const actions = node("div", null, "olivia-chat-actions");
+        if (canReuse && !done) {
+          actions.append(action(t("用这个号"), async (button) => save({managed: true, reuse_saved_owner: true})(button)));
+        }
+        editor.hidden = !qqOwnerDraft;
+        if (editor.hidden) actions.append(link(t("换一个号"), async () => { editor.hidden = false; owner.focus(); }));
+        body.append(actions, editor);
+      } else {
+        body.append(node("div", t("填你自己平时用的 QQ 号，林离只和这个号私聊。"), "olivia-chat-copy"), editor);
+      }
+      return box;
+    };
+
+    // 3 try it: send her a message; /连接测试 makes sure both ways work.
+    const renderTry = (status, state) => {
+      const live = ["CONNECTED", "LISTENING"].includes(state);
+      const verified = Boolean(status.e2e_verified_at?.qq);
+      const {box, body} = step(3, t("试一下"), verified ? t("能收发") : "", {done: live && verified, waiting: !live});
+      if (!live) {
+        body.append(node("div", t("前两步完成后，给林离发条消息试试。"), "olivia-chat-copy"));
+      } else if (verified) {
+        body.append(node("div", t("已经确认过能互相收发消息。"), "olivia-chat-copy"));
+      } else {
+        const pending = (status.connection_test_pending || []).includes("qq");
+        body.append(node("div", pending
+          ? t("把 QQ 里收到的 4 位数字原样回给她，就确认好了。")
+          : t("用你的 QQ 给林离发一句话，她会回你。想确认一下的话，给她发 {command}，再把收到的 4 位数字回给她。", {command: "/连接测试"}),
+          "olivia-chat-copy"));
+      }
+      const replyHealth = node("div");
+      replyHealth.dataset.qqReplyHealth = "true";
+      body.append(replyHealth);
+      return box;
+    };
+
     const renderQQ = (status) => {
       const box = node("div", null, "olivia-chat-channel");
       const top = node("div", null, "olivia-chat-row");
@@ -293,140 +467,17 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
       const state = ["FAILED", "READY_RESTART"].includes(setupState) ? setupState : listener || setupState;
       const liveState = node("div", stateLabel(state), "olivia-chat-state");
       liveState.dataset.qqLiveState = "true";
-      left.append(node("div", t("QQ（实验功能）"), "olivia-chat-name"), liveState);
+      left.append(node("div", "QQ", "olivia-chat-name"), liveState);
       top.append(left);
-      box.append(top);
+      box.append(top, renderLogin(status), renderOwner(status, state), renderTry(status, state));
 
+      // Everything technical, closed: the component and its connection, and connecting an existing NapCat.
       const napcat = status.napcat || {};
-      const component = node("div", null, "olivia-chat-subcard");
-      const componentTop = node("div", null, "olivia-chat-row");
-      const componentLeft = document.createElement("div");
-      componentLeft.append(
-        node("div", t("QQ 本地组件"), "olivia-chat-name"),
-        node("div", `${stateLabel(napcat.state)} · ${napcat.version || ""}`, "olivia-chat-state"),
-      );
-      componentTop.append(componentLeft);
-      if (!napcat.installed && !["DOWNLOADING", "INSTALLER_OPENED"].includes(napcat.state)) {
-        componentTop.append(action(t("一键安装"), async () => {
-          try {
-            await request(NAPCAT_INSTALL, {method: "POST", body: {}});
-            await refresh(true);
-          } catch (error) { renderError(component, error); }
-        }));
-      } else if (napcat.installed && napcat.state !== "ONEBOT_READY") {
-        const label = napcat.state === "AWAITING_QQ_LOGIN" ? t("刷新登录二维码") : t("启动并登录 QQ");
-        const startButton = action(napcat.state === "STARTING" ? t("正在启动…") : label, async (button) => {
-          try {
-            button.textContent = t("正在启动…");
-            await request(napcat.state === "AWAITING_QQ_LOGIN" ? NAPCAT_LOGIN : NAPCAT_START, {method: "POST", body: {}});
-            await refresh(true);
-          } catch (error) { button.textContent = label; renderError(component, error); }
-        });
-        startButton.disabled = napcat.state === "STARTING";
-        componentTop.append(startButton);
-      }
-      component.append(componentTop);
-      if (napcat.state === "STARTING") {
-        component.append(node("div", t("正在检查 QQ 运行依赖并启动登录页。首次准备需从 Olivia 下载服务获取约 427 MB 完整包，已下载文件可复用；无需重复点击。"), "olivia-chat-copy"));
-      } else if (napcat.state === "DOWNLOADING") {
-        component.append(node("div", t("正在从 Olivia 下载服务获取并校验 QQ 完整组件包。"), "olivia-chat-copy"));
-      } else if (napcat.state === "AWAITING_QQ_LOGIN") {
-        const login = status.qq_login || {};
-        const message = login.logged_in ? t("QQ 已登录，正在准备连接…")
-          : login.scanned ? t("已扫码，请在手机 QQ 上确认登录。")
-          : login.qr_data ? t("请使用用于林离的 QQ 小号扫描下方二维码登录。关闭设置页不会关闭 QQ 组件，再次进入即可继续登录。")
-          : t("QQ 组件正在后台运行，暂未取得登录二维码。请刷新二维码，或点击下方按钮打开登录窗口。");
-        component.append(node("div", message, "olivia-chat-copy"));
-        if (login.qr_data) {
-          const qr = node("img", null, "olivia-chat-qr");
-          qr.alt = t("QQ 登录二维码");
-          qr.src = login.qr_data;
-          component.append(qr);
-        }
-        if (login.verification_required) component.append(node("div", t("QQ 需要额外验证，请点击下方按钮，在打开的登录窗口中完成验证。"), "olivia-chat-copy"));
-        component.append(action(t("打开 QQ 登录窗口"), async (button) => {
-          try {
-            await request(NAPCAT_BROWSER, {method: "POST", body: {}});
-            button.textContent = t("已请求打开，再次点击可重开");
-          } catch (error) { renderError(component, error); }
-        }));
-      } else if (napcat.state === "ONEBOT_PROBING") {
-        component.append(node("div", t("已经检测到 OneBot 端口，正在确认真实登录账号。"), "olivia-chat-copy"));
-      } else if (napcat.state === "ONEBOT_CONFIG_PENDING") {
-        component.append(node("div", t("QQ 已登录，正在等待 NapCat 把默认 OneBot 配置落成账号专属配置。"), "olivia-chat-copy"));
-      } else if (napcat.state === "ONEBOT_READY") {
-        component.append(node("div", t("QQ 已登录，账号专属 OneBot 配置和 127.0.0.1:3001 都已验证。"), "olivia-chat-copy"));
-      } else if (napcat.installed) {
-        component.append(node("div", t("Olivia 会使用 NapCat 的自包含 Node 包，自动准备仅监听 127.0.0.1 的 OneBot 连接和随机 Token。"), "olivia-chat-copy"));
-      } else {
-        component.append(node("div", t("点击一键安装即可。从 Olivia 下载服务获取固定版本 QQ 组件及运行依赖，安装前校验 SHA-256。"), "olivia-chat-copy"));
-      }
-      if (napcat.error) renderError(component, {code: napcat.error});
-      box.append(component);
-
-      if (napcat.state === "ONEBOT_READY") {
-        const managed = node("div", null, "olivia-chat-subcard");
-        managed.append(node("div", t("OneBot 已就绪"), "olivia-chat-name"));
-        managed.append(node("div", t("刚扫码登录的是机器人账号，已自动识别。下方请填写你用来和机器人聊天的个人 QQ 号。"), "olivia-chat-copy"));
-        if (status.qq?.owner_masked) {
-          const saved = node("div", t("已保存聊天 QQ：{owner}。{status}", {owner: status.qq.owner_masked, status: ["READY_RESTART", "CONFIGURED_RESTART"].includes(state) ? t("请重启 Olivia 后生效。") : state === "CONNECTED" ? t("接收连接已建立；实际回复状态见下方。") : t("当前状态：{state}。", {state: stateLabel(state)})}), "olivia-chat-copy");
-          saved.setAttribute("role", "status");
-          managed.append(saved);
-        }
-        const owner = input(t("用于和机器人聊天的个人 QQ 号"));
-        owner.value = qqOwnerDraft;
-        owner.addEventListener("input", () => { qqOwnerDraft = owner.value; });
-        owner.inputMode = "numeric";
-        owner.setAttribute("aria-label", t("用于和机器人聊天的个人 QQ 号"));
-        owner.style.marginTop = "10px";
-        managed.append(owner);
-        const controls = node("div", null, "olivia-chat-actions");
-        const canReuse = status.qq?.can_reuse_owner === true;
-        const connectLabel = () => canReuse && !owner.value.trim() ? t("使用已保存QQ连接") : t("连接并保存");
-        if (canReuse) managed.append(node("div", t("保留输入框为空，可直接使用已保存的聊天 QQ；填写新号码则替换。"), "olivia-chat-copy"));
-        const connectButton = action(connectLabel(), async (button) => {
-          qqSaving = true;
-          owner.disabled = true;
-          button.textContent = t("正在验证并保存…");
-          try {
-            const body = canReuse && !owner.value.trim()
-              ? {managed: true, reuse_saved_owner: true} : {managed: true, owner: owner.value.trim()};
-            await request(QQ_CONFIGURE, {method: "POST", body});
-            qqSaving = false;
-            await refresh(false);
-          } catch (error) { renderError(managed, error); }
-          finally {
-            qqSaving = false;
-            owner.disabled = false;
-            button.textContent = connectLabel();
-            button.disabled = !owner.value.trim() && !canReuse;
-          }
-        });
-        connectButton.disabled = !owner.value.trim() && !canReuse;
-        owner.addEventListener("input", () => {
-          connectButton.textContent = connectLabel();
-          connectButton.disabled = qqSaving || !owner.value.trim() && !canReuse;
-        });
-        controls.append(connectButton);
-        managed.append(controls);
-        box.append(managed);
-      }
-
-      const replyHealth = node("div");
-      replyHealth.dataset.qqReplyHealth = "true";
-      box.append(replyHealth);
-      if (status.e2e_verified_at?.qq) {
-        box.append(node("div", t("曾通过端到端验证：QQ 收到过测试回复。当前连接及回复异常请以上方状态为准。"), "olivia-chat-copy"));
-      } else if (listener === "CONNECTED") {
-        const pending = (status.connection_test_pending || []).includes("qq");
-        box.append(node("div",
-          pending
-            ? t("连接测试进行中：请把 QQ 里收到的 4 位验证码原样回复。")
-            : t("协议连接正常。请在 QQ 里发送 {command}；收到 4 位验证码后原样回复，完成真实端到端验证。", {command: "/连接测试"}),
-          "olivia-chat-copy"));
-      }
-
-      box.append(renderAdvancedQQ(box));
+      const advanced = document.createElement("details");
+      advanced.append(node("summary", t("高级")));
+      advanced.append(node("div", t("QQ 组件 {version}：{state}", {version: napcat.version || "", state: stateLabel(napcat.state)}), "olivia-chat-copy"));
+      advanced.append(renderAdvancedQQ(box));
+      box.append(advanced);
       if (status.qq?.error) renderError(box, {code: status.qq.error});
       return box;
     };
@@ -469,12 +520,12 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
       if (health) {
         health.replaceChildren();
         if (status.reply_errors?.qq) {
-          health.append(node("div", t("普通聊天回复异常"), "olivia-chat-copy"));
+          health.append(node("div", t("上一条消息没回成："), "olivia-chat-copy"));
           renderError(health, {code: status.reply_errors.qq});
           const failedAt = new Date(status.reply_error_at?.qq || "");
           if (!Number.isNaN(failedAt.getTime())) {
             const time = failedAt.toLocaleString(t("zh-CN"), {month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit"});
-            health.append(node("div", t("这是 {time} 那条消息的失败；之后还没有新的回复结果，发一条新消息即可确认是否已恢复。", {time}), "olivia-chat-copy"));
+            health.append(node("div", t("（{time} 那条）再发一条消息，就能看出好了没有。", {time}), "olivia-chat-copy"));
           }
         }
       }
