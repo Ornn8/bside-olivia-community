@@ -54,6 +54,34 @@ def fact_sentence_spans(candidate: str, spans) -> list[tuple[int, int]]:
     return merged
 
 
+def whole_paragraph_spans(candidate: str, spans) -> list[tuple[int, int]]:
+    """Removed sentences that make up a whole paragraph take its blank line with them, so no empty paragraph is
+    left where it was (2026-10-24: a letter showed a blank block under its greeting after its first paragraph was
+    removed). Adjacent removals are joined first; a sentence that leaves text on its line keeps the line as it is."""
+    merged = []
+    for start, end in sorted(spans):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
+        else:
+            merged.append((start, end))
+    widened = []
+    for start, end in merged:
+        if start == 0 or candidate[start - 1] == '\n':
+            stop = end
+            while stop < len(candidate) and candidate[stop] in ' \t\r\n':
+                stop += 1
+            if stop == len(candidate) or '\n' in candidate[end:stop]:
+                end = stop
+        widened.append((start, end))
+    return widened
+
+
+def without_empty_paragraphs(text: str) -> str:
+    """Blank lines left by an emptied paragraph: one paragraph break remains."""
+    import re
+    return re.sub(r'\n[ \t]*\n(?:[ \t]*\n)+', '\n\n', text)
+
+
 def preserves_quote_balance(original: str, repaired: str) -> bool:
     """Do not turn a balanced quoted passage into a fragment by deleting a sentence."""
     for opening, closing in [('“', '”'), ('‘', '’'), ('「', '」'), ('『', '』')]:

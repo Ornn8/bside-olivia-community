@@ -923,6 +923,24 @@ def test_fresh_profile_retries_known_first_exit_once(
     assert str(root.resolve()) not in launcher_log
 
 
+def test_a_window_that_quits_because_another_copy_runs_is_opened_again_after_the_leftovers_end(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from installer import version_launcher
+    ended = []
+    running = [[], [4242]]  # nothing before the first start; a leftover found after the quick exit
+    monkeypatch.setattr(version_launcher, "_running_client_processes", lambda root: running.pop(0) if running else [])
+    monkeypatch.setattr(version_launcher, "_terminate_processes", lambda ids: ended.extend(ids))
+    monkeypatch.setattr(start_local.time, "sleep", lambda seconds: None)
+    root, result, client_runs, client_events, _log = _run_launcher_with_client_results(
+        tmp_path, monkeypatch, (0x0E000001, 0))
+    assert result == 0 and len(client_runs) == 2 and ended == [4242]
+    assert {"event": "client_leftover_ended", "count": 1} in client_events
+    assert {"attempt": 2, "event": "client_retry", "reason": "leftover_client_exit"} in client_events
+    assert client_events[-1] == {"attempt": 2, "event": "client_exit", "exit_code": 0}
+
+
 @pytest.mark.parametrize("native_tail", [b"", b"\x01native-appended-record"])
 def test_launcher_preserves_native_widget_preferences_on_each_client_attempt(
     tmp_path: Path,

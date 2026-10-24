@@ -295,6 +295,10 @@ _CORE_HEALTH_CHECK_STATES = frozenset({"available", "degraded", "unavailable"})
 _BACKEND_START_TIMEOUT_SECONDS = 120
 _BACKEND_ID_RE = re.compile(r"[0-9A-Za-z.+-]{1,160}")
 _KNOWN_FRESH_PROFILE_EXIT_CODE = 0x0E000003
+# The window quits at once while another copy of it still runs (a user on 2026-10-24, twice in a row, after an
+# earlier session had left its processes behind; the same code on that user's very first start cleared on the
+# second). Leftovers are ended and the window is opened once more.
+_LEFTOVER_CLIENT_EXIT_CODE = 0x0E000001
 
 
 def _port_is_bindable(port: int) -> bool:
@@ -377,6 +381,18 @@ def _server_backend_id(port: int) -> str | None:
     """Read the path-free identity published by the backend on this port."""
 
     return _probe_health(port)[1]
+
+
+def _end_leftover_clients(root: Path, data_root: Path) -> None:
+    """End Olivia.exe copies started from this install's app/ that no launcher owns any more."""
+    try:
+        from installer.version_launcher import _running_client_processes, _terminate_processes
+        leftover = _running_client_processes(root)
+        if leftover:
+            _terminate_processes(leftover)
+            _append_launcher_event(data_root, "client_leftover_ended", count=len(leftover))
+    except (OSError, ImportError, AttributeError):
+        pass
 
 
 def _stop_backend_server(server: object) -> None:
@@ -1314,6 +1330,9 @@ def _launch(args: argparse.Namespace, root: Path, backend: Path, entrypoint: Pat
         # Widget preferences are migrated through the native bridge after login.
         # Rewriting the store here would override a user's saved off switch.
         client_environment.setdefault("OLIVIA_STARTUP_VIDEO", str(backend / "installer" / "assets" / "startup.mp4"))
+        # This launcher holds the install's start lease, so a window of this install still running is left over
+        # from a session that ended without it; it would make the new window quit at once.
+        _end_leftover_clients(root, data_root)
         _append_launcher_event(data_root, "client_start", attempt=1,
                                preparation_seconds=round(time.monotonic() - preparation_started, 3))
         exit_code = _run_client_with_native_layout(
@@ -1331,12 +1350,16 @@ def _launch(args: argparse.Namespace, root: Path, backend: Path, entrypoint: Pat
             attempt=1,
             exit_code=exit_code,
         )
-        if exit_code == _KNOWN_FRESH_PROFILE_EXIT_CODE:
+        if exit_code in {_KNOWN_FRESH_PROFILE_EXIT_CODE, _LEFTOVER_CLIENT_EXIT_CODE}:
+            if exit_code == _LEFTOVER_CLIENT_EXIT_CODE:
+                _end_leftover_clients(root, data_root)
+                time.sleep(1.0)
             _append_launcher_event(
                 data_root,
                 "client_retry",
                 attempt=2,
-                reason="known_fresh_profile_exit" if fresh_profile else "known_client_exit",
+                reason=("leftover_client_exit" if exit_code == _LEFTOVER_CLIENT_EXIT_CODE
+                        else "known_fresh_profile_exit" if fresh_profile else "known_client_exit"),
             )
             _append_launcher_event(data_root, "client_start", attempt=2)
             exit_code = _run_client_with_native_layout(
