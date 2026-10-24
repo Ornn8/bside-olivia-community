@@ -21,6 +21,8 @@ from runtime.reply.proactive_letters import read_json, write_json
 MAX_ATTEMPTS = 3
 MAX_ACK_TRIES = 5
 BUSY_SECONDS = 60
+# What he bought is answered between his messages instead of after he stops writing (owner 2026-10-23).
+PRIORITY_PURPOSES = frozenset({'gift_goods'})
 RETRY_SECONDS = 120
 KEEP_HANDLED = 200
 MAX_PENDING = 100
@@ -338,7 +340,15 @@ async def _carry_out(root, now, event, channel, qq_ready, preferred, deliver):
             settle(root, event['id'], 'delivered', now, channel=channel, error_code=outcome.error_code)
         elif outcome.status == 'busy':
             # Nothing began (the owner was writing, a channel was not free): not an attempt.
-            hold(root, event['id'], attempts=attempts - 1, retry_after=now + BUSY_SECONDS)
+            event['attempts'] = attempts - 1
+            if (channel == 'qq' and event['channel'] == 'qq_then_letter'
+                    and now - event['started_at'] >= event['qq_wait_seconds']):
+                # QQ stayed busy for the whole wait: the letter carries it now.
+                hold(root, event['id'], attempts=attempts - 1)
+                channel = 'letter'
+                continue
+            hold(root, event['id'], attempts=attempts - 1,
+                 retry_after=now + (0 if event['purpose'] in PRIORITY_PURPOSES else BUSY_SECONDS))
         elif attempts >= MAX_ATTEMPTS or outcome.status == 'failed' and not outcome.fallback:
             settle(root, event['id'], 'failed', now, channel=channel, error_code=outcome.error_code)
         elif channel == 'qq' and event['channel'] == 'qq_then_letter' and outcome.status == 'failed':

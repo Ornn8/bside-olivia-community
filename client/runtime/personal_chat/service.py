@@ -15,6 +15,7 @@ from runtime.cloud_policy import get_policy
 from runtime import proactive_config, ui_language
 from runtime.ui_i18n_backend import tr
 from runtime.reply.proactive_runtime import unprompted
+from .qq_faces import face_labels
 JEV_ERROR_CODES = _JEV_PORT_ERRORS | {
     'JEV_PLAN_UNSUPPORTED', 'JEV_CONTEXT_UNAVAILABLE', 'JEV_STORED_DECISION_INVALID',
     'JEV_SERVICE_UNAVAILABLE', 'JEV_CONTEXT_BUDGET_EXCEEDED', 'JEV_INPUT_SUPERSEDED',
@@ -35,6 +36,12 @@ def _boundary(item, index):
             item.get('read_boundary_sequence', item.get('received_sequence', index)))
 
 
+def _priority(contact):
+    """A cloud contact answering what he just bought: it goes out between his messages."""
+    from runtime.cloud_contact import PRIORITY_PURPOSES
+    return bool(contact) and contact.get('contact_purpose') in PRIORITY_PURPOSES
+
+
 def _sent_time(row):
     try:
         value = datetime.fromisoformat((row.get('read_boundary_sent_at') or row['user_sent_at']).replace('Z', '+00:00'))
@@ -53,7 +60,7 @@ def chat_text(reply_text):
 
 
 def _clear_draft(row):
-    for key in ('reply_text', 'prepared_audio', 'reply_audio_duration', 'voice_fallback', 'sticker_id',
+    for key in ('reply_text', 'prepared_audio', 'reply_audio_duration', 'voice_fallback', 'sticker_id', 'qq_poke',
                 'letter_invitation', 'initiative_preference', 'pause_until', 'letter_preference',
                 'letter_until', 'followup_at', 'followup_quote', 'listening_preference', 'requested_format',
                 'presentation_status', 'delivery_basis', 'voice_ready', 'quality_status', 'reviewer_calls', 'rewrite_calls',
@@ -293,11 +300,14 @@ class PersonalChatService:
             datetime.now(timezone.utc).timestamp() - row.get('created_at', datetime.now(timezone.utc).timestamp()))), 4))
         timings.setdefault('voice_wait', 0.0)
         media_token = MEDIA_RESOLVER.set(getattr(send, 'resolve_media', None))
+        from .qq_games import THROWER
+        thrower = THROWER.set(getattr(send, 'game', None))  # her answer to his dice or rock-paper-scissors
         current = TURN_IS_CURRENT.set(lambda: not self._new_inputs(row))
         try:
             return await self.generate(event, row)
         finally:
             TURN_IS_CURRENT.reset(current)
+            THROWER.reset(thrower)
             MEDIA_RESOLVER.reset(media_token)
 
     def replies_in_flight(self):
@@ -376,10 +386,45 @@ class PersonalChatService:
         """contact: the fields of a cloud contact this exchange carries out (see runtime.cloud_contact)."""
         revision = self.user_revision
         async with self.batch_lock:
+            if _priority(contact) and not self._unanswered(event):
+                # His purchase is answered at the first gap between his messages, not once he stops writing.
+                revision = self.user_revision
             if not eligible() or revision != self.user_revision:
                 return
             await self._handle_one(event, send, proactive=True, followup=followup,
                                    proactive_revision=revision, proactive_eligible=eligible, contact=contact)
+
+    @staticmethod
+    async def _poke_first(row, send):
+        """A poke she chose goes just before her message; a lost poke never holds the message back."""
+        if row.get('qq_poke') != 'PENDING' or not callable(getattr(send, 'poke', None)):
+            return
+        try:
+            await send.poke()
+            row['qq_poke'] = 'SENT'
+        except Exception:
+            row['qq_poke'] = 'FAILED'
+
+    @staticmethod
+    async def _after_delivery(row, event, send):
+        """A face she wrote follows a voice message: faces are never spoken."""
+        changed = False
+        labels = face_labels(row.get('reply_text', ''))
+        if row.get('delivered_format') == 'audio' and labels:
+            try:
+                await getattr(send, 'plain', send)(labels[0])
+                row['qq_face_after_voice'] = 'SENT'
+            except Exception:
+                row['qq_face_after_voice'] = 'FAILED'
+            changed = True
+        return changed
+
+    def _unanswered(self, event):
+        """A message of his on this binding is still waiting for her reply."""
+        return any(row.get('binding_id') == event.binding_id and row.get('source_messages')
+                   and not row.get('superseded_by')
+                   and row.get('delivery_status') in {'RECEIVED', 'GENERATING', 'GENERATED'}
+                   for row in self.rows)
 
     async def _handle_one(self, event, send, proactive=False, followup=None, proactive_revision=None,
                           proactive_eligible=None, contact=None):
@@ -408,8 +453,14 @@ class PersonalChatService:
             raise ValueError("PERSONAL_CHAT_OWNER_MISMATCH")
         if (not event.text.strip() and not proactive) or len(event.text) > 10000:
             raise ValueError("PERSONAL_CHAT_INPUT_INVALID")
+        priority = proactive and _priority(contact)
+
+        def outdated():
+            # He wrote meanwhile: her own message gives way, the answer to his purchase does not.
+            return proactive and not priority and proactive_revision != self.user_revision
+
         async with self.lock:
-            if proactive and proactive_revision != self.user_revision:
+            if proactive and outdated():
                 return
             row = next((r for r in self.rows if r.get("letter_id") == event.exchange_id), None)
             if row is not None:
@@ -490,7 +541,7 @@ class PersonalChatService:
                 if row.get("generation_attempts", 0) >= 2:
                     raise RuntimeError("PERSONAL_CHAT_GENERATION_RETRY_EXHAUSTED")
                 validated_controls = row.get('user_controls_applied') is True
-                for key in ('prepared_audio', 'reply_audio_duration', 'voice_fallback', 'sticker_id',
+                for key in ('prepared_audio', 'reply_audio_duration', 'voice_fallback', 'sticker_id', 'qq_poke',
                             'letter_invitation', 'initiative_preference', 'pause_until', 'letter_preference',
                             'letter_until', 'followup_at', 'listening_preference', 'requested_format', 'presentation_status',
                             'delivery_basis', 'voice_ready',
@@ -517,13 +568,14 @@ class PersonalChatService:
                     row['voice_available'] = callable(getattr(send, 'audio', None))
                     row['image_available'] = callable(self.photo) and callable(getattr(send, 'image', None))
                     if proactive:
-                        if proactive_revision != self.user_revision:
+                        if outdated():
                             row.update(delivery_status='SKIPPED', letter_status='SKIPPED',
                                        error_code='PERSONAL_CHAT_USER_PRIORITY', skip_reason='USER_PRIORITY')
                             await persist_state(self.persist)
                             return
                         task = asyncio.create_task(self._generate(event, row, send))
-                        self.proactive_generation = task
+                        if not priority:  # a new message from him cancels only her own initiative
+                            self.proactive_generation = task
                         try:
                             text = await task
                         except asyncio.CancelledError:
@@ -612,7 +664,7 @@ class PersonalChatService:
             if not text:
                 raise ValueError('PERSONAL_CHAT_REPLY_INVALID')
             if proactive:
-                if proactive_revision != self.user_revision:
+                if outdated():
                     row.update(delivery_status='SKIPPED', letter_status='SKIPPED',
                                error_code='PERSONAL_CHAT_USER_PRIORITY', skip_reason='USER_PRIORITY')
                     await persist_state(self.persist)
@@ -665,7 +717,7 @@ class PersonalChatService:
                     updated = await self._refresh_draft(row, event)
                     if updated is not None:
                         return updated
-                elif proactive_revision != self.user_revision:
+                elif outdated():
                     row.update(delivery_status='SKIPPED', letter_status='SKIPPED',
                                error_code='PERSONAL_CHAT_USER_PRIORITY', skip_reason='USER_PRIORITY')
                     await persist_state(self.persist)
@@ -679,14 +731,15 @@ class PersonalChatService:
                 row['send_attempt_id'] = row.get('generation_attempt_id')
                 row['send_input_revision'] = row.get('input_revision', 0)
                 await persist_state(self.persist)
-            if proactive and (proactive_revision != self.user_revision
+            if proactive and (outdated()
                               or callable(proactive_eligible) and not proactive_eligible()):
                 row.update(delivery_status='SKIPPED', letter_status='SKIPPED',
-                           error_code=('PERSONAL_CHAT_USER_PRIORITY' if proactive_revision != self.user_revision
+                           error_code=('PERSONAL_CHAT_USER_PRIORITY' if outdated()
                                        else 'PERSONAL_CHAT_CONTACT_SUPERSEDED'),
-                           skip_reason=('USER_PRIORITY' if proactive_revision != self.user_revision else 'CONTACT_SUPERSEDED'))
+                           skip_reason=('USER_PRIORITY' if outdated() else 'CONTACT_SUPERSEDED'))
                 await persist_state(self.persist)
                 return
+            await self._poke_first(row, send)
             receipt = None
             try:
                 from runtime.diagnostics.reply_telemetry import timing
@@ -730,6 +783,8 @@ class PersonalChatService:
             row["private_world_semantic_key"] = "canonical." + hashlib.sha256(event.exchange_id.encode()).hexdigest()
             row.pop("error_code", None)
             await persist_state(self.persist)
+            if event.channel == 'qq' and await self._after_delivery(row, event, send):
+                await persist_state(self.persist)
             if (row.get('companion_decision') is None and row.get('proactive_decision') is None
                     and row.get('sticker_id') and not unprompted(row) and callable(getattr(send, 'image', None))):
                 from pathlib import Path

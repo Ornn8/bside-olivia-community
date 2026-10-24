@@ -6,6 +6,7 @@ import asyncio
 from dataclasses import dataclass, field, replace
 import hashlib
 import json
+import logging
 import os
 import time
 from collections import OrderedDict
@@ -867,6 +868,13 @@ class ReplyPipeline:
                         error_code='PERSONAL_CHAT_DECISION_INVALID', decision_rejection_reason='SILENCE_NOT_AUTHORIZED')
                 silence_authorized = True
                 companion_timing, companion_delivery = decision['silence_kind'], None
+        voice_preview = (chat_metadata or {}).get('voice_preview') if envelope is not None else None
+        if callable(voice_preview) and not decision['skip']:
+            # Her voice can start now, while the reply is reviewed; it is used only if the reviewed words match.
+            try:
+                voice_preview(decision, companion_delivery, photo_with_words)
+            except Exception:
+                logging.getLogger(__name__).debug('VOICE_PREVIEW_UNAVAILABLE')
         if not isinstance(self.reviewer, NullReviewer):
             # Validated user silence and proactive skips have no outgoing prose.
             if envelope is None or not decision['skip']:

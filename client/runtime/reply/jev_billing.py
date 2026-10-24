@@ -1,4 +1,5 @@
 """Turn-bound JEV settlement. Only signed provider receipts reach the wallet."""
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -21,6 +22,12 @@ from runtime.diagnostics.jev_pricing import CURRENT_PRICE_VERSION, PRICE_VERSION
 class BillingTurn:
     turn_id: str
     key: str = field(repr=False)
+    # A QQ turn settles its judgments beside its next stages and confirms them before the reply goes out
+    # (2026-10-24: ~0.4 s a judgment, 2-3.7 s a turn, all of it on the reply's path). None: settle at once.
+    pending: list | None = field(default=None, compare=False, repr=False)
+
+
+_SETTLEMENTS = ThreadPoolExecutor(max_workers=4, thread_name_prefix='jev-settle')
 
 
 CURRENT = ContextVar('jev_billing_turn', default=None)
@@ -56,7 +63,7 @@ def account_key_missing():
 
 
 @contextmanager
-def billing_scope(turn_id):
+def billing_scope(turn_id, *, deferred=False):
     if os.environ.get('OLIVIA_JEV_BILLING_ENABLED') != '1' or CURRENT.get() is not None:
         yield
         return
@@ -71,7 +78,7 @@ def billing_scope(turn_id):
     if (not isinstance(key, str) or not key.startswith('olivia-')
             or len(key) <= len('olivia-') or any(c.isspace() for c in key)):
         raise ValueError('JEV_BILLING_ACCOUNT_UNAVAILABLE')
-    token = CURRENT.set(BillingTurn(turn_id, key))
+    token = CURRENT.set(BillingTurn(turn_id, key, pending=[] if deferred else None))
     try:
         yield
     finally:
@@ -101,17 +108,20 @@ def cloud_request_headers(body_digest):
             **MINIMUM_HEADER}
 
 
+def _settlement_opener():
+    """Keep-alive connections shared with the judgments: direct, no redirects, the client's TLS context."""
+    from .jev_http import shared_opener
+    return shared_opener()
+
+
 def _post_settlement(key, signed):
     from original_client_relay_api import RELAY_BASE
-    from runtime.remote_generation import gpu_tls_context
-    from .companion_decision import _NoRedirect
     from runtime import ui_language
     body = json.dumps(signed, ensure_ascii=False, separators=(',', ':'), allow_nan=False).encode()
     request = urllib.request.Request(RELAY_BASE + '/jev/settle', data=body, method='POST',
         headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json', **MINIMUM_HEADER,
                  **ui_language.headers()})
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect(),
-                                        urllib.request.HTTPSHandler(context=gpu_tls_context()))
+    opener = _settlement_opener()
     # A wallet commit can succeed while its acknowledgement is lost. Replay
     # the identical signed operation; the relay never debits it twice.
     for attempt in range(3):
@@ -145,6 +155,13 @@ def settle_receipt_sync(billing, expected_body_digest):
             or not isinstance(receipt.get('operation_id'), str)
             or not isinstance(billing.get('signature'), str)):
         raise ValueError('JEV_BILLING_RECEIPT_INVALID')
+    if turn.pending is not None:
+        turn.pending.append(_SETTLEMENTS.submit(_settle, turn, billing, receipt))
+        return None
+    return _settle(turn, billing, receipt)
+
+
+def _settle(turn, billing, receipt):
     # Only the relay has the signing secret. A matching client-side shape does
     # not establish trust; its authenticated verification and transaction do.
     try:
@@ -213,3 +230,25 @@ def settle_receipt_sync(billing, expected_body_digest):
 
 async def settle_receipt(billing, expected_body_digest):
     return await asyncio.to_thread(settle_receipt_sync, billing, expected_body_digest)
+
+
+def _confirm_settlements(pending):
+    failures = []
+    for future in pending:
+        try:
+            future.result()
+        except Exception as exc:
+            failures.append(exc)
+    if failures:
+        raise failures[0]
+
+
+async def confirm_settlements():
+    """Every deferred settlement of this turn has gone through; the first failure fails the turn, as it did when
+    each judgment waited for its own."""
+    turn = CURRENT.get()
+    if turn is None or not turn.pending:
+        return
+    pending = list(turn.pending)
+    del turn.pending[:len(pending)]
+    await asyncio.to_thread(_confirm_settlements, pending)

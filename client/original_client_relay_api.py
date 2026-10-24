@@ -19,7 +19,7 @@ RELAY_MULTIPLIER_BASELINE = 'claude-sonnet-5-5'
 NEW_ACCOUNT_ROUTES = {'qq': None, 'letter': None, 'diary': 'claude-opus-5-5'}
 RELAY_MODELS = frozenset({RELAY_MODEL, 'gemini-3.8-flash', 'gemini-4-argon', 'qwen3.7-flash', 'claude-opus-5-5',
     'claude-sonnet-5-5', 'claude-opus-4-6', 'qwen3.8-max', 'claude-fable-5-1',
-    'gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-luna', 'claude-haiku-5-5'})
+    'gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-luna', 'claude-haiku-5-5', 'deepseek-flash'})
 
 
 # Answers that depend on what this client can carry out say so in the request.

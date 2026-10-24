@@ -54,7 +54,8 @@ def test_interrupted_rest_does_not_turn_planned_window_into_execution_history():
     assert set(actual['planned_rest_window']) == {'start','end','kind'}
 
 
-def test_schedule_and_exchange_intervals_do_not_observe_who_woke_her():
+def test_his_message_in_her_sleep_wakes_her_and_a_running_chat_does_not_again():
+    """Owner 2026-10-24: at 3-4 a.m. she is asleep and his message wakes her, not 「我还没睡呢」."""
     now = datetime.fromisoformat('2026-09-08T02:00:00+08:00')
     resting = rhythm(now, [])
     corresponding = rhythm(now, [(now-timedelta(minutes=5), now)])
@@ -62,9 +63,8 @@ def test_schedule_and_exchange_intervals_do_not_observe_who_woke_her():
     assert corresponding['phase'] == 'interrupted_rest' and corresponding['rest'] == 'rested'
     for state in (resting, corresponding):
         assert state['phase_basis'] == 'schedule_and_correspondence'
-        assert state['wake_cause'] == 'unknown'
-        assert '醒来' not in state['activity']
-    assert resting['activity'] == '计划休息的时段'
+    assert resting['wake_cause'] == 'his_message' and '吵醒' in resting['activity']
+    assert corresponding['wake_cause'] == 'unknown' and '醒着' in corresponding['activity']
 
 
 def test_brief_night_correspondence_does_not_immediately_claim_sleep_deficit():

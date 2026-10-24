@@ -138,8 +138,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     return;
   }
   let setupSessionToken = "";
+  // Her photo is found by its letter (letter-id); a picture the user put in the letter is given directly (src).
   if (typeof customElements !== 'undefined' && typeof HTMLElement !== 'undefined' && !customElements.get('olivia-photo')) customElements.define('olivia-photo', class extends HTMLElement {
-    static get observedAttributes(){return ['letter-id'];}
+    static get observedAttributes(){return ['letter-id','src'];}
     connectedCallback(){
       this.parentElement?.classList.add('olivia-photo-stack');
       this.removeAttribute('data-open');
@@ -153,7 +154,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       if(open===this.hasAttribute('data-open'))return;
       this.motion?.cancel();
       const before=this.getBoundingClientRect();
-      const paper=this.parentElement?.querySelector('.mail-box-reply-content');
+      const paper=this.parentElement?.querySelector('.mail-box-reply-content,.mail-box-write-content');
       if(open&&paper)this.style.setProperty('--photo-open-height',Math.max(120,paper.clientHeight-48)+'px');
       this.toggleAttribute('data-open',open);
       if(this.isConnected&&this.animate&&!matchMedia('(prefers-reduced-motion: reduce)').matches){
@@ -175,17 +176,20 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     }
     ackPhoto(){
       const img=this.querySelector('img');
-      if(!this.isConnected||!this.hasAttribute('data-open')||!img?.naturalWidth)return;
+      if(!this.isConnected||!this.hasAttribute('data-open')||!img?.naturalWidth||this.hasAttribute('src'))return;
       fetch(new URL('/toy/image/ack',apiBase),{method:'POST',headers:{'Content-Type':'application/json','X-Olivia-Companion-Action':'confirmed'},body:JSON.stringify({filename:new URL(img.src).pathname.split('/').pop()})}).catch(()=>{});
     }
     async refresh(){
       clearTimeout(this.timer);this.controller?.abort();
       const controller=new AbortController();this.controller=controller;
-      const id=this.getAttribute('letter-id');if(!id)return;
+      const id=this.getAttribute('letter-id'),own=this.getAttribute('src');if(!id&&!own)return;
       try {
-        const endpoint=new URL('/toy/image/status',apiBase);endpoint.searchParams.set('letter_id',id);
-        const response=await fetch(endpoint,{signal:controller.signal});const raw=await response.json();const data=raw.data;
-        if(!response.ok||raw.code!==0||!data?.imageStatus)throw new Error('PHOTO_STATUS_UNAVAILABLE');
+        let data={imageStatus:'COMPLETED',replyImageUrl:own};
+        if(!own){
+          const endpoint=new URL('/toy/image/status',apiBase);endpoint.searchParams.set('letter_id',id);
+          const response=await fetch(endpoint,{signal:controller.signal});const raw=await response.json();data=raw.data;
+          if(!response.ok||raw.code!==0||!data?.imageStatus)throw new Error('PHOTO_STATUS_UNAVAILABLE');
+        }
         if(controller.signal.aborted||!this.isConnected||id!==this.getAttribute('letter-id'))return;
         if(data?.imageStatus==='COMPLETED' && data.replyImageUrl){
           if(this.dataset.loaded===data.replyImageUrl)return;
@@ -4072,6 +4076,12 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         .olivia-compose-grid,.olivia-compose-grid[data-mode=cover]{display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr);height:clamp(340px,56vh,560px);gap:20px;transition:none;color-scheme:dark}
         .olivia-compose-navigation{display:flex;gap:12px;grid-row:1}
         .olivia-compose-navigation button{padding:10px 22px}
+        .olivia-compose-pictures{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:10px;margin-left:auto;min-width:0}
+        .olivia-compose-picture{position:relative;flex:none;width:40px;height:40px}
+        .olivia-compose-picture img{display:block;width:40px;height:40px;object-fit:cover;border-radius:6px;box-shadow:0 2px 6px #0006}
+        .olivia-compose-navigation .olivia-compose-picture button{position:absolute;top:-7px;right:-7px;width:20px;height:20px;min-height:20px;padding:0;background:#202124;font-size:12px;line-height:18px}
+        .olivia-compose-picture-note{color:#b8b9bf;font-size:13px;line-height:1.4}
+        .olivia-compose-picture-note:empty{display:none}
         .olivia-compose-grid>.olivia-compose-body,.olivia-compose-music{grid-row:2;grid-column:1;min-height:0;overflow:auto;width:100%!important;box-sizing:border-box}
         .olivia-compose-grid>.olivia-compose-body{overflow:hidden}
         .olivia-compose-grid .mail-box-write-dialog-content{width:100%;height:100%;min-width:0;min-height:0;margin:0;aspect-ratio:auto;box-sizing:border-box;padding:16px 142px 16px 16px;overflow:hidden}
@@ -4119,7 +4129,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       if(mode===state.mode)return;
       if(state.mode==='letter')state.draft=input.value;
       state.mode=mode;if(mode!=='letter')state.musicMode=mode;grid.dataset.mode=mode;
-      frame.hidden=mode!=='letter';frame.inert=mode!=='letter';music.hidden=mode==='letter';music.inert=mode==='letter';
+      frame.hidden=mode!=='letter';frame.inert=mode!=='letter';music.hidden=mode==='letter';music.inert=mode==='letter';pictures.hidden=mode!=='letter';
       cover.hidden=mode!=='cover';cover.inert=mode!=='cover';original.hidden=mode!=='original';original.inert=mode!=='original';
       normal.setAttribute('aria-expanded',String(mode==='letter'));sing.setAttribute('aria-expanded',String(mode!=='letter'));
       originalTab.setAttribute('aria-pressed',String(mode==='original'));coverTab.setAttribute('aria-pressed',String(mode==='cover'));
@@ -4138,7 +4148,68 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const syncOriginalText=()=>{if(state.mode==='original')setValue(t('请为我原创演唱一首歌曲。')+intent.value.trim())};intent.addEventListener('input',syncOriginalText);
     original.append(intentLabel);const musicControls=mountMusicSettings(original,true);
     const navigation=document.createElement('div');navigation.className='olivia-compose-navigation';navigation.append(normal,sing);
-    frame.before(grid);music.append(tabs,original,cover);grid.append(navigation,frame,music);cover.hidden=true;cover.inert=true;
+    // Pictures for her to see go with an ordinary letter. Each is uploaded when chosen and leaves the composer once the letter is sent.
+    state.images=[];state.imagesBusy=0;
+    const pictures=document.createElement('div');pictures.className='olivia-compose-pictures';
+    const pictureFile=document.createElement('input');pictureFile.type='file';pictureFile.accept='.png,.jpg,.jpeg,.webp';pictureFile.multiple=true;pictureFile.hidden=true;
+    pictureFile.addEventListener('cancel',event=>event.stopPropagation());
+    pictureFile.addEventListener('click',event=>event.stopPropagation());
+    const pictureNote=text('span','');pictureNote.className='olivia-compose-picture-note';pictureNote.setAttribute('role','status');
+    const addPicture=button(t('添加图片'),()=>pictureFile.click());
+    const showPictures=()=>{
+      pictures.querySelectorAll('.olivia-compose-picture').forEach(node=>node.remove());
+      for(const item of state.images){
+        const tile=document.createElement('span');tile.className='olivia-compose-picture';
+        const preview=document.createElement('img');preview.src=item.url;preview.alt=t('随信图片');
+        const drop=button('×',()=>{state.images=state.images.filter(other=>other!==item);pictureNote.textContent='';showPictures()});drop.setAttribute('aria-label',t('移除这张图片'));
+        tile.append(preview,drop);addPicture.before(tile);
+      }
+      addPicture.hidden=state.images.length>=4;addPicture.disabled=state.imagesBusy>0;
+    };
+    state.clearPictures=()=>{state.images=[];pictureNote.textContent='';showPictures()};
+    const addPictures=async chosen=>{
+      for(const selected of chosen){
+        if(state.images.length>=4){pictureNote.textContent=t('一封信最多附 4 张图片。');break}
+        if(!/\.(png|jpe?g|webp)$/i.test(selected.name)){pictureNote.textContent=t('请选择 PNG、JPG 或 WebP 图片。');continue}
+        if(selected.size>20*1024*1024){pictureNote.textContent=t('请选择不超过 20 MB 的图片。');continue}
+        state.imagesBusy++;showPictures();pictureNote.textContent=t('正在添加图片…');
+        try{
+          const response=await fetch(new URL('/toy/letter/image/upload',apiBase),{method:'POST',credentials:'omit',headers:{'Content-Type':'application/octet-stream',[CONFIRM_HEADER]:CONFIRM_VALUE},body:selected});
+          const result=await response.json();if(!response.ok||result.code!==0)throw Error('upload');
+          state.images.push({image_id:result.data.image_id,url:result.data.url});pictureNote.textContent='';
+        }catch{pictureNote.textContent=t('这张图片没能添加，请换一张或重新选择。')}
+        finally{state.imagesBusy--;showPictures()}
+      }
+    };
+    pictureFile.onchange=()=>{const chosen=Array.from(pictureFile.files||[]);pictureFile.value='';return addPictures(chosen)};
+    // A picture copied anywhere (QQ, a browser, a screenshot) and pasted into an ordinary letter is added as if chosen.
+    // Copied pictures often come without a file name; their type names them.
+    const pictureName=(file,index)=>/\.(png|jpe?g|webp)$/i.test(file.name)||!/^image\/(png|jpeg|webp)$/.test(file.type)?file:
+      new File([file],'picture-'+(index+1)+'.'+file.type.slice(6).replace('jpeg','jpg'),{type:file.type});
+    grid.addEventListener('paste',event=>{
+      const pasted=Array.from(event.clipboardData?.items||[]).filter(item=>item.kind==='file').map(item=>item.getAsFile()).filter(Boolean);
+      if(state.mode!=='letter'||!pasted.length)return;
+      if(!Array.from(event.clipboardData.types||[]).includes('text/plain'))event.preventDefault();
+      addPictures(pasted.map(pictureName));
+    });
+    pictures.append(addPicture,pictureNote);navigation.append(pictures);
+    // The song pages carry their own material; an ordinary letter carries its pictures.
+    state.attachmentForSend=()=>{
+      if(state.mode!=='letter')return state.materialForSend();
+      if(state.imagesBusy)throw Error(t('图片还在添加，请稍候再寄出。'));
+      return state.images.length?{image_ids:state.images.map(item=>item.image_id)}:null;
+    };
+    // The native dialog empties its draft once the letter is on its way; the pictures go with it.
+    // A failed send keeps the draft, and so the pictures.
+    state.sending=content=>{
+      clearInterval(state.sendingTimer);const until=Date.now()+120000;
+      state.sendingTimer=setInterval(()=>{
+        if(!input.isConnected||!input.value)state.clearPictures();
+        else if(input.value===content&&Date.now()<until)return;
+        clearInterval(state.sendingTimer);
+      },250);
+    };
+    frame.before(grid);music.append(tabs,original,cover);grid.append(navigation,frame,music,pictureFile);cover.hidden=true;cover.inert=true;
     // Keep full-width content mounted so switching cannot reflow the paper or resize the dialog.
     const sizeBodies=()=>{grid.style.setProperty('--body-width',grid.clientWidth+'px')};
     sizeBodies();const bodyResize=new ResizeObserver(sizeBodies);bodyResize.observe(grid);
@@ -4221,14 +4292,14 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const shell=owner.closest('[role="dialog"],.el-dialog')||owner.parentElement;
     const clear=Array.from(shell.querySelectorAll('button')).find(node=>node.textContent.trim()===t('清空'));
     clear?.addEventListener('click',event=>{
-      if(state.mode==='letter')return;
+      if(state.mode==='letter'){state.clearPictures();return}
       event.preventDefault();event.stopImmediatePropagation();
       if(state.mode==='original'){intent.value='';syncOriginalText();return}
       if(state.busy){status.textContent=t('原曲仍在准备中，请完成后再清空。');return}
       remove.click();status.textContent=t('翻唱内容已清空，普通信件草稿保留。');
     },true);
     // Release only this editor's media when the native composer is removed.
-    const dispose=new MutationObserver(()=>{if(grid.isConnected)return;audio.pause();waveCleanup?.();bodyResize.disconnect();if(objectUrl)URL.revokeObjectURL(objectUrl);dispose.disconnect()});dispose.observe(document.body,{childList:true,subtree:true});
+    const dispose=new MutationObserver(()=>{if(grid.isConnected)return;audio.pause();waveCleanup?.();bodyResize.disconnect();clearInterval(state.sendingTimer);if(objectUrl)URL.revokeObjectURL(objectUrl);dispose.disconnect()});dispose.observe(document.body,{childList:true,subtree:true});
   };
   window.__oliviaPrepareLetterRoute = async (config) => {
     const endpoint = new URL(config.url, config.baseURL || apiBase);
@@ -4247,19 +4318,19 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const editor=!resending && composerInput?.isConnected && composerInput.value===body.content ? composerCovers.get(composerInput) : null;
     const composerMode=editor?.mode;
     let attachment=null;
-    try{if(editor && editor.mode!=='letter')attachment=editor.materialForSend()}
+    try{if(editor)attachment=editor.attachmentForSend()}
     catch(error){error.config=config;throw error}
     const requireUnchangedComposer=()=>{
       if(!attachment)return;
       let current;
-      try{if(editor.mode===composerMode)current=editor.materialForSend()}catch{}
+      try{if(editor.mode===composerMode)current=editor.attachmentForSend()}catch{}
       if(!composerInput.isConnected || composerInput.value!==body.content || JSON.stringify(current)!==JSON.stringify(attachment)){
         throw Object.assign(new Error(t('回信形式或歌曲内容已变更，请确认后重新寄出。草稿已保留。')),{config,code:'ERR_CANCELED',__CANCEL__:true});
       }
     };
     try { do { preview = await routeRequest("/toy/letter/route-preview", {...(resending ? {letter_id:body.letter_id || body.letterId} : {content: body.content}),
       ...(attachment?.original_output ? {original_output:attachment.original_output,music_options:attachment.music_options} :
-        attachment ? {cover_source_id:attachment.cover_source_id,cover_output:attachment.cover_output} : {})});
+        attachment?.cover_source_id ? {cover_source_id:attachment.cover_source_id,cover_output:attachment.cover_output} : {})});
       if (!preview.requested_route || preview.ready || preview.readiness?.backend !== 'remote') break;
       if (await confirmReplyRoute(preview.requested_route, false, preview.needs_video_confirmation, preview.readiness) !== 'retry') {
         throw Object.assign(new Error(t('已取消发送，信件内容保留')), {name:'CanceledError',code:'ERR_CANCELED',__CANCEL__:true});
@@ -4352,6 +4423,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     if (once) material.route_allow_once = once;
     if (videoOnce) material.route_video_once = videoOnce;
     config.data = {...body, material};
+    if (attachment?.image_ids) editor.sending(body.content);
     return config;
   };
   const mountProactiveSetting = (section) => {
@@ -4673,7 +4745,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const feedback=document.createElement('div');feedback.className='ow-feedback';
     const status=text('p',t('正在读取衣橱…'));status.setAttribute('role','status');
     const retry=button(t('重新读取'),()=>{void load();});retry.className='ow-retry';retry.hidden=true;feedback.append(status,retry);
-    let selected=null,preview=null,busy=false,styles=[],daily=null,purchases=null;const tabs=[];
+    let selected=null,preview=null,busy=false,styles=[],daily=null,purchases=null,pinned=null,pinnable=false;const tabs=[];
     const purchaseNote=text('p','');intro.append(purchaseNote);
     const render=()=>{
       const saved=styles.find(style=>style.style_id===selected),outfit=styles.find(style=>style.style_id===preview);
@@ -4692,13 +4764,13 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           image.addEventListener('error',()=>{image.replaceWith(text('span',t('参考图暂未加载，请重新读取。'),'ow-image-error'));},{once:true});
           const caption=text('figcaption',item.label+(daily?.look_id===item.look_id?t(' · 今日穿搭'):''));figure.append(image,caption);gallery.append(figure);
           if(purchases){
-            const owned=purchases.owned.includes(item.look_id);
+            const owned=purchases.owned.includes(item.look_id),wearing=pinned===item.look_id;
             let armed=false;const cap=purchases.free_remaining>0?0:500;
-            const claim=button(owned?t('已拥有'):cap===0?t('免费领取'):t('¥5 解锁'),()=>{
+            const claim=owned&&pinnable?button(wearing?t('正在穿'):t('穿这件'),()=>{void wear(item);}):button(owned?t('已拥有'):cap===0?t('免费领取'):t('¥5 解锁'),()=>{
               if(!armed){armed=true;claim.textContent=cap===0?t('确认免费领取'):t('确认购买 · ¥5');status.textContent=cap===0?t('领取「{name}」会占用一个免费自选名额。', {name: item.label}):t('购买「{name}」将从余额扣除 ¥5，解锁后长期可用。', {name: item.label});return;}
               void acquire(item,cap);
             });
-            claim.disabled=busy||owned;claim.className='ow-purchase';figure.append(claim);
+            claim.disabled=busy||owned&&(!pinnable||wearing);claim.className='ow-purchase';figure.append(claim);
           }
         }
         gallery.hidden=!(outfit.looks||[]).length;
@@ -4714,9 +4786,20 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       busy=true;render();status.textContent=t('正在解锁…');
       try{
         const result=await routeRequest('/toy/world/wardrobe',{request_id:videoReplyRequestId(),look_id:item.look_id,max_charge_cents:cap},{confirmed:true});
-        purchases=result.purchases;daily=result.daily_outfit||null;selected=result.wardrobe.style_id;
+        purchases=result.purchases;daily=result.daily_outfit||null;selected=result.wardrobe.style_id;pinned=result.pinned_look||null;
         status.textContent=t('已解锁「{name}」，可以指定此风格供林离搭配。', {name: item.label});
       }catch(_){status.textContent=t('未确认解锁成功，请重新读取衣橱。余额不足请先充值；免费名额若已用完，需要另行确认 ¥5 购买。');retry.hidden=false;}
+      finally{busy=false;render();}
+    };
+    const wear=async item=>{
+      if(busy||!pinnable||pinned===item.look_id)return;
+      busy=true;render();status.textContent=t('正在换上…');
+      try{
+        const result=await routeRequest('/toy/world/wardrobe',{request_id:videoReplyRequestId(),look_id:item.look_id},{confirmed:true});
+        if(result.pinned_look!==item.look_id)throw Error('not worn');
+        pinned=result.pinned_look;daily=result.daily_outfit||null;selected=result.wardrobe.style_id;purchases=result.purchases||purchases;
+        status.textContent=t('林离今天穿「{name}」。重新指定风格后，搭配交还给林离。', {name: item.label});
+      }catch(_){status.textContent=t('没有换成功，请重新读取衣橱后再试。');retry.hidden=false;}
       finally{busy=false;render();}
     };
     rail.addEventListener('keydown',event=>{
@@ -4731,7 +4814,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       try{
         const result=await routeRequest('/toy/world/wardrobe',{request_id:videoReplyRequestId(),style_id:value},{confirmed:true});
         if(!styles.some(style=>style.style_id===result.wardrobe?.style_id))throw Error('invalid wardrobe');
-        selected=result.wardrobe.style_id;daily=result.daily_outfit||null;
+        selected=result.wardrobe.style_id;daily=result.daily_outfit||null;pinned=result.pinned_look||null;
         status.textContent=selected===value?t('风格已生效，林离会按新风格挑选搭配。'):t('当前风格已由其他客户端更新，请重新读取。');
       }catch(_){status.textContent=t('没有保存成功，当前风格仍是{style}。可以重新尝试。', {style: styles.find(style=>style.style_id===selected)?.label||t('原来的风格')});}
       finally{busy=false;render();}
@@ -4742,6 +4825,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         const result=await routeRequest('/toy/world/wardrobe');
         if(!Array.isArray(result.wardrobe_styles)||!result.wardrobe_styles.some(style=>style.style_id===result.wardrobe?.style_id))throw Error('invalid wardrobe');
         styles=result.wardrobe_styles;selected=preview=result.wardrobe.style_id;daily=result.daily_outfit||null;purchases=result.purchases||null;tabs.length=0;rail.replaceChildren();
+        pinnable='pinned_look' in result;pinned=result.pinned_look||null;  // older servers cannot dress her in one exact look
         for(const style of styles){
           const tab=button('',()=>browse(style.style_id));tab.className='ow-style';tab.dataset.style=style.style_id;tab.id='ow-style-'+style.style_id;
           tab.setAttribute('role','tab');tab.setAttribute('aria-controls',look.id);tab.setAttribute('aria-label',style.label);
@@ -4755,6 +4839,80 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     };
     panel.append(heading,interior,feedback);section.append(wardrobeStyle(),panel);render();void load();
     return panel;
+  };
+
+  // Her QQ life around the chat (2.5.0): each part has its own switch, saved as it changes.
+  const mountQqExtras = (section) => {
+    if (!document.createElement) return;
+    const container = document.createElement("div");
+    container.setAttribute("data-olivia-qq-extras", "true");
+    container.className = "flex flex-col gap-3";
+    const style = document.createElement("style");
+    style.textContent = `
+      [data-olivia-qq-extras] .olivia-qq-option{display:flex;align-items:center;justify-content:space-between;gap:24px;
+        min-height:64px;padding:12px 0;border-bottom:1px solid #343536;cursor:pointer;box-sizing:border-box}
+      [data-olivia-qq-extras] .olivia-qq-copy{min-width:0;display:flex;flex-direction:column;gap:6px}
+      [data-olivia-qq-extras] .olivia-qq-switch{appearance:none;-webkit-appearance:none;position:relative;flex:0 0 44px;
+        width:44px;height:26px;margin:0;padding:0;border:1px solid #777772;border-radius:99px;background:#28292b;cursor:pointer}
+      [data-olivia-qq-extras] .olivia-qq-switch::before{content:'';position:absolute;top:3px;left:3px;width:18px;height:18px;
+        border-radius:50%;background:#b8b6ae;transition:transform 160ms ease-out}
+      [data-olivia-qq-extras] .olivia-qq-switch:checked{background:#d9d5c9;border-color:#d9d5c9}
+      [data-olivia-qq-extras] .olivia-qq-switch:checked::before{transform:translateX(18px);background:#28292b}
+      [data-olivia-qq-extras] .olivia-qq-switch:focus-visible{outline:2px solid #eee9dd;outline-offset:4px}
+      [data-olivia-qq-extras] .olivia-qq-switch:disabled{opacity:.45;cursor:default}
+      @media(prefers-reduced-motion:reduce){[data-olivia-qq-extras] .olivia-qq-switch::before{transition:none}}
+    `;
+    const options = [
+      ["qzone", t("QQ 空间"), t("她偶尔发说说，配当天发给你的照片；也会给你的说说点赞、评论，回复你的评论。")],
+      ["status", t("QQ 状态"), t("她的 QQ 状态跟着她正在做的事变化，比如练琴中、睡觉中。")],
+      ["like", t("名片点赞"), t("她每天给你的 QQ 名片点赞。")],
+      ["gestures", t("戳一戳"), t("她偶尔在 QQ 里戳你一下。")],
+    ];
+    const status = text("p", t("正在读取…"), "text-text-secondary text-caption-m");
+    status.setAttribute("role", "status");
+    const inputs = {};
+    let busy = false;
+    const persist = async (changed) => {
+      if (busy) return;
+      busy = true;
+      Object.values(inputs).forEach((input) => { input.disabled = true; });
+      status.textContent = t("正在保存…");
+      try {
+        const body = Object.fromEntries(Object.entries(inputs).map(([key, input]) => [key, input.checked]));
+        await routeRequest("/toy/qq/extras", body, {confirmed: true});
+        status.textContent = t("已保存。");
+      } catch (_error) {
+        changed.checked = !changed.checked;
+        status.textContent = t("没有保存成功，已恢复原设置，请稍后重试。");
+      } finally {
+        busy = false;
+        Object.values(inputs).forEach((input) => { input.disabled = false; });
+      }
+    };
+    const rows = options.map(([key, label, detail]) => {
+      const row = document.createElement("label");
+      row.className = "olivia-qq-option text-text-body text-body-m";
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.className = "olivia-qq-switch";
+      input.setAttribute("role", "switch");
+      input.setAttribute("aria-label", label);
+      input.disabled = true;
+      input.addEventListener("change", () => { void persist(input); });
+      inputs[key] = input;
+      const copy = document.createElement("span");
+      copy.className = "olivia-qq-copy";
+      copy.append(text("span", label, "text-text-body text-body-m"),
+        text("span", detail, "text-text-secondary text-caption-m font-regular"));
+      row.append(copy, input);
+      return row;
+    });
+    container.append(style, text("div", t("QQ 里的小动作"), "text-text-body text-title-m"), ...rows, status);
+    section.append(container);
+    routeRequest("/toy/qq/extras").then((value) => {
+      for (const [key, input] of Object.entries(inputs)) { input.checked = value[key] !== false; input.disabled = false; }
+      status.textContent = "";
+    }).catch(() => { status.textContent = t("暂时读取不到这些设置，请稍后再打开。"); });
   };
 
   const goWorld = path => {
@@ -5692,6 +5850,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     if (window.__oliviaNativeView) mountProactiveSetting(reply);
     mountStickerPacks(reply);
     const chat = settingsGroup("chat", "QQ", t("绑定后可以在 QQ 里和林离聊天"));
+    mountQqExtras(chat);
     // Memories live in the top bar's letters-and-memories window; settings keeps only import and backup.
     const letters = settingsGroup("letters", t("信件与记忆"), t("备份信件与聊天"));
     mountLocalLetterImport(letters);
@@ -6034,12 +6193,15 @@ BOOTSTRAP_JAVASCRIPT = r'''
     .mail-box-reply-content-text:has(olivia-letter-audio) .mail-box-reply-content-textarea{height:180px;margin-top:10px}
     .mail-responsive-card:has(olivia-photo){height:auto!important;aspect-ratio:auto;flex:0 0 auto!important}
     .olivia-photo-stack:has(olivia-photo .olivia-letter-photo-print){position:relative;isolation:isolate;padding-bottom:44px}
-    .olivia-photo-stack:has(olivia-photo .olivia-letter-photo-print)>.mail-box-reply-content{position:relative;z-index:1}
+    .olivia-photo-stack:has(olivia-photo .olivia-letter-photo-print)>:is(.mail-box-reply-content,.mail-box-write-content){position:relative;z-index:1}
     .olivia-photo-stack:has(olivia-photo[data-open]){z-index:5}
     olivia-photo[data-moving]{z-index:3!important}
     olivia-photo{display:block;flex:none;margin:8px 20px 16px;max-width:100%;color:#bbb6ad;overflow-wrap:anywhere;font-family:system-ui,sans-serif;font-size:13px;line-height:1.6}
-    olivia-photo:has(.olivia-letter-photo-print){position:absolute;right:56px;bottom:44px;z-index:0;display:block;max-width:calc(100% - 80px);margin:0;transform-origin:bottom right;transform:rotate(-12deg)}
-    olivia-photo[data-open]{top:16px;bottom:auto;z-index:3;transform:none}
+    olivia-photo:has(.olivia-letter-photo-print){position:absolute;right:calc(56px + var(--print-shift,0px));bottom:44px;z-index:0;display:block;max-width:calc(100% - 80px);margin:0;transform-origin:bottom right;transform:rotate(var(--print-turn,-12deg))}
+    olivia-photo[data-index="1"]{--print-shift:64px;--print-turn:-5deg}
+    olivia-photo[data-index="2"]{--print-shift:128px;--print-turn:-16deg}
+    olivia-photo[data-index="3"]{--print-shift:192px;--print-turn:-8deg}
+    olivia-photo[data-open]{top:16px;bottom:auto;z-index:3;transform:none;--print-shift:0px}
     .olivia-letter-photo-print{display:block;box-sizing:border-box;width:160px;max-width:100%;padding:6px;border:0;border-radius:0;background:#f3eee4;color:#514638;text-decoration:none;box-shadow:0 4px 12px #0003;cursor:zoom-in}
     .olivia-letter-photo-print img{display:block;max-width:100%;width:100%;height:176px;object-fit:cover}
     .olivia-letter-photo-print span{display:block;padding:4px 0;text-align:center;font:16px/1.5 SentyTEA,serif}

@@ -40,3 +40,21 @@ def test_cleanup_never_acks_different_connection(tmp_path):
     other.request=unexpected
     asyncio.run(retry_pending(tmp_path,other))
     assert output.with_suffix('.mp4.gpu-cleanup.json').exists()
+
+
+def test_a_chat_voice_leaves_its_ack_to_the_cleanup_loop(tmp_path):
+    from runtime.gpu_cleanup import acknowledge_later, retry_pending
+    from runtime.remote_generation import RemoteGeneration
+    output = tmp_path / 'reply.wav'; output.write_bytes(b'voice')
+    api = RemoteGeneration('https://gpu.example', 'synthetic-key')
+    calls = []
+    async def success(action, data):
+        calls.append(action)
+        return {'task_id': data['task_id'], 'status': 'acknowledged'}
+    api.request = success
+    acknowledge_later(api, 'task-77', output)
+    marker = output.with_suffix('.wav.gpu-cleanup.json')
+    assert calls == [] and marker.exists() and 'synthetic-key' not in marker.read_text()
+    output.unlink()  # a discarded voice is still acknowledged
+    asyncio.run(retry_pending(tmp_path, api))
+    assert calls == ['ack'] and not marker.exists()

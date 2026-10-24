@@ -4,6 +4,7 @@ import re
 from datetime import datetime
 from runtime.private_world.life_rhythm import LOCAL
 from .presentation import VOICE_POLICY
+from .qq_faces import FACE_IDS, HER_FACES
 
 INSTRUCTION = '''以 JSON 对象输出本轮决定，不要 Markdown、末尾控制标记或 JSON 外的正文。
 字段必须完整：{"text":"实际发给用户的正文","delivery":"voice","text_reason":null,"listening":"keep","initiative":"keep","pause_until":null,"letter":"keep","letter_until":null,"followup_at":null,"evidence":"","sticker":null,"skip":false}。
@@ -45,6 +46,18 @@ INSTRUCTION += ('\n优先回应本轮用户的新内容；recent_dialogue里的�
                 '回复前先理清最近几句里谁说了要去做什么、谁正在做什么：你自己说过要去做或正在做的事是你的状态，'
                 '不能安到用户身上；用户没写主语的关心或建议通常是对你说的；只有用户描述自己的动作时才是用户在做。'
                 '接住用户这一句的意思再回应，不把用户的玩笑或亲近的话理解成与上文无关的新情况。\n')
+# QQ faces, cards and pokes (owner 2026-10-24). Appended, so the cloud text for the rules above still applies.
+INSTRUCTION += ('QQ里：输入中的[表情:名称]是他发来的QQ表情，名称就是它的意思；[表情包:说明]是表情包的文字说明；'
+                '[分享卡片：来源 · 标题]是他分享的链接；[他戳了戳你]是他在QQ里戳了你一下，可以自然回应。'
+                'channel为qq时，正文里可以偶尔用一个QQ表情，直接写[名称]，只从这些里选：' + '、'.join(HER_FACES) + '。'
+                '一条最多一个，很多时候不用，不写[表情:名称]这种格式。'
+                '可选字段poke=true表示发消息前在QQ里戳他一下，只在亲近、玩闹或他先戳你时偶尔用；不需要就省略。\n')
+# Games and photos already sent (owner 2026-10-24). Appended for the same reason.
+INSTRUCTION += ('[骰子:N点]是他在QQ里掷出的骰子点数，[猜拳:手势]是他出的拳；[QQ小游戏：…]说明你已经回掷或回出了什么、谁赢了，'
+                '照这个结果回应，不另编点数或手势。'
+                'recent_dialogue里带image_delivery_confirmed或image_observations的回合，表示那张照片已经发到他手机上了：'
+                '你说过要拍给他看的照片，送到了就算已经发了，之后接着聊这张照片或他的反应，'
+                '不再说照片还在拍、还没拍完、马上发。\n')
 
 
 PROVENANCE_HEADER = re.compile(r'\[(?:历史消息|当前消息)\s*\{.*?\}\s*\]\s*', re.DOTALL)
@@ -67,7 +80,8 @@ _RESERVED_CONTROL = re.compile(r'\[\[\s*(?:(?:chat|delivery|initiative|letter|co
                                re.IGNORECASE)
 NEUTRAL_METADATA = dict(delivery='text', listening='keep', initiative='keep', pause_until=None,
                         letter='keep', letter_until=None, followup_at=None, evidence='', skip=False)
-OPTIONAL_FIELDS = frozenset({'letter_invitation', 'sticker', 'text_reason', 'speech', 'silence', 'daily_video'})
+OPTIONAL_FIELDS = frozenset({'letter_invitation', 'sticker', 'text_reason', 'speech', 'silence', 'daily_video',
+                             'poke', 'reaction'})
 
 
 def _control_body(text):
@@ -187,6 +201,9 @@ def decode(raw, *, user, now, proactive=False, allow_user_silence=False, allow_s
             data['text_reason'] = None
         if not isinstance(data.get('sticker'), str):
             data['sticker'] = None
+        if data.get('poke') is not True:
+            data.pop('poke', None)
+        data.pop('reaction', None)  # QQ refuses reactions in a private chat; an extra field is not an error
         if not isinstance(data['text'], str) or type(data['skip']) is not bool:
             raise ValueError("TEXT_OR_SKIP_TYPE")
         data['text'] = _reply_body(data['text'])
@@ -194,8 +211,14 @@ def decode(raw, *, user, now, proactive=False, allow_user_silence=False, allow_s
         # It is metadata, never something she says; an echo with nothing else is no reply.
         data['text'] = PROVENANCE_HEADER.sub('', data['text'])
         # Incoming platform placeholders must not reach either QQ text or TTS.
-        for marker in ('[QQ表情]', '(QQ表情)', '（QQ表情）', '【QQ表情】'):
+        for marker in ('[QQ表情]', '(QQ表情)', '（QQ表情）', '【QQ表情】', '[他戳了戳你]'):
             data['text'] = data['text'].replace(marker, '')
+        # His face as the input shows it, copied back, is still the face itself.
+        data['text'] = re.sub(r'\[表情[:：]([^\[\]\r\n]{1,32})\]',
+                              lambda m: '[' + m.group(1) + ']' if m.group(1).casefold() in FACE_IDS else '', data['text'])
+        # A throw is never text or a face: a [骰子]/[包剪锤] face would throw blind, without her knowing the result.
+        data['text'] = re.sub(r'\[(?:骰子|猜拳|包剪锤)(?:[:：][^\[\]\r\n]{1,8})?\]|\[QQ小游戏[:：][^\[\]]{0,200}\]', '',
+                              data['text'])
         if data['delivery'] not in {'text','voice'}:
             raise ValueError("DELIVERY_OR_LISTENING")
         try:

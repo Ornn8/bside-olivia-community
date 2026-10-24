@@ -1,6 +1,7 @@
 """Normalize owner-only text events before any model, memory or world access."""
 from dataclasses import dataclass
 import hashlib
+import json
 import re
 from datetime import datetime, timezone
 from typing import Mapping
@@ -33,6 +34,85 @@ class PersonalMessage:
         return hashlib.sha256('\0'.join((self.channel,self.account_id,self.owner_id)).encode()).hexdigest()
 
 
+# What the other QQ segment kinds read as (2026-10-24). A share card keeps its title and link, a sticker its caption;
+# a kind this list does not know still arrives as a marker instead of losing the whole message.
+_MARKERS = {'image': '[图片]', 'record': '[语音]', 'video': '[视频]', 'file': '[文件]', 'forward': '[聊天记录]',
+            'node': '[聊天记录]', 'contact': '[名片]', 'location': '[位置]',
+            'music': '[音乐分享]', 'shake': '[窗口抖动]', 'poke': '[戳一戳]', 'xml': '[分享卡片]', 'markdown': '[消息]'}
+_SILENT = {'reply', 'at'}
+
+
+def _face(data):
+    from .qq_faces import FACE_NAMES
+    name = FACE_NAMES.get(str(data.get('id')))
+    return f'[表情:{name}]' if name else '[QQ表情]'
+
+
+def _sticker(data):
+    summary = data.get('summary')
+    caption = summary.strip().strip('[]').strip() if isinstance(summary, str) else ''
+    return f'[表情包:{caption[:20]}]' if caption else '[表情包]'
+
+
+def _card(data):
+    """A shared link or mini-program card: its source, title and https link, never its raw JSON."""
+    try:
+        card = json.loads(data['data']) if isinstance(data.get('data'), str) and len(data['data']) <= 65536 else None
+    except ValueError:
+        card = None
+    if not isinstance(card, dict):
+        return '[分享卡片]'
+    meta = card.get('meta') if isinstance(card.get('meta'), dict) else {}
+    detail = next((value for value in meta.values() if isinstance(value, dict)), {})
+    mini = 'qqdocurl' in detail
+    words = [value.strip()[:120] for value in (detail.get('title') if mini else detail.get('tag'),
+                                               detail.get('desc') if mini else detail.get('title'))
+             if isinstance(value, str) and value.strip()]
+    if not words and isinstance(card.get('prompt'), str) and card['prompt'].strip():
+        words = [card['prompt'].strip()[:120]]
+    text = '[分享卡片：' + ' · '.join(words) + ']' if words else '[分享卡片]'
+    url = detail.get('qqdocurl') or detail.get('jumpUrl')
+    if isinstance(url, str) and url.startswith('https://') and len(url) <= 500 and not any(c.isspace() for c in url):
+        text += ' ' + url
+    return text
+
+
+def _segment_text(segment):
+    kind, data = segment['type'], segment['data']
+    if kind == 'text':
+        return data['text']
+    if kind in _SILENT:
+        return ''
+    if kind == 'face':
+        return _face(data)
+    if kind == 'mface':
+        return _sticker(data)
+    if kind == 'json':
+        return _card(data)
+    if kind in ('dice', 'rps'):
+        from .qq_games import marker
+        return marker(kind, data)
+    return _MARKERS.get(kind, '[QQ消息]')
+
+
+def _poke(payload, *, account_id, owner_id):
+    """He poked her in their private chat: a turn of its own."""
+    if (payload.get('post_type') != 'notice' or payload.get('notice_type') != 'notify' or payload.get('sub_type') != 'poke'
+            or payload.get('group_id') or str(payload.get('self_id', '')) != account_id
+            or str(payload.get('user_id', '')) != owner_id or str(payload.get('target_id', '')) != account_id
+            or str(payload.get('sender_id', owner_id)) != owner_id  # NapCat: user_id is the chat, sender_id who poked
+            or owner_id == account_id):
+        return None
+    raw_time = payload.get('time')
+    if type(raw_time) not in (int, float) or raw_time <= 0:
+        return None
+    try:
+        sent_at = datetime.fromtimestamp(raw_time, timezone.utc).isoformat()
+    except (ValueError, OverflowError, OSError):
+        return None
+    return PersonalMessage('qq', account_id, owner_id, f'poke-{int(raw_time)}', '[他戳了戳你]', sent_at=sent_at)
+
+
 def owner_message(channel: str, payload: Mapping, *, account_id: str, owner_id: str) -> PersonalMessage | None:
     """Reject all groups, foreign senders, own echoes and incomplete events."""
     if not account_id or not owner_id:
@@ -40,12 +120,14 @@ def owner_message(channel: str, payload: Mapping, *, account_id: str, owner_id: 
     if not isinstance(payload, Mapping):
         return None
     if channel == "qq":
+        if payload.get('post_type') == 'notice':
+            return _poke(payload, account_id=account_id, owner_id=owner_id)
         if (payload.get("post_type") != "message" or payload.get("message_type") != "private"
                 or str(payload.get("self_id", "")) != account_id
                 or str(payload.get("user_id", "")) != owner_id or owner_id == account_id):
             return None
         segments = payload.get("message")
-        if not isinstance(segments, list) or any(not isinstance(s, dict) or s.get("type") not in {"text", "image", "face", "reply", "record", "video", "file"}
+        if not isinstance(segments, list) or any(not isinstance(s, dict) or not isinstance(s.get("type"), str)
             or not isinstance(s.get("data"), dict) for s in segments):
             return None
         if any(s['type'] == 'text' and not isinstance(s['data'].get('text'), str) for s in segments):
@@ -69,11 +151,8 @@ def owner_message(channel: str, payload: Mapping, *, account_id: str, owner_id: 
             attachments.append(('audio' if segment['type'] == 'record' else segment['type'], reference, name))
         if len(attachments) + len(pictures) > 4:
             return None
-        # QQ faces are not downloadable pictures. Preserve the surrounding text
-        # without guessing an emotion from an opaque platform-specific face ID.
-        text = "".join(s['data']['text'] if s['type'] == 'text' else
-                       {'image': '[图片]', 'face': '[QQ表情]', 'record': '[语音]', 'video': '[视频]', 'file': '[文件]'}[s['type']]
-                       for s in segments if s['type'] != 'reply')
+        # A face is named from the bundled catalog; an ID it does not hold stays [QQ表情], never a guess.
+        text = "".join(_segment_text(s) for s in segments)
         message_id = payload.get("message_id")
     elif channel == "wechat":
         if (payload.get("group_id") or payload.get("message_type") != 1

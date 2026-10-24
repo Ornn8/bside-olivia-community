@@ -335,3 +335,12 @@ def test_repeated_concurrent_ack_uses_one_vision_request(tmp_path, monkeypatch):
         await asyncio.gather(vision.commit_image_memory(server, row), vision.commit_image_memory(server, row))
         assert len(calls) == 1
     asyncio.run(scenario())
+
+
+def test_a_mall_sticker_missing_its_large_size_is_fetched_at_the_size_it_has():
+    """His sticker answered 404 at raw300.gif and she saw only a placeholder (2026-10-24)."""
+    sticker = 'https://gxh.vip.qq.com/club/item/parcel/item/7d/7db60f7a93072b9684ad5e14c6107f92/raw300.gif'
+    stem = sticker.rsplit('/', 1)[0]
+    assert vision._sticker_sizes(sticker) == [sticker, stem + '/raw200.gif', stem + '/200x200.png']
+    assert vision._sticker_sizes('https://multimedia.nt.qq.com.cn/download?fileid=x') == [
+        'https://multimedia.nt.qq.com.cn/download?fileid=x']

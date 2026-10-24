@@ -25,6 +25,7 @@ from jsonschema import Draft202012Validator, ValidationError
 from runtime.diagnostics.usage_metrics import record_usage, purpose_for
 from runtime.contact_context import current as current_contact, headers as contact_headers
 from runtime.tls import client_tls_context
+from runtime import relay_session
 from runtime.reply.model_capabilities import model_capabilities
 from runtime.reply.model_request_policy import reasoning_request_parameters
 from runtime.official_endpoints import API_ORIGIN, canonical_api_base
@@ -1029,7 +1030,7 @@ class OpenAICompatibleAdapter(Gateway):
             usage = None
             outcome = "error"
             try:
-                async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with relay_session.session(timeout) as session:
                     self.mark_network_call()
                     async with session.post(
                         endpoint or self._url(),
@@ -1451,7 +1452,7 @@ class OpenAICompatibleAdapter(Gateway):
             buffered = []
             outcome = "error"
             try:
-                async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with relay_session.session(timeout) as session:
                     self.mark_network_call()
                     async with session.post(
                         self._url(),

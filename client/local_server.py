@@ -2230,7 +2230,7 @@ def _offline_media(value):
 # ---------------------------------------------------------------------------
 # 路由处理
 # ---------------------------------------------------------------------------
-_MEDIA_NAME = _re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.(?:mp4|wav|png)$")
+_MEDIA_NAME = _re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.(?:mp4|wav|png|jpg|webp)$")
 
 
 def _media_root() -> Path | None:
@@ -2252,7 +2252,7 @@ async def _media_handler(request: web.Request) -> web.StreamResponse:
         return web.json_response({"status": "FAILED", "error_code": "MEDIA_NOT_FOUND"}, status=404)
     if not target.is_file():
         return web.json_response({"status": "FAILED", "error_code": "MEDIA_NOT_FOUND"}, status=404)
-    return web.FileResponse(target, headers={"Content-Type": {'.png':'image/png','.wav':'audio/wav','.mp4':'video/mp4'}[target.suffix], "Cache-Control": "no-store", **CORS_HEADERS(request)})
+    return web.FileResponse(target, headers={"Content-Type": {'.png':'image/png','.jpg':'image/jpeg','.webp':'image/webp','.wav':'audio/wav','.mp4':'video/mp4'}[target.suffix], "Cache-Control": "no-store", **CORS_HEADERS(request)})
 
 
 async def handler(request: web.Request):
@@ -2355,6 +2355,26 @@ async def handler(request: web.Request):
             audio.unlink(missing_ok=True)
             code = str(exc) if str(exc) in {"COVER_FFMPEG_UNAVAILABLE", "COVER_UPLOAD_TOO_LARGE"} else "COVER_UPLOAD_INVALID"
             return web.json_response(err(400, code, {"error_code": code}), status=400, headers=CORS_HEADERS(request))
+
+    if canonical_path == "/toy/letter/image/upload":
+        if method != "POST" or request.headers.get("X-Olivia-Companion-Action") != "confirmed":
+            return web.json_response(err(403, "COMPANION_CONFIRMATION_REQUIRED", {}), status=403, headers=CORS_HEADERS(request))
+        from runtime.media.letter_images import MAX_UPLOAD_BYTES, save_upload
+        root = _media_root()
+        if root is None:
+            return web.json_response(err(503, "LETTER_IMAGE_STORAGE_UNAVAILABLE", {}), status=503, headers=CORS_HEADERS(request))
+        try:
+            raw = bytearray()
+            async for chunk in request.content.iter_chunked(65536):
+                raw.extend(chunk)
+                if len(raw) > MAX_UPLOAD_BYTES:
+                    raise ValueError("LETTER_IMAGE_TOO_LARGE")
+            saved = await asyncio.to_thread(save_upload, root, bytes(raw))
+        except (ValueError, OSError) as exc:
+            code = "LETTER_IMAGE_TOO_LARGE" if str(exc) == "LETTER_IMAGE_TOO_LARGE" else "LETTER_IMAGE_INVALID"
+            return web.json_response(err(400, code, {"error_code": code}), status=400, headers=CORS_HEADERS(request))
+        return web.json_response(ok({"image_id": saved["image_id"], "url": f"http://127.0.0.1:{PORT}/toy/media/{saved['name']}"}),
+                                 headers=CORS_HEADERS(request))
 
     body = {}
     body_error = None
@@ -5127,9 +5147,9 @@ async def route(
             if method=='POST':
                 if not companion_confirmed:
                     return err(403,'COMPANION_CONFIRMATION_REQUIRED',{})
-                if not isinstance(body,dict) or set(body) not in ({'request_id','style_id'}, {'request_id','look_id','max_charge_cents'}):
+                if not isinstance(body,dict) or set(body) not in ({'request_id','style_id'}, {'request_id','look_id','max_charge_cents'}, {'request_id','look_id'}):
                     return err(400,'WARDROBE_STYLE_INVALID',{})
-                result=await api.request('wardrobe_buy' if 'look_id' in body else 'wardrobe_set',body)
+                result=await api.request('wardrobe_buy' if 'max_charge_cents' in body else 'wardrobe_pin' if 'look_id' in body else 'wardrobe_set',body)
             elif method=='GET':
                 result=await api.request('wardrobe_get',{})
             else:
@@ -5143,10 +5163,28 @@ async def route(
                     pass
             for style in result['wardrobe_styles']:
                 for look in style['looks']:
-                    look['image_url']=f"http://127.0.0.1:{PORT}/toy/wardrobe/images/{look['look_id']}"
+                    look['image_url']=f"http://127.0.0.1:{PORT}/toy/wardrobe/images/{look['look_id']}{'-preview' if 'preview_asset' in look else ''}"
             return ok(result)
         except CloudError as exc:
             return err(exc.status,exc.code,{'error_code':exc.code})
+
+    if p == '/toy/qq/extras':
+        from runtime.personal_chat.qq_presence import settings as qq_extras, save_settings
+        root = _state_root()
+        if root is None:
+            return err(503, 'QQ_EXTRAS_UNAVAILABLE', {})
+        if method == 'POST':
+            if not companion_confirmed:
+                return err(403, 'COMPANION_CONFIRMATION_REQUIRED', {})
+            try:
+                return ok(await asyncio.to_thread(save_settings, root, body))
+            except ValueError:
+                return err(400, 'QQ_EXTRAS_INVALID', {})
+            except OSError:
+                return err(503, 'QQ_EXTRAS_UNAVAILABLE', {})
+        if method != 'GET':
+            return err(405, 'METHOD_NOT_ALLOWED', {})
+        return ok(await asyncio.to_thread(qq_extras, root))
 
     if p == '/toy/world/gifts':
         from runtime.remote_generation import RemoteGeneration
@@ -5816,6 +5854,11 @@ async def route(
                 'error_code': 'CONTENT_TOO_LONG',
                 'max_length': 10000,
             })
+        from runtime.media.letter_images import attachments
+        try:
+            letter_images = attachments(_media_root(), material.get('image_ids'))
+        except ValueError as exc:
+            return err(400, str(exc), {'status': 'FAILED', 'error_code': str(exc)})
         missing = await asyncio.to_thread(_missing_memory_component)
         if missing:
             return err(503, missing, {'error_code': missing, 'retryable': True})
@@ -5979,6 +6022,7 @@ async def route(
             "letter_id": lid,
             "content": content,
             "material": material,
+            **({"letter_images": [f"http://127.0.0.1:{PORT}/toy/media/{name}" for name in letter_images]} if letter_images else {}),
             "letter_status": "PENDING",
             "audit_status": 2,
             "is_read": 1,
@@ -6668,7 +6712,8 @@ async def _recover_photo_memories():
     from runtime.image_understanding import commit_image_memory
     while True:
         for row in tuple(store.letters):
-            if row.get('image_world_status') == 'PENDING' and row.get('image_delivery_status') == 'DELIVERED':
+            if row.get('image_world_status') == 'PENDING' and (row.get('image_delivery_status') == 'DELIVERED'
+                                                               or row.get('incoming_image_observations')):
                 try:
                     await commit_image_memory(sys.modules[__name__], row)
                 except Exception:
@@ -6702,6 +6747,9 @@ def _letter_replies_in_flight() -> int:
 
 
 async def _start_reply_tasks(_app: web.Application) -> None:
+    # Model calls on this loop share kept-alive relay connections (runtime/relay_session.py).
+    from runtime import relay_session
+    await relay_session.start()
     # An update restart waits for a letter reply that is being written (runtime/auto_update.py).
     from runtime.auto_update import track_replies
     track_replies('letters', _letter_replies_in_flight)
@@ -6874,6 +6922,11 @@ async def _stop_reply_tasks(_app: web.Application) -> None:
     media_tasks.clear()
     reply_jobs.clear()
     media_jobs.clear()
+    # Every task that could still use them has stopped: close the kept-alive relay connections.
+    from runtime import relay_session
+    from runtime.reply.jev_http import close_idle_connections
+    await relay_session.stop()
+    close_idle_connections()
 
 
 async def _stop_conversation_memory(_app: web.Application) -> None:
@@ -7187,6 +7240,19 @@ async def _run_reply_pipeline_for_letter(
                 or (exact_mode in {"voice_reply", "voice_song_video"} and letter.get("reply_video_enabled") is True)
                 else content
             )
+        if letter.get('letter_images'):
+            # She sees the pictures in a letter the way she sees QQ pictures: observations after the letter text.
+            import sys
+            from runtime.diagnostics.reply_telemetry import timing
+            from runtime.image_understanding import incoming_context, understand_letter_images
+            with timing('media_in', letter):
+                await understand_letter_images(sys.modules[__name__], letter)
+            reply_input += incoming_context(letter)
+        from runtime.media.song_notice import song_kind, writer_note
+        if song_kind(letter, exact_mode) is not None:
+            # She is told the song came with the letter and, when songs are recorded at night, when it will be ready.
+            from runtime.media_capabilities import current as media_capabilities
+            reply_input += writer_note(letter, exact_mode, await media_capabilities(_os.environ))
         request = ReplyRequest(
             content=reply_input,
             received_user_text=content,

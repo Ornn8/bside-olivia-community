@@ -123,6 +123,8 @@ def validate_dynamic_state(value):
                     or not isinstance(look.get('label'), str) or not 1 <= len(look['label']) <= 200):
                 raise ValueError('WARDROBE_STATE_INVALID')
             validate_entry('wardrobe', look['look_id'], look.get('image_asset'))
+            if 'preview_asset' in look:  # a small copy for the wardrobe page; the original stays the reference
+                validate_entry('wardrobe', look['look_id'] + '-preview', look['preview_asset'])
             look_ids.add(look['look_id'])
             hashes[look['look_id']] = look['image_asset']['sha256']
     if 'original' not in style_ids or len(look_ids) > 1000:
@@ -137,6 +139,8 @@ def validate_dynamic_state(value):
             or not 0 <= purchases['free_remaining'] <= 3 or not isinstance(purchases.get('owned'), list)
             or any(not valid_look_id(lid) for lid in purchases['owned'])
             or len(set(purchases['owned'])) != len(purchases['owned']) or len(purchases['owned']) > 1000):
+        raise ValueError('WARDROBE_STATE_INVALID')
+    if value.get('pinned_look') is not None and not valid_look_id(value['pinned_look']):
         raise ValueError('WARDROBE_STATE_INVALID')
     outfit = validate_daily_outfit(value.get('daily_outfit'))
     if outfit and (outfit['look_id'] not in look_ids or outfit['reference_sha256'] != hashes[outfit['look_id']] or outfit['style_id'] != pref['style_id']

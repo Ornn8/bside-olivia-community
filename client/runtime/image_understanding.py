@@ -193,7 +193,8 @@ def image_memory_rows(row):
     """Additional outbox deliveries; never rewrite the original text source."""
     for item in image_evidence(row):
         own = item['source'] == 'generated'
-        summary = ('林离已发给用户的生成照片，画面：' if own else '用户通过QQ发来的图片，画面：') + item['summary']
+        summary = ('林离已发给用户的生成照片，画面：' if own else '用户随信附上的图片，画面：' if item['channel'] == 'letter'
+                   else '用户通过QQ发来的图片，画面：') + item['summary']
         if own and 'scene_location' in item:
             summary += ('\n生成场景：' + item['scene_location'] + '，' + item['scene_time_of_day']
                         + '。这是照片场景，不代表林离此刻仍在该处。')
@@ -291,18 +292,32 @@ def _allowed_qq_image_url(url):
                 for domain in ('qpic.cn', 'qq.com', 'gtimg.cn'))))
 
 
+def _sticker_sizes(url):
+    """A QQ mall sticker is named raw300.gif, but some packs only hold the 200 px files (2026-10-24: his sticker
+    answered 404 and she saw only a placeholder)."""
+    parsed = urlsplit(url)
+    if parsed.hostname != 'gxh.vip.qq.com' or not parsed.path.endswith('/raw300.gif'):
+        return [url]
+    stem = url[:url.rindex('/raw300.gif')]
+    return [url, stem + '/raw200.gif', stem + '/200x200.png']
+
+
 async def _download_qq_image(url, target):
     if not _allowed_qq_image_url(url):
         raise ValueError('QQ_IMAGE_URL_INVALID')
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
-        async with session.get(url, allow_redirects=False) as response:
-            if response.status != 200:
-                raise RuntimeError('QQ_IMAGE_DOWNLOAD_FAILED')
-            data = bytearray()
-            async for chunk in response.content.iter_chunked(65536):
-                data.extend(chunk)
-                if len(data) > 20 * 1024 * 1024:
-                    raise ValueError('QQ_IMAGE_TOO_LARGE')
+        for candidate in _sticker_sizes(url):
+            async with session.get(candidate, allow_redirects=False) as response:
+                if response.status != 200 and candidate != _sticker_sizes(url)[-1]:
+                    continue  # a missing size answers 404 or a redirect to a missing file
+                if response.status != 200:
+                    raise RuntimeError('QQ_IMAGE_DOWNLOAD_FAILED')
+                data = bytearray()
+                async for chunk in response.content.iter_chunked(65536):
+                    data.extend(chunk)
+                    if len(data) > 20 * 1024 * 1024:
+                        raise ValueError('QQ_IMAGE_TOO_LARGE')
+                break
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(data)
 
@@ -334,9 +349,36 @@ async def understand_incoming(server, event, row):
     await commit_image_memory(server, row)
 
 
+async def understand_letter_images(server, row):
+    """Pictures put in a letter are already in the local media folder. Each is described once, like a QQ
+    picture, and all of them at the same time so the reply waits for one description, not four."""
+    if not row.get('letter_images') or row.get('incoming_image_status') == 'COMPLETED':
+        return
+    from runtime.media.letter_images import MAX_IMAGES, image_path
+    observations = row.setdefault('incoming_image_observations', [])
+    async def observe(name, identity):
+        item = await describe_image(server, image_path(server._media_root(), name), source='user',
+            operation_id=str(row['letter_id']) + ':' + identity)
+        item['input_id'] = identity
+        return item
+    names = [urlsplit(str(url)).path.rsplit('/', 1)[-1] for url in row['letter_images'][:MAX_IMAGES]]
+    wanted = [(name, hashlib.sha256(name.encode()).hexdigest()) for name in names]
+    wanted = [(name, identity) for name, identity in wanted
+              if not any(item.get('input_id') == identity for item in observations)]
+    results = await asyncio.gather(*(observe(name, identity) for name, identity in wanted), return_exceptions=True)
+    if any(isinstance(result, asyncio.CancelledError) for result in results):
+        raise asyncio.CancelledError
+    observations.extend(result for result in results if isinstance(result, dict))
+    failures = sum(isinstance(result, BaseException) for result in results)
+    row['incoming_image_status'] = 'PARTIAL' if failures else 'COMPLETED'
+    row['incoming_image_failed'] = failures
+    server._persist_store_state()
+    await commit_image_memory(server, row)
+
+
 def incoming_context(row):
     values = [item for item in image_evidence(row) if item['source'] == 'user']
-    if not values and not row.get('incoming_images'):
+    if not values and not (row.get('incoming_images') or row.get('letter_images')):
         return '\n[系统图片观察，非用户原话]\n' + json.dumps({
             'current_turn_has_images': False,
             'meaning': '本轮没有新上传的图片。旧图片观察属于各自历史轮次，不能说成本轮刚看到的新图。'

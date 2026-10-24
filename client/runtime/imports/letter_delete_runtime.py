@@ -324,7 +324,8 @@ def _delete(server, adapter, lid, part, *, deleted_at=None, with_diary=False):
                  'points': points,
                  'media': {k: v for k, v in row.items() if (
                      part == 'reply' and (k.startswith(('media_', 'image_', 'music_', 'video_', 'audio_')) or k in {'reply_segments', 'reply_video_url', 'reply_audio_url', 'reply_structure', 'reply_signature'})
-                     or part == 'user' and k in {'material', 'incoming_media_observations'})}}
+                     or part == 'user' and k in {'material', 'incoming_media_observations', 'letter_images',
+                                                 'incoming_image_observations', 'incoming_image_status', 'incoming_image_failed'})}}
         key = uuid.uuid4().hex
         server.store.letter_trash[key] = entry
         try:

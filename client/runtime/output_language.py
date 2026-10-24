@@ -31,6 +31,9 @@ USER_REQUEST_PREFIXES = (
     "diary-memoir-revise:",
     "daily-video-author:",  # words for a short selfie clip
     "daily-video-share:",
+    "qzone-post:",  # her own 说说 and QQ signature
+    "qzone-comment:",  # her comment under his 说说
+    "qzone-reply:",  # her reply to his comment under her 说说
 )
 # Calls that carry no readable request id are recognised by their scope instead.
 USER_SCOPES = frozenset({"song_content"})  # original song lyrics

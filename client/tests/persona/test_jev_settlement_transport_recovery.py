@@ -15,7 +15,6 @@ from tests.persona.test_jev_billing_helper import KEY, DIGEST, signed, result
 def settlement_transport(monkeypatch, failures, *, malformed=False):
     monkeypatch.setenv('OLIVIA_JEV_BILLING_ENABLED', '1')
     monkeypatch.setattr(billing, '_account_key', lambda: KEY)
-    monkeypatch.setattr('runtime.remote_generation.gpu_tls_context', lambda: None)
     calls, debits = [], []
 
     class Response:
@@ -45,7 +44,7 @@ def settlement_transport(monkeypatch, failures, *, malformed=False):
                 response.body = b'{PRIVATE invalid JSON'
             return response
 
-    monkeypatch.setattr(billing.urllib.request, 'build_opener', lambda *_: Opener())
+    monkeypatch.setattr(billing, '_settlement_opener', lambda: Opener())
     if hasattr(billing, 'time'):
         monkeypatch.setattr(billing.time, 'sleep', lambda *_: None)
     return calls, debits

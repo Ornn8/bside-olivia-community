@@ -29,8 +29,12 @@ class ExchangeRunner:
                 return await getattr(lease(), name)(*args, **kwargs)
             return deliver
 
-        for name in ('audio', 'image', 'video', 'file', 'resolve_media'):
+        # Her QQ gestures too (poke … cookies, 2.5.0): a proxy without them would silently drop them.
+        for name in ('audio', 'image', 'video', 'file', 'resolve_media', 'poke', 'like', 'status',
+                     'signature', 'qzone_post', 'cookies', 'game'):
             setattr(send, name, action(name))
+        if event is not None:
+            send.plain = self._sender()  # the same chat without quoting his message
         send.is_available = lambda: (not self.stopped and self.sender is not None
                                      and self.sender.is_available())
         send.for_exchange = self._sender

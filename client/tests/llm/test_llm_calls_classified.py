@@ -28,6 +28,7 @@ USER_FACING = {
     "runtime/diary/diary.py": "diary entries and memoirs (diary:, diary-revise:, diary-memoir:, diary-memoir-revise:)",
     "runtime/media/song_content.py": "original song lyrics (scope song_content)",
     "runtime/personal_chat/daily_video_author.py": "words for a selfie clip (daily-video-author:, daily-video-share:)",
+    "runtime/personal_chat/qq_presence.py": "her 说说, signature and comments (qzone-post:, qzone-comment:, qzone-reply:)",
     "runtime/reply/reply_model_quality.py": "mixed: the rewrite replaces what the user reads and asks for English itself; "
                                            "the reviewers are internal",
 }
@@ -63,6 +64,9 @@ PREFIX_SOURCES = {
     "diary-memoir-revise:": ("runtime/diary/diary.py", "'-revise:'"),
     "daily-video-author:": ("runtime/personal_chat/daily_video_author.py", "daily-video-author"),
     "daily-video-share:": ("runtime/personal_chat/daily_video_author.py", "daily-video-share"),
+    "qzone-post:": ("runtime/personal_chat/qq_presence.py", "qzone-post"),
+    "qzone-comment:": ("runtime/personal_chat/qq_presence.py", "qzone-comment"),
+    "qzone-reply:": ("runtime/personal_chat/qq_presence.py", "qzone-reply"),
 }
 
 

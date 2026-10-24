@@ -230,10 +230,84 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
             if not future.done():
                 future.cancel()
 
+    async def qq_action(name, params, timeout=None):
+        """One NapCat action whose answer may carry no data (a poke, a like, a status)."""
+        echo = uuid.uuid4().hex
+        future = asyncio.get_running_loop().create_future()
+        pending[echo] = future
+        try:
+            await ws.send_json({'action': name, 'echo': echo, 'params': params})
+            raw = await asyncio.wait_for(future, timeout or ack_timeout)
+            if raw.get('status') != 'ok' or raw.get('retcode') != 0:
+                raise RuntimeError('QQ_ACTION_UNCONFIRMED')
+            return raw.get('data')
+        finally:
+            pending.pop(echo, None)
+            if not future.done():
+                future.cancel()
+
+    # Her small QQ gestures (owner 2026-10-24). Each names its own action; the owner is fixed here.
+    async def poke():
+        await qq_action('friend_poke', {'user_id': int(owner_id)})
+
+    async def like(times):
+        if type(times) is not int or not 1 <= times <= 10:
+            raise ValueError('QQ_LIKE_INVALID')
+        await qq_action('send_like', {'user_id': int(owner_id), 'times': times})
+
+    async def status(face_id, wording):
+        if not re.fullmatch(r'[0-9]{1,5}', str(face_id)) or not isinstance(wording, str) or not 1 <= len(wording) <= 16:
+            raise ValueError('QQ_STATUS_INVALID')
+        await qq_action('set_diy_online_status', {'face_id': str(face_id), 'face_type': '1', 'wording': wording})
+
+    async def signature(text):
+        if not isinstance(text, str) or not 1 <= len(text) <= 60 or '\n' in text:
+            raise ValueError('QQ_SIGNATURE_INVALID')
+        await qq_action('set_self_longnick', {'longNick': text})
+
+    async def qzone_post(content, images=()):
+        from pathlib import Path
+        if not isinstance(content, str) or not 1 <= len(content) <= 1000 or len(images) > 3:
+            raise ValueError('QQ_QZONE_POST_INVALID')
+        files = [Path(path).resolve().as_uri() for path in images]
+        # ugc_right 4: her friends see it, which is him.
+        data = await qq_action('send_qzone_msg', {'content': content, 'images': files, 'ugc_right': 4}, media_ack_timeout)
+        if not isinstance(data, dict) or not isinstance(data.get('tid'), str) or not data['tid']:
+            raise RuntimeError('QQ_QZONE_POST_UNCONFIRMED')
+        return data['tid']
+
+    async def game(kind):
+        """Her dice or rock-paper-scissors. QQ picks the result, so it is read back from the message sent."""
+        if kind not in {'dice', 'rps'}:
+            raise ValueError('QQ_REPLY_INVALID')
+        identifier = await send_item({'type': kind, 'data': {}})
+        allowed = '123456' if kind == 'dice' else '123'
+        for wait in (0, .5, 1, 2):
+            await asyncio.sleep(wait)
+            data = await qq_action('get_msg', {'message_id': int(identifier) if identifier.lstrip('-').isdigit()
+                                               else identifier})
+            segments = data.get('message') if isinstance(data, dict) else None
+            result = next((str(s['data'].get('result', '')) for s in segments or []
+                           if isinstance(s, dict) and s.get('type') == kind and isinstance(s.get('data'), dict)), '')
+            if len(result) == 1 and result in allowed:
+                return result
+        raise RuntimeError('QQ_ACTION_UNCONFIRMED')  # sent, but no result to go on
+
+    async def cookies(domain):
+        if domain not in {'user.qzone.qq.com', 'qzone.qq.com'}:
+            raise ValueError('QQ_COOKIE_DOMAIN_INVALID')
+        data = await qq_action('get_cookies', {'domain': domain})
+        if not isinstance(data, dict) or not isinstance(data.get('cookies'), str):
+            raise RuntimeError('QQ_COOKIES_UNAVAILABLE')
+        return data['cookies']
+
     send.audio = send_audio
     send.image = send_image
     send.video = send_video
     send.file = send_file
+    send.poke, send.like, send.status = poke, like, status
+    send.signature, send.qzone_post, send.cookies = signature, qzone_post, cookies
+    send.game = game
     async def resolve_media(kind, reference):
         if kind not in {'audio', 'video', 'file'} or not re.fullmatch(r'[A-Za-z0-9_.-]{1,256}', reference):
             raise ValueError('QQ_MEDIA_REFERENCE_INVALID')
@@ -260,7 +334,7 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
             raise ValueError('QQ_REPLY_OWNER_MISMATCH')
         # Proactive exchanges have no inbound message; their local ID is not a
         # OneBot message ID and cannot be used in a reply segment.
-        reply_to = event.message_id if event.text.strip() else None
+        reply_to = event.message_id if event.text.strip() and not event.message_id.startswith('poke-') else None  # a poke has no message
         async def correlated(text):
             if not isinstance(text, str) or not text.strip() or len(text) > 10000:
                 raise ValueError('QQ_REPLY_INVALID')
@@ -274,6 +348,9 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
             return await send_video(path, reply_to, eligible=eligible)
         correlated.video = correlated_video
         correlated.file = send_file
+        correlated.poke = poke
+        correlated.game = game
+        correlated.plain = send  # without quoting his message
         correlated.resolve_media = resolve_media
         correlated.is_available = send.is_available
         correlated.start_typing = start_typing

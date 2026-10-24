@@ -86,3 +86,70 @@ def test_dynamic_catalog_rejects_malformed_entries_before_cache(tmp_path,mutatio
     if mutation=='daily_hash':data['daily_outfit']['reference_sha256']='b'*64
     with pytest.raises((ValueError,CloudError)):assets.save_wardrobe_catalog(tmp_path,data)
     assert list(tmp_path.iterdir())==[]
+
+
+PREVIEW=b'RIFF\x10\x00\x00\x00WEBPsynthetic-preview'
+
+
+def with_preview(data):
+    sha=hashlib.sha256(PREVIEW).hexdigest()
+    data['wardrobe_styles'][1]['looks'][0]['preview_asset']={'filename':'rainwear-01-preview.webp','sha256':sha,
+        'size_bytes':len(PREVIEW),'content_type':'image/webp',
+        'key':f'distribution/olivia-images/wardrobe/{sha}/rainwear-01-preview.webp'}
+    data['pinned_look']='rainwear-01'
+    return data
+
+
+def test_the_page_shows_the_small_preview_and_photos_keep_the_original(tmp_path,monkeypatch):
+    import local_server
+    class API:
+        def __init__(self,*_):pass
+        async def request(self,*_):return with_preview(state())
+    monkeypatch.setattr('runtime.remote_generation.RemoteGeneration',API)
+    monkeypatch.setattr(local_server,'_local_data_root',lambda:tmp_path)
+    result=asyncio.run(local_server.route('GET','/toy/world/wardrobe',{},{}))
+    look=result['data']['wardrobe_styles'][1]['looks'][0]
+    assert look['image_url']=='http://127.0.0.1:8899/toy/wardrobe/images/rainwear-01-preview'
+    assert assets.image_entry(tmp_path,'wardrobe','rainwear-01-preview')==look['preview_asset']
+    assert assets.image_entry(tmp_path,'wardrobe','rainwear-01')==look['image_asset']
+    assert result['data']['pinned_look']=='rainwear-01'
+
+
+def test_he_can_dress_her_in_one_look_he_owns(tmp_path,monkeypatch):
+    async def scenario():
+        data=with_preview(state());posted=[]
+        async def catalog(request):
+            posted.append(await request.json())
+            return web.json_response(data)
+        app=web.Application();app.router.add_post('/v1/wardrobe',catalog)
+        async with TestClient(TestServer(app)) as client:
+            api=RemoteGeneration(str(client.make_url('')).rstrip('/'),'synthetic-fixture')
+            assert await api.request('wardrobe_pin',{'look_id':'rainwear-01','request_id':'wear-rain'})==data
+            for bad in ({'look_id':'../x','request_id':'wear'},{'look_id':'rainwear-01','request_id':'wear','extra':1}):
+                with pytest.raises(CloudError):
+                    await api.request('wardrobe_pin',bad)
+        assert posted==[{'look_id':'rainwear-01','request_id':'wear-rain'}]
+    asyncio.run(scenario())
+
+
+def test_the_local_route_passes_a_wear_request_on(tmp_path,monkeypatch):
+    import local_server
+    seen=[]
+    class API:
+        def __init__(self,*_):pass
+        async def request(self,action,body):
+            seen.append((action,body));return with_preview(state())
+    monkeypatch.setattr('runtime.remote_generation.RemoteGeneration',API)
+    monkeypatch.setattr(local_server,'_local_data_root',lambda:tmp_path)
+    body={'request_id':'wear-rain','look_id':'rainwear-01'}
+    result=asyncio.run(local_server.route('POST','/toy/world/wardrobe',body,{},companion_confirmed=True))
+    assert result['data']['pinned_look']=='rainwear-01' and seen==[('wardrobe_pin',body)]
+
+
+@pytest.mark.parametrize('mutation',['preview_key','pinned'])
+def test_a_malformed_preview_or_pin_is_rejected_before_cache(tmp_path,mutation):
+    data=with_preview(state())
+    if mutation=='preview_key':data['wardrobe_styles'][1]['looks'][0]['preview_asset']['key']='private/secret'
+    if mutation=='pinned':data['pinned_look']='../x'
+    with pytest.raises((ValueError,CloudError)):assets.save_wardrobe_catalog(tmp_path,data)
+    assert list(tmp_path.iterdir())==[]

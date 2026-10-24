@@ -5,8 +5,9 @@ import pytest
 @pytest.mark.parametrize('segments, expected', [
     ([{'type': 'text', 'data': {'text': 'hello'}},
       {'type': 'face', 'data': {'id': '76'}},
-      {'type': 'text', 'data': {'text': ' again'}}], 'hello[QQ表情] again'),
-    ([{'type': 'face', 'data': {'id': '76'}}], '[QQ表情]'),
+      {'type': 'text', 'data': {'text': ' again'}}], 'hello[表情:赞] again'),
+    ([{'type': 'face', 'data': {'id': '76'}}], '[表情:赞]'),
+    ([{'type': 'face', 'data': {'id': '9999'}}], '[QQ表情]'),  # not in the bundled catalog: never a guess
 ])
 def test_qq_faces_do_not_silently_discard_owner_messages(segments, expected):
     event = owner_message('qq', qq(message=segments), account_id='100', owner_id='200')

@@ -162,7 +162,8 @@ def test_generation_requests_over_a_real_connection(monkeypatch):
 
     zh, en, en_other = asyncio.run(scenario())
     expected = {"Authorization": "Bearer olivia-synthetic-key", "X-Olivia-Wardrobe-Protocol": "daily-v2",
-                "X-Olivia-Wardrobe-Catalog": "dynamic-v1", "X-Olivia-Daily-Video-Moment": "1", "X-Olivia-Piano": "1"}
+                "X-Olivia-Wardrobe-Catalog": "dynamic-v1", "X-Olivia-Daily-Video-Moment": "1", "X-Olivia-Piano": "1",
+                "X-Olivia-Doodle": "1"}
     assert _olivia_headers(zh) == expected
     assert HEADER not in zh and not any(name.lower() == HEADER.lower() for name in zh)
     assert _olivia_headers(en) == {**expected, HEADER: "en"}
@@ -301,8 +302,10 @@ def test_the_anonymous_upload_carries_the_header_in_english_only(monkeypatch):
 
 # --- no call to the cloud is left out ------------------------------------------------------------------------------
 
+# relay_session.session( is the kept-alive session model calls borrow; its caller still sets the headers.
 CLIENT_PATTERN = re.compile(
     r"ClientSession\(|urlopen\(|build_opener\(|http\.client\.HTTP\w*Connection|\.ws_connect\(|urllib\.request\.Request\(|\bRequest\("
+    r"|relay_session\.session\("
 )
 
 # Files that call Olivia's own services (api.bside-moon.cn): each must put the language header on its requests.
@@ -326,12 +329,16 @@ OTHER_CLIENTS = {
     "runtime/cloud_service.py": "the optional account connection to an address the user entered",
     "runtime/imports/official_letters.py": "the original game's own service",
     "runtime/media/music_reply.py": "the music generator running on this computer",
+    "runtime/personal_chat/bilibili.py": "public video pages and media, fetched on this computer",
     "runtime/personal_chat/napcat_installer.py": "QQ protocol software on this computer, public download",
     "runtime/personal_chat/probe.py": "QQ and WeChat transports",
     "runtime/personal_chat/qq.py": "QQ transport on this computer",
+    "runtime/personal_chat/qzone.py": "QQ space pages with the session QQ already holds",
     "runtime/personal_chat/setup.py": "QQ and WeChat transports",
     "runtime/personal_chat/wechat.py": "WeChat transport",
     "runtime/private_world/student_world.py": "a public weather service",
+    "runtime/relay_session.py": "kept-alive transport for llm_gateway; the caller sets every header",
+    "runtime/reply/jev_http.py": "kept-alive transport for JevDecisionPort and settlements; the callers set every header",
     "runtime/reply/companion_duties.py": "uses JevDecisionPort.request_headers",
     "runtime/reply/jev_questions.py": "uses JevDecisionPort.request_headers",
     "runtime/reply/semantic_shadow.py": "a loopback development endpoint",

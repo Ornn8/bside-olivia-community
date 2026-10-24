@@ -214,8 +214,34 @@ def _discard_chat_audio(path):
         pass  # An unused generated artifact cannot block receipt or delivery.
 
 
+# Her voice started while the reply is still being reviewed (owner 2026-10-24: 「没道理这么慢」):
+# exchange id -> (the words it speaks, its output, the rendering). Used only when the reviewed words match.
+_VOICE_PREVIEWS = {}
+
+
+def _drop_voice_preview(exchange_id):
+    preview = _VOICE_PREVIEWS.pop(exchange_id, None)
+    if preview is None:
+        return
+    _, path, rendering = preview
+    if rendering.done():
+        if not rendering.cancelled():
+            rendering.exception()
+        _discard_chat_audio(path)
+    else:
+        rendering.cancel()  # prepare_chat_audio discards its late output
+
+
+def _qq_extras(server):
+    from .qq_presence import DEFAULTS, settings
+    root = getattr(server, '_state_root', lambda: None)()
+    return settings(root) if root is not None else dict(DEFAULTS)
+
+
 async def prepare_chat_audio(server, text, path, *, timeout_seconds=None):
     """Submit chat speech independently of letter and photo media work."""
+    from .qq_faces import without_faces
+    text = without_faces(text).strip() or text  # a face label is seen in QQ, never read aloud
     from runtime.media.voice_direction import TextOnlyVoicePlan
     from runtime.media.media_paths import configured_media_path
     from runtime.remote_pipeline import enabled as remote_enabled
@@ -503,13 +529,18 @@ async def generate(server, event, row):
                 and any(item.get('type') == 'voice' for item in row.get('contact_media') or [])):
             row['default_voice_status'] = 'PENDING'  # The text first, then the same words as a voice message.
         return row['contact_body']
+    from runtime.reply.jev_billing import confirm_settlements
+    # A QQ turn's judgments settle beside its next stages; all of them are confirmed before the reply goes out.
     with contact_context.using(row.get('contact_id')), billing_scope(
-            'personal-chat:' + event.exchange_id + ':' + str(row.get('input_revision', 0))), using('qq'), scope(
+            'personal-chat:' + event.exchange_id + ':' + str(row.get('input_revision', 0)),
+            deferred=event.channel == 'qq'), using('qq'), scope(
             event.exchange_id, 'proactive' if row.get('origin') == 'proactive' else event.channel, row.get('generation_attempts', 0)):
         row['diagnostic_model'] = selected_model()
         token = TIMINGS.set(row)
         try:
-            return await _generate_billed(server, event, row)
+            text = await _generate_billed(server, event, row)
+            await confirm_settlements()
+            return text
         finally:
             TIMINGS.reset(token)
 
@@ -545,6 +576,14 @@ async def _generate_billed(server, event, row):
     observation_context = incoming_context(row)
     if event.media:
         observation_context += incoming_media.incoming_context(row)
+    if event.channel == 'qq':
+        from .bilibili import link_context
+        observation_context += await link_context(server, event, row)
+        from .qq_games import game_context
+        thrown = row.get('qq_game')
+        observation_context += await game_context(event, row, enabled=_qq_extras(server)['gestures'])
+        if row.get('qq_game') is not thrown:
+            await persist_chat(server)  # a rewritten turn never throws again
     from runtime.piano import recent_context
     observation_context += recent_context(server, event.binding_id)
     from runtime.call.store import recent_context as call_context
@@ -702,6 +741,32 @@ async def _generate_billed(server, event, row):
         return result
     proactive_metadata = ({'proactive_decide': proactive_decide}
                           if row.get('origin') == 'proactive' and not asked and proactive_enabled() else {})
+    def voice_preview(decision, delivery, words):
+        """Start her voice once the reply is written, while it is reviewed. Only a reply that will go as a
+        voice message starts one: a JEV plan for her voice, or her QQ default voice without a reason for text."""
+        from runtime.reply.companion_runtime import media_locked
+        from runtime.cloud_policy import get_policy
+        if event.exchange_id in _VOICE_PREVIEWS or not turn_is_current():
+            return
+        if delivery == 'audio_speech':
+            likely = True
+        elif (delivery == 'text' and not media_locked((row.get('companion_decision') or {}).get('plan'))
+              or delivery == 'image' and words):
+            likely = (not (decision.get('delivery') == 'text' and decision.get('text_reason'))
+                      and get_policy('qq_default_voice')['mode'] == 'voice_only')
+        else:
+            likely = False
+        text = decision['text'].strip() if isinstance(decision.get('text'), str) else ''
+        if (not likely or not text or decision.get('speech') or decision.get('daily_video_request')
+                or row.get('piano_midi') or (row.get('companion_decision') or {}).get('piano_request')):
+            return
+        path = server._state_root() / 'media' / (event.exchange_id + '-' + secrets.token_hex(8) + '.wav')
+        rendering = asyncio.ensure_future(prepare_chat_audio(server, text, path,
+                                                             timeout_seconds=_qq_default_voice_timeout_seconds()))
+        _VOICE_PREVIEWS[event.exchange_id] = (text, path, rendering)
+    preview_metadata = ({'voice_preview': voice_preview}
+                        if event.channel == 'qq' and voice_available and not unprompted and not asked
+                        and row.get('origin') != 'proactive' else {})
     async def save_writer_checkpoint(key, fingerprint):
         row['writer_checkpoint'] = dict(key=key, fingerprint=fingerprint,
                                       input_revision=revision,
@@ -752,6 +817,7 @@ async def _generate_billed(server, event, row):
                                 'letter_invitation_allowed': allowed,
                                 'sticker_choices': sticker_choices,
                                 'proactive': row.get('origin') == 'proactive', **proactive_metadata,
+                                **preview_metadata,
                                 **({'contact': cloud_contact.writer_brief(row)} if asked else {})})
     from .context import READ_WINDOW, freeze_read_window
     from itertools import chain
@@ -959,6 +1025,11 @@ async def _generate_billed(server, event, row):
         sticker = decision['sticker'] if decision['sticker'] in sticker_choices else None
         if sticker and companion is None and contact is None and not unprompted:
             row['sticker_id'] = sticker
+        if (event.channel == 'qq' and companion is None and contact is None and not asked
+                and _qq_extras(server)['gestures']):
+            # Her QQ gesture from the same decision: a poke before the message.
+            if decision.get('poke') is True:
+                row['qq_poke'] = 'PENDING'
         if not voice_available:
             mode = 'text'
             basis = voice_block
@@ -1022,7 +1093,19 @@ async def _generate_billed(server, event, row):
             # A cancelled older revision can still finish in its worker thread.
             # Give each render its own output so it cannot overwrite new audio.
             path = server._state_root() / 'media' / (event.exchange_id + '-' + secrets.token_hex(8) + '.wav')
-            timeout = (_qq_default_voice_timeout_seconds() if basis == 'QQ_DEFAULT_VOICE'
+            preview = _VOICE_PREVIEWS.get(event.exchange_id)
+            rendering = None
+            if preview is not None and preview[0] == text:
+                # The voice started during the review speaks exactly these words: wait for it instead.
+                del _VOICE_PREVIEWS[event.exchange_id]
+                path, rendering = preview[1], preview[2]
+                row['voice_preview'] = 'USED'
+            else:
+                row['voice_preview'] = 'CHANGED' if preview is not None else 'NONE'
+                _drop_voice_preview(event.exchange_id)
+            # A QQ reply never waits long for its voice: without one the words go as text
+            # (owner 2026-10-24 「没语音也可以聊天啊」, after a reply waited 20 minutes for a voice).
+            timeout = (_qq_default_voice_timeout_seconds() if basis == 'QQ_DEFAULT_VOICE' or event.channel == 'qq'
                        else _VOICE_RENDER_TIMEOUT_SECONDS)
             started = monotonic()
             voice_status = 'failed'
@@ -1030,7 +1113,8 @@ async def _generate_billed(server, event, row):
             try:
                 from runtime.diagnostics.reply_telemetry import timing
                 with timing('voice_wait', row):
-                    metadata = await prepare_chat_audio(server, text, path, timeout_seconds=timeout)
+                    metadata = await (rendering if rendering is not None
+                                      else prepare_chat_audio(server, text, path, timeout_seconds=timeout))
                 if not turn_is_current():
                     _discard_chat_audio(path)
                     return text
@@ -1063,6 +1147,7 @@ async def _generate_billed(server, event, row):
                                voice_prepare_seconds=round(monotonic() - started, 3))
         return text
     finally:
+        _drop_voice_preview(event.exchange_id)  # an unused early voice is never sent
         if read_window is not None:
             READ_WINDOW.reset(read_window)
         server._CURRENT_LETTER_MEMORY_SOURCE.reset(source)
@@ -1632,6 +1717,7 @@ def install_personal_chat(app, server):
             handle.ingest = ingest
             handle.pending = lambda channel: service.pending(channel) if channel in selected_channels(server) else ()
             def ready(channel, send):
+                runtime.setdefault('senders', {})[channel] = send  # the live connection, for qq_presence
                 service.resume_speech(channel, send)
                 service.resume_media(channel, send)
                 if channel in service.bindings and channel in selected_channels(server):
@@ -1729,7 +1815,19 @@ def install_personal_chat(app, server):
                         runtime['errors']['initiative'] = _failure_code(exc)
                     finally:
                         _publish_status(server, runtime)
+            async def presence_loop():
+                # Her QQ status, likes and 说说 (qq_presence); a pass never stops the listener.
+                from .qq_presence import tick as presence_tick
+                while not stop_event.is_set():
+                    await asyncio.sleep(60)
+                    try:
+                        await presence_tick(server, runtime, initiative)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        runtime['errors']['presence'] = _failure_code(exc)
             runtime['tasks'].append(asyncio.create_task(proactive_loop()))
+            runtime['tasks'].append(asyncio.create_task(presence_loop()))
             runtime["tasks"].append(asyncio.create_task(boot()))
         except Exception:
             server._safe_log("personal_chat_start_failed", error_code="PERSONAL_CHAT_CONFIG_UNAVAILABLE")

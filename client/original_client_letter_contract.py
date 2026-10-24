@@ -56,6 +56,7 @@ _INTERNAL_AUDIT_STATUS = {
     "REJECTED": OriginalClientAuditStatus.REJECTED,
 }
 _MEDIA_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.(?:mp4|wav|png)$")
+_LETTER_IMAGE_NAME = re.compile(r"^letter-image-[0-9a-f]{32}\.(?:png|jpg|webp)$")
 _VIDEO_MODES = frozenset({"musical_video", "singing_video", "voice_song_video"})
 
 
@@ -200,7 +201,7 @@ def _exact_reply_mode(value: object) -> str:
     return "text_letter"
 
 
-def _safe_local_media_url(value: object) -> str:
+def _safe_local_media_url(value: object, names: re.Pattern[str] = _MEDIA_NAME) -> str:
     if not isinstance(value, str) or not value:
         return ""
     try:
@@ -226,7 +227,7 @@ def _safe_local_media_url(value: object) -> str:
     if not parsed.path.startswith(prefix):
         return ""
     name = parsed.path[len(prefix) :]
-    return value if _MEDIA_NAME.fullmatch(name) else ""
+    return value if names.fullmatch(name) else ""
 
 
 def _reply_projection(
@@ -405,6 +406,12 @@ def serialize_letter_detail(
             "replyVideoUrl": media_url,
         }
     )
+    # The pictures the user put in the letter go on the user's own paper, whatever the reply is doing.
+    sent_images = letter.get("letter_images")
+    if isinstance(sent_images, list):
+        urls = [_safe_local_media_url(value, _LETTER_IMAGE_NAME) for value in sent_images[:4]]
+        if any(urls):
+            payload["sentImageUrls"] = [url for url in urls if url]
     sticker_id = letter.get("reply_sticker_id")
     if published:
         image_settings = letter.get('image_reply_settings')

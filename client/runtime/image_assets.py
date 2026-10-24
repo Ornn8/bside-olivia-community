@@ -214,6 +214,8 @@ def save_wardrobe_catalog(data_root, state):
     if data_root is None:
         raise CloudError('IMAGE_CACHE_UNAVAILABLE', 503)
     entries = {look['look_id']: look['image_asset'] for style in state['wardrobe_styles'] for look in style['looks']}
+    entries.update({look['look_id'] + '-preview': look['preview_asset'] for style in state['wardrobe_styles']
+                    for look in style['looks'] if 'preview_asset' in look})
     raw = json.dumps(entries, ensure_ascii=False, sort_keys=True).encode('utf-8')
     if len(raw) > 2097152:
         raise CloudError('IMAGE_CATALOG_INVALID', 503)

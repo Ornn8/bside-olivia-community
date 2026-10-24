@@ -86,6 +86,67 @@ const requestSetup=async(path,body)=>{
     assert '<pre id="acceptance">PASS</pre>' in result.stdout, result.stdout.split('<pre id="acceptance">')[-1][:500]
 
 
+def test_letter_pictures_upload_send_with_an_ordinary_letter_and_leave_once_sent(tmp_path):
+    browser = Path('C:/Program Files/Google/Chrome/Application/chrome.exe')
+    if not browser.is_file():
+        pytest.skip('Headless Chromium unavailable')
+    document = composer_document().replace('</script></html>', '''
+const fixtureFetch=window.fetch;let uploads=0,holdUpload=false,releaseUpload=null;
+const pictureId=n=>String(n).padStart(32,'0');
+window.fetch=async(url,request)=>{
+ if(new URL(url).pathname!=='/toy/letter/image/upload')return fixtureFetch(url,request);
+ if(holdUpload)await new Promise(resolve=>releaseUpload=resolve);
+ const n=++uploads;
+ return {ok:true,json:async()=>({code:0,data:{image_id:pictureId(n),url:'http://127.0.0.1:8899/toy/media/letter-image-'+pictureId(n)+'.png'}})};
+};
+(async()=>{
+ const check=(ok,message)=>{if(!ok)throw Error(message)};
+ const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+ const state=composerCovers.get(input),strip=document.querySelector('.olivia-compose-pictures');
+ const pictureInput=document.querySelector('.olivia-compose-grid>input[type=file]');
+ const choose=async(...names)=>{const dt=new DataTransfer();for(const name of names)dt.items.add(new File([new Uint8Array(8)],name,{type:'image/png'}));pictureInput.files=dt.files;await pictureInput.onchange()};
+ const prepare=()=>window.__oliviaPrepareLetterRoute({url:'/toy/letter/send',data:{content:input.value}});
+ const add=[...strip.querySelectorAll('button')].find(node=>node.textContent==='添加图片');
+ check(add&&!strip.hidden&&strip.closest('.olivia-compose-navigation'),'picture button beside the letter tabs');
+ check(document.querySelector('input[type=file]').accept.includes('.wav'),'the song file stays the first file input');
+ await choose('a.png','b.JPG','notes.txt');
+ check(state.images.length===2&&strip.querySelectorAll('.olivia-compose-picture img').length===2,'two pictures, text refused');
+ check(strip.textContent.includes('PNG'),'type hint shown');
+ let config=await prepare();
+ check(JSON.stringify(config.data.material.image_ids)===JSON.stringify([pictureId(1),pictureId(2)]),'pictures named in the letter');
+ check(!('cover_source_id' in config.data.material)&&config.data.content==='今晚想听你唱一首歌。','ordinary letter otherwise');
+ check(!('cover_source_id' in calls.filter(item=>item.path==='/toy/letter/route-preview').pop().body),'preview asks no cover');
+ strip.querySelector('.olivia-compose-picture button').click();
+ check(state.images.length===1&&state.images[0].image_id===pictureId(2),'one removed');
+ await choose('c.webp','d.png','e.jpeg','f.png');
+ check(state.images.length===4&&add.hidden&&strip.textContent.includes('4'),'at most four');
+ state.select('cover');check(strip.hidden,'song pages hide the pictures');
+ await testFile();config=await prepare();check(!config.data.material.image_ids&&config.data.material.cover_source_id,'a cover carries no pictures');
+ state.select('letter');check(!strip.hidden&&state.images.length===4,'pictures kept across tabs');
+ state.clearPictures();holdUpload=true;const pending=choose('g.png');await wait(0);
+ check(add.disabled,'busy while uploading');
+ let blocked='';try{await prepare()}catch(error){blocked=error.message}
+ check(blocked.includes('图片还在添加'),'no send while a picture uploads');
+ releaseUpload();await pending;holdUpload=false;
+ config=await prepare();check(config.data.material.image_ids.length===1,'uploaded picture sent');
+ await wait(600);check(state.images.length===1,'kept while the send is under way');
+ input.value='';await wait(600);check(state.images.length===0,'gone once the dialog empties its draft');
+ input.value='另一封信';await choose('h.png');document.getElementById('clear').click();
+ check(state.images.length===0,'clear empties the pictures too');
+ document.getElementById('acceptance').textContent='PASS';
+})().catch(error=>document.getElementById('acceptance').textContent='FAIL:'+error.message);
+</script></html>''')
+    page = tmp_path / 'pictures.html'
+    page.write_text(document, encoding='utf-8')
+    result = subprocess.run([str(browser), '--headless', '--disable-gpu', '--no-first-run',
+        '--disable-background-networking', '--disable-component-update',
+        f'--user-data-dir={tmp_path / "profile"}', '--virtual-time-budget=5000',
+        '--dump-dom', page.as_uri()], capture_output=True,
+        text=True, encoding='utf-8', errors='replace', timeout=45)
+    assert result.returncode == 0, result.stderr[-1500:]
+    assert '<pre id="acceptance">PASS</pre>' in result.stdout, result.stdout.split('<pre id="acceptance">')[-1][:500]
+
+
 def test_audio_collection_reuses_existing_waveform_and_stays_outside_paper():
     source = BOOTSTRAP_JAVASCRIPT
     assert "collect.className='olivia-wave-style'" in source
@@ -128,3 +189,45 @@ document.getElementById('acceptance').textContent='PASS';
 </script>''',encoding='utf-8')
     result=subprocess.run([str(browser),'--headless','--disable-gpu','--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-component-update',f'--user-data-dir={tmp_path / "profile"}','--virtual-time-budget=1000','--dump-dom',page.as_uri()],capture_output=True,text=True,encoding='utf-8',errors='replace',timeout=90)
     assert '<pre id="acceptance">PASS</pre>' in result.stdout,result.stdout[-1800:]
+
+
+def test_letter_pictures_can_be_pasted_into_an_ordinary_letter(tmp_path):
+    browser = Path('C:/Program Files/Google/Chrome/Application/chrome.exe')
+    if not browser.is_file():
+        pytest.skip('Headless Chromium unavailable')
+    document = composer_document().replace('</script></html>', '''
+const fixtureFetch=window.fetch;let uploads=0;
+window.fetch=async(url,request)=>{
+ if(new URL(url).pathname!=='/toy/letter/image/upload')return fixtureFetch(url,request);
+ const n=String(++uploads).padStart(32,'0');
+ return {ok:true,json:async()=>({code:0,data:{image_id:n,url:'http://127.0.0.1:8899/toy/media/letter-image-'+n+'.png'}})};
+};
+(async()=>{
+ const check=(ok,message)=>{if(!ok)throw Error(message)};
+ const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+ const state=composerCovers.get(input);
+ // A copied picture often has no file name; pasting it adds it, and text pasted with it still goes in.
+ const paste=dt=>{const event=new ClipboardEvent('paste',{bubbles:true,cancelable:true,clipboardData:dt});input.dispatchEvent(event);return event};
+ let dt=new DataTransfer();dt.items.add(new File([new Uint8Array(8)],'',{type:'image/png'}));
+ check(paste(dt).defaultPrevented,'a pasted picture alone is taken');
+ await wait(50);check(state.images.length===1,'pasted picture added');
+ dt=new DataTransfer();dt.items.add(new File([new Uint8Array(8)],'',{type:'image/jpeg'}));dt.setData('text/plain','看这个');
+ check(!paste(dt).defaultPrevented,'text pasted with a picture still goes in');
+ await wait(50);check(state.images.length===2,'picture pasted with text added');
+ dt=new DataTransfer();dt.items.add(new File([new Uint8Array(8)],'notes.txt',{type:'text/plain'}));
+ paste(dt);await wait(50);check(state.images.length===2,'a pasted text file is refused');
+ state.select('cover');dt=new DataTransfer();dt.items.add(new File([new Uint8Array(8)],'c.png',{type:'image/png'}));
+ check(!paste(dt).defaultPrevented,'song pages ignore pasted pictures');
+ await wait(50);state.select('letter');check(state.images.length===2,'nothing added on a song page');
+ document.getElementById('acceptance').textContent='PASS';
+})().catch(error=>document.getElementById('acceptance').textContent='FAIL:'+error.message);
+</script></html>''')
+    page = tmp_path / 'drop.html'
+    page.write_text(document, encoding='utf-8')
+    result = subprocess.run([str(browser), '--headless', '--disable-gpu', '--no-first-run',
+        '--disable-background-networking', '--disable-component-update',
+        f'--user-data-dir={tmp_path / "profile"}', '--virtual-time-budget=5000',
+        '--dump-dom', page.as_uri()], capture_output=True,
+        text=True, encoding='utf-8', errors='replace', timeout=45)
+    assert result.returncode == 0, result.stderr[-1500:]
+    assert '<pre id="acceptance">PASS</pre>' in result.stdout, result.stdout.split('<pre id="acceptance">')[-1][:500]

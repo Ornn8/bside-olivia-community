@@ -45,6 +45,8 @@ class RemoteGeneration:
         # video, so the service announces moment videos only to clients that say they can take one.
         headers['X-Olivia-Daily-Video-Moment'] = '1'
         headers['X-Olivia-Piano'] = '1'
+        # Her doodles come back as a photo of type 'doodle', which releases before 2.5.0 refuse (2026-10-24).
+        headers['X-Olivia-Doodle'] = '1'
         headers.update(ui_language.headers())
         headers.update(contact_context.headers())
         payload = None
@@ -104,6 +106,15 @@ class RemoteGeneration:
                 raise CloudError('GPU_REQUEST_INVALID',400)
             payload=data
             path, method = '/v1/wardrobe', 'POST'
+        elif action == 'wardrobe_pin':
+            # He picks the exact look she wears; it must be one he owns.
+            from runtime.wardrobe import valid_look_id
+            if (not isinstance(data,dict) or set(data)!={'request_id','look_id'}
+                    or not isinstance(data['request_id'],str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,255}',data['request_id'])
+                    or not valid_look_id(data['look_id'])):
+                raise CloudError('GPU_REQUEST_INVALID',400)
+            payload=data
+            path, method = '/v1/wardrobe', 'POST'
         elif action == 'gifts_get' and data == {}:
             path, method = '/v1/gifts', 'GET'
         elif action == 'gifts_buy':
@@ -148,7 +159,7 @@ class RemoteGeneration:
             if action in ('pets_get', 'pets_post'):
                 from runtime.pets import validate_pets
                 return validate_pets(result)
-            if action in ('wardrobe_get','wardrobe_set','wardrobe_buy'):
+            if action in ('wardrobe_get','wardrobe_set','wardrobe_buy','wardrobe_pin'):
                 from runtime.wardrobe import validate_cloud_state
                 return validate_cloud_state(result)
             if action in ('billing_prices', 'billing_account'):
@@ -363,8 +374,10 @@ class RemoteGeneration:
         except (ClientError, TimeoutError) as exc: raise connection_error(exc) from None
         except (ValueError, KeyError, TypeError): raise CloudError('GPU_RESPONSE_INVALID', 502) from None
 
-    async def generate(self, kind, data, output, *, assets=None, timeout=3600, validate=None, receipt_path=None):
-        caps = await self.request('capabilities', {})
+    async def generate(self, kind, data, output, *, assets=None, timeout=3600, validate=None, receipt_path=None,
+                       capabilities=None):
+        # A caller that has just read the capabilities passes them: one round trip less on a chat voice.
+        caps = capabilities if isinstance(capabilities, dict) else await self.request('capabilities', {})
         if kind != 'piano' and kind not in caps['kinds']: raise CloudError('GPU_CAPABILITY_UNAVAILABLE', 503)
         if kind == 'piano':
             from runtime.piano import capability
@@ -458,7 +471,8 @@ class RemoteGeneration:
             if deadline is not None and time.monotonic() >= deadline:
                 await self.request('cancel', {'task_id': task['task_id']})
                 raise CloudError('GPU_TASK_TIMEOUT', 504)
-            await asyncio.sleep(NIGHT_POLL_SECONDS if task.get('night_hold') else 1)
+            # A chat voice takes seconds and its reply waits for it, so it is looked at more often.
+            await asyncio.sleep(NIGHT_POLL_SECONDS if task.get('night_hold') else .4 if kind == 'tts' else 1)
             task = await self._status(task['task_id'])
             progress('generation', task)
         if receipt and task['status'] in ('failed', 'cancelled') and kind not in ('daily_video', 'piano') and not data.get('speech_mode'):
@@ -472,8 +486,11 @@ class RemoteGeneration:
         result = await self._download(task, output, validate=validate)
         if (caps.get('result_acknowledgement') is True and kind not in ('cover_video', 'original_video', 'daily_video', 'piano')
                 and not data.get('speech_mode')):
-            from runtime.gpu_cleanup import acknowledge_result
-            await acknowledge_result(self, task['task_id'], output)
+            from runtime.gpu_cleanup import acknowledge_result, acknowledge_later
+            if kind == 'tts':
+                acknowledge_later(self, task['task_id'], output)
+            else:
+                await acknowledge_result(self, task['task_id'], output)
         return result
 
     async def _status(self, task_id):

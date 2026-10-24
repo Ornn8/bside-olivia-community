@@ -32,10 +32,10 @@ def real_voice_server(monkeypatch, tmp_path, result):
     return server, row
 
 
-def test_explicit_audio_does_not_use_optional_default_voice_budget(monkeypatch, tmp_path):
+def test_explicit_audio_on_qq_waits_the_qq_voice_budget(monkeypatch, tmp_path):
+    # Every QQ voice waits at most the QQ budget; past it the words go as text (owner 2026-10-24).
     server, row = real_voice_server(monkeypatch, tmp_path,
         pipeline_result(delivery='audio_speech'))
-    monkeypatch.setattr(backend, '_QQ_DEFAULT_VOICE_TIMEOUT_SECONDS', .01, raising=False)
     release = threading.Event()
     def render(text, path, **kwargs):
         assert release.wait(2)
@@ -48,13 +48,13 @@ def test_explicit_audio_does_not_use_optional_default_voice_budget(monkeypatch, 
             PersonalMessage('qq', 'b', 'u', 'voice', 'Use voice, please'), row))
         try:
             await asyncio.sleep(.04)
-            assert not task.done()  # Still honoring the audio contract.
+            assert not task.done()  # still waiting inside the budget
             release.set()
             assert await asyncio.wait_for(task, .5) == 'Hello'
         finally:
             release.set()
     asyncio.run(scenario())
-    assert row['voice_prepare_timeout_seconds'] == backend._VOICE_RENDER_TIMEOUT_SECONDS
+    assert row['voice_prepare_timeout_seconds'] == backend._qq_default_voice_timeout_seconds() == 60
     assert row['voice_prepare_status'] == 'completed' and row.get('prepared_audio')
     assert row['requested_format'] == 'voice' and 'voice_fallback' not in row
 
@@ -62,7 +62,7 @@ def test_explicit_audio_does_not_use_optional_default_voice_budget(monkeypatch, 
 def test_explicit_audio_timeout_sends_the_written_text(monkeypatch, tmp_path):
     server, row = real_voice_server(monkeypatch, tmp_path,
         pipeline_result(delivery='audio_speech'))
-    monkeypatch.setattr(backend, '_VOICE_RENDER_TIMEOUT_SECONDS', .04)
+    monkeypatch.setattr(backend, '_qq_default_voice_timeout_seconds', lambda: .04)
     release = threading.Event()
     def render(text, path, **kwargs):
         assert release.wait(2)
