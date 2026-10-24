@@ -279,3 +279,43 @@ def test_a_server_without_v5_still_settles_under_the_receipt_version(configured,
     monkeypatch.setattr(billing, '_post_settlement', lambda *a: answer)
     with billing.billing_scope('synthetic:turn'):
         assert billing.settle_receipt_sync(signed(17000), DIGEST)['charged_units'] == 17000 * 150
+
+
+def test_a_deferred_turn_uses_each_judgment_at_once_and_confirms_every_settlement(configured, monkeypatch):
+    release, calls = threading.Event(), []
+    def settle(key, receipt):
+        assert release.wait(5)
+        calls.append(receipt['receipt']['operation_id'])
+        return result(receipt)
+    monkeypatch.setattr(billing, '_post_settlement', settle)
+    async def scenario():
+        with billing.billing_scope('synthetic:turn', deferred=True):
+            assert billing.settle_receipt_sync(signed(), DIGEST) is None  # the judgment goes on, unsettled yet
+            assert await billing.settle_receipt(signed(), DIGEST) is None
+            assert calls == []
+            release.set()
+            await billing.confirm_settlements()
+            assert len(calls) == 2 and billing.CURRENT.get().pending == []
+    asyncio.run(scenario())
+
+
+def test_a_failed_deferred_settlement_fails_the_turn(configured, monkeypatch):
+    import urllib.error
+    def refuse(key, receipt):
+        raise urllib.error.HTTPError('https://relay.invalid/jev/settle', 402, 'balance', {}, None)
+    monkeypatch.setattr(billing, '_post_settlement', refuse)
+    async def scenario():
+        with billing.billing_scope('synthetic:turn', deferred=True):
+            billing.settle_receipt_sync(signed(), DIGEST)
+            with pytest.raises(ValueError, match='JEV_BILLING_HTTP_402'):
+                await billing.confirm_settlements()
+    asyncio.run(scenario())
+
+
+def test_a_receipt_that_cannot_be_settled_is_refused_before_the_judgment_is_used(configured, monkeypatch):
+    monkeypatch.setattr(billing, '_post_settlement', lambda *a: pytest.fail('must not settle'))
+    bad = signed()
+    bad['receipt']['input_digest'] = 'c' * 64
+    with billing.billing_scope('synthetic:turn', deferred=True):
+        with pytest.raises(ValueError, match='JEV_BILLING_RECEIPT_INVALID'):
+            billing.settle_receipt_sync(bad, DIGEST)

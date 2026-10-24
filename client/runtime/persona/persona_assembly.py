@@ -693,5 +693,5 @@ def _im_presentation():
                   'proactive_decide', 'proactive_decision', 'turn_is_current',
                   'record_stage_timing', 'generation_attempts', 'daily_video_candidates', 'story_continuation',
                   'generation_run_id', 'generation_attempt_id', 'save_writer_checkpoint', 'piano_midi', 'piano_experience', 'piano_pieces',
-                  'offer_experience', 'recent_replies'}
+                  'offer_experience', 'recent_replies', 'voice_preview'}
     return {"chat_delivery": {key: item for key, item in value.items() if key not in local_only}} if value is not None else {}
