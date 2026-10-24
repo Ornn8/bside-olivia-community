@@ -26,6 +26,20 @@ async def acknowledge_result(api, task_id, output):
         pass
 
 
+def acknowledge_later(api, task_id, output):
+    """Leave the ACK to the cleanup loop: a chat voice is sent without waiting for it (2026-10-24: 1.4 s a voice)."""
+    output = Path(output)
+    if not output.is_file() or not output.stat().st_size:
+        return
+    marker = output.with_suffix(output.suffix + '.gpu-cleanup.json')
+    try:
+        temporary = marker.with_suffix('.tmp')
+        temporary.write_text(json.dumps({**_identity(api), 'task_id': task_id}), encoding='utf-8')
+        temporary.replace(marker)
+    except OSError:
+        pass  # the server's retention removes an unacknowledged result
+
+
 async def retry_pending(root, api):
     identity = _identity(api)
     for marker in Path(root).rglob('*.gpu-cleanup.json'):

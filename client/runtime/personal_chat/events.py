@@ -37,7 +37,7 @@ class PersonalMessage:
 # What the other QQ segment kinds read as (2026-10-24). A share card keeps its title and link, a sticker its caption;
 # a kind this list does not know still arrives as a marker instead of losing the whole message.
 _MARKERS = {'image': '[图片]', 'record': '[语音]', 'video': '[视频]', 'file': '[文件]', 'forward': '[聊天记录]',
-            'node': '[聊天记录]', 'dice': '[骰子]', 'rps': '[猜拳]', 'contact': '[名片]', 'location': '[位置]',
+            'node': '[聊天记录]', 'contact': '[名片]', 'location': '[位置]',
             'music': '[音乐分享]', 'shake': '[窗口抖动]', 'poke': '[戳一戳]', 'xml': '[分享卡片]', 'markdown': '[消息]'}
 _SILENT = {'reply', 'at'}
 
@@ -89,6 +89,9 @@ def _segment_text(segment):
         return _sticker(data)
     if kind == 'json':
         return _card(data)
+    if kind in ('dice', 'rps'):
+        from .qq_games import marker
+        return marker(kind, data)
     return _MARKERS.get(kind, '[QQ消息]')
 
 

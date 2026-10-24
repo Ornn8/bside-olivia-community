@@ -151,8 +151,9 @@ def test_status_transient_failure_does_not_resubmit(tmp_path, monkeypatch, failu
                 assert output.read_bytes()==b'synthetic-output'
                 assert len(polled)==2
             assert len(submitted)==1
-            assert delays == ([1, 2, 4, 8, 16] + [30] * 19 if failure == 'persistent'
-                              else [1] if failure in (401, 404) else [1, 2])
+            # The first wait is the poll interval, 0.4 s for a chat voice; then the read backoff.
+            assert delays == ([.4, 2, 4, 8, 16] + [30] * 19 if failure == 'persistent'
+                              else [.4] if failure in (401, 404) else [.4, 2])
     asyncio.run(scenario())
 
 

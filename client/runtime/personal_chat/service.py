@@ -300,11 +300,14 @@ class PersonalChatService:
             datetime.now(timezone.utc).timestamp() - row.get('created_at', datetime.now(timezone.utc).timestamp()))), 4))
         timings.setdefault('voice_wait', 0.0)
         media_token = MEDIA_RESOLVER.set(getattr(send, 'resolve_media', None))
+        from .qq_games import THROWER
+        thrower = THROWER.set(getattr(send, 'game', None))  # her answer to his dice or rock-paper-scissors
         current = TURN_IS_CURRENT.set(lambda: not self._new_inputs(row))
         try:
             return await self.generate(event, row)
         finally:
             TURN_IS_CURRENT.reset(current)
+            THROWER.reset(thrower)
             MEDIA_RESOLVER.reset(media_token)
 
     def replies_in_flight(self):

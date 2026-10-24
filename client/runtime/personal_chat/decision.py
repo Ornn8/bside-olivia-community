@@ -52,6 +52,12 @@ INSTRUCTION += ('QQ里：输入中的[表情:名称]是他发来的QQ表情，�
                 'channel为qq时，正文里可以偶尔用一个QQ表情，直接写[名称]，只从这些里选：' + '、'.join(HER_FACES) + '。'
                 '一条最多一个，很多时候不用，不写[表情:名称]这种格式。'
                 '可选字段poke=true表示发消息前在QQ里戳他一下，只在亲近、玩闹或他先戳你时偶尔用；不需要就省略。\n')
+# Games and photos already sent (owner 2026-10-24). Appended for the same reason.
+INSTRUCTION += ('[骰子:N点]是他在QQ里掷出的骰子点数，[猜拳:手势]是他出的拳；[QQ小游戏：…]说明你已经回掷或回出了什么、谁赢了，'
+                '照这个结果回应，不另编点数或手势。'
+                'recent_dialogue里带image_delivery_confirmed或image_observations的回合，表示那张照片已经发到他手机上了：'
+                '你说过要拍给他看的照片，送到了就算已经发了，之后接着聊这张照片或他的反应，'
+                '不再说照片还在拍、还没拍完、马上发。\n')
 
 
 PROVENANCE_HEADER = re.compile(r'\[(?:历史消息|当前消息)\s*\{.*?\}\s*\]\s*', re.DOTALL)
@@ -210,6 +216,9 @@ def decode(raw, *, user, now, proactive=False, allow_user_silence=False, allow_s
         # His face as the input shows it, copied back, is still the face itself.
         data['text'] = re.sub(r'\[表情[:：]([^\[\]\r\n]{1,32})\]',
                               lambda m: '[' + m.group(1) + ']' if m.group(1).casefold() in FACE_IDS else '', data['text'])
+        # A throw is never text or a face: a [骰子]/[包剪锤] face would throw blind, without her knowing the result.
+        data['text'] = re.sub(r'\[(?:骰子|猜拳|包剪锤)(?:[:：][^\[\]\r\n]{1,8})?\]|\[QQ小游戏[:：][^\[\]]{0,200}\]', '',
+                              data['text'])
         if data['delivery'] not in {'text','voice'}:
             raise ValueError("DELIVERY_OR_LISTENING")
         try:

@@ -276,6 +276,23 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
             raise RuntimeError('QQ_QZONE_POST_UNCONFIRMED')
         return data['tid']
 
+    async def game(kind):
+        """Her dice or rock-paper-scissors. QQ picks the result, so it is read back from the message sent."""
+        if kind not in {'dice', 'rps'}:
+            raise ValueError('QQ_REPLY_INVALID')
+        identifier = await send_item({'type': kind, 'data': {}})
+        allowed = '123456' if kind == 'dice' else '123'
+        for wait in (0, .5, 1, 2):
+            await asyncio.sleep(wait)
+            data = await qq_action('get_msg', {'message_id': int(identifier) if identifier.lstrip('-').isdigit()
+                                               else identifier})
+            segments = data.get('message') if isinstance(data, dict) else None
+            result = next((str(s['data'].get('result', '')) for s in segments or []
+                           if isinstance(s, dict) and s.get('type') == kind and isinstance(s.get('data'), dict)), '')
+            if len(result) == 1 and result in allowed:
+                return result
+        raise RuntimeError('QQ_ACTION_UNCONFIRMED')  # sent, but no result to go on
+
     async def cookies(domain):
         if domain not in {'user.qzone.qq.com', 'qzone.qq.com'}:
             raise ValueError('QQ_COOKIE_DOMAIN_INVALID')
@@ -290,6 +307,7 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
     send.file = send_file
     send.poke, send.like, send.status = poke, like, status
     send.signature, send.qzone_post, send.cookies = signature, qzone_post, cookies
+    send.game = game
     async def resolve_media(kind, reference):
         if kind not in {'audio', 'video', 'file'} or not re.fullmatch(r'[A-Za-z0-9_.-]{1,256}', reference):
             raise ValueError('QQ_MEDIA_REFERENCE_INVALID')
@@ -331,6 +349,7 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
         correlated.video = correlated_video
         correlated.file = send_file
         correlated.poke = poke
+        correlated.game = game
         correlated.plain = send  # without quoting his message
         correlated.resolve_media = resolve_media
         correlated.is_available = send.is_available

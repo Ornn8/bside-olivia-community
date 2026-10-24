@@ -67,8 +67,8 @@ def generate(kind, data, output, *, environment=None, assets=None):
     receipt = (Path(output).with_name(Path(output).stem + '-remote-order.private.json')
                if kind in ('video', 'lipsync') or kind in night else None)
     try:
-        task = run_sync(lambda: asyncio.run(api.generate(kind, data, output, assets=assets,
-            validate=validate, **({'receipt_path': receipt} if receipt is not None else {}))))
+        task = run_sync(lambda: asyncio.run(api.generate(kind, data, output, assets=assets, validate=validate,
+            capabilities=caps, **({'receipt_path': receipt} if receipt is not None else {}))))
     finally:
         if marker is not None:
             marker.unlink(missing_ok=True)

@@ -556,6 +556,11 @@ async def _generate_billed(server, event, row):
     if event.channel == 'qq':
         from .bilibili import link_context
         observation_context += await link_context(server, event, row)
+        from .qq_games import game_context
+        thrown = row.get('qq_game')
+        observation_context += await game_context(event, row, enabled=_qq_extras(server)['gestures'])
+        if row.get('qq_game') is not thrown:
+            await persist_chat(server)  # a rewritten turn never throws again
     from runtime.piano import recent_context
     observation_context += recent_context(server, event.binding_id)
     from runtime.call.store import recent_context as call_context
