@@ -149,3 +149,33 @@ def test_server_final_artifact_never_runs_client_assembly(tmp_path, monkeypatch)
     result=render_music_materials('original_video',{'media_request':{'incoming':'synthetic','reply':'synthetic'}},final,
         environment={},include_spoken=True,reply_text='synthetic',performance_video_path=Path(),official_reply_reference_path=Path())
     assert result['assembly']=='server' and calls==['ack']
+
+
+def test_a_finished_task_video_is_taken_from_its_bundle_or_as_it_is(tmp_path, monkeypatch):
+    import asyncio, hashlib, json, zipfile
+    from runtime.media import remote_materials, music_reply
+    monkeypatch.setattr(music_reply, '_media_duration_seconds', lambda path, **kwargs: 12.0 if path.is_file() else None)
+    final, song = b'\0\0\0\x18ftypmp42final', b'RIFFsong'
+
+    class Api:
+        def __init__(self, payload):
+            self.payload, self.asked = payload, []
+        async def download_task(self, task_id, output, *, validate=None):
+            self.asked.append(task_id)
+            output.write_bytes(self.payload)
+
+    bundle = tmp_path / 'bundle.zip'
+    files = {'final.mp4': final, 'song.wav': song}
+    with zipfile.ZipFile(bundle, 'w') as archive:
+        for name, data in files.items():
+            archive.writestr(name, data)
+        archive.writestr('manifest.json', json.dumps({'version': 2, 'assembly': 'server', 'files': {
+            name: {'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()} for name, data in files.items()}}))
+    api = Api(bundle.read_bytes())
+    out = tmp_path / 'media' / 'letter.mp4'
+    assert asyncio.run(remote_materials.fetch_task_video(api, 'task-1', out)) == 'song'
+    assert out.read_bytes() == final and api.asked == ['task-1']
+    single = Api(final)
+    assert asyncio.run(remote_materials.fetch_task_video(single, 'task-2', tmp_path / 'media' / 'spoken.mp4')) == 'spoken'
+    assert (tmp_path / 'media' / 'spoken.mp4').read_bytes() == final
+    assert sorted(p.name for p in (tmp_path / 'media').iterdir()) == ['letter.mp4', 'spoken.mp4']  # no leftovers

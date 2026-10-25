@@ -155,7 +155,7 @@ def test_the_answer_is_fetched_with_the_events_header_and_kept(monkeypatch, tmp_
         return web.json_response(FULL)
     proactive_config.configure(tmp_path)
     assert refresh(monkeypatch, handler, NOW) is True
-    assert seen == ['contact.v1']
+    assert seen == ['contact.v1,contact.task_video.v1']
     assert proactive_config.status() == {'version': 'cfg-7', 'source': 'cloud'}
     assert proactive_config.template('diary_due') == 'TEXT-diary_due' and proactive_config.rule('max_per_day') == 3
     kept = json.loads((tmp_path / 'proactive' / 'config.json').read_text(encoding='utf-8'))

@@ -602,7 +602,7 @@ def test_the_events_check_says_what_this_client_can_do_and_keeps_contacts(tmp_pa
         finally:
             await server.close()
     asyncio.run(scenario())
-    assert seen == [('events', 'contact.v1', 'Bearer olivia-synthetic')]
+    assert seen == [('events', 'contact.v1,contact.task_video.v1', 'Bearer olivia-synthetic')]
     assert [item['id'] for item in cloud_contact.pending(tmp_path)] == [ID]
     assert cloud_events.visits(tmp_path, '2026-10-13') == ['20:00']
 
@@ -838,3 +838,11 @@ def test_the_outcome_is_written_as_a_contact_event_without_any_text(tmp_path):
         assert not [item for item in collector.batch(1) if item['stage'] == 'contact']  # Old servers never see the stage.
     finally:
         reply_telemetry.configure(None)
+
+
+def test_a_video_may_name_the_finished_task_it_is_and_nothing_else_may():
+    parsed = cloud_contact.parse_event(event(media=[{'type': 'video', 'task_id': '44a4fa8aca02b41539e5af88ec9acce2'}]))
+    assert parsed['media'] == [{'type': 'video', 'brief': None, 'task_id': '44a4fa8aca02b41539e5af88ec9acce2'}]
+    for media in ([{'type': 'photo', 'task_id': 'abc'}], [{'type': 'video', 'task_id': '../etc'}],
+                  [{'type': 'video', 'task_id': 7}], [{'type': 'video', 'task_id': 'x' * 101}]):
+        assert cloud_contact.parse_event(event(media=media)) is None
