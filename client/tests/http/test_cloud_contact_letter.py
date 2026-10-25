@@ -304,7 +304,7 @@ asyncio.run(main())
 
 
 def test_a_finished_video_named_by_its_task_is_fetched_and_shown_on_the_letter(tmp_path):
-    # 2026-10-25: six night song videos failed; made again for free, they reach their owners this way.
+    # 2026-10-25: six night song videos failed; made again later, they reach their owners this way.
     run_isolated(tmp_path, SETUP + r'''
 os.environ['OLIVIA_GPU_API_URL'] = 'https://api.example.test'
 os.environ['OLIVIA_GPU_API_KEY'] = 'olivia-synthetic'

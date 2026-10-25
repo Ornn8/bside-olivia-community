@@ -3895,7 +3895,7 @@ async def _contact_letter_media(letter, skipped) -> list:
 
 async def _attach_task_video(letter, task_id) -> list:
     """A video the service already finished for this account (a song it made again after a failed night), fetched
-    by its task and attached to the contact letter as its video. Nothing is ordered or charged."""
+    by its task and attached to the contact letter as its video. Nothing is ordered again."""
     if letter.get('media_status') == 'COMPLETED' and letter.get('reply_video_url'):
         return []  # attached on an earlier try
     root = _media_root()
