@@ -3875,7 +3875,9 @@ async def _contact_letter_media(letter, skipped) -> list:
     from runtime.image_reply import contact_photos, schedule as schedule_image
     codes = list(skipped)
     for item in letter.get('contact_media') or []:
-        if item['type'] != 'photo':  # Letters carry pictures only; no clip or voice attaches to one.
+        if item['type'] == 'video' and item.get('task_id'):
+            codes += await _attach_task_video(letter, item['task_id'])
+        elif item['type'] != 'photo':  # Letters carry pictures, and only a video already made; no voice.
             codes.append('MEDIA_VIDEO_UNSUPPORTED' if item['type'] == 'video' else 'MEDIA_VOICE_UNSUPPORTED')
     photos = contact_photos(letter)
     if photos:
@@ -3889,6 +3891,39 @@ async def _contact_letter_media(letter, skipped) -> list:
                 codes += letter.get('contact_media_errors') or [
                     'MEDIA_PHOTO_FAILED' if letter['image_status'] == 'FAILED' else 'MEDIA_PHOTO_SKIPPED']
     return codes
+
+
+async def _attach_task_video(letter, task_id) -> list:
+    """A video the service already finished for this account (a song it made again after a failed night), fetched
+    by its task and attached to the contact letter as its video. Nothing is ordered again."""
+    if letter.get('media_status') == 'COMPLETED' and letter.get('reply_video_url'):
+        return []  # attached on an earlier try
+    root = _media_root()
+    url, key = _os.environ.get('OLIVIA_GPU_API_URL', ''), _os.environ.get('OLIVIA_GPU_API_KEY', '')
+    if root is None or not url or not key:
+        return ['MEDIA_VIDEO_UNAVAILABLE']
+    from runtime.cloud_service import CloudError
+    from runtime.media.latentsync_reply import resolve_ffmpeg_executable
+    from runtime.media.remote_materials import fetch_task_video
+    from runtime.remote_generation import RemoteGeneration
+    output = root / f"{letter['letter_id']}.mp4"
+    try:
+        kind = await fetch_task_video(RemoteGeneration(url, key), task_id, output,
+                                      ffmpeg=resolve_ffmpeg_executable(_os.environ))
+    except (CloudError, OSError, RuntimeError, ValueError, KeyError, TypeError):
+        _safe_log('contact_task_video_unavailable')
+        return ['MEDIA_VIDEO_FAILED']
+    # The letter page shows a video for any mode but a text letter: a song is her singing, an MP4 her speaking.
+    letter.update(reply_video_enabled=True, reply_video_url=f"http://127.0.0.1:{PORT}/toy/media/{output.name}",
+                  reply_mode=(ReplyMode.SINGING_VIDEO if kind == 'song' else ReplyMode.SPOKEN_VIDEO).value,
+                  **({'reply_structure': 'singing_only'} if kind == 'song' else {}),
+                  media_status='COMPLETED', media_error_code=None, media_retryable=False,
+                  video_completed_at=time.time(), is_read=0)
+    _record_published_media(letter, reply_text=letter.get('reply_text', ''),
+                            delivery_id=letter.get('private_world_delivery_id', ''),
+                            path=output, components=('music',), presentation='video')
+    _persist_media_state()
+    return []
 
 
 async def _deliver_contact_letter(event: dict):

@@ -20,7 +20,14 @@ from runtime.media.media_paths import resolve_media_path
 
 _LOGGER = logging.getLogger(__name__)
 
-_FAILURE_PHASES = frozenset({"source_prepare", "inference", "output_validate"})
+_FAILURE_PHASES = frozenset({"source_prepare", "inference", "output_validate", "segment_cut", "segment_join"})
+# LatentSync holds every frame of its input in memory: a whole song (about 5000 frames) grew past the GPU host's
+# 31 GB and was killed (2026-10-24 and 25). A long clip is lip-synced in pieces of SEGMENT_FRAMES and joined;
+# 480 frames is 19.2 s at 25 fps and a whole number of the model's 16-frame batches.
+SEGMENT_FRAMES = 480
+SEGMENT_FPS = 25
+# A shorter remainder joins the piece before it rather than becoming a piece of its own.
+SEGMENT_MIN_TAIL = 96
 _INPUT_NAMES = frozenset({"video", "audio", "output_parent"})
 _MISSING_COMPONENTS = frozenset({
     "unknown", "video", "audio", "output_parent", "ffmpeg", "ffprobe", "scheduler",
@@ -387,6 +394,90 @@ def _validate_rendered_video(
         )
 
 
+def segment_spans(frames: int) -> list[tuple[int, int]]:
+    """(first frame, frame count) of each piece; one piece when the clip is short enough."""
+    if frames <= SEGMENT_FRAMES + SEGMENT_MIN_TAIL:
+        return [(0, frames)]
+    spans = [(start, min(SEGMENT_FRAMES, frames - start)) for start in range(0, frames, SEGMENT_FRAMES)]
+    if spans[-1][1] < SEGMENT_MIN_TAIL:
+        tail = spans.pop()
+        spans[-1] = (spans[-1][0], spans[-1][1] + tail[1])
+    return spans
+
+
+def _run_ffmpeg_step(command, *, environment, deadline, phase, paths):
+    try:
+        result = run_managed_process(command, deadline=deadline, env=environment)
+    except subprocess.TimeoutExpired as exc:
+        raise _reported_process_failure(environment, returncode=None, stderr=exc.stderr, timed_out=True,
+                                        phase=phase, paths=paths) from exc
+    except OSError as exc:
+        raise _reported_process_failure(environment, returncode=None, stderr=str(exc), management_failed=True,
+                                        phase=phase, paths=paths) from exc
+    if result.returncode != 0:
+        raise _reported_process_failure(environment, returncode=result.returncode, stderr=result.stderr,
+                                        phase=phase, paths=paths)
+    return result
+
+
+def _count_frames(video_path: Path, *, environment, deadline) -> int:
+    """Frames of the prepared clip, or 0 when they cannot be counted: then it is rendered whole, as before."""
+    ffmpeg = shutil.which("ffmpeg", path=environment["PATH"])
+    if ffmpeg is None:
+        return 0
+    try:
+        result = run_managed_process(
+            [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostats", "-progress", "pipe:1",
+             "-i", str(video_path), "-map", "0:v:0", "-f", "null", os.devnull],
+            deadline=deadline, env=environment)
+    except (subprocess.TimeoutExpired, OSError):
+        return 0
+    if result.returncode != 0 or not isinstance(result.stdout, bytes):
+        return 0
+    progress = dict(line.split("=", 1) for line in result.stdout.decode("utf-8", errors="replace").splitlines()
+                    if "=" in line)
+    try:
+        return int(progress.get("frame", "0"))
+    except ValueError:
+        return 0
+
+
+def _cut_segment(video_path: Path, audio_path: Path, start: int, count: int, video_out: Path, audio_out: Path, *,
+                 environment, deadline) -> None:
+    """One piece of the prepared clip and the same span of the voice, frame-exact at 25 fps."""
+    ffmpeg = shutil.which("ffmpeg", path=environment["PATH"])
+    if ffmpeg is None:
+        raise LatentSyncReplyError("LATENTSYNC_FFMPEG_UNAVAILABLE")
+    paths = {"video": video_path, "audio": audio_path, "output_parent": video_out.parent}
+    offset, seconds = f"{start / SEGMENT_FPS:.3f}", f"{count / SEGMENT_FPS:.3f}"
+    _run_ffmpeg_step(
+        [ffmpeg, "-y", "-loglevel", "error", "-nostdin", "-ss", offset, "-i", str(video_path),
+         "-frames:v", str(count), "-map", "0:v:0", "-an", "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+         "-pix_fmt", "yuv420p", "-r", str(SEGMENT_FPS), str(video_out)],
+        environment=environment, deadline=deadline, phase="segment_cut", paths=paths)
+    _run_ffmpeg_step(
+        [ffmpeg, "-y", "-loglevel", "error", "-nostdin", "-ss", offset, "-t", seconds, "-i", str(audio_path),
+         "-map", "0:a:0", "-c:a", "pcm_s16le", str(audio_out)],
+        environment=environment, deadline=deadline, phase="segment_cut", paths=paths)
+    if not video_out.is_file() or not audio_out.is_file():
+        raise LatentSyncReplyError("LATENTSYNC_SOURCE_PREPARE_FAILED")
+
+
+def _join_segments(pieces: list[Path], audio_path: Path, output: Path, *, environment, deadline) -> None:
+    """The lip-synced pieces in order, with the whole voice laid back over them."""
+    ffmpeg = shutil.which("ffmpeg", path=environment["PATH"])
+    if ffmpeg is None:
+        raise LatentSyncReplyError("LATENTSYNC_FFMPEG_UNAVAILABLE")
+    listing = output.parent / "segments.txt"
+    listing.write_text("".join("file '" + piece.as_posix() + "'\n" for piece in pieces), encoding="utf-8")
+    _run_ffmpeg_step(
+        [ffmpeg, "-y", "-loglevel", "error", "-nostdin", "-f", "concat", "-safe", "0", "-i", str(listing),
+         "-i", str(audio_path), "-map", "0:v:0", "-map", "1:a:0", "-c:v", "libx264", "-preset", "fast",
+         "-crf", "18", "-pix_fmt", "yuv420p", "-r", str(SEGMENT_FPS), "-c:a", "aac", "-shortest", str(output)],
+        environment=environment, deadline=deadline, phase="segment_join",
+        paths={"video": output, "audio": audio_path, "output_parent": output.parent})
+
+
 def render_latentsync_video(
     source_video: Path,
     audio_path: Path,
@@ -464,30 +555,32 @@ def render_latentsync_video(
             environment=runtime_environment,
             deadline=deadline,
         )
-        command = [
-            str(python_path),
-            str(Path(__file__).resolve().parents[2] / "tools/latentsync_diagnostic_worker.py"),
-            "--olivia-path-safe-io",
-            "--unet_config_path",
-            str(config_path),
-            "--inference_ckpt_path",
-            str(checkpoint_path),
-            "--video_path",
-            str(prepared_video),
-            "--audio_path",
-            str(audio_path),
-            "--video_out_path",
-            str(working_output),
-            "--inference_steps",
-            "20",
-            "--guidance_scale",
-            "1.5",
-            "--temp_dir",
-            str(pipeline_temp),
-            "--seed",
-            "1247",
-            "--enable_deepcache",
-        ]
+        def inference_command(video, audio, out, temp):
+            return [
+                str(python_path),
+                str(Path(__file__).resolve().parents[2] / "tools/latentsync_diagnostic_worker.py"),
+                "--olivia-path-safe-io",
+                "--unet_config_path",
+                str(config_path),
+                "--inference_ckpt_path",
+                str(checkpoint_path),
+                "--video_path",
+                str(video),
+                "--audio_path",
+                str(audio),
+                "--video_out_path",
+                str(out),
+                "--inference_steps",
+                "20",
+                "--guidance_scale",
+                "1.5",
+                "--temp_dir",
+                str(temp),
+                "--seed",
+                "1247",
+                "--enable_deepcache",
+            ]
+
         diagnostic_paths = {
             "video": prepared_video, "audio": audio_path,
             "output_parent": working_output.parent, "runtime_root": latentsync_root,
@@ -501,36 +594,60 @@ def render_latentsync_video(
             "vae_config": latentsync_root / "stabilityai/sd-vae-ft-mse/config.json",
             "vae_weights": latentsync_root / "stabilityai/sd-vae-ft-mse/diffusion_pytorch_model.safetensors",
         }
-        try:
-            result = run_managed_process(
-                command,
-                cwd=latentsync_root,
-                deadline=deadline,
-                env=runtime_environment,
-            )
-        except subprocess.TimeoutExpired as exc:
-            failure = _reported_process_failure(
-                source_environment,
-                returncode=None,
-                stderr=exc.stderr,
-                timed_out=True,
-                paths=diagnostic_paths,
-            )
-            raise failure from exc
-        except OSError as exc:
-            failure = _reported_process_failure(
-                source_environment,
-                returncode=None,
-                stderr=str(exc),
-                management_failed=True,
-                paths=diagnostic_paths,
-            )
-            raise failure from exc
-        if result.returncode != 0:
-            raise _reported_process_failure(
-                source_environment, returncode=result.returncode, stderr=result.stderr,
-                paths=diagnostic_paths,
-            )
+
+        def infer(video, audio, out, temp):
+            try:
+                result = run_managed_process(
+                    inference_command(video, audio, out, temp),
+                    cwd=latentsync_root,
+                    deadline=deadline,
+                    env=runtime_environment,
+                )
+            except subprocess.TimeoutExpired as exc:
+                failure = _reported_process_failure(
+                    source_environment,
+                    returncode=None,
+                    stderr=exc.stderr,
+                    timed_out=True,
+                    paths=diagnostic_paths,
+                )
+                raise failure from exc
+            except OSError as exc:
+                failure = _reported_process_failure(
+                    source_environment,
+                    returncode=None,
+                    stderr=str(exc),
+                    management_failed=True,
+                    paths=diagnostic_paths,
+                )
+                raise failure from exc
+            if result.returncode != 0:
+                raise _reported_process_failure(
+                    source_environment, returncode=result.returncode, stderr=result.stderr,
+                    paths=diagnostic_paths,
+                )
+            if not Path(out).is_file() or Path(out).stat().st_size == 0:
+                raise LatentSyncReplyError("LATENTSYNC_OUTPUT_MISSING")
+
+        spans = segment_spans(_count_frames(prepared_video, environment=runtime_environment, deadline=deadline))
+        if len(spans) == 1:
+            infer(prepared_video, audio_path, working_output, pipeline_temp)
+        else:
+            pieces = []
+            for index, (first, count) in enumerate(spans):
+                piece_video = temporary_root / f"segment-{index:03d}.mp4"
+                piece_audio = temporary_root / f"segment-{index:03d}.wav"
+                piece_out = temporary_root / f"segment-{index:03d}-lipsync.mp4"
+                piece_temp = temporary_root / f"pipeline-temp-{index:03d}"
+                _cut_segment(prepared_video, audio_path, first, count, piece_video, piece_audio,
+                             environment=runtime_environment, deadline=deadline)
+                infer(piece_video, piece_audio, piece_out, piece_temp)
+                # Only the finished piece is kept: the disk filled on 2026-10-25 03:28.
+                for leftover in (piece_video, piece_audio):
+                    leftover.unlink(missing_ok=True)
+                shutil.rmtree(piece_temp, ignore_errors=True)
+                pieces.append(piece_out)
+            _join_segments(pieces, audio_path, working_output, environment=runtime_environment, deadline=deadline)
         if not working_output.is_file() or working_output.stat().st_size == 0:
             raise LatentSyncReplyError("LATENTSYNC_OUTPUT_MISSING")
         _validate_rendered_video(

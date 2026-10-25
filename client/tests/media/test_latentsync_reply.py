@@ -171,6 +171,8 @@ def test_missing_job_audio_is_reported_without_paths(tmp_path, monkeypatch, know
     fixture = _fixture(tmp_path / "private folder")
     monkeypatch.setattr(latentsync_reply, "_prepare_source_clip", _prepare)
     def fail(command, **kwargs):
+        if "--unet_config_path" not in command:  # the frame count before rendering
+            return subprocess.CompletedProcess(command, 0, b"frame=10\nprogress=end\n", b"")
         fixture.audio.unlink()
         missing = str(fixture.audio) if known else "C:/private folder/secret letter.wav"
         return subprocess.CompletedProcess(command, 1, b"", f"FileNotFoundError: [Errno 2] No such file or directory: '{missing}'")
@@ -259,3 +261,47 @@ def test_missing_runtime_alternatives_are_classified(tmp_path, relative, expecte
     result = latentsync_reply._failure_context('inference',
         f"FileNotFoundError: No such file or directory: '{relative}'", {'runtime_root': tmp_path})
     assert result == {'phase': 'inference', 'missing_component': expected}
+
+
+def test_segment_spans_keep_a_short_clip_whole_and_fold_a_short_tail():
+    assert latentsync_reply.segment_spans(400) == [(0, 400)]
+    assert latentsync_reply.segment_spans(576) == [(0, 576)]
+    assert latentsync_reply.segment_spans(1000) == [(0, 480), (480, 520)]
+    assert latentsync_reply.segment_spans(1000 + 480) == [(0, 480), (480, 480), (960, 520)]
+    spans = latentsync_reply.segment_spans(5250)
+    assert sum(count for _, count in spans) == 5250 and all(count <= 480 + 96 for _, count in spans)
+    assert [first for first, _ in spans] == [480 * index for index in range(len(spans))]
+
+
+def test_a_long_clip_is_lip_synced_in_pieces_and_joined(tmp_path: Path, monkeypatch) -> None:
+    # A whole song held every frame in memory and was killed at 31 GB (2026-10-24 and 25).
+    fixture = _fixture(tmp_path)
+    monkeypatch.setattr(latentsync_reply, "_prepare_source_clip", _prepare)
+    seen = {"cuts": [], "renders": [], "joins": []}
+
+    def run(command, **_kwargs):
+        if "--unet_config_path" in command:
+            video = Path(command[command.index("--video_path") + 1])
+            out = Path(command[command.index("--video_out_path") + 1])
+            assert video.name.startswith("segment-") and video.is_file()
+            seen["renders"].append(video.name)
+            _write(out)
+            return subprocess.CompletedProcess(command, 0, b"", b"")
+        if "-progress" in command and "segment" not in " ".join(command):
+            return subprocess.CompletedProcess(command, 0, b"frame=1000\nout_time_us=40000000\nprogress=end\n", b"")
+        if "concat" in command:
+            listing = Path(command[command.index("-i") + 1]).read_text(encoding="utf-8")
+            seen["joins"].append(listing.count("file '"))
+            _write(Path(command[-1]))
+            return subprocess.CompletedProcess(command, 0, b"", b"")
+        if "-ss" in command:
+            seen["cuts"].append(command[command.index("-ss") + 1])
+            _write(Path(command[-1]))
+            return subprocess.CompletedProcess(command, 0, b"", b"")
+        raise AssertionError(command)
+
+    monkeypatch.setattr(latentsync_reply, "run_managed_process", run)
+    _render(fixture)
+    assert seen["renders"] == ["segment-000.mp4", "segment-001.mp4"] and seen["joins"] == [1 + 1]
+    assert seen["cuts"] == ["0.000", "0.000", "19.200", "19.200"]  # the picture and the voice of each piece
+    assert fixture.output.is_file()

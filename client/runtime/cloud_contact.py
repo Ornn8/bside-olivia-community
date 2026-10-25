@@ -36,6 +36,7 @@ TELEMETRY_STATUS = {'delivered': 'ok', 'failed': 'failed', 'expired': 'skipped',
 _ID = re.compile(r'contact:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')
 _PURPOSE = re.compile(r'[a-z_]{1,32}')
 _SHA256 = re.compile(r'[0-9a-f]{64}')
+_TASK = re.compile(r'[A-Za-z0-9_-]{1,100}')
 _CODE = re.compile(r'[A-Z][A-Z0-9_]{2,63}')
 
 # status: delivered | failed | retry | busy. A failed attempt that may have reached
@@ -83,6 +84,13 @@ def _media(items):
                 raise ValueError('CONTACT_EVENT_INVALID')
             entry.update(asset_url=item['asset_url'], sha256=item['sha256'],
                          bytes=_integer(item.get('bytes'), 1, MAX_ASSET_BYTES))
+        if item.get('task_id') is not None:
+            # A video the service already finished for this account (a song it made again after a failed night):
+            # fetched by its task, never ordered or generated again.
+            if (item['type'] != 'video' or item.get('asset_url') is not None
+                    or not isinstance(item['task_id'], str) or not _TASK.fullmatch(item['task_id'])):
+                raise ValueError('CONTACT_EVENT_INVALID')
+            entry['task_id'] = item['task_id']
         result.append(entry)
     return result
 

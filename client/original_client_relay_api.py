@@ -23,7 +23,8 @@ RELAY_MODELS = frozenset({RELAY_MODEL, 'gemini-3.8-flash', 'gemini-4-argon', 'qw
 
 
 # Answers that depend on what this client can carry out say so in the request.
-EVENTS_HEADER = {'X-Olivia-Events': 'contact.v1'}
+# contact.task_video.v1: a contact may attach a video the service already finished, named by its task.
+EVENTS_HEADER = {'X-Olivia-Events': 'contact.v1,contact.task_video.v1'}
 EVENTS_PATHS = frozenset({'/events', '/proactive/config'})
 EVENTS_MAX_BYTES = 1 << 20  # Wording and fixed texts, even written out as escapes.
 

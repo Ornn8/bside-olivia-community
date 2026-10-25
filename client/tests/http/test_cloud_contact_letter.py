@@ -301,3 +301,54 @@ async def main():
     assert server._proactive_gate_reason() in {'attempt_limit', 'quiet_hours'}   # Her own letters are held back by them.
 asyncio.run(main())
 ''')
+
+
+def test_a_finished_video_named_by_its_task_is_fetched_and_shown_on_the_letter(tmp_path):
+    # 2026-10-25: six night song videos failed; made again later, they reach their owners this way.
+    run_isolated(tmp_path, SETUP + r'''
+os.environ['OLIVIA_GPU_API_URL'] = 'https://api.example.test'
+os.environ['OLIVIA_GPU_API_KEY'] = 'olivia-synthetic'
+fetched = []
+async def fetch(api, task_id, output, *, ffmpeg=None):
+    fetched.append(task_id)
+    Path(output).parent.mkdir(parents=True, exist_ok=True)
+    Path(output).write_bytes(b'\0\0\0\x18ftypmp42' + b'\0' * 64)
+    return 'song'
+import runtime.media.remote_materials as materials
+materials.fetch_task_video = fetch
+delivered = []
+server.daily_life_runtime = SimpleNamespace(store=SimpleNamespace(exchange_state=lambda: {},
+                                                                   record_media_delivery=delivered.append))
+TASK = '44a4fa8aca02b41539e5af88ec9acce2'
+async def main():
+    contact_id = await carry(20, media=[{'type': 'video', 'task_id': TASK}])
+    [letter] = letters_of(contact_id)
+    assert fetched == [TASK] and letter['contact_media'] == [{'type': 'video', 'brief': None, 'task_id': TASK}]
+    name = letter['letter_id'] + '.mp4'
+    assert letter['reply_video_url'] == 'http://127.0.0.1:8123/toy/media/' + name
+    assert letter['media_status'] == 'COMPLETED' and letter['reply_mode'] == 'singing_video' and letter['is_read'] == 0
+    assert acks[-1] == {'id': contact_id, 'status': 'delivered', 'channel': 'letter', 'error_code': None}
+    from original_client_letter_contract import serialize_letter_detail
+    detail = serialize_letter_detail(letter)
+    assert detail['replyVideoUrl'] == letter['reply_video_url']
+    assert [event['component'] for event in delivered] == ['music']  # her day knows she sent it
+asyncio.run(main())
+''')
+
+
+def test_a_finished_video_that_cannot_be_fetched_leaves_the_letter_and_is_reported(tmp_path):
+    run_isolated(tmp_path, SETUP + r'''
+os.environ['OLIVIA_GPU_API_URL'] = 'https://api.example.test'
+os.environ['OLIVIA_GPU_API_KEY'] = 'olivia-synthetic'
+async def fetch(api, task_id, output, *, ffmpeg=None):
+    from runtime.cloud_service import CloudError
+    raise CloudError('GPU_TASK_FAILED', 502)
+import runtime.media.remote_materials as materials
+materials.fetch_task_video = fetch
+async def main():
+    contact_id = await carry(21, media=[{'type': 'video', 'task_id': 'e8080df9b8ad45e1c46b45e53305af23'}])
+    [letter] = letters_of(contact_id)
+    assert letter['letter_status'] == 'COMPLETED' and 'reply_video_url' not in letter
+    assert acks[-1] == {'id': contact_id, 'status': 'delivered', 'channel': 'letter', 'error_code': 'MEDIA_VIDEO_FAILED'}
+asyncio.run(main())
+''')

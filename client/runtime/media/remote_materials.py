@@ -42,6 +42,33 @@ def extract_materials(bundle, destination, *, include_spoken, server_assembly=Fa
     return expected
 
 
+async def fetch_task_video(api, task_id, output, *, ffmpeg=None):
+    """A video the service already finished for this account, fetched by its task without ordering anything:
+    a song video bundle assembled by the service (its final.mp4) or a single MP4. Checked before it is kept.
+    Returns 'song' for a song video and 'spoken' for a single MP4 (her speaking)."""
+    from runtime.media.music_reply import _media_duration_seconds
+    output = Path(output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='olivia-task-video-', dir=output.parent) as temporary:
+        work = Path(temporary)
+        download = work / 'result.bin'
+        await api.download_task(task_id, download)
+        song = zipfile.is_zipfile(download)
+        if song:
+            try:
+                extract_materials(download, work, include_spoken=False, server_assembly=True)
+            except (ValueError, KeyError, TypeError, zipfile.BadZipFile):
+                raise CloudError('GPU_MATERIALS_INVALID', 502) from None
+            video = work / 'final.mp4'
+        else:
+            video = work / 'result.mp4'
+            download.replace(video)
+        if not _media_duration_seconds(video, required_streams=('0:a:0', '0:v:0'), ffmpeg_path=ffmpeg):
+            raise CloudError('GPU_OUTPUT_INVALID', 502)
+        video.replace(output)
+    return 'song' if song else 'spoken'
+
+
 def render_music_materials(kind, data, output, *, environment, include_spoken, reply_text,
                            performance_video_path, official_reply_reference_path,
                            spoken_action_base_path=None, voice_performance_plan=None,
