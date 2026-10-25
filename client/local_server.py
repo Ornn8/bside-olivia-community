@@ -4881,8 +4881,9 @@ async def route(
                 _start_history_relationships(retry=True)
                 return ok(_history_relationship_status())
             from runtime.imports import backup_sections
-            memory = letters_adapter.conversation_memory
-            memory_user = getattr(letters_adapter.memory_prompt_builder, 'conversation_memory_user_id', 'local-user')
+            memory = getattr(letters_adapter, 'conversation_memory', None)
+            memory_user = getattr(getattr(letters_adapter, 'memory_prompt_builder', None),
+                                  'conversation_memory_user_id', 'local-user')
             if p.endswith("/export"):
                 rows = (_letter_collection("current", strict=True) + personal_chat_letters(getattr(store, 'personal_chats', ()))
                         + backup_sections.call_letters(getattr(store, 'calls', ())))

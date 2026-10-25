@@ -5518,7 +5518,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       const head = await selected.slice(0, 16).arrayBuffer();
       if (head.byteLength !== 16 || new TextDecoder().decode(head.slice(0, 8)) !== "SOUL0001") throw Error("invalid soul");
       const view = new DataView(head), length = view.getUint32(8, true);
-      if (view.getUint32(12, true) !== 0 || !length || length > 64 * 1024 * 1024 || length + 16 > selected.size) throw Error("invalid soul size");
+      if (view.getUint32(12, true) !== 0 || !length || length > 16 * 1024 * 1024 || length + 16 > selected.size) throw Error("invalid soul size");
       const manifest = JSON.parse(new TextDecoder("utf-8", {fatal:true}).decode(await selected.slice(16, 16 + length).arrayBuffer()));
       if (!Array.isArray(manifest?.memory?.exchanges)) throw Error("invalid soul exchanges");
       backup = {format:"soul", manifest:{memory:{exchanges:manifest.memory.exchanges.map(row => {
