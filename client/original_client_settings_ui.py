@@ -5527,34 +5527,38 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         return {incoming, reply, date, time};
       })}}};
     } else {
-      if (selected.size > 16 * 1024 * 1024) throw Error("backup too large");
+      if (selected.size > 64 * 1024 * 1024) throw Error("backup too large");
       backup = (await selected.text()).replace(/^\uFEFF/, "");
     }
-    if (new TextEncoder().encode(JSON.stringify({backup})).length > 16 * 1024 * 1024 + 1024) throw Error("backup too large");
+    if (new TextEncoder().encode(JSON.stringify({backup})).length > 64 * 1024 * 1024 + 1024) throw Error("backup too large");
     return backup;
   };
 
   const mountLetterBackup = (section) => {
-    const state = text("div", t("备份包含信件、QQ／微信聊天的文字和时间。QQ／微信只保存已确认发出的回复；不含图片或音视频附件。请自行保管内容。"), "text-text-secondary text-body-m font-regular");
+    const state = text("div", t("备份包含信件、QQ 聊天和语音通话的文字与时间，她的日记（连同你的留言）和长期记忆。聊天只保存已确认发出的回复；不含图片或音视频附件。请自行保管内容。"), "text-text-secondary text-body-m font-regular");
     state.setAttribute("aria-live", "polite");
     const controls = actions();
     const file = document.createElement("input");
     file.type = "file"; file.accept = ".json,.soul,application/json"; file.hidden = true;
     file.addEventListener("cancel", event => event.stopPropagation());
-    const save = button(t("导出信件与聊天备份"), async () => {
+    const save = button(t("导出备份"), async () => {
       setButtonsBusy([save, restore], true);
-      state.textContent = t("正在导出信件与聊天原文……");
+      state.textContent = t("正在导出信件、聊天、日记和记忆……");
       try {
         const result = await requestMutation("/toy/letter/backup/export", {});
-        if (result.status !== "READY" || result.backup?.schema_version !== "olivia.letters.v1" || !Array.isArray(result.backup.letters)) throw Error("invalid backup");
-        const blob = new Blob([JSON.stringify(result.backup, null, 2)], {type:"application/json;charset=utf-8"});
+        const backup = result.backup;
+        if (result.status !== "READY" || backup?.schema_version !== "olivia.letters.v1" || !Array.isArray(backup.letters)) throw Error("invalid backup");
+        const blob = new Blob([JSON.stringify(backup, null, 2)], {type:"application/json;charset=utf-8"});
         const url = URL.createObjectURL(blob), link = document.createElement("a");
         link.href = url; link.download = `Olivia-letters-${new Date().toISOString().slice(0,10)}.json`;
         document.body.append(link); link.click(); link.remove();
         window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-        const qq = result.backup.letters.filter(row => row.channel === "qq").length;
-        const wechat = result.backup.letters.filter(row => row.channel === "wechat").length;
-        state.textContent = t("已导出 {letters} 封信件、{qq} 条 QQ 和 {wechat} 条微信聊天记录，请在下载位置查看。", {letters: result.backup.letters.length - qq - wechat, qq, wechat});
+        const chats = backup.letters.filter(row => row.channel === "qq" || row.channel === "wechat").length;
+        const calls = backup.letters.filter(row => !row.channel && String(row.source_id || "").startsWith("call-")).length;
+        const diary = Array.isArray(backup.diary?.entries) ? backup.diary.entries.length : 0;
+        const memories = Array.isArray(backup.memories) ? backup.memories.length : 0;
+        state.textContent = t("已导出 {letters} 封信件、{chats} 条聊天、{calls} 段通话、{diary} 篇日记和 {memories} 条记忆，请在下载位置查看。", {letters: backup.letters.length - chats - calls, chats, calls, diary, memories})
+          + (backup.memories_unavailable ? t(" 长期记忆这次没读到，未包含在文件里，稍后可再导出一次。") : "");
       } catch (_) { state.textContent = t("备份导出失败，请重试。原记录未改变。"); }
       finally { setButtonsBusy([save, restore], false); }
     });
@@ -5564,18 +5568,21 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       setButtonsBusy([save, restore], true);
       try {
         const backup = await readLetterBackupFile(selected);
-        if (!await confirmAction(t("导入所选文件中的信件与聊天记录？支持灵离 .soul、原版 letter_pairs.json 和 Olivia 文字备份；QQ／微信记录需来自 Olivia 备份。只读保存文字，不回发旧消息，不导入图片或音视频；重复记录跳过，已有记录不覆盖。随后每五组完整往返记录调用模型评估关系并消耗额度，已有进度保留。"))) return;
-        state.textContent = t("正在保存信件与聊天原文，无需等待大模型……");
+        if (!await confirmAction(t("导入所选文件中的信件、聊天、日记和记忆？支持灵离 .soul、原版 letter_pairs.json 和 Olivia 备份；聊天、日记和记忆需来自 Olivia 备份。只读保存文字，不回发旧消息，不导入图片或音视频；重复记录跳过，已有记录和已写好的日记不覆盖。随后每五组完整往返记录调用模型评估关系并消耗额度，已有进度保留。"))) return;
+        state.textContent = t("正在保存信件、聊天和日记，无需等待大模型……");
         const result = await requestMutation("/toy/letter/backup/import", {backup});
         if (result.status !== "APPLIED") throw Error("import failed");
-        state.textContent = t("已导入 {inserted} 条记录，重复 {duplicates} 条。正在刷新历史记录。", {inserted: result.inserted, duplicates: result.duplicates});
+        const memories = result.memories || {};
+        state.textContent = t("已导入 {inserted} 条记录和 {diary} 篇日记，重复 {duplicates} 条。正在刷新历史记录。", {inserted: result.inserted, diary: result.diary_entries || 0, duplicates: result.duplicates})
+          + (memories.status === "RESTORING" ? t(" {memories} 条记忆正在后台恢复。", {memories: memories.count})
+            : memories.status === "UNAVAILABLE" ? t(" 长期记忆暂不可用，{memories} 条记忆未恢复，可稍后再导入一次。", {memories: memories.count}) : "");
         window.setTimeout(() => window.location.reload(), 800);
-      } catch (_) { state.textContent = t("导入未完成。请选择完整的 .soul、letter_pairs.json 或 Olivia 文字备份（文字清单最大 16 MB）；可再次导入，重复记录会跳过。"); }
+      } catch (_) { state.textContent = t("导入未完成。请选择完整的 .soul、letter_pairs.json 或 Olivia 备份（最大 64 MB）；可再次导入，重复记录会跳过。"); }
       finally { file.value = ""; setButtonsBusy([save, restore], false); }
     });
     controls.append(save, restore, file);
-    section.append(text("div", t("导入与导出信件及聊天"), "text-text-body text-title-m"),
-      text("p", t("Olivia JSON 备份可恢复信件与 QQ／微信文字聊天；.soul 和 letter_pairs.json 只恢复文件内的信件文字。换电脑请先导出备份，再点“选择文件导入”。没有单独保存文件时，可在下方从原版目录读取信件。"), "text-text-secondary text-body-m font-regular"), state, controls);
+    section.append(text("div", t("导入与导出备份"), "text-text-body text-title-m"),
+      text("p", t("Olivia 备份可恢复信件、QQ 文字聊天、语音通话的文字、她的日记和长期记忆；.soul 和 letter_pairs.json 只恢复文件内的信件文字。换电脑请先导出备份，再点“选择文件导入”。没有单独保存文件时，可在下方从原版目录读取信件。"), "text-text-secondary text-body-m font-regular"), state, controls);
   };
 
   const mountLetterMaintenance = (section) => {
@@ -5698,7 +5705,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       const chosen = file.files?.[0]; if (!chosen || busy) return;
       busy = true; sync();
       try { backup = await readLetterBackupFile(chosen); filename = chosen.name; busy = false; await inspect(); }
-      catch (_) { plan = null; results.replaceChildren(); selectors = []; status.textContent = t("备份无法读取。请选择完整的 .soul 或 JSON 文件（文字清单最大 16 MB）。"); }
+      catch (_) { plan = null; results.replaceChildren(); selectors = []; status.textContent = t("备份无法读取。请选择完整的 .soul 或 JSON 文件（最大 64 MB）。"); }
       finally { file.value = ""; busy = false; sync(); }
     });
     controls.append(scan, compare, apply, file); pager.append(previous, pageLabel, next); pager.hidden = true;

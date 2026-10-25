@@ -667,6 +667,11 @@ class DeferredConversationMemoryAdapter:
         with self._using_current() as delegate:
             return delegate.add_manual_memory(text, user_id=user_id, source_id=source_id)
 
+    def restore_memories(self, records, *, user_id: str) -> int:
+        with self._using_current() as delegate:
+            restore = getattr(delegate, "restore_memories", None)
+            return restore(records, user_id=user_id) if callable(restore) else 0
+
     def delete_memory(self, memory_id: str, *, user_id: str) -> bool:
         with self._using_current() as delegate:
             return delegate.delete_memory(memory_id, user_id=user_id)
@@ -2517,6 +2522,32 @@ class Mem0ConversationMemoryAdapter:
         except Exception as exc:
             self._last_error_code = "MEM0_MANUAL_WRITE_FAILED"
             raise Mem0AdapterError("MEM0_MANUAL_WRITE_FAILED") from exc
+
+    def restore_memories(self, records, *, user_id: str) -> int:
+        """Stored facts from the user's backup, kept as they were: text, source, time and who said it. Nothing is
+        extracted again and no model is called; a fact already stored with the same text is skipped. Returns how
+        many were added; stops at the first write that fails."""
+        self._evidence_cache.clear()
+        self._fact_cache = None
+        user_id = self._normalized_user_id(user_id)
+        known = {record.text for record in self.all_memories(user_id=user_id)}
+        added = 0
+        for record in records:
+            if record['text'] in known:
+                continue
+            metadata = {**record['metadata'], 'source_id': record['source_id'], 'domain': _DOMAIN,
+                        **({'occurred_at': record['occurred_at']} if record['occurred_at'] else {})}
+            state, value = self._write_with_timeout(
+                lambda: self.backend.add(record['text'], user_id=user_id, agent_id=self.config.agent_id,
+                                         metadata=metadata, infer=False))
+            acknowledgements = _add_acknowledgements(value) if state == 'completed' else None
+            if not acknowledgements or len(acknowledgements) != 1:
+                self._last_error_code = 'MEM0_RESTORE_FAILED'
+                break
+            known.add(record['text'])
+            added += 1
+        self._fact_cache = None
+        return added
 
     def delete_memory(self, memory_id: str, *, user_id: str) -> bool:
         self._evidence_cache.clear()

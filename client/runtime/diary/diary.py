@@ -718,6 +718,40 @@ class DiaryStore:
                 raise KeyError(day)
             db.execute('INSERT INTO diary_comments VALUES (?,?,?)', (day, now.astimezone(timezone.utc).isoformat(), text))
 
+    def backup(self):
+        """Every entry and memoir with its facts, and his comments, for the user's own backup file."""
+        with self._db() as db:
+            entries = [{'day': r['day'], 'written_at': r['written_at'], 'title': r['title'], 'mood': r['mood'],
+                        'body': r['body'], 'facts': json.loads(r['facts']), 'short': bool(r['short']),
+                        'seen': bool(r['seen']), 'style': r['style']}
+                       for r in db.execute('SELECT * FROM diary_entries ORDER BY day')]
+            comments = [dict(r) for r in db.execute('SELECT day,written_at,text FROM diary_comments '
+                                                    'ORDER BY day,written_at')]
+        return {'entries': entries, 'comments': comments}
+
+    def restore(self, entries, comments):
+        """Entries from a backup, in one step. A day already written here, or deleted here, keeps what it has; a
+        comment is added once, to a day that has an entry. Returns (entries added, comments added)."""
+        added = noted = 0
+        with self._db() as db:
+            for entry in entries:
+                if db.execute('SELECT 1 FROM diary_deleted WHERE day=?', (entry['day'],)).fetchone():
+                    continue
+                added += db.execute(
+                    'INSERT OR IGNORE INTO diary_entries (day,written_at,title,mood,body,facts,model,short,seen,style) '
+                    'VALUES (?,?,?,?,?,?,?,?,?,?)',
+                    (entry['day'], entry['written_at'], entry['title'], entry['mood'], entry['body'],
+                     json.dumps(entry['facts'], ensure_ascii=False), None, int(entry['short']), int(entry['seen']),
+                     entry['style'])).rowcount
+            for comment in comments:
+                if (db.execute('SELECT 1 FROM diary_entries WHERE day=?', (comment['day'],)).fetchone()
+                        and not db.execute('SELECT 1 FROM diary_comments WHERE day=? AND written_at=? AND text=?',
+                                           (comment['day'], comment['written_at'], comment['text'])).fetchone()):
+                    db.execute('INSERT INTO diary_comments VALUES (?,?,?)',
+                               (comment['day'], comment['written_at'], comment['text']))
+                    noted += 1
+        return added, noted
+
     def delete(self, day):
         """The entry and its facts go together: she no longer keeps that day."""
         with self._db() as db:
