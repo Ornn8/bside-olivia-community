@@ -335,6 +335,10 @@ class ReplyPipeline:
                     if CURRENT.get().get('last_decision_rejection_reason') == 'SILENCE_NOT_AUTHORIZED':
                         generation_note += ('\n上一候选静默已被独立语义检查拒绝：当前没有有效的等待或免回复授权。'
                                             '请回应当前用户内容，skip=false，不要再次沿用静默提议。')
+                    elif CURRENT.get().get('last_decision_rejection_reason') == 'REPEATED_REPLY':
+                        generation_note += ('\n上一候选正文和你最近已经发出的一条回复一字不差，已被拒绝，不会发出。'
+                                            '用户这条是新消息：接住它本身，只回了表情包、一两个字或附和也是在回应你上一条，'
+                                            '顺着它说一句新的话；上一条里问过的问题不要原样再问。')
                 else:
                     generation_note = INSTRUCTION
         original_budget = request.max_input_chars if isinstance(request, ReplyRequest) else 0

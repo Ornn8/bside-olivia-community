@@ -603,6 +603,12 @@ class PersonalChatService:
                                 row.update(delivery_status='SKIPPED', letter_status='SKIPPED', skip_reason=reason)
                                 await persist_state(self.persist)
                                 return
+                            if text is None and row.get('skip_reason') == 'DUPLICATE_CONTENT':
+                                # Her draft said again, word for word, what she had just sent: it is not sent twice.
+                                row.update(delivery_status='SKIPPED', letter_status='SKIPPED',
+                                           error_code='PERSONAL_CHAT_DUPLICATE_CONTENT')
+                                await persist_state(self.persist)
+                                return
                     if proactive and text.strip() == '[[skip]]':
                         row.update(delivery_status='SKIPPED', letter_status='SKIPPED', skip_reason='PROACTIVE_NO_REPLY')
                         await persist_state(self.persist)

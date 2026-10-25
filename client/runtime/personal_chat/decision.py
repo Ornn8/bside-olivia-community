@@ -58,6 +58,9 @@ INSTRUCTION += ('[骰子:N点]是他在QQ里掷出的骰子点数，[猜拳:手�
                 'recent_dialogue里带image_delivery_confirmed或image_observations的回合，表示那张照片已经发到他手机上了：'
                 '你说过要拍给他看的照片，送到了就算已经发了，之后接着聊这张照片或他的反应，'
                 '不再说照片还在拍、还没拍完、马上发。\n')
+# A sticker or a one-word answer (2026-10-26): her previous line went out again, word for word, after his sticker.
+INSTRUCTION += ('他只回了表情包、一两个字或附和时，那是在回应你上一条：顺着它接一句新的话，'
+                '不把你上一条回复原样或换个说法再发一遍，上一条里问过的问题也不原样再问。\n')
 
 
 PROVENANCE_HEADER = re.compile(r'\[(?:历史消息|当前消息)\s*\{.*?\}\s*\]\s*', re.DOTALL)
