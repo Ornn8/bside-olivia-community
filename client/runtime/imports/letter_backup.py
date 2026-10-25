@@ -9,8 +9,9 @@ from runtime.memory.memory_port import LegacyLetter
 
 SCHEMA = 'olivia.letters.v1'
 KIND = 'local_letter_backup_v1'
-MAX_BYTES = 16 * 1024 * 1024
-MAX_LETTERS = 10000
+# A year of daily QQ chat runs past ten thousand rows; the diary and stored facts ride in the same file.
+MAX_BYTES = 64 * 1024 * 1024
+MAX_LETTERS = 100000
 
 
 def is_backup(metadata):

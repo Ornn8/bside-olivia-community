@@ -107,7 +107,7 @@ them in “Compare and tidy letters” and fold them away.
 
 A few messages may appear on the page. This is what they mean:
 
-- “The backup can't be read. Please choose a complete .soul or JSON file (the text list is limited to 16 MB).”: the wrong file, or it is too big.
+- “The backup can't be read. Please choose a complete .soul or JSON file (up to 64 MB).”: the wrong file, or it is too big.
 - “The mailbox changed. Please check again before choosing.”: the mailbox was changed somewhere else between your check and your apply. Just check again.
 - “Memories are being imported or tidied. Please check again shortly.”: something else is writing right now. Wait a moment and come back.
 - “Couldn't save the tidy-up result. Please check your disk and try again.”: most likely the disk is full.

@@ -31,11 +31,13 @@ const URL={createObjectURL(value){blob=value;return 'blob:fixture'},revokeObject
 let backup={schema_version:'olivia.letters.v1',letters:[
  {content:'line one\nline two',reply_text:'reply'},
  {content:'qq message',reply_text:'qq response',channel:'qq',delivery_status:'DELIVERED'},
- {content:'wechat message',reply_text:'',channel:'wechat',delivery_status:'RECEIVED_ONLY'}
-]};
+ {content:'wechat message',reply_text:'',channel:'wechat',delivery_status:'RECEIVED_ONLY'},
+ {content:'what he said on the call',reply_text:'what she said',title:'语音通话',source_id:'call-0123456789abcdef'}
+],diary:{entries:[{day:'2026-10-25',body:'entry'},{day:'2026-10',body:'memoir'}],comments:[]},memories:[{text:'fact'}]};
+let restored={status:'RESTORING',count:1};
 const requestMutation=async(path,body)=>{
  if(path.endsWith('/export'))return {status:'READY',backup};
- imported=body.backup;return {status:'APPLIED',inserted:1,duplicates:0};
+ imported=body.backup;return {status:'APPLIED',inserted:1,duplicates:0,diary_entries:2,memories:restored};
 };
 '''
     helper = 'const setDiagnosticDetails =' + BOOTSTRAP_JAVASCRIPT.split(
@@ -44,21 +46,24 @@ const requestMutation=async(path,body)=>{
 (async()=>{
  mountLetterBackup(new Element());
  const buttons=all.filter(x=>x.textContent&&typeof x.click==='function');
- const save=buttons.find(x=>x.textContent==='导出信件与聊天备份');
+ const save=buttons.find(x=>x.textContent==='导出备份');
  await save.click(); assert.match(downloaded,/^Olivia-letters-.*\.json$/);
  assert.deepEqual(JSON.parse(await blob.text()),backup);
- assert.ok(all.some(x=>x.textContent==='已导出 1 封信件、1 条 QQ 和 1 条微信聊天记录，请在下载位置查看。'));
+ assert.ok(all.some(x=>x.textContent==='已导出 1 封信件、2 条聊天、1 段通话、2 篇日记和 1 条记忆，请在下载位置查看。'));
  const file=all.find(x=>x.type==='file');
  file.files=[{size:100,text:async()=>JSON.stringify(backup)}];
  await file.events.change(); assert.deepEqual(JSON.parse(imported),backup); assert.equal(file.value,'');
- assert.match(confirmations.at(-1),/QQ.*微信/);
+ assert.match(confirmations.at(-1),/聊天.*日记.*记忆/);
  assert.match(confirmations.at(-1),/只读.*不.*发/);
- assert.ok(all.some(x=>x.textContent==='已导入 1 条记录，重复 0 条。正在刷新历史记录。'));
- backup={schema_version:'olivia.letters.v1',letters:[{content:'legacy letter',reply_text:'legacy reply'}]};
+ assert.ok(all.some(x=>x.textContent==='已导入 1 条记录和 2 篇日记，重复 0 条。正在刷新历史记录。 1 条记忆正在后台恢复。'));
+ backup={schema_version:'olivia.letters.v1',letters:[{content:'legacy letter',reply_text:'legacy reply'}],memories_unavailable:true};
  await save.click();assert.deepEqual(JSON.parse(await blob.text()),backup);
- assert.ok(all.some(x=>x.textContent==='已导出 1 封信件、0 条 QQ 和 0 条微信聊天记录，请在下载位置查看。'));
+ assert.ok(all.some(x=>x.textContent==='已导出 1 封信件、0 条聊天、0 段通话、0 篇日记和 0 条记忆，请在下载位置查看。 长期记忆这次没读到，未包含在文件里，稍后可再导出一次。'));
+ restored={status:'UNAVAILABLE',count:3};
  file.files=[{size:100,text:async()=>JSON.stringify(backup)}];
  await file.events.change(); assert.deepEqual(JSON.parse(imported),backup);
+ assert.ok(all.some(x=>x.textContent==='已导入 1 条记录和 2 篇日记，重复 0 条。正在刷新历史记录。 长期记忆暂不可用，3 条记忆未恢复，可稍后再导入一次。'));
+ restored=undefined;
  const pairs=[{content:'original',reply:'response'}];
  file.files=[{size:100,text:async()=>JSON.stringify(pairs)}];
  await file.events.change(); assert.deepEqual(JSON.parse(imported),pairs);
@@ -81,7 +86,7 @@ const requestMutation=async(path,body)=>{
  imported=null;
  file.files=[{name:'broken.soul',size:20,slice(){return new Blob([head])}}];
  await file.events.change();assert.equal(imported,null);assert.equal(save.disabled,false);
- imported=null;file.files=[{size:17*1024*1024,text:async()=>{throw Error('must not read oversized file')}}];
+ imported=null;file.files=[{size:65*1024*1024,text:async()=>{throw Error('must not read oversized file')}}];
  await file.events.change();assert.equal(imported,null);assert.equal(save.disabled,false);
 })().catch(e=>{console.error(e);process.exitCode=1});
 '''

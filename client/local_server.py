@@ -320,6 +320,49 @@ def _start_history_relationships(*, retry=False):
     _history_relationship_task = asyncio.create_task(work())
 
 
+_backup_memory_tasks = set()
+
+
+BACKUP_MEMORY_WAIT_SECONDS = 600
+
+
+async def _memory_state(memory):
+    try:
+        return (await asyncio.to_thread(memory.status)).status
+    except Exception:
+        return 'unavailable'
+
+
+async def _restore_backup_memories(memory, user_id, records):
+    """A backup's stored facts go back in the background, one write at a time beside the chat's own writes; replies
+    are not held for them (holding the memory admin gate would hold replies). Long-term memory that is still
+    starting on a new install is waited for. Returns what the page tells the user."""
+    if not records:
+        return {'status': 'NONE', 'count': 0}
+    if (not getattr(memory, 'enabled', False) or not callable(getattr(memory, 'restore_memories', None))
+            or await _memory_state(memory) == 'disabled'):
+        return {'status': 'UNAVAILABLE', 'count': len(records)}
+    earlier = tuple(_backup_memory_tasks)
+    async def work():
+        try:
+            # A second file chosen meanwhile waits, so the same fact is not written twice.
+            await asyncio.gather(*earlier, return_exceptions=True)
+            deadline = time.monotonic() + BACKUP_MEMORY_WAIT_SECONDS
+            while await _memory_state(memory) not in {'available', 'degraded'}:
+                if time.monotonic() > deadline:
+                    _safe_log('backup_memories_failed', error_code='BACKUP_MEMORY_UNAVAILABLE')
+                    return
+                await asyncio.sleep(15)
+            added = await asyncio.to_thread(memory.restore_memories, records, user_id=user_id)
+            _safe_log('backup_memories_restored', added=added, offered=len(records))
+        except Exception:
+            _safe_log('backup_memories_failed', error_code='BACKUP_MEMORY_RESTORE_FAILED')
+    task = asyncio.create_task(work())
+    _backup_memory_tasks.add(task)
+    task.add_done_callback(_backup_memory_tasks.discard)
+    return {'status': 'RESTORING', 'count': len(records)}
+
+
 def _history_relationship_status():
     if _history_relationship_queue is None:
         return {'status':'UNAVAILABLE','processed':0,'total':0,'batch_size':5}
@@ -4837,10 +4880,17 @@ async def route(
             if p.endswith('/import') and body.get('relationship_retry') is True:
                 _start_history_relationships(retry=True)
                 return ok(_history_relationship_status())
+            from runtime.imports import backup_sections
+            memory = letters_adapter.conversation_memory
+            memory_user = getattr(letters_adapter.memory_prompt_builder, 'conversation_memory_user_id', 'local-user')
             if p.endswith("/export"):
-                rows = _letter_collection("current", strict=True) + personal_chat_letters(getattr(store, 'personal_chats', ()))
-                payload = await asyncio.to_thread(export_letter_backup, rows)
+                rows = (_letter_collection("current", strict=True) + personal_chat_letters(getattr(store, 'personal_chats', ()))
+                        + backup_sections.call_letters(getattr(store, 'calls', ())))
+                diary = await asyncio.to_thread(backup_sections.diary_section, diary_store)
+                memories = await asyncio.to_thread(backup_sections.memory_section, memory, memory_user)
+                payload = await asyncio.to_thread(backup_sections.export, rows, diary=diary, memories=memories)
                 return ok({"status": "READY", "backup": payload})
+            entries, comments, facts = await asyncio.to_thread(backup_sections.read, body.get("backup"))
             if not _history_memory_admin_gate.acquire(blocking=False):
                 return err(409, "MEMORY_ADMIN_BUSY")
             async def restore_backup():
@@ -4851,8 +4901,13 @@ async def route(
                     # dates, including hidden rows, without importing duplicates.
                     existing = existing + project(existing, getattr(store, 'letter_maintenance', {}), include_hidden=True)
                     existing += personal_chat_letters(getattr(store, 'personal_chats', ()))
-                    return await asyncio.to_thread(import_letter_backup, body.get("backup"),
+                    existing += backup_sections.call_letters(getattr(store, 'calls', ()))
+                    result = await asyncio.to_thread(import_letter_backup, body.get("backup"),
                         adapter=_legacy_import_adapter(), existing=existing)
+                    added = (0, 0)
+                    if diary_store is not None and (entries or comments):
+                        added = await asyncio.to_thread(diary_store.restore, entries, comments)
+                    return {**result, 'diary_entries': added[0], 'diary_comments': added[1]}
                 finally:
                     _history_memory_admin_gate.release()
             operation = asyncio.create_task(restore_backup())
@@ -4864,7 +4919,7 @@ async def route(
             operation.add_done_callback(backup_settled)
             result = await asyncio.shield(operation)
             _start_history_relationships()
-            return ok(result)
+            return ok({**result, 'memories': await _restore_backup_memories(memory, memory_user, facts)})
         except (ValueError, TypeError, UnicodeError, OverflowError):
             return err(400, "LETTER_BACKUP_INVALID")
         except (OSError, sqlite3.Error):
