@@ -530,11 +530,15 @@ async def generate(server, event, row):
             row['default_voice_status'] = 'PENDING'  # The text first, then the same words as a voice message.
         return row['contact_body']
     from runtime.reply.jev_billing import confirm_settlements
+    from runtime.reply import web_search
     # A QQ turn's judgments settle beside its next stages; all of them are confirmed before the reply goes out.
+    # Whether to search the web is judged as the turn starts, beside its other preparation (runtime/reply/web_search).
+    asked = getattr(event, 'text', '') if row.get('origin') != 'proactive' and row.get('contact_id') is None else ''
     with contact_context.using(row.get('contact_id')), billing_scope(
             'personal-chat:' + event.exchange_id + ':' + str(row.get('input_revision', 0)),
             deferred=event.channel == 'qq'), using('qq'), scope(
-            event.exchange_id, 'proactive' if row.get('origin') == 'proactive' else event.channel, row.get('generation_attempts', 0)):
+            event.exchange_id, 'proactive' if row.get('origin') == 'proactive' else event.channel, row.get('generation_attempts', 0)), \
+            web_search.searching(asked):
         row['diagnostic_model'] = selected_model()
         token = TIMINGS.set(row)
         try:
