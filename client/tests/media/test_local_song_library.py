@@ -274,3 +274,48 @@ def test_corrupt_id_ledger_preserves_existing_playback_but_cannot_allocate(libra
     assert result['errors'][0]['code'] == 'LOCAL_SONG_ID_LEDGER_INVALID'
     assert ledger.read_text(encoding='utf-8') == 'broken'
     assert library.songs() == existing
+
+
+def float_wav(path, seconds=1.0, rate=16000):
+    """A 32-bit float WAV (format 3), the way her finished songs arrive; the wave module cannot open it."""
+    import struct
+    frames = int(seconds * rate)
+    data = struct.pack('<%df' % frames, *([0.25] * frames))
+    fmt = struct.pack('<HHIIHH', 3, 1, rate, rate * 4, 4, 32)
+    path.write_bytes(b'RIFF' + struct.pack('<I', 4 + 8 + len(fmt) + 8 + len(data)) + b'WAVE'
+                     + b'fmt ' + struct.pack('<I', len(fmt)) + fmt + b'data' + struct.pack('<I', len(data)) + data)
+
+
+def test_her_float_song_is_kept_as_16_bit_pcm(tmp_path):
+    import wave
+    from runtime.media.latentsync_reply import resolve_ffmpeg_executable
+    try:
+        resolve_ffmpeg_executable({})
+    except RuntimeError:
+        pytest.skip('no FFmpeg on this machine')
+    source = tmp_path / 'letter-song.wav'
+    float_wav(source)
+    library = LocalSongLibrary(tmp_path / 'data', {})
+    first = library.import_audio(source, '林离的原创歌曲')
+    assert first['added'] is True
+    assert library.import_audio(source, '再收藏一次')['added'] is False
+    with wave.open(str(library.media_path(first['id'])), 'rb') as audio:
+        assert (audio.getsampwidth(), audio.getframerate(), audio.getnframes()) == (2, 16000, 16000)
+    song = library.songs()[0]
+    assert song['media_type'] == 'audio' and song['duration'] == pytest.approx(1.0)
+    assert sorted(p.suffix for p in library.root.iterdir() if p.name.endswith('.tmp')) == []
+
+
+def test_an_audio_file_ffmpeg_cannot_read_is_a_named_failure(tmp_path, monkeypatch):
+    import subprocess
+    from runtime.media import local_song_library as module
+    source = tmp_path / 'broken.wav'
+    source.write_bytes(b'RIFF\x00\x00\x00\x00WAVEnot audio')
+    monkeypatch.setattr(module, 'run_managed_process',
+                        lambda command, **_: subprocess.CompletedProcess(command, 1, b'', b''))
+    monkeypatch.setattr(module, 'resolve_ffmpeg_executable', lambda _environment: Path('ffmpeg'))
+    library = LocalSongLibrary(tmp_path / 'data', {})
+    with pytest.raises(LocalSongError, match='LOCAL_SONG_AUDIO_INVALID'):
+        library.import_audio(source, '林离的翻唱')
+    assert library.songs() == []
+    assert not [p for p in library.root.iterdir() if p.name.endswith('.tmp')]
