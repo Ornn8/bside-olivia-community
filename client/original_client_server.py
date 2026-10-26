@@ -249,9 +249,14 @@ def _project_proactive_fields(
     payload["replyAllowed"] = False
     payload["reply_allowed"] = False
     payload["content"] = ""
-    payload["replyType"] = 1
-    payload["reply_type"] = 1
-    payload["reply_mode"] = "text"
+    # Her letter is a text letter on the mailbox's welcome paper, unless it carries a finished video (a song video a
+    # cloud contact brought): then the paper is told it is a video, or it shows the words alone (2026-10-26).
+    carries_video = (letter.get("reply_video_enabled") is True and letter.get("reply_video_url")
+                     and str(letter.get("media_status") or "").upper() == "COMPLETED")
+    if not carries_video:
+        payload["replyType"] = 1
+        payload["reply_type"] = 1
+        payload["reply_mode"] = "text"
     if isinstance(title, str) and title.strip():
         payload["title"] = title.strip()
         payload["summary"] = title.strip()

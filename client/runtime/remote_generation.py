@@ -24,6 +24,13 @@ def connection_error(exc):
 
 
 NIGHT_POLL_SECONDS = 30  # a task held for the night batch is checked every half minute
+OUTAGE_POLL_SECONDS = 60  # a long wait that lost the service looks again every minute, for as long as it waits
+
+
+def _transient(exc) -> bool:
+    """The service could not be reached or answered with a passing server error; the order itself is unknown."""
+    return (exc.code in ('GPU_CONNECT_FAILED', 'GPU_CONNECTION_TIMEOUT', 'GPU_CONNECTION_FAILED')
+            or exc.code == 'GPU_REQUEST_FAILED' and exc.status in (502, 503, 504))
 
 
 class RemoteGeneration:
@@ -473,7 +480,16 @@ class RemoteGeneration:
                 raise CloudError('GPU_TASK_TIMEOUT', 504)
             # A chat voice takes seconds and its reply waits for it, so it is looked at more often.
             await asyncio.sleep(NIGHT_POLL_SECONDS if task.get('night_hold') else .4 if kind == 'tts' else 1)
-            task = await self._status(task['task_id'])
+            try:
+                task = await self._status(task['task_id'])
+            except CloudError as exc:
+                # A wait without a limit (the night batch, videos) outlives a network outage or a sleeping PC: the
+                # order goes on at the service and is paid when it is made, so giving it up here left a letter saying
+                # it failed while the video was made and charged that night (2026-10-25).
+                if deadline is not None or not _transient(exc):
+                    raise
+                await asyncio.sleep(OUTAGE_POLL_SECONDS)
+                continue
             progress('generation', task)
         if receipt and task['status'] in ('failed', 'cancelled') and kind not in ('daily_video', 'piano') and not data.get('speech_mode'):
             receipt.unlink(missing_ok=True)
@@ -500,9 +516,7 @@ class RemoteGeneration:
             try:
                 return await self.request('status', {'task_id': task_id})
             except CloudError as exc:
-                transient = exc.code in ('GPU_CONNECT_FAILED', 'GPU_CONNECTION_TIMEOUT', 'GPU_CONNECTION_FAILED')
-                transient |= exc.code == 'GPU_REQUEST_FAILED' and exc.status in (502, 503, 504)
-                if not transient or attempt == 23:
+                if not _transient(exc) or attempt == 23:
                     raise
                 await asyncio.sleep(min(2 ** (attempt + 1), 30))
 

@@ -30,7 +30,7 @@ MAX_ASSET_BYTES = 10 * 1024 * 1024
 MEDIA_WAIT_SECONDS = 300  # How long a contact waits for its picture before it is reported.
 DEFAULT_TITLE = '想和你说说话'
 CHANNELS = ('letter', 'qq', 'qq_then_letter', 'preferred')
-MEDIA_TYPES = ('photo', 'video', 'voice')
+MEDIA_TYPES = ('photo', 'video', 'voice', 'song')
 ACK_STATUSES = ('delivered', 'failed', 'expired', 'skipped')
 TELEMETRY_STATUS = {'delivered': 'ok', 'failed': 'failed', 'expired': 'skipped', 'skipped': 'skipped'}
 _ID = re.compile(r'contact:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')
@@ -85,9 +85,9 @@ def _media(items):
             entry.update(asset_url=item['asset_url'], sha256=item['sha256'],
                          bytes=_integer(item.get('bytes'), 1, MAX_ASSET_BYTES))
         if item.get('task_id') is not None:
-            # A video the service already finished for this account (a song it made again after a failed night):
-            # fetched by its task, never ordered or generated again.
-            if (item['type'] != 'video' or item.get('asset_url') is not None
+            # A video or a song (audio) the service already finished for this account, which its letter never
+            # showed: fetched by its task, never ordered or generated again.
+            if (item['type'] not in ('video', 'song') or item.get('asset_url') is not None
                     or not isinstance(item['task_id'], str) or not _TASK.fullmatch(item['task_id'])):
                 raise ValueError('CONTACT_EVENT_INVALID')
             entry['task_id'] = item['task_id']

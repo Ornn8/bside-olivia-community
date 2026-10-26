@@ -571,6 +571,7 @@ def _repair_mailbox_write_access(root: Path) -> str:
     )
     source = _repair_native_letter_audio(source)
     source = _repair_native_proactive_collection(source)
+    source = _repair_native_proactive_video(source)
     source = _repair_native_silent_reply(source)
     source = _repair_native_reply_failure(source)
     source = _repair_native_mailbox_order_and_time(source)
@@ -920,6 +921,37 @@ def _repair_native_letter_audio(source: str) -> str:
 
 
 _NATIVE_PROACTIVE_MARKER = "/*olivia-proactive-native-v1*/"
+_NATIVE_PROACTIVE_VIDEO_MARKER = "/*olivia-proactive-video-v1*/"
+_PROACTIVE_PAPER_HEAD = 'k(ks,{coverId:x.selectedMail?.coverId,'
+_PROACTIVE_PAPER_TAIL = 'type:"text"},null,8,["modelValue","timestamp","coverId","audioUrl","audioStatus","songUrl"]'
+
+
+def _repair_native_proactive_video(source: str) -> str:
+    """Her own letter shows the video it carries, on the same paper a video reply uses.
+
+    Her letters render on the welcome-paper path (_repair_native_proactive_collection), which passed the paper its
+    text, audio and song but no video and a fixed text type: a finished song video a cloud contact attached was
+    fetched and kept but never shown (2026-10-26, the six night videos made again or never shown). The paper already
+    takes videoUrl, bodyText, signature and type, as on a reply; this passes them. A bundle without the paper is
+    left as it is.
+    """
+    if _NATIVE_PROACTIVE_VIDEO_MARKER in source:
+        return source
+    head, tail = source.find(_PROACTIVE_PAPER_HEAD), source.find(_PROACTIVE_PAPER_TAIL)
+    if (source.count(_PROACTIVE_PAPER_HEAD) != 1 or source.count(_PROACTIVE_PAPER_TAIL) != 1
+            or not head < tail or tail - head > 2000):
+        return source
+    received = 'x.selectedMail?.received?.'
+    source = source.replace(
+        _PROACTIVE_PAPER_HEAD,
+        _PROACTIVE_PAPER_HEAD + f'videoUrl:{received}videoUrl,bodyText:{received}bodyText,'
+        f'signature:{received}signature,', 1)
+    source = source.replace(
+        _PROACTIVE_PAPER_TAIL,
+        f'type:{received}type==="video"?"video":"text"}},null,8,'
+        '["modelValue","timestamp","coverId","audioUrl","audioStatus","songUrl","videoUrl","bodyText","signature","type"]',
+        1)
+    return _NATIVE_PROACTIVE_VIDEO_MARKER + source
 
 
 def _repair_native_proactive_collection(source: str) -> str:

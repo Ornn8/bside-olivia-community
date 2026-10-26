@@ -3920,8 +3920,11 @@ async def _contact_letter_media(letter, skipped) -> list:
     for item in letter.get('contact_media') or []:
         if item['type'] == 'video' and item.get('task_id'):
             codes += await _attach_task_video(letter, item['task_id'])
-        elif item['type'] != 'photo':  # Letters carry pictures, and only a video already made; no voice.
-            codes.append('MEDIA_VIDEO_UNSUPPORTED' if item['type'] == 'video' else 'MEDIA_VOICE_UNSUPPORTED')
+        elif item['type'] == 'song' and item.get('task_id'):
+            codes += await _attach_task_song(letter, item['task_id'])
+        elif item['type'] != 'photo':  # Letters carry pictures, and only a video or song already made; no voice.
+            codes.append({'video': 'MEDIA_VIDEO_UNSUPPORTED', 'song': 'MEDIA_SONG_UNSUPPORTED'}.get(
+                item['type'], 'MEDIA_VOICE_UNSUPPORTED'))
     photos = contact_photos(letter)
     if photos:
         if not photos[0].get('asset_url') and not letter.get('image_reply_settings', {}).get('enabled'):
@@ -3965,6 +3968,46 @@ async def _attach_task_video(letter, task_id) -> list:
     _record_published_media(letter, reply_text=letter.get('reply_text', ''),
                             delivery_id=letter.get('private_world_delivery_id', ''),
                             path=output, components=('music',), presentation='video')
+    _persist_media_state()
+    return []
+
+
+async def _attach_task_song(letter, task_id) -> list:
+    """A song (audio only) the service already made for this account, which its own letter never showed (the wait
+    for the night batch was given up, 2026-10-25): fetched by its task and attached to the contact letter as her song,
+    the way a song letter carries one. Nothing is ordered again."""
+    if letter.get('media_status') == 'COMPLETED' and letter.get('reply_audio_url'):
+        return []  # attached on an earlier try
+    root = _media_root()
+    url, key = _os.environ.get('OLIVIA_GPU_API_URL', ''), _os.environ.get('OLIVIA_GPU_API_KEY', '')
+    if root is None or not url or not key:
+        return ['MEDIA_SONG_UNAVAILABLE']
+    from runtime.cloud_service import CloudError
+    from runtime.media.latentsync_reply import resolve_ffmpeg_executable
+    from runtime.media.music_reply import _media_duration_seconds
+    from runtime.remote_generation import RemoteGeneration
+    output = root / f"{letter['letter_id']}.wav"
+    ffmpeg = resolve_ffmpeg_executable(_os.environ)
+    measured = {}
+
+    def validate(path):
+        duration = _media_duration_seconds(path, required_streams=('0:a:0',), ffmpeg_path=ffmpeg)
+        if not duration or duration <= 0:
+            raise CloudError('GPU_OUTPUT_INVALID', 502)
+        measured['seconds'] = duration
+    try:
+        await RemoteGeneration(url, key).download_task(task_id, output, validate=validate)
+    except (CloudError, OSError, RuntimeError, ValueError, KeyError, TypeError):
+        _safe_log('contact_task_song_unavailable')
+        return ['MEDIA_SONG_FAILED']
+    letter.update(reply_mode=ReplyMode.SINGING_VIDEO.value, reply_video_enabled=False,
+                  reply_audio_url=f"http://127.0.0.1:{PORT}/toy/media/{output.name}",
+                  reply_structure='original_song_audio', media_status='COMPLETED', media_error_code=None,
+                  media_retryable=False, is_read=0,
+                  **({'music_duration_seconds': measured['seconds']} if measured.get('seconds') else {}))
+    _record_published_media(letter, reply_text=letter.get('reply_text', ''),
+                            delivery_id=letter.get('private_world_delivery_id', ''),
+                            path=output, components=('music',), presentation='audio')
     _persist_media_state()
     return []
 
