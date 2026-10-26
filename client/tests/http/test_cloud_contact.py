@@ -846,3 +846,14 @@ def test_a_video_may_name_the_finished_task_it_is_and_nothing_else_may():
     for media in ([{'type': 'photo', 'task_id': 'abc'}], [{'type': 'video', 'task_id': '../etc'}],
                   [{'type': 'video', 'task_id': 7}], [{'type': 'video', 'task_id': 'x' * 101}]):
         assert cloud_contact.parse_event(event(media=media)) is None
+
+
+
+def test_a_song_rides_by_its_task_and_nothing_else_does():
+    from runtime.cloud_contact import _media
+    task = '1434f97b4a2b4c8d9e0f1a2b3c4d5e6f'
+    assert _media([{'type': 'song', 'task_id': task}]) == [{'type': 'song', 'brief': None, 'task_id': task}]
+    for bad in ({'type': 'voice', 'task_id': task}, {'type': 'song', 'task_id': 'not a task'},
+                {'type': 'tune', 'task_id': task}):
+        with pytest.raises(ValueError):
+            _media([bad])

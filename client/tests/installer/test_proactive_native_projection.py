@@ -129,3 +129,18 @@ global.fetch=async(url, options)=>{
 ''' + BOOTSTRAP_JAVASCRIPT[begin:end] + '\nsaveProactiveSettings({enabled:true,allow_voice:true,login_check_enabled:false});', encoding='utf-8')
     result = subprocess.run([node, str(script)], capture_output=True, text=True, timeout=20)
     assert result.returncode == 0, result.stderr
+
+
+def test_her_own_letter_shows_the_video_it_carries():
+    # 2026-10-26: a contact letter carried a finished song video the paper was never given.
+    from patch_companion_settings import _repair_native_proactive_video
+    paper = ('k(ks,{coverId:x.selectedMail?.coverId,audioUrl:x.selectedMail?.received?.audioUrl||"",'
+             'modelValue:o(h),class:"w-[516px] aspect-[16/9]","is-visible":!0,readonly:"",timestamp:t??null,'
+             'type:"text"},null,8,["modelValue","timestamp","coverId","audioUrl","audioStatus","songUrl"]')
+    patched = _repair_native_proactive_video('before;' + paper + ';after')
+    assert patched.startswith('/*olivia-proactive-video-v1*/')
+    assert 'videoUrl:x.selectedMail?.received?.videoUrl,bodyText:x.selectedMail?.received?.bodyText,' in patched
+    assert 'type:x.selectedMail?.received?.type==="video"?"video":"text"},null,8,' in patched
+    assert '"songUrl","videoUrl","bodyText","signature","type"]' in patched
+    assert _repair_native_proactive_video(patched) == patched
+    assert _repair_native_proactive_video('a bundle without the paper') == 'a bundle without the paper'

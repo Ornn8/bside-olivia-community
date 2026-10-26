@@ -505,6 +505,8 @@ async def _contact_qq_media(row):
                 else ['MEDIA_PHOTO_SKIPPED'] if row.get('image_status') == 'SKIPPED' else [])
     if 'video' in kinds and not row.get('daily_video_request'):
         codes.append('MEDIA_VIDEO_UNAVAILABLE')
+    if 'song' in kinds:
+        codes.append('MEDIA_SONG_UNAVAILABLE')  # a finished song rides a letter, never a chat message
     if 'voice' in kinds and row.get('delivered_format') != 'audio':
         if row.get('default_voice_status') in {'PENDING', 'RENDERING', 'SENDING'}:
             await cloud_contact.wait_until(lambda: row.get('default_voice_status') not in {'PENDING', 'RENDERING', 'SENDING'},

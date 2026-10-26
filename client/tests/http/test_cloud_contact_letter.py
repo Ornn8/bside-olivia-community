@@ -329,8 +329,15 @@ async def main():
     assert letter['media_status'] == 'COMPLETED' and letter['reply_mode'] == 'singing_video' and letter['is_read'] == 0
     assert acks[-1] == {'id': contact_id, 'status': 'delivered', 'channel': 'letter', 'error_code': None}
     from original_client_letter_contract import serialize_letter_detail
+    from original_client_server import _project_proactive_fields
     detail = serialize_letter_detail(letter)
     assert detail['replyVideoUrl'] == letter['reply_video_url']
+    # Her letter keeps the video type on its way to the mailbox: forced to text, the paper showed the words alone
+    # and never the video (2026-10-26).
+    projected = _project_proactive_fields(dict(detail), letter)
+    assert projected['replyType'] == 4 and projected['origin'] == 'proactive' and projected['replyAllowed'] is False
+    plain = _project_proactive_fields(dict(detail), {**letter, 'media_status': 'FAILED'})
+    assert plain['replyType'] == 1 and plain['reply_mode'] == 'text'
     assert [event['component'] for event in delivered] == ['music']  # her day knows she sent it
 asyncio.run(main())
 ''')
@@ -352,3 +359,56 @@ async def main():
     assert acks[-1] == {'id': contact_id, 'status': 'delivered', 'channel': 'letter', 'error_code': 'MEDIA_VIDEO_FAILED'}
 asyncio.run(main())
 ''')
+
+
+def test_a_finished_song_named_by_its_task_is_fetched_and_played_on_the_letter(tmp_path):
+    # 2026-10-26: songs (audio only) made at night whose letters had given up reach their owners this way.
+    run_isolated(tmp_path, SETUP + r"""
+os.environ['OLIVIA_GPU_API_URL'] = 'https://api.example.test'
+os.environ['OLIVIA_GPU_API_KEY'] = 'olivia-synthetic'
+fetched = []
+async def download_task(self, task_id, output, *, validate=None):
+    fetched.append(task_id)
+    Path(output).parent.mkdir(parents=True, exist_ok=True)
+    Path(output).write_bytes(b'RIFF' + b'\0' * 64)
+    return {'task_id': task_id, 'status': 'succeeded'}
+import runtime.remote_generation as remote_generation
+remote_generation.RemoteGeneration.download_task = download_task
+delivered = []
+server.daily_life_runtime = SimpleNamespace(store=SimpleNamespace(exchange_state=lambda: {},
+                                                                   record_media_delivery=delivered.append))
+TASK = '1434f97b4a2b4c8d9e0f1a2b3c4d5e6f'
+async def main():
+    contact_id = await carry(22, media=[{'type': 'song', 'task_id': TASK}])
+    [letter] = letters_of(contact_id)
+    assert fetched == [TASK] and letter['contact_media'] == [{'type': 'song', 'brief': None, 'task_id': TASK}]
+    assert letter['reply_audio_url'] == 'http://127.0.0.1:8123/toy/media/' + letter['letter_id'] + '.wav'
+    assert letter['reply_video_enabled'] is False and letter['reply_mode'] == 'singing_video'
+    assert letter['media_status'] == 'COMPLETED' and letter['is_read'] == 0
+    assert acks[-1] == {'id': contact_id, 'status': 'delivered', 'channel': 'letter', 'error_code': None}
+    from original_client_letter_contract import serialize_letter_detail
+    from original_client_server import _project_proactive_fields
+    detail = _project_proactive_fields(serialize_letter_detail(letter), letter)
+    assert detail['replyAudioUrl'] == letter['reply_audio_url'] and detail['audioStatus'] == 'COMPLETED'
+    assert detail['coverId'] == letter['letter_id']   # the paper's player and 添加到曲库
+    assert [event['component'] for event in delivered] == ['music']
+asyncio.run(main())
+""")
+
+
+def test_a_song_that_cannot_be_fetched_leaves_the_letter_and_is_reported(tmp_path):
+    run_isolated(tmp_path, SETUP + r"""
+os.environ['OLIVIA_GPU_API_URL'] = 'https://api.example.test'
+os.environ['OLIVIA_GPU_API_KEY'] = 'olivia-synthetic'
+async def download_task(self, task_id, output, *, validate=None):
+    from runtime.cloud_service import CloudError
+    raise CloudError('GPU_TASK_NOT_FOUND', 404)
+import runtime.remote_generation as remote_generation
+remote_generation.RemoteGeneration.download_task = download_task
+async def main():
+    contact_id = await carry(23, media=[{'type': 'song', 'task_id': '1434f97b4a2b4c8d9e0f1a2b3c4d5e6f'}])
+    [letter] = letters_of(contact_id)
+    assert letter['letter_status'] == 'COMPLETED' and not letter.get('reply_audio_url')
+    assert acks[-1]['status'] == 'delivered' and acks[-1]['error_code'] == 'MEDIA_SONG_FAILED'
+asyncio.run(main())
+""")
