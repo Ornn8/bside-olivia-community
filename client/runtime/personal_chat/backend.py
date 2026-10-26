@@ -530,11 +530,15 @@ async def generate(server, event, row):
             row['default_voice_status'] = 'PENDING'  # The text first, then the same words as a voice message.
         return row['contact_body']
     from runtime.reply.jev_billing import confirm_settlements
+    from runtime.reply import web_search
     # A QQ turn's judgments settle beside its next stages; all of them are confirmed before the reply goes out.
+    # Whether to search the web is judged as the turn starts, beside its other preparation (runtime/reply/web_search).
+    asked = getattr(event, 'text', '') if row.get('origin') != 'proactive' and row.get('contact_id') is None else ''
     with contact_context.using(row.get('contact_id')), billing_scope(
             'personal-chat:' + event.exchange_id + ':' + str(row.get('input_revision', 0)),
             deferred=event.channel == 'qq'), using('qq'), scope(
-            event.exchange_id, 'proactive' if row.get('origin') == 'proactive' else event.channel, row.get('generation_attempts', 0)):
+            event.exchange_id, 'proactive' if row.get('origin') == 'proactive' else event.channel, row.get('generation_attempts', 0)), \
+            web_search.searching(asked):
         row['diagnostic_model'] = selected_model()
         token = TIMINGS.set(row)
         try:
@@ -960,20 +964,19 @@ async def _generate_billed(server, event, row):
         from .decision import repeats_recent
         if repeats_recent(text, [r for r in server.store.personal_chats if r is not row],
                           channel=event.channel, binding_id=event.binding_id):
-            if row.get('origin') != 'proactive':
-                # A new user message can warrant the same greeting or answer.
-                # Repetition is a style warning after content validation, not
-                # a reason to discard a reply or buy another generation.
-                row['decision_warning_codes'] = ['REPEATED_REPLY']
-                server._safe_log('personal_chat_decision_warning', channel=event.channel,
-                                 decision_warning_codes=['REPEATED_REPLY'])
-            else:
-                # Repeated unsolicited proactive contact retains its existing guard.
+            # Her exact words of a recent reply never go out again as a new message (2026-10-26: his sticker
+            # was answered with her previous line, character for character). The first such draft is written
+            # once more, told that it repeated; when the second says it again, nothing is sent for this turn.
+            if row.get('origin') == 'proactive' or row.get('generation_attempts', 1) < 2:
                 row['decision_rejection_reason'] = 'REPEATED_REPLY'
                 server._safe_log('personal_chat_decision_rejected', reason='REPEATED_REPLY', missing_fields=[], extra_field_count=0)
                 error = ValueError('PERSONAL_CHAT_DECISION_INVALID')
                 error.reason = 'REPEATED_REPLY'
                 raise error
+            row['skip_reason'] = 'DUPLICATE_CONTENT'
+            server._safe_log('personal_chat_decision_warning', channel=event.channel,
+                             decision_warning_codes=['REPEATED_REPLY'])
+            return None
         basis = 'WRITER_SELECTION'
         if companion is not None:
             delivery = row['companion_delivery']

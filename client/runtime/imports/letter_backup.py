@@ -9,8 +9,12 @@ from runtime.memory.memory_port import LegacyLetter
 
 SCHEMA = 'olivia.letters.v1'
 KIND = 'local_letter_backup_v1'
-MAX_BYTES = 16 * 1024 * 1024
-MAX_LETTERS = 10000
+# A year of daily QQ chat runs past ten thousand rows; the diary and stored facts ride in the same file.
+MAX_BYTES = 64 * 1024 * 1024
+MAX_LETTERS = 100000
+# The original app's .soul file keeps its own published limits (contracts/soul_letter_import.schema.json).
+SOUL_MAX_BYTES = 16 * 1024 * 1024
+SOUL_MAX_EXCHANGES = 10000
 
 
 def is_backup(metadata):
@@ -156,13 +160,13 @@ def validate_backup(payload):
 
 def _soul_backup(manifest):
     """Read only text exchanges from the SOUL0001 manifest (PR #508 format)."""
-    if not isinstance(manifest, dict) or len(json.dumps(manifest, ensure_ascii=False).encode('utf-8')) > MAX_BYTES:
+    if not isinstance(manifest, dict) or len(json.dumps(manifest, ensure_ascii=False).encode('utf-8')) > SOUL_MAX_BYTES:
         raise ValueError('LETTER_BACKUP_INVALID')
     memory = manifest.get('memory')
     if not isinstance(memory, dict) or not isinstance(memory.get('exchanges'), list):
         raise ValueError('LETTER_BACKUP_INVALID')
     exchanges = memory['exchanges']
-    if len(exchanges) > MAX_LETTERS:
+    if len(exchanges) > SOUL_MAX_EXCHANGES:
         raise ValueError('LETTER_BACKUP_TOO_LARGE')
     rows = []
     for item in exchanges:

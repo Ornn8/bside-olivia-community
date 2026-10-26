@@ -193,9 +193,13 @@ def test_backend_generate_uses_real_pipeline_persona_memory_and_world(tmp_path, 
         return
     async def scenario(row=None):
         row = row if row is not None else {"life_received_at": datetime.now(timezone.utc).isoformat()}
-        row['decision_rejection_reason'] = 'JSON_SYNTAX'
+        row.setdefault('decision_rejection_reason', 'JSON_SYNTAX')
         result = await backend.generate(server, event, row)
         assert 'decision_rejection_reason' not in row
+        if envelope_variant == 'repeated_reply':
+            # Only a second draft that says her recent line again gets here: it is not sent.
+            assert result is None and row['skip_reason'] == 'DUPLICATE_CONTENT' and 'sticker_id' not in row
+            return result
         if envelope_variant in ('missing_sticker', 'numeric_sticker', 'text_only', 'daily_video_explicit'):
             assert 'sticker_id' not in row
         else:
@@ -204,9 +208,6 @@ def test_backend_generate_uses_real_pipeline_persona_memory_and_world(tmp_path, 
         if envelope_variant in ('missing_control', 'text_only'):
             assert row['decision_defaulted_fields']
             assert 'user_controls_applied' not in row
-        if envelope_variant == 'repeated_reply':
-            assert row['decision_warning_codes'] == ['REPEATED_REPLY']
-            assert 'decision_rejection_reason' not in row
         if envelope_variant in ('unrequested_speech', 'invalid_unrequested_speech'):
             assert row['decision_dropped_media'] == 'UNREQUESTED_SPEECH'
             assert 'speech_script' not in row and 'speech_delivery_status' not in row
@@ -267,6 +268,21 @@ def test_backend_generate_uses_real_pipeline_persona_memory_and_world(tmp_path, 
                 worker.bind('qq', send)
                 await worker.refresh_capabilities()
                 monitor = asyncio.create_task(worker.monitor())
+            if envelope_variant == 'repeated_reply':
+                # The draft repeats her last delivered line: written once more, told why, and never sent twice.
+                with pytest.raises(ValueError, match='^PERSONAL_CHAT_DECISION_INVALID$'):
+                    await service.handle(event, send)
+                row = service.rows[-1]
+                assert row['delivery_status'] == 'FAILED' and row['generation_attempts'] == 1
+                assert row['decision_rejection_reason'] == 'REPEATED_REPLY' and sent == [] and generated == []
+                await service.handle(event, send)
+                assert row['delivery_status'] == 'SKIPPED' and row['skip_reason'] == 'DUPLICATE_CONTENT'
+                assert row['error_code'] == 'PERSONAL_CHAT_DUPLICATE_CONTENT' and row['generation_attempts'] == 2
+                assert sent == [] and generated == [None] and 'reply_text' not in row
+                notes = [''.join(m['content'] for m in call if m['role'] == 'system') for call in calls]
+                assert len(notes) == 2 and '已被拒绝，不会发出' in notes[1] and '已被拒绝，不会发出' not in notes[0]
+                assert [log['event'] for log in logs].count('personal_chat_decision_rejected') == 1
+                return
             await service.handle(event, send)
             row = service.rows[-1]
             assert row['delivery_status'] == 'DELIVERED' and row['transport_confirmation'] == 'CONFIRMED'
@@ -300,7 +316,7 @@ def test_backend_generate_uses_real_pipeline_persona_memory_and_world(tmp_path, 
             if service.consumer_tasks:
                 await asyncio.gather(*service.consumer_tasks.values())
         asyncio.run(delivered_scenario())
-    assert len(calls) == 1
+    assert len(calls) == (2 if envelope_variant == 'repeated_reply' else 1)
     system = calls[0][0]["content"]
     assert "constitution" in system and "future_im" in system
     assert "即时聊天" in system
