@@ -38,7 +38,7 @@ async def relay_request(base, key, method, path, payload=None):
             async with session.request(method, base.rstrip('/')+path, json=payload,
                                        headers={'Authorization':'Bearer '+key,
                                                 'X-Olivia-Chat-Price': 'account-20261017',
-                                                'X-Olivia-JEV-Price': 'jev-input-cny-20261017-v6',
+                                                'X-Olivia-JEV-Price': 'jev-input-cny-20261027-v7',
                                                 **ui_language.headers(),
                                                 **(EVENTS_HEADER if path in EVENTS_PATHS else {})},
                                        allow_redirects=False,
