@@ -63,7 +63,10 @@ INSTRUCTION += ('他只回了表情包、一两个字或附和时，那是在回
                 '不把你上一条回复原样或换个说法再发一遍，上一条里问过的问题也不原样再问。\n')
 
 
-PROVENANCE_HEADER = re.compile(r'\[(?:历史消息|当前消息)\s*\{.*?\}\s*\]\s*', re.DOTALL)
+# The two source headers, and any other "[label {"field": …}]" the model makes up from the fields it was shown
+# (2026-10-26 a letter began with [语音回复 {"source_id": "media:…", "status": "sent"}]). Her faces ([微笑]) have no JSON.
+PROVENANCE_HEADER = re.compile(r'\[(?:历史消息|当前消息)\s*\{.*?\}\s*\]\s*'
+                               r'|\[[^\[\]{}\r\n]{1,16}\s*\{\s*"[A-Za-z_][A-Za-z0-9_]*"\s*:[^\[\]]*?\}\s*\]\s*', re.DOTALL)
 
 
 def repeats_recent(text, rows, *, channel, binding_id, limit=6):

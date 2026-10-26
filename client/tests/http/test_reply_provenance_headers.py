@@ -11,13 +11,21 @@ from tests.http.test_expression_context_routes import run_isolated
 BODY = '收到啦。你说的[当前消息]我看到了。'
 
 
-@pytest.fixture(params=['当前消息', '历史消息'])
+@pytest.fixture(params=['当前消息', '历史消息', '语音回复'])
 def header(request):
+    if request.param == '语音回复':  # made up by the writer from the media fields it was shown (2026-10-26)
+        return '[语音回复 {"source_id": "media:' + '6' * 64 + '", "status": "sent"}]'
     metadata = dict(source='received-user:letter:current',
                     event_id='received-user:letter:current', actor='user',
                     evidence_kind='current_input', channel='letter',
                     received_at='2026-10-10T15:00:00+08:00', truncated=False)
     return '[' + request.param + ' ' + json.dumps(metadata) + ']\n'
+
+
+def test_her_faces_and_plain_brackets_are_not_headers():
+    from runtime.personal_chat.decision import PROVENANCE_HEADER
+    text = '[微笑]好呀，[语音]我晚点发你 {不是字段}，[备注 {"随便": 1}]'
+    assert PROVENANCE_HEADER.sub('', text) == text
 
 
 def test_chat_removes_provenance_but_preserves_reply_and_rejects_header_only(header):
