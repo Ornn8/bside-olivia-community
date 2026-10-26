@@ -117,3 +117,48 @@ def test_a_saved_night_order_survives_a_restart(tmp_path, monkeypatch):
     order.write_text(json.dumps({'fingerprint': 'f' * 64,                      # submitted but never answered
                                  'submission': {'request_id': 'req-123456789', 'kind': 'original', 'input': {}}}))
     assert server._has_saved_night_order(letter) is False
+
+
+def test_a_night_wait_outlives_a_network_outage(tmp_path, monkeypatch):
+    """2026-10-25: a client lost the service for about ten minutes while a song video waited for the night, gave the
+    order up and showed a failed letter; the batch made the video and it was paid. Now the wait goes on."""
+    from runtime import remote_generation
+    slept = []
+
+    async def sleep(seconds):
+        slept.append(seconds)
+    monkeypatch.setattr(remote_generation.asyncio, 'sleep', sleep)
+    api = remote_generation.RemoteGeneration('https://gpu.example', 'synthetic-key')
+    request, calls = fake_service(held(2), caps={'night_batch': NIGHT})
+    outage = {'left': 60}
+
+    async def flaky(action, data):
+        if action == 'status' and outage['left'] > 0:
+            outage['left'] -= 1
+            raise CloudError('GPU_CONNECTION_TIMEOUT')
+        return await request(action, data)
+    api.request = flaky
+    task = run(api, 'cover', tmp_path / 'song.wav', timeout=0)
+    assert task['status'] == 'succeeded' and 'cancel' not in calls
+    assert remote_generation.OUTAGE_POLL_SECONDS in slept
+
+
+def test_an_outage_still_ends_a_wait_that_has_a_limit_and_a_refusal_ends_any(tmp_path, monkeypatch):
+    from runtime import remote_generation
+
+    async def sleep(seconds):
+        pass
+    monkeypatch.setattr(remote_generation.asyncio, 'sleep', sleep)
+    for caps, failure in (({}, CloudError('GPU_CONNECTION_TIMEOUT')),
+                          ({'night_batch': NIGHT}, CloudError('GPU_TASK_NOT_FOUND', 404))):
+        api = remote_generation.RemoteGeneration('https://gpu.example', 'synthetic-key')
+        request, calls = fake_service(held(2), caps=caps)
+
+        async def broken(action, data, request=request, failure=failure):
+            if action == 'status':
+                raise failure
+            return await request(action, data)
+        api.request = broken
+        with pytest.raises(CloudError) as raised:
+            run(api, 'cover', tmp_path / 'song.wav', timeout=3600)
+        assert raised.value.code == failure.code
