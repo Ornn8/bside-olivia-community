@@ -572,6 +572,7 @@ def _repair_mailbox_write_access(root: Path) -> str:
     source = _repair_native_letter_audio(source)
     source = _repair_native_proactive_collection(source)
     source = _repair_native_proactive_video(source)
+    source = _repair_native_proactive_video_text(source)
     source = _repair_native_silent_reply(source)
     source = _repair_native_reply_failure(source)
     source = _repair_native_mailbox_order_and_time(source)
@@ -952,6 +953,49 @@ def _repair_native_proactive_video(source: str) -> str:
         '["modelValue","timestamp","coverId","audioUrl","audioStatus","songUrl","videoUrl","bodyText","signature","type"]',
         1)
     return _NATIVE_PROACTIVE_VIDEO_MARKER + source
+
+
+_NATIVE_PROACTIVE_VIDEO_TEXT_MARKER = "/*olivia-proactive-video-text-v1*/"
+_PROACTIVE_VIDEO_TAIL = (
+    'type:x.selectedMail?.received?.type==="video"?"video":"text"},null,8,'
+    '["modelValue","timestamp","coverId","audioUrl","audioStatus","songUrl","videoUrl","bodyText","signature","type"])]}),_:1})'
+)
+# The paper's slot wrapper in front of it: [k($s,null,{default:V(()=>{var E,M;return[ (minified names vary by build).
+_PROACTIVE_SLOT_OPEN = re.compile(r'\[(k\([\w$]+,null,\{default:[\w$]+\(\(\)=>\{(?:var [\w$,]+;)?return\[)$')
+_PROACTIVE_STACK_STYLE = ('display:flex;flex-direction:column;align-items:center;gap:16px;'
+                          'max-height:100%;overflow-y:auto;overflow-x:hidden;padding:8px 0')
+
+
+def _repair_native_proactive_video_text(source: str) -> str:
+    """Her letter that carries a video keeps its words: a text paper under the video, as a video reply has.
+
+    The paper shows text OR video, so from 2.5.4 her letter with a finished song video showed the video alone and its
+    words were gone (2026-10-26 「主动信件视频把文字挡住了」). Replies got a second text paper in 2.4.11
+    (installer/patch_letter_stickers _patch_video_text); her letters get the same here, both papers stacked in one
+    scrolling column. A letter without a video looks as before. A bundle without the anchors is left as it is.
+    """
+    if _NATIVE_PROACTIVE_VIDEO_TEXT_MARKER in source or _NATIVE_PROACTIVE_VIDEO_MARKER not in source:
+        return source
+    head, tail = source.find(_PROACTIVE_PAPER_HEAD), source.find(_PROACTIVE_VIDEO_TAIL)
+    if (source.count(_PROACTIVE_PAPER_HEAD) != 1 or source.count(_PROACTIVE_VIDEO_TAIL) != 1
+            or not head < tail or tail - head > 3000):
+        return source
+    opening = _PROACTIVE_SLOT_OPEN.search(source, max(0, head - 200), head)
+    model = re.search(r'modelValue:([\w$]+\([\w$]+\)),"onUpdate:modelValue"', source[head:tail])
+    if opening is None or model is None:
+        return source
+    received = 'x.selectedMail.received'
+    text_paper = (
+        f',x.selectedMail?.received?.type==="video"&&{model.group(1)}?(r(),_("div",{{key:"olivia-proactive-video-text",'
+        f'class:"olivia-proactive-video-text"}},[k(ks,({{bodyText:{received}.bodyText,signature:{received}.signature,'
+        f'modelValue:{model.group(1)},class:"w-[516px] aspect-[16/9]","is-visible":!0,readonly:"",'
+        f'timestamp:{received}.timestamp??null,type:"text"}}),null,8,["bodyText","signature","modelValue","timestamp"])]))'
+        ':Y("",!0)])')
+    end = tail + len(_PROACTIVE_VIDEO_TAIL)
+    stack = f'[n("div",{{class:"olivia-proactive-stack",style:"{_PROACTIVE_STACK_STYLE}"}},['
+    source = (source[:opening.start()] + stack + opening.group(1) + source[opening.end():end]
+              + text_paper + source[end:])
+    return _NATIVE_PROACTIVE_VIDEO_TEXT_MARKER + source
 
 
 def _repair_native_proactive_collection(source: str) -> str:

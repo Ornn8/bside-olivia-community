@@ -144,3 +144,42 @@ def test_her_own_letter_shows_the_video_it_carries():
     assert '"songUrl","videoUrl","bodyText","signature","type"]' in patched
     assert _repair_native_proactive_video(patched) == patched
     assert _repair_native_proactive_video('a bundle without the paper') == 'a bundle without the paper'
+
+
+# Her letter's paper as the native mailbox renders it (assets/main-*.js, welcome-paper path), its slot wrapper included.
+NATIVE_PROACTIVE_PAPER = (
+    'n("div",Hw,[k($s,null,{default:V(()=>{var E,M;return[k(ks,{coverId:x.selectedMail?.coverId,'
+    'audioUrl:x.selectedMail?.received?.audioUrl||"",audioStatus:x.selectedMail?.audioStatus||"",'
+    'songUrl:x.selectedMail?.received?.songUrl||"",modelValue:o(h),"onUpdate:modelValue":I[1]||(I[1]=A=>be(h)?h.value=A:null),'
+    'class:"w-[516px] aspect-[16/9]","is-visible":!0,readonly:"",'
+    'timestamp:((M=(E=x.selectedMail)==null?void 0:E.received)==null?void 0:M.timestamp)??null,'
+    'type:"text"},null,8,["modelValue","timestamp","coverId","audioUrl","audioStatus","songUrl"])]}),_:1})])')
+
+
+def test_her_video_letter_keeps_its_words_under_the_video(tmp_path):
+    # 2026-10-26 「主动信件视频把文字挡住了」: the paper shows text OR video, so the video took her words away.
+    from patch_companion_settings import _repair_native_proactive_video, _repair_native_proactive_video_text
+    patched = _repair_native_proactive_video_text(_repair_native_proactive_video(NATIVE_PROACTIVE_PAPER))
+    assert patched.startswith('/*olivia-proactive-video-text-v1*/')
+    assert _repair_native_proactive_video_text(patched) == patched
+    assert _repair_native_proactive_video_text(NATIVE_PROACTIVE_PAPER) == NATIVE_PROACTIVE_PAPER  # needs the video step
+    node = shutil.which('node')
+    if node is None:
+        pytest.skip('Node.js unavailable')
+    expression = patched[patched.index('*/') + 2:]
+    script = tmp_path / 'paper.cjs'
+    script.write_text('''
+const n=(tag,props,children)=>({tag,props,children}), k=(c,props,slots)=>({c,props,slots});
+const V=f=>f, r=()=>{}, _=(tag,props,children)=>({tag,props,children}), Y=()=>null, o=v=>v.value, be=()=>false;
+const Hw={}, $s='zoomable', ks='paper', I=[];
+const papers=node=>{if(!node||typeof node!=='object')return[];if(Array.isArray(node))return node.flatMap(papers);
+  if(node.c==='paper')return[node.props];
+  return [...papers(node.children),...papers(node.slots&&node.slots.default?node.slots.default():null)];};
+const render=(type)=>{const x={selectedMail:{coverId:1,audioStatus:'',received:{type,bodyText:'她的信',signature:'林',
+  timestamp:1,videoUrl:type==='video'?'v.mp4':''}}};const h={value:'她的信'};return papers(%s);};
+const video=render('video'), text=render('text');
+if(video.length!==2||video[0].type!=='video'||video[1].type!=='text'||video[1].modelValue!=='她的信')throw Error('video '+JSON.stringify(video));
+if(text.length!==1||text[0].type!=='text')throw Error('text '+JSON.stringify(text));
+''' % expression, encoding='utf-8')
+    result = subprocess.run([node, str(script)], capture_output=True, text=True, timeout=20)
+    assert result.returncode == 0, result.stderr
