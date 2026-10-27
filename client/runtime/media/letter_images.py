@@ -8,19 +8,22 @@ import uuid
 
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 MAX_IMAGES = 4  # as many as one QQ turn carries
-_SUFFIXES = {'PNG': '.png', 'JPEG': '.jpg', 'WEBP': '.webp'}
+MAX_PIXELS = 64_000_000  # a 50 MP phone photo fits
+# Phones on Android 14+ save Ultra HDR photos: a JPEG with its gain map as a second picture, which Pillow names
+# MPO. It is a .jpg to everyone else and was refused as an unknown format, so such photos never reached her.
+_SUFFIXES = {'PNG': '.png', 'JPEG': '.jpg', 'MPO': '.jpg', 'WEBP': '.webp'}
 NAME = re.compile(r'letter-image-[0-9a-f]{32}\.(?:png|jpg|webp)')
 
 
 def save_upload(media_root: Path, raw: bytes) -> dict:
-    """Keep the bytes as sent once they decode as a PNG, JPG or WebP picture."""
+    """Keep the bytes as sent once they decode as a PNG, JPG (Ultra HDR included) or WebP picture."""
     from PIL import Image
     if len(raw) > MAX_UPLOAD_BYTES:
         raise ValueError('LETTER_IMAGE_TOO_LARGE')
     try:
         with Image.open(io.BytesIO(raw)) as image:
             suffix = _SUFFIXES.get(image.format)
-            if suffix is None or image.width * image.height > 24_000_000:
+            if suffix is None or image.width * image.height > MAX_PIXELS:
                 raise ValueError('LETTER_IMAGE_INVALID')
             width, height = image.size
             image.load()
@@ -44,7 +47,7 @@ def attachments(media_root: Path | None, image_ids: object) -> list[str]:
         raise ValueError('LETTER_IMAGES_INVALID')
     names = []
     for image_id in image_ids:
-        found = [media_root / f'letter-image-{image_id}{suffix}' for suffix in _SUFFIXES.values()
+        found = [media_root / f'letter-image-{image_id}{suffix}' for suffix in sorted(set(_SUFFIXES.values()))
                  if media_root is not None and (media_root / f'letter-image-{image_id}{suffix}').is_file()]
         if len(found) != 1:
             raise ValueError('LETTER_IMAGE_NOT_FOUND')
