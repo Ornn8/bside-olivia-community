@@ -139,5 +139,11 @@ def test_repeated_start_while_login_pending_does_not_spawn_again(tmp_path, monke
             responses = await asyncio.gather(*[client.post(setup.NAPCAT_START_PATH,
                 headers={setup.CONFIRM_HEADER: setup.CONFIRM_VALUE}, json={}) for _ in range(2)])
             assert all(response.status == 202 for response in responses)
+            # The start runs in a worker (its files are checked first): wait for it, then make sure it ran once.
+            for _ in range(200):
+                if calls:
+                    break
+                await asyncio.sleep(0.01)
+            await asyncio.sleep(0.05)
             assert calls == [1]
     asyncio.run(scenario())

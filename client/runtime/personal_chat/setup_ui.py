@@ -61,6 +61,8 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
     CONNECTED: t("已连接"),
     LISTENING: t("已连接"),
     RECONNECTING: t("正在重连"),
+    QQ_LOGIN_REQUIRED: t("QQ 已掉线，需要重新扫码登录"),
+    QQ_COMPONENT_FAILED: t("QQ 组件启动不了，见下方说明"),
     AUTH_REQUIRED: t("登录已失效，需要重新绑定"),
     SETUP_REQUIRED: t("需要设置"),
     CONFIGURED_RESTART: t("已保存，重启 Olivia 后生效"),
@@ -80,6 +82,19 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
     UNSUPPORTED: t("当前系统不支持"),
     FAILED: t("连接失败"),
   }[value] || value || t("未知状态"));
+
+  // What the QQ line shows. While QQ only keeps reconnecting, the local component says why: QQ logged out and waits
+  // for a new scan, or the component cannot start (2026-10-27: both showed 正在重连 for days).
+  const qqLiveState = (status) => {
+    const setupState = status.qq?.state;
+    if (["FAILED", "READY_RESTART"].includes(setupState)) return setupState;
+    const listener = status.listeners?.qq;
+    if (["CONNECTING", "RECONNECTING"].includes(listener)) {
+      if (status.napcat?.state === "AWAITING_QQ_LOGIN") return "QQ_LOGIN_REQUIRED";
+      if (status.napcat?.state === "FAILED") return "QQ_COMPONENT_FAILED";
+    }
+    return listener || setupState;
+  };
 
   const input = (placeholder, type = "text") => {
     const element = document.createElement("input");
@@ -172,6 +187,9 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
         NAPCAT_LOGIN_OPEN_FAILED: t("登录窗口未能打开。可以直接扫描本页二维码；需要额外验证时，请设置默认浏览器后再点“打开 QQ 登录窗口”。"),
         NAPCAT_LOGIN_UNAVAILABLE: t("暂未取得 QQ 登录信息，请稍后刷新二维码。"),
         NAPCAT_START_FAILED: t("QQ 组件启动后已退出，请重试或导出诊断包排查。"),
+        NAPCAT_EXITS_ON_START: t("QQ 组件每次一启动就退出，常见原因是杀毒软件（360、火绒、电脑管家、Windows 安全中心）把它的文件隔离了。请在杀毒软件的隔离区恢复 Olivia 文件夹里的文件、把 Olivia 安装文件夹加入信任，然后点“启动并登录 QQ”，Olivia 会先补齐缺少的文件再启动。"),
+        NAPCAT_REPAIR_FAILED: t("补齐 QQ 组件文件失败，请检查剩余空间后重试。"),
+        NAPCAT_ARCHIVE_INVALID: t("QQ 组件包校验失败，请检查网络后重试；Olivia 会重新下载校验。"),
         NAPCAT_PORT_IN_USE: t("QQ 登录端口被其他实例占用，请关闭其他 NapCat 实例后重试。"),
         NAPCAT_DEPENDENCY_HASH_MISMATCH: t("QQ 运行依赖校验失败，请重试；Olivia 会重新下载校验，无需重装程序。"),
         NAPCAT_DEPENDENCY_EXTRACT_FAILED: t("QQ 运行依赖解压失败，请检查剩余空间后重试。"),
@@ -289,9 +307,7 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
       const top = node("div", null, "olivia-chat-row");
       const left = document.createElement("div");
       const listener = status.listeners?.qq;
-      const setupState = status.qq?.state;
-      const state = ["FAILED", "READY_RESTART"].includes(setupState) ? setupState : listener || setupState;
-      const liveState = node("div", stateLabel(state), "olivia-chat-state");
+      const liveState = node("div", stateLabel(qqLiveState(status)), "olivia-chat-state");
       liveState.dataset.qqLiveState = "true";
       left.append(node("div", t("QQ（实验功能）"), "olivia-chat-name"), liveState);
       top.append(left);
@@ -451,8 +467,11 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
       const selected = Array.isArray(status.selected_channels) ? status.selected_channels.filter(name => name === 'qq') : [];
       const live = (name) => ["CONNECTED", "LISTENING"].includes(status.listeners?.[name]);
       for (const name of ["qq", "wechat"]) {
-        const problem = selected.includes(name) && status.reply_errors?.[name];
-        const value = !selected.includes(name) ? "" : problem ? t("{channel} 需要处理", {channel: names[name]})
+        const stuck = name === "qq" && ["QQ_LOGIN_REQUIRED", "QQ_COMPONENT_FAILED"].includes(qqLiveState(status));
+        const problem = selected.includes(name) && (status.reply_errors?.[name] || stuck);
+        const value = !selected.includes(name) ? ""
+          : stuck && qqLiveState(status) === "QQ_LOGIN_REQUIRED" ? t("{channel} 需要重新扫码", {channel: names[name]})
+          : problem ? t("{channel} 需要处理", {channel: names[name]})
           : live(name) ? t("{channel} 正常", {channel: names[name]}) : t("{channel} 未连接", {channel: names[name]});
         root.dispatchEvent(new CustomEvent("olivia-group-status", {bubbles: true, detail: {part: name, value: problem ? "" : value}}));
         root.dispatchEvent(new CustomEvent("olivia-group-status", {bubbles: true, detail: {part: name + ":problem", value: problem ? value : ""}}));
@@ -463,8 +482,7 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
     const updateReplyHealth = (status) => {
       reportGroup(status);
       const state = content.querySelector("[data-qq-live-state]");
-      if (state) state.textContent = stateLabel(["FAILED", "READY_RESTART"].includes(status.qq?.state)
-        ? status.qq.state : status.listeners?.qq || status.qq?.state);
+      if (state) state.textContent = stateLabel(qqLiveState(status));
       const health = content.querySelector("[data-qq-reply-health]");
       if (health) {
         health.replaceChildren();
