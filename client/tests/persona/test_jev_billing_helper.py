@@ -75,35 +75,43 @@ def test_wrong_attribution_rejected_before_settlement(configured, monkeypatch, f
 
 
 @pytest.mark.parametrize('field,value', [('charged_units',2549),('debited_units',0),('replayed',1),('input_tokens',18)])
-def test_wrong_relay_amount_is_not_consumed(configured, monkeypatch, field, value):
+def test_inconsistent_settlement_is_not_consumed(configured, monkeypatch, field, value):
     answer = result(signed())
     answer[field] = value
     monkeypatch.setattr(billing, '_post_settlement', lambda *a: answer)
     with billing.billing_scope('synthetic:turn'):
-        # A wrong amount is a real mismatch, reported as such, never "unavailable".
+        # A debit other than the reported charge, or another judgment's tokens, is a real
+        # mismatch, reported as such, never "unavailable".
         with pytest.raises(ValueError, match='JEV_BILLING_RESPONSE_INVALID'):
             billing.settle_receipt_sync(signed(), DIGEST)
 
 
+@pytest.mark.parametrize('tokens,charged', [(17, 1_000_000), (17, 2550), (20000, 1_000_000), (17000, 17000 * 203),
+                                            (17000, 17000 * 101), (0, 0)])
 @pytest.mark.parametrize('replayed', [False, True])
-def test_published_minimum_is_accepted_for_small_judgments(configured, monkeypatch, replayed):
-    answer = result(signed(), replayed=replayed)
-    answer.update(charged_units=billing.MINIMUM_CHARGE_UNITS,
-                  debited_units=0 if replayed else billing.MINIMUM_CHARGE_UNITS)
+def test_the_relay_prices_the_judgment(configured, monkeypatch, tokens, charged, replayed):
+    # The relay debited the receipt when the judgment answered; the amount it reports is the charge.
+    answer = result(signed(tokens), replayed=replayed)
+    answer.update(price_version=billing.SERVER_PRICE_VERSION, charged_units=charged,
+                  debited_units=0 if replayed else charged)
     monkeypatch.setattr(billing, '_post_settlement', lambda *a: answer)
     with billing.billing_scope('synthetic:turn'):
-        assert billing.settle_receipt_sync(signed(), DIGEST)['charged_units'] == billing.MINIMUM_CHARGE_UNITS
+        assert billing.settle_receipt_sync(signed(tokens), DIGEST)['charged_units'] == charged
+        assert billing.billing_headers()['X-Olivia-JEV-Price'] == 'jev-input-cny-20261027-v7'
         assert billing.billing_headers()['X-Olivia-Billing-Minimum'] == '1'
 
 
-def test_minimum_is_not_accepted_when_usage_already_exceeds_it(configured, monkeypatch):
-    big = signed(tokens=20000)
-    answer = result(big)
-    answer.update(charged_units=billing.MINIMUM_CHARGE_UNITS, debited_units=billing.MINIMUM_CHARGE_UNITS)
+@pytest.mark.parametrize('field,value', [('charged_units', -1), ('charged_units', 1.5), ('charged_units', '2550'),
+    ('price_version', None), ('status', 'reserved'), ('operation_id', 'd' * 64), ('turn_id', 'another-turn')])
+def test_a_settlement_that_is_not_this_judgments_is_refused(configured, monkeypatch, field, value):
+    answer = result(signed())
+    answer[field] = value
+    if field == 'charged_units':
+        answer['debited_units'] = value
     monkeypatch.setattr(billing, '_post_settlement', lambda *a: answer)
     with billing.billing_scope('synthetic:turn'):
         with pytest.raises(ValueError, match='JEV_BILLING_RESPONSE_INVALID'):
-            billing.settle_receipt_sync(big, DIGEST)
+            billing.settle_receipt_sync(signed(), DIGEST)
 
 
 def test_no_scope_does_not_retroactively_charge_existing_receipt(configured, monkeypatch):
@@ -215,66 +223,18 @@ def test_account_key_missing_only_when_billing_needs_a_key(monkeypatch):
     assert billing.account_key_missing() is False
 
 
-@pytest.mark.parametrize('version,rate,ok', [
-    ('jev-input-cny-20261016-v5', 101, True),   # declared current version, listed purpose
-    ('jev-input-cny-20261016-v5', 169, False),  # a listed purpose never settles at the version rate
-    ('jev-input-cny-20261012-v3', 169, True),   # a turn still settled under v3
-    ('jev-input-cny-20261012-v3', 101, False),  # v3 has no purpose rate
-    ('jev-input-cny-20261012-v3', 135, False),  # price does not match its version
-    ('jev-input-cny-20261002-v2', 135, True),   # a server that has not applied v3 yet
-    ('jev-input-cny-20260928-v1', 150, True),   # a server that has not applied it yet
-    ('jev-input-cny-20261002-v2', 150, False),  # price does not match its version
-    ('jev-input-cny-20991231-v9', 135, False),  # unknown price version
-])
-def test_settlement_is_verified_against_its_declared_price_version(configured, monkeypatch, version, rate, ok):
-    tokens = 17000
-    answer = result(signed(tokens))
-    answer.update(price_version=version, charged_units=tokens * rate, debited_units=tokens * rate)
-    monkeypatch.setattr(billing, '_post_settlement', lambda *a: answer)
-    assert billing.MINIMUM_HEADER['X-Olivia-JEV-Price'] == 'jev-input-cny-20261017-v6'
-    with billing.billing_scope('synthetic:turn'):
-        if ok:
-            assert billing.settle_receipt_sync(signed(tokens), DIGEST)['charged_units'] == tokens * rate
-        else:
-            with pytest.raises(ValueError, match='JEV_BILLING_RESPONSE_INVALID'):
-                billing.settle_receipt_sync(signed(tokens), DIGEST)
-
-
-def purpose_receipt(tokens, purpose):
-    value = signed(tokens)
-    value['receipt']['purpose'] = purpose
-    return value
-
-
-@pytest.mark.parametrize('purpose,tokens,charged,ok', [
-    ('character-emotion', 17000, 17000 * 101, True),   # listed purpose: its purpose rate
-    ('character-emotion', 17000, 17000 * 169, False),  # ... never the version rate
-    ('world-decision', 17000, 17000 * 169, True),      # other purpose: the version rate
-    ('world-decision', 17000, 17000 * 101, True),      # ... or the purpose rate once the service moves it
-    ('world-decision', 17000, 17000 * 135, False),
-    ('quality-review', 500, 1_000_000, True),          # the published minimum for a small judgment
-    ('quality-review', 500, 500 * 101, True),          # an account without the minimum
-    ('quality-review', 500, 500 * 169, False),
-    ('quality-review', 500, 2_000_000, False),         # no other floor
-    ('world-decision', 9000, 1_000_000, True),         # 9000 x 101 is below the minimum
-    ('world-decision', 9000, 9000 * 169, True),
-    ('reply_photo_plan', 0, 0, True),
-    ('reply_photo_plan', 0, 1_000_000, False),         # zero usage is never charged
-])
-def test_v5_settlement_is_verified_per_purpose(configured, monkeypatch, purpose, tokens, charged, ok):
-    answer = result(purpose_receipt(tokens, purpose))
-    answer.update(price_version='jev-input-cny-20261016-v5', charged_units=charged, debited_units=charged)
+@pytest.mark.parametrize('version', ['jev-input-cny-20261016-v5', 'jev-input-cny-20261017-v6',
+                                     'jev-input-cny-20260928-v1', 'jev-input-cny-20991231-v9'])
+def test_any_price_version_the_relay_settled_under_is_taken(configured, monkeypatch, version):
+    answer = result(signed(17000))
+    answer.update(price_version=version, charged_units=17000 * 135, debited_units=17000 * 135)
     monkeypatch.setattr(billing, '_post_settlement', lambda *a: answer)
     with billing.billing_scope('synthetic:turn'):
-        if ok:
-            assert billing.settle_receipt_sync(purpose_receipt(tokens, purpose), DIGEST)['charged_units'] == charged
-        else:
-            with pytest.raises(ValueError, match='JEV_BILLING_RESPONSE_INVALID'):
-                billing.settle_receipt_sync(purpose_receipt(tokens, purpose), DIGEST)
+        assert billing.settle_receipt_sync(signed(17000), DIGEST)['charged_units'] == 17000 * 135
 
 
-def test_a_server_without_v5_still_settles_under_the_receipt_version(configured, monkeypatch):
-    # Until the service knows v5 it settles a declaring client under v1; that stays valid.
+def test_a_server_without_v7_still_settles_under_the_receipt_version(configured, monkeypatch):
+    # Until the service knows v7 it settles a declaring client under v1; that stays valid.
     answer = result(signed(17000))
     monkeypatch.setattr(billing, '_post_settlement', lambda *a: answer)
     with billing.billing_scope('synthetic:turn'):

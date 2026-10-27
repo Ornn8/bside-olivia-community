@@ -119,7 +119,7 @@ def test_relay_requests_carry_the_header_in_english_only(monkeypatch):
 
     asyncio.run(call())
     assert sent[0]["headers"] == {"Authorization": "Bearer olivia-synthetic-key", "X-Olivia-Chat-Price": "account-20261017",
-                                  "X-Olivia-JEV-Price": "jev-input-cny-20261017-v6"}
+                                  "X-Olivia-JEV-Price": "jev-input-cny-20261027-v7"}
     ui_language.set_language("en")
     asyncio.run(call())
     assert sent[1]["headers"] == {**sent[0]["headers"], HEADER: "en"}

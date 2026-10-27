@@ -233,31 +233,57 @@ class LocalSongLibrary:
     def import_audio(self, source: Path, title: str):
         if not isinstance(title, str) or not title.strip() or len(title.strip()) > 120:
             raise LocalSongError('LOCAL_SONG_NAME_INVALID')
-        with wave.open(str(source), 'rb') as audio:
-            duration = audio.getnframes() / audio.getframerate()
-            if duration <= 0:
-                raise LocalSongError('LOCAL_SONG_AUDIO_INVALID')
         with source.open('rb') as stream:
             song_id = hashlib.file_digest(stream, 'sha256').hexdigest()
         with _LOCK:
-            rows = self._read()
-            if any(x['id'] == song_id for x in rows):
+            if any(x['id'] == song_id for x in self._read()):
                 return {'id': song_id, 'added': False}
-            self.root.mkdir(parents=True, exist_ok=True)
-            fd, temporary = tempfile.mkstemp(dir=self.root, suffix='.wav.tmp')
-            os.close(fd)
-            destination = self.root / (song_id + '.wav')
-            try:
-                shutil.copyfile(source, temporary)
-                os.replace(temporary, destination)
-                self._write([*rows, {'id': song_id, 'name': title.strip(), 'duration': duration,
-                                     'media_type': 'audio', 'native_id': self._native_id(song_id, rows)}])
-            except Exception:
-                destination.unlink(missing_ok=True)
-                raise
-            finally:
-                Path(temporary).unlink(missing_ok=True)
+        self.root.mkdir(parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(dir=self.root, suffix='.wav.tmp')
+        os.close(fd)
+        try:
+            duration = self._playable_wav(source, Path(temporary))
+            with _LOCK:
+                rows = self._read()
+                if any(x['id'] == song_id for x in rows):
+                    return {'id': song_id, 'added': False}
+                destination = self.root / (song_id + '.wav')
+                try:
+                    os.replace(temporary, destination)
+                    self._write([*rows, {'id': song_id, 'name': title.strip(), 'duration': duration,
+                                         'media_type': 'audio', 'native_id': self._native_id(song_id, rows)}])
+                except Exception:
+                    destination.unlink(missing_ok=True)
+                    raise
+        finally:
+            Path(temporary).unlink(missing_ok=True)
         return {'id': song_id, 'added': True}
+
+    def _playable_wav(self, source, output):
+        """Copy a WAV to `output` and return its duration. One the wave module cannot read (her finished songs
+        arrive as 32-bit float, 2026-10-26) is converted to 16-bit PCM, the format every earlier import had."""
+        try:
+            with wave.open(str(source), 'rb') as audio:
+                duration = audio.getnframes() / audio.getframerate()
+            shutil.copyfile(source, output)
+        except (wave.Error, EOFError):
+            try:
+                ffmpeg = resolve_ffmpeg_executable(self.environment)
+            except RuntimeError as exc:
+                raise LocalSongError('LOCAL_SONG_FFMPEG_UNAVAILABLE') from exc
+            result = run_managed_process(
+                [str(ffmpeg), '-v', 'error', '-nostdin', '-y', '-i', str(source), '-map', '0:a:0',
+                 '-c:a', 'pcm_s16le', '-f', 'wav', str(output)], timeout_seconds=600)
+            if result.returncode:
+                raise LocalSongError('LOCAL_SONG_AUDIO_INVALID')
+            try:
+                with wave.open(str(output), 'rb') as audio:
+                    duration = audio.getnframes() / audio.getframerate()
+            except (wave.Error, EOFError) as exc:
+                raise LocalSongError('LOCAL_SONG_AUDIO_INVALID') from exc
+        if duration <= 0:
+            raise LocalSongError('LOCAL_SONG_AUDIO_INVALID')
+        return duration
 
     def import_path(self, value):
         if not _IMPORT_LOCK.acquire(blocking=False):
