@@ -175,3 +175,36 @@ def test_each_picture_is_described_once_and_a_missing_file_is_not_guessed(tmp_pa
     assert len(calls) == 1
     assert json.loads(vision.incoming_context({'letter_images': ['x'], 'incoming_image_failed': 1}).split('\n', 2)[2])[
         'current_turn_has_images'] is True
+
+
+def test_an_ultra_hdr_phone_photo_is_kept_and_seen(tmp_path, monkeypatch):
+    # 10-27: a letter's three phone photos never reached her. Android 14+ phones save Ultra HDR photos, JPEGs that carry
+    # a gain map as a second picture; Pillow opens them as MPO and the upload refused them as an unknown format.
+    import local_server as server
+    monkeypatch.setenv('OLIVIA_LOCAL_DATA_ROOT', str(tmp_path))
+    output = io.BytesIO()
+    Image.new('RGB', (640, 480), (90, 140, 200)).save(output, 'MPO', save_all=True,
+                                                     append_images=[Image.new('RGB', (160, 120), (128, 128, 128))])
+    raw = output.getvalue()
+    assert Image.open(io.BytesIO(raw)).format == 'MPO'
+    headers = {'X-Olivia-Companion-Action': 'confirmed', 'Content-Type': 'application/octet-stream'}
+
+    async def run():
+        app = web.Application(); app.router.add_route('*', '/{tail:.*}', server.handler)
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post('/toy/letter/image/upload', data=raw, headers=headers)
+            body = await response.json()
+            assert response.status == 200 and body['code'] == 0, body
+            return body['data']['image_id']
+    image_id = asyncio.run(run())
+    path = tmp_path / 'media' / f'letter-image-{image_id}.jpg'
+    assert path.read_bytes() == raw                                   # kept as sent, named .jpg
+    digest, width, height, uri = vision._pixels(path)                # and what she is shown of it
+    assert (width, height) == (640, 480) and uri.startswith('data:image/jpeg;base64,')
+
+
+def test_a_50_megapixel_phone_photo_is_not_refused(tmp_path):
+    big = io.BytesIO()
+    Image.new('RGB', (8160, 6144), (200, 200, 200)).save(big, 'JPEG', quality=30)
+    saved = letter_images.save_upload(tmp_path, big.getvalue())
+    assert (saved['width'], saved['height']) == (8160, 6144)

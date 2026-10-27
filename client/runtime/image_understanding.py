@@ -40,7 +40,8 @@ def _pixels(path):
     if not raw or len(raw) > 20 * 1024 * 1024:
         raise ValueError('IMAGE_INPUT_INVALID')
     with Image.open(io.BytesIO(raw)) as image:
-        if image.width * image.height > 24_000_000 or image.format not in {'PNG', 'JPEG', 'WEBP', 'GIF'}:
+        # MPO: an Ultra HDR phone photo (JPEG + gain map); its first picture is the photo.
+        if image.width * image.height > 64_000_000 or image.format not in {'PNG', 'JPEG', 'MPO', 'WEBP', 'GIF'}:
             raise ValueError('IMAGE_INPUT_INVALID')
         width, height = image.size
         image = ImageOps.exif_transpose(image).convert('RGB')
