@@ -50,8 +50,14 @@ from runtime.media.managed_voice_reference import (
 
 
 def _load_dpapi_key(path: Path) -> str:
-    if os.name != "nt" or not path.is_file():
+    if not path.is_file():
         return ""
+    if os.name != "nt":
+        from original_client_setup_api import LLMSetupError, _dpapi_unprotect
+        try:
+            return _dpapi_unprotect(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, LLMSetupError):
+            return ""
     try:
         protected = path.read_text(encoding="utf-8").strip()
         if not protected:
@@ -304,6 +310,11 @@ _LEFTOVER_CLIENT_EXIT_CODE = 0x0E000001
 def _port_is_bindable(port: int) -> bool:
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            if os.name != "nt":
+                # As the server itself binds on Linux: connections of a just-stopped backend still waiting to close
+                # (TIME_WAIT, up to a minute) do not make the port busy (2026-10-25: a restart refused for ~3 min).
+                # On Windows the option would let two listeners share the port, so it stays off there.
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             probe.bind(("127.0.0.1", port))
     except OSError:
         return False

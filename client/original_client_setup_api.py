@@ -116,9 +116,18 @@ class LLMSetupError(RuntimeError):
         super().__init__(code)
 
 
+# On a Linux server there is no DPAPI. A secret is then kept in the data folder as it is (base64 only so the file
+# stays one line); the protection is the folder itself, which must belong to the service's own user with nobody else
+# allowed to read it (0700). Windows keeps DPAPI, and a Windows-protected file is refused on Linux.
+_POSIX_PREFIX = "posix-v1:"
+
+
 def _dpapi_protect(value: str) -> str:
     if os.name != "nt":
-        raise LLMSetupError("LLM_SETUP_DPAPI_UNAVAILABLE", status=503)
+        import base64
+        if not isinstance(value, str) or not value:
+            raise LLMSetupError("LLM_SETUP_DPAPI_FAILED", status=503)
+        return _POSIX_PREFIX + base64.b64encode(value.encode("utf-8")).decode("ascii")
     script = (
         "Add-Type -AssemblyName System.Security; "
         "$b=[Text.Encoding]::UTF8.GetBytes([Console]::In.ReadToEnd()); "
@@ -142,7 +151,17 @@ def _dpapi_protect(value: str) -> str:
 
 def _dpapi_unprotect(value: str) -> str:
     if os.name != "nt":
-        raise LLMSetupError("LLM_SETUP_DPAPI_UNAVAILABLE", status=503)
+        import base64
+        import binascii
+        if not isinstance(value, str) or not value.strip().startswith(_POSIX_PREFIX):
+            raise LLMSetupError("LLM_SETUP_DPAPI_UNAVAILABLE", status=503)
+        try:
+            secret = base64.b64decode(value.strip()[len(_POSIX_PREFIX):], validate=True).decode("utf-8")
+        except (binascii.Error, UnicodeDecodeError):
+            raise LLMSetupError("LLM_SETUP_KEY_UNAVAILABLE", status=503) from None
+        if not secret:
+            raise LLMSetupError("LLM_SETUP_KEY_UNAVAILABLE", status=503)
+        return secret
     modern = value.startswith("dpapi-v1:")
     script = (
         "Add-Type -AssemblyName System.Security; "
