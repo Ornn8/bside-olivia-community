@@ -30,6 +30,9 @@ let status={selected_channels:['qq'],listeners:{qq:'CONNECTED'},qq:{state:'CONNE
 const request=async()=>{calls++;return status;};
 const setTimeout=(fn,ms)=>{timer=fn;delay=ms;return 1;},clearTimeout=()=>{};
 '''
+    # The status line's helper is defined above the cut; the harness takes the real one.
+    live = PERSONAL_CHAT_SETUP_JAVASCRIPT.split('  const qqLiveState =', 1)[1].split('\n  };\n', 1)[0]
+    harness += 'const qqLiveState =' + live + '\n  };\n'
     harness += 'const schedule =' + source
     harness += r'''
 (async()=>{
