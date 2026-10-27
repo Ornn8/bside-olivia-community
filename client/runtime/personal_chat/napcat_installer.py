@@ -201,11 +201,82 @@ def find_shell(data_root: Path) -> Path | None:
     return sorted(candidates, key=lambda item: (len(item.parts), str(item)))[0]
 
 
+def _archive_ok(archive: Path) -> bool:
+    if not archive.is_file() or archive.stat().st_size > _MAX_ARCHIVE_BYTES:
+        return False
+    with archive.open("rb") as stream:
+        check = hashlib.sha256()
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            check.update(chunk)
+    return check.hexdigest().lower() == NAPCAT_SHA256
+
+
+def _members(archive: Path) -> list[zipfile.ZipInfo]:
+    with zipfile.ZipFile(archive) as opened:
+        return [info for info in opened.infolist() if not info.is_dir()]
+
+
+def missing_files(data_root: Path) -> list[str]:
+    """Files of the installed NapCat that are gone: a security program that quarantines NapCat's launcher or hook
+    leaves napcat.bat in place, and NapCat then exits on every start (2026-10-27: one user's, about 3500 times in a
+    day). Files that are there are not compared: NapCat and QQ write into their own folder."""
+    archive = _root(data_root, create=False) / NAPCAT_ASSET
+    destination = _component_root(data_root)
+    if not archive.is_file() or not destination.is_dir():
+        return []
+    try:
+        members = _members(archive)
+    except (OSError, zipfile.BadZipFile):
+        return []
+    return [info.filename for info in members
+            if not (destination / info.filename.replace("\\", "/")).is_file()]
+
+
+def repair_component(data_root: Path, *, download: bool = True) -> int:
+    """Put the installed NapCat's missing files back from its verified archive; how many were put back. Without
+    ``download`` an archive that is not here (or not the verified one) is not fetched again and nothing changes."""
+    destination = _component_root(data_root)
+    archive = _root(data_root) / NAPCAT_ASSET
+    missing = set(missing_files(data_root))
+    if not destination.is_dir() or not missing:
+        return 0
+    if not _archive_ok(archive):
+        if not download:
+            return 0
+        from .napcat_bundle import ensure_bundle
+        ensure_bundle(data_root)
+        if not _archive_ok(archive):
+            raise NapCatSetupError("NAPCAT_ARCHIVE_INVALID")
+        missing = set(missing_files(data_root))
+    root = destination.resolve()
+    restored = 0
+    try:
+        with zipfile.ZipFile(archive) as opened:
+            for info in opened.infolist():
+                if info.is_dir() or info.filename not in missing:
+                    continue
+                name = info.filename.replace("\\", "/")
+                target = (destination / name).resolve()
+                if name.startswith("/") or ":" in name.split("/", 1)[0] or root not in target.parents:
+                    raise NapCatSetupError("NAPCAT_ARCHIVE_INVALID")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with opened.open(info) as source, target.open("wb") as output:
+                    shutil.copyfileobj(source, output, length=1024 * 1024)
+                restored += 1
+    except NapCatSetupError:
+        raise
+    except (OSError, RuntimeError, zipfile.BadZipFile, KeyError) as exc:
+        raise NapCatSetupError("NAPCAT_REPAIR_FAILED") from exc
+    return restored
+
+
 def install_component(data_root: Path) -> Path:
     if os.name != "nt":
         raise NapCatSetupError("NAPCAT_WINDOWS_REQUIRED")
     existing = find_shell(data_root)
     if existing is not None:
+        # Installed before: what a security program took is put back first.
+        repair_component(data_root)
         from .napcat_dependencies import ensure_dependencies
         ensure_dependencies(data_root, existing)
         return existing

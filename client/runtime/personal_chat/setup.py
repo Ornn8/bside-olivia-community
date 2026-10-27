@@ -53,6 +53,15 @@ _NAPCAT_WATCHDOG_SECONDS = 15.0
 # and NapCat restarted (quick login, no new QR) at most this often.
 _NAPCAT_ONLINE_CHECK_SECONDS = 60.0
 _NAPCAT_RELOGIN_SECONDS = 600.0
+# NapCat that exits soon after every start (2026-10-27: one user's, about 3500 times in a day, restarted every 15 s
+# while the page said 正在重连): after REPAIR_AFTER such exits its missing files are put back once; after
+# GIVE_UP_AFTER it is reported as NAPCAT_EXITS_ON_START and started again less and less often.
+_NAPCAT_QUICK_EXIT_SECONDS = 60.0
+_NAPCAT_REPAIR_AFTER = 3
+_NAPCAT_GIVE_UP_AFTER = 5
+_NAPCAT_RETRY_FIRST_SECONDS = 60.0
+_NAPCAT_RETRY_MAX_SECONDS = 600.0
+_NAPCAT_RUNNING_STATES = frozenset({"AWAITING_QQ_LOGIN", "ONEBOT_PROBING", "ONEBOT_CONFIG_PENDING", "ONEBOT_READY"})
 
 
 def _failure_code(exc: BaseException) -> str:
@@ -62,7 +71,7 @@ def _failure_code(exc: BaseException) -> str:
     return "PERSONAL_CHAT_SETUP_UNAVAILABLE"
 
 
-def _napcat_diagnostic(server, *, status, reason):
+def _napcat_diagnostic(server, *, status, reason, exit_code=None):
     from runtime.diagnostics.reply_telemetry import emit
     emit('transport', 'auth_required' if status == 'AWAITING_QQ_LOGIN' else
          'closed' if status == 'FAILED' else 'connecting', channel='qq',
@@ -70,8 +79,10 @@ def _napcat_diagnostic(server, *, status, reason):
     logger = getattr(server, '_safe_log', None)
     if callable(logger):
         try:
-            logger('personal_chat_napcat_state', channel='qq', status=status.lower(),
-                   reason=reason, recorded_at_ms=int(time.time() * 1000))
+            # How NapCat ended is kept for the diagnostic bundle (a crash code and a normal exit read differently).
+            logger('personal_chat_napcat_state', channel='qq', status=status.lower(), reason=reason,
+                   recorded_at_ms=int(time.time() * 1000),
+                   **({'exit_code': exit_code} if type(exit_code) is int else {}))
         except Exception:
             pass
 
@@ -518,7 +529,54 @@ def install_setup_routes(app: web.Application, server) -> None:
         if runtime.get('napcat_observed_state') != state:
             runtime['napcat_observed_state'] = state
             _napcat_diagnostic(server, status=state, reason='probe')
+        if state in _NAPCAT_RUNNING_STATES:
+            # It came up: whatever kept it from starting is over.
+            for key in ("napcat_quick_exits", "napcat_retry_at", "napcat_repaired"):
+                runtime.pop(key, None)
+            if runtime.get("napcat_error") == "NAPCAT_EXITS_ON_START":
+                runtime.pop("napcat_error", None)
         return state
+
+    def started(process) -> None:
+        runtime["napcat_shell_process"] = process
+        if process is not None:
+            runtime["napcat_started_at"] = time.monotonic()
+
+    async def exited_on_start(process) -> bool:
+        """Counts a NapCat that exited soon after it was started. True when it now counts as exiting on every start:
+        reported (FAILED, NAPCAT_EXITS_ON_START) and started again only after a growing pause."""
+        from . import napcat_installer
+
+        code = getattr(process, "returncode", None)
+        code = code if type(code) is int else None
+        quick = process is not None and time.monotonic() - float(runtime.get("napcat_started_at") or 0) < _NAPCAT_QUICK_EXIT_SECONDS
+        exits = int(runtime.get("napcat_quick_exits") or 0) + 1 if quick else 0
+        runtime["napcat_quick_exits"] = exits
+        if exits >= _NAPCAT_REPAIR_AFTER and not runtime.get("napcat_repaired"):
+            runtime["napcat_repaired"] = True
+            try:
+                restored = await asyncio.to_thread(napcat_installer.repair_component, _root(server), download=False)
+            except Exception as exc:
+                restored, failure = 0, _failure_code(exc)
+            else:
+                failure = None
+            logger = getattr(server, '_safe_log', None)
+            if callable(logger):
+                try:
+                    logger('personal_chat_napcat_repair', channel='qq', restored=restored,
+                           **({'error_code': failure} if failure else {}))
+                except Exception:
+                    pass
+        if exits < _NAPCAT_GIVE_UP_AFTER:
+            _napcat_diagnostic(server, status='STARTING', reason='process_exit_restart', exit_code=code)
+            return False
+        pause = min(_NAPCAT_RETRY_MAX_SECONDS, _NAPCAT_RETRY_FIRST_SECONDS * 2 ** (exits - _NAPCAT_GIVE_UP_AFTER))
+        runtime["napcat_retry_at"] = time.monotonic() + pause
+        if runtime.get("napcat_error") != "NAPCAT_EXITS_ON_START":
+            _napcat_diagnostic(server, status='FAILED', reason='watchdog_failed', exit_code=code)
+        runtime["napcat_state"] = "FAILED"
+        runtime["napcat_error"] = "NAPCAT_EXITS_ON_START"
+        return True
 
     async def relogin_if_offline(process) -> None:
         from . import napcat_installer
@@ -550,7 +608,7 @@ def install_setup_routes(app: web.Application, server) -> None:
         runtime["napcat_state"] = "STARTING"
         _napcat_diagnostic(server, status='STARTING', reason='confirmed_offline_restart')
         await asyncio.to_thread(napcat_installer.stop_shell, _root(server), process)
-        runtime["napcat_shell_process"] = await asyncio.to_thread(napcat_installer.ensure_shell, _root(server))
+        started(await asyncio.to_thread(napcat_installer.ensure_shell, _root(server)))
         await refresh_managed_napcat_state()
 
     async def napcat_watchdog() -> None:
@@ -570,13 +628,21 @@ def install_setup_routes(app: web.Application, server) -> None:
                     await relogin_if_offline(process)
                     continue
                 runtime["napcat_offline_checks"] = 0
+                if state == "FAILED" and runtime.get("napcat_error") == "NAPCAT_EXITS_ON_START":
+                    # It exits on every start: tried again only once its pause is over.
+                    if time.monotonic() < float(runtime.get("napcat_retry_at") or 0):
+                        continue
+                    runtime["napcat_state"] = "STARTING"
+                    started(await asyncio.to_thread(napcat_installer.ensure_shell, _root(server)))
+                    await refresh_managed_napcat_state()
+                    continue
                 if state != "STARTING":
                     continue
                 if alive:
                     continue
-                _napcat_diagnostic(server, status='STARTING', reason='process_exit_restart')
-                process = await asyncio.to_thread(napcat_installer.ensure_shell, _root(server))
-                runtime["napcat_shell_process"] = process
+                if await exited_on_start(process):
+                    continue
+                started(await asyncio.to_thread(napcat_installer.ensure_shell, _root(server)))
                 await refresh_managed_napcat_state()
                 runtime.pop("napcat_error", None)
             except asyncio.CancelledError:
@@ -600,8 +666,7 @@ def install_setup_routes(app: web.Application, server) -> None:
             from . import napcat_installer
 
             runtime["napcat_state"] = "STARTING"
-            process = await asyncio.to_thread(napcat_installer.ensure_shell, _root(server))
-            runtime["napcat_shell_process"] = process
+            started(await asyncio.to_thread(napcat_installer.ensure_shell, _root(server)))
             await refresh_managed_napcat_state()
             task = runtime.get("napcat_watchdog_task")
             if not isinstance(task, asyncio.Task) or task.done():
@@ -697,6 +762,8 @@ def install_setup_routes(app: web.Application, server) -> None:
         if isinstance(login_task, asyncio.Task) and not login_task.done():
             return web.json_response({"status": str(runtime.get("napcat_state") or "STARTING")}, status=202)
         runtime.pop("napcat_error", None)
+        for key in ("napcat_quick_exits", "napcat_retry_at", "napcat_repaired"):
+            runtime.pop(key, None)  # he asked for it: counted afresh
         runtime["napcat_state"] = "STARTING"
         runtime["napcat_login_task"] = asyncio.create_task(prepare_and_open_napcat())
         return web.json_response({"status": "STARTING"}, status=202)
@@ -707,8 +774,11 @@ def install_setup_routes(app: web.Application, server) -> None:
         try:
             process = runtime.get("napcat_shell_process")
             if process is None or getattr(process, "poll", lambda: 0)() is not None:
-                process = await asyncio.to_thread(napcat_installer.ensure_shell, _root(server))
-            runtime["napcat_shell_process"] = process
+                # What a security program took from NapCat is put back before it starts.
+                await asyncio.to_thread(napcat_installer.repair_component, _root(server))
+                started(await asyncio.to_thread(napcat_installer.ensure_shell, _root(server)))
+            else:
+                runtime["napcat_shell_process"] = process
             await refresh_managed_napcat_state()
             await _open_napcat_login(server, runtime)
         except Exception as exc:
