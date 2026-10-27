@@ -774,9 +774,12 @@ def install_setup_routes(app: web.Application, server) -> None:
         try:
             process = runtime.get("napcat_shell_process")
             if process is None or getattr(process, "poll", lambda: 0)() is not None:
-                # What a security program took from NapCat is put back before it starts.
-                await asyncio.to_thread(napcat_installer.repair_component, _root(server))
-                started(await asyncio.to_thread(napcat_installer.ensure_shell, _root(server)))
+                def repair_and_start(root):
+                    # What a security program took from NapCat is put back before it starts (one worker call, so
+                    # the start is underway as soon as it was before).
+                    napcat_installer.repair_component(root)
+                    return napcat_installer.ensure_shell(root)
+                started(await asyncio.to_thread(repair_and_start, _root(server)))
             else:
                 runtime["napcat_shell_process"] = process
             await refresh_managed_napcat_state()

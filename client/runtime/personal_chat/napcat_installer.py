@@ -235,8 +235,10 @@ def missing_files(data_root: Path) -> list[str]:
 def repair_component(data_root: Path, *, download: bool = True) -> int:
     """Put the installed NapCat's missing files back from its verified archive; how many were put back. Without
     ``download`` an archive that is not here (or not the verified one) is not fetched again and nothing changes."""
+    archive = _root(data_root, create=False) / NAPCAT_ASSET
+    if not archive.is_file():
+        return 0  # nothing to compare with (not installed from the archive here)
     destination = _component_root(data_root)
-    archive = _root(data_root) / NAPCAT_ASSET
     missing = set(missing_files(data_root))
     if not destination.is_dir() or not missing:
         return 0
