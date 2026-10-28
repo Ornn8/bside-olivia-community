@@ -307,7 +307,10 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
       const top = node("div", null, "olivia-chat-row");
       const left = document.createElement("div");
       const listener = status.listeners?.qq;
-      const liveState = node("div", stateLabel(qqLiveState(status)), "olivia-chat-state");
+      // Also read by the saved-binding line once QQ is logged in (2.5.7 dropped it: that view threw
+      // "state is not defined", so after a successful scan the page kept showing the QR or the error).
+      const state = qqLiveState(status);
+      const liveState = node("div", stateLabel(state), "olivia-chat-state");
       liveState.dataset.qqLiveState = "true";
       left.append(node("div", t("QQ（实验功能）"), "olivia-chat-name"), liveState);
       top.append(left);
