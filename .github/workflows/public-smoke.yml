@@ -15,7 +15,7 @@ jobs:
   public-smoke:
     name: Public smoke (Windows / Python 3.12)
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -27,6 +27,13 @@ jobs:
 
       - name: Install public development dependencies
         run: python -m pip install -e ".[dev]"
+
+      # The settings-page browser tests drive the installed Chrome / Edge; without Playwright they are skipped
+      # (that is how a broken QQ settings page reached 2.5.7). The bundled Chromium covers the tests that start it.
+      - name: Install browser test dependencies
+        run: |
+          python -m pip install playwright==1.63.0
+          python -m playwright install chromium
 
       - name: Run public smoke tests
         run: python -m pytest -q
