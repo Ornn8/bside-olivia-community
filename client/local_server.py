@@ -521,6 +521,13 @@ def _runtime_diagnostic_record(event: object, fields: Mapping[str, object]) -> d
                  'personal_chat_decision_normalized', 'personal_chat_decision_warning'}:
         from runtime.diagnostics.support_bundle import _project_tail_record
         return _project_tail_record({'event': event, **fields}, runtime=True)
+    if event in {'personal_chat_napcat_state', 'personal_chat_napcat_repair'}:
+        # Its state, why and how NapCat ended (2026-10-27: a bundle of a NapCat restart loop kept only the event name).
+        from runtime.diagnostics.support_bundle import _project_tail_record
+        try:
+            return _project_tail_record({'event': event, **fields}, runtime=True)
+        except RuntimeError:
+            return {'event': event}
     if event == 'history_relationship_failed':
         from runtime.diagnostics.support_bundle import project_history_relationship_failure
         return project_history_relationship_failure({**fields, 'status': 'FAILED'})

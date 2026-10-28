@@ -191,6 +191,10 @@ def test_qq_start_returns_while_dependencies_are_preparing(tmp_path, monkeypatch
                 assert response.status == 202
                 again = await client.post(setup.NAPCAT_START_PATH, headers=headers, json={})
                 assert again.status == 202
+                for _ in range(200):  # the start runs in a worker, after its files are checked
+                    if calls:
+                        break
+                    await asyncio.sleep(0.01)
                 assert len(calls) == 1
             finally:
                 release.set()
