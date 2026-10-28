@@ -190,7 +190,7 @@ function backendHeaders(headers = {}) {
   return { ...headers, "X-Olivia-Desktop-Token": backendToken };
 }
 
-async function request(method, route, body, internal = false) {
+async function request(method, route, body, internal = false, retried = false) {
   const url = new URL(route, "http://127.0.0.1");
   if (!routes[method]?.some((pattern) => pattern.test(url.pathname))) throw new Error("ROUTE_FORBIDDEN");
   if (!internal && url.pathname === "/toy/relay/action" && ![
@@ -215,6 +215,11 @@ async function request(method, route, body, internal = false) {
     signal: AbortSignal.timeout(["/toy/letter/send", "/toy/letter/resend", "/toy/local-songs/import"].includes(url.pathname) ? 900000 : 60000),
   });
   const result = await response.json();
+  if (needsSession && !retried && result.error_code === "LLM_SETUP_LOGIN_REQUIRED") {
+    // The backend issues a new setup session whenever it restarts.
+    setupSession = undefined;
+    return request(method, route, body, internal, true);
+  }
   if (!response.ok || result.code && result.code !== 0 || result.error || result.error_code) {
     throw new Error(result.error_code || result.error || result.data?.error_code || result.message || `HTTP_${response.status}`);
   }
@@ -226,6 +231,7 @@ function startBackend() {
     fs.mkdirSync(dataRoot, { recursive: true, mode: 0o700 });
     const nonce = randomBytes(24).toString("hex");
     backendToken = randomBytes(32).toString("hex");
+    setupSession = undefined;
     backendStopping = false;
     const child = spawn(python, [path.join(backendRoot, "desktop_backend.py")], {
       cwd: backendRoot,
@@ -298,6 +304,7 @@ async function handleBackendStopped() {
         mainWindow.webContents.send("olivia:backend-restarted");
         await mainWindow.webContents.reload();
       }
+      backendRecoveryAttempts = 0;
       refreshTrayStatus().catch(() => {});
     } catch {
       failed = true;
@@ -510,8 +517,9 @@ ipcMain.handle("olivia:connect-account", async (event) => {
   fromApp(event);
   const script = 'set answer to display dialog "Olivia Key" default answer "" with hidden answer buttons {"取消", "连接"} default button "连接"\nreturn text returned of answer';
   const key = await new Promise((resolve, reject) => {
-    execFile("/usr/bin/osascript", ["-e", script], { timeout: 120000, maxBuffer: 1024 }, (error, stdout) => {
-      if (error && error.code === 1) return resolve(null);
+    execFile("/usr/bin/osascript", ["-e", script], { timeout: 120000, maxBuffer: 1024 }, (error, stdout, stderr) => {
+      // osascript exits 1 for every script error; only -128 is a user cancel.
+      if (error && error.code === 1 && /\(-128\)/.test(stderr)) return resolve(null);
       if (error) return reject(new Error("KEY_PROMPT_FAILED"));
       resolve(stdout.trim());
     });

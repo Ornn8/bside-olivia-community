@@ -2514,7 +2514,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       return;
     }
     const nativeKeyEntry = typeof window.olivia?.connectAccount === "function";
-    const secureEntry = text("p", t("点击连接后，在 macOS 安全窗口中输入 Olivia Key。Key 不会经过页面。"), "text-text-secondary text-body-m font-regular");
+    const secureEntry = text("p", t("点击连接后，在 macOS 安全窗口中输入 Olivia Key，无需在页面里粘贴。"), "text-text-secondary text-body-m font-regular");
     const key = nativeKeyEntry ? null : setupInput(t("导入已有的 Olivia Key（已获取 Key 时留空）"), "password");
     if (key) {
       key.input.maxLength = 128;

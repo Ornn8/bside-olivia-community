@@ -3,7 +3,7 @@ const fs = require("fs");
 const http = require("http");
 const net = require("net");
 const path = require("path");
-const { Readable } = require("stream");
+const { Readable, pipeline } = require("stream");
 
 const staticTypes = {
   ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
@@ -104,8 +104,13 @@ function startFrontendServer({ backendUrl, backendHeaders = () => ({}), getFront
         headers.set("Origin", "https://olivia.local");
         for (const [name, value] of Object.entries(backendHeaders())) headers.set(name, value);
         const body = ["GET", "HEAD"].includes(request.method) ? undefined : await readBody(request);
+        // Abort the backend request when the page goes away (for example a
+        // media seek), so an unread body never outlives its reader.
+        const disconnected = new AbortController();
+        response.once("close", () => disconnected.abort());
         const upstream = await fetch(backendUrl(url.pathname + url.search), {
-          method: request.method, headers, body, signal: AbortSignal.timeout(900000),
+          method: request.method, headers, body,
+          signal: AbortSignal.any([disconnected.signal, AbortSignal.timeout(900000)]),
         });
         const contentType = upstream.headers.get("content-type") || "application/octet-stream";
         if (contentType.includes("json")) {
@@ -122,7 +127,7 @@ function startFrontendServer({ backendUrl, backendHeaders = () => ({}), getFront
           if (upstream.headers.has(name)) outgoing[name] = upstream.headers.get(name);
         }
         response.writeHead(upstream.status, outgoing);
-        if (upstream.body) Readable.fromWeb(upstream.body).pipe(response);
+        if (upstream.body) pipeline(Readable.fromWeb(upstream.body), response, () => {});
         else response.end();
         return;
       }

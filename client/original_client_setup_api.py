@@ -507,11 +507,16 @@ class LLMSetupService:
             self._key_path.unlink(missing_ok=True)
         except OSError:
             pass
-        try:
-            legacy_relay_path.unlink(missing_ok=True)
-        except OSError:
-            pass
         current_reference = protected_bytes.decode("utf-8").strip() if protected_bytes else None
+        if current_reference:
+            # The relay account file is the durable account identity; point it at
+            # the same protected item so a later delete() can keep the account.
+            try:
+                staging = legacy_relay_path.with_suffix(".staging")
+                staging.write_text(current_reference, encoding="utf-8")
+                staging.replace(legacy_relay_path)
+            except OSError:
+                pass
         for reference in previous_references:
             if reference != current_reference:
                 _discard_protected(reference)
@@ -522,13 +527,21 @@ class LLMSetupService:
         configured = self._config()
         active = self._active_key_path()
         previous_references: set[str] = set()
-        legacy_relay_path = self._config_root / "olivia_relay_key.dpapi"
-        for candidate in (active, self._key_path, legacy_relay_path):
+        for candidate in (active, self._key_path):
             if candidate is not None and candidate.is_file():
                 try:
                     previous_references.add(candidate.read_text(encoding="utf-8").strip())
                 except OSError:
                     pass
+        # Deleting the reply connection keeps the relay account identity, so the
+        # user can reconnect, check balance or export the key afterwards.
+        legacy_relay_path = self._config_root / "olivia_relay_key.dpapi"
+        try:
+            if legacy_relay_path.is_file():
+                previous_references.discard(legacy_relay_path.read_text(encoding="utf-8").strip())
+        except OSError:
+            # Without knowing the account reference, keep every protected item.
+            previous_references.clear()
         try:
             previous_config = (
                 self._config_path.read_bytes() if self._config_path.is_file() else None
@@ -565,10 +578,6 @@ class LLMSetupService:
                 pass
         try:
             self._key_path.unlink(missing_ok=True)
-        except OSError:
-            pass
-        try:
-            legacy_relay_path.unlink(missing_ok=True)
         except OSError:
             pass
         for reference in previous_references:

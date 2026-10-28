@@ -461,7 +461,8 @@ def test_setup_delete_removes_only_managed_key(tmp_path: Path) -> None:
                 "restart_required": True,
             }
         assert not key_path.exists()
-        assert not legacy_path.exists()
+        # The relay account identity survives deleting the reply connection.
+        assert legacy_path.read_text(encoding="utf-8") == "protected:legacy\n"
         assert retained.read_text(encoding="utf-8") == "keep"
 
     asyncio.run(scenario())
