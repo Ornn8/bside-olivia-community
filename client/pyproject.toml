@@ -10,10 +10,12 @@ readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.12"
 dependencies = [
+    "cryptography>=44,<47; sys_platform == 'darwin'",
     "Pillow>=12.3,<13",
     "aiohttp>=3.9,<4",
     "imageio-ffmpeg>=0.6,<1",
     "jsonschema>=4.26,<5",
+    "keyring>=25,<26; sys_platform == 'darwin'",
 ]
 
 [project.optional-dependencies]
@@ -34,6 +36,8 @@ memory-mem0 = [
 [tool.setuptools]
 py-modules = [
     "baseline_hardening_scan",
+    "desktop_backend",
+    "desktop_original_frontend",
     "companion_memory_context",
     "conversation_memory_admin",
     "conversation_memory_delivery",

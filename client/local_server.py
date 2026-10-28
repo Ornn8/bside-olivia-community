@@ -4668,7 +4668,9 @@ async def route(
         if root is None:
             return err(503, "PROACTIVE_STORAGE_UNAVAILABLE", {})
         previous = _proactive_settings()
-        updated = {**previous, **body, 'enabled': True}
+        updated = {**previous, **body}
+        if _os.environ.get('OLIVIA_DESKTOP_PROACTIVE_OPT_IN') != '1':
+            updated['enabled'] = True
         # Registration is performed only by an explicit settings change.
         if 'login_check_enabled' in body:
             from runtime.reply.proactive_login import configure_login_start

@@ -119,6 +119,7 @@ PAYLOAD_EXTRA_FILES = (
     "runtime/__init__.py",
     "runtime/original_client_media_http.py",
     "runtime/video_reply_settings.py",
+    "runtime/mac_keychain.py",
 )
 PAYLOAD_SUFFIXES = {".py", ".json", ".toml", ".ini", ".txt", ".ps1", ".patch"}
 IMAGE_SUFFIXES = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.avif'}

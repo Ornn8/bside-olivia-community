@@ -96,6 +96,8 @@ def test_napcat_launch_passes_isolated_workdir(
         return _Process()
 
     monkeypatch.setattr(module.subprocess, "Popen", fake_popen)
+    # Keep host filesystem paths while simulating the Windows launch branch.
+    monkeypatch.setattr(module, "Path", type(tmp_path))
     monkeypatch.setattr(module.os, "name", "nt", raising=False)
     module.launch_shell(tmp_path)
     assert seen["args"] == ["cmd.exe", "/c", str(shell / "napcat.bat")]

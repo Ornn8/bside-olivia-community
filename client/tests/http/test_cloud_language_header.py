@@ -322,6 +322,7 @@ OTHER_CLIENTS = {
     "installer/build_offline_core_assets.py": "build tooling",
     "installer/bundle_media_tool.py": "build tooling",
     "installer/start_local.py": "loopback health check of the local backend",
+    "desktop_backend.py": "authenticated loopback health check for the Electron host",
     "mem0_capability_install.py": "model and package mirrors",
     "original_client_update_api.py": "signed component updates from the update source",
     "runtime/auto_update.py": "the signed update manifest on the public site",
@@ -350,7 +351,7 @@ def _http_client_files() -> set[str]:
     found = set()
     for path in ROOT.rglob("*.py"):
         relative = path.relative_to(ROOT).as_posix()
-        if relative.startswith(("tests/", "tools/", "scripts/", "control_center/", ".evidence/")):
+        if relative.startswith(("tests/", "tools/", "scripts/", "control_center/", ".evidence/", ".venv/", "build/")):
             continue
         if CLIENT_PATTERN.search(path.read_text(encoding="utf-8")):
             found.add(relative)
@@ -376,5 +377,6 @@ def test_every_cloud_client_adds_the_language_header(relative):
 
 def test_the_header_is_added_by_one_helper_and_spelled_in_one_place():
     spelled = [path.relative_to(ROOT).as_posix() for path in ROOT.rglob("*.py")
-               if HEADER in path.read_text(encoding="utf-8") and not path.relative_to(ROOT).as_posix().startswith(("tests/", "tools/"))]
+               if not path.relative_to(ROOT).as_posix().startswith(("tests/", "tools/", ".evidence/", ".venv/", "build/"))
+               and HEADER in path.read_text(encoding="utf-8")]
     assert spelled == ["runtime/ui_language.py"]

@@ -1,11 +1,12 @@
 import os
+import sys
 
 import pytest
 
 from runtime.personal_chat.image_crypto import encrypt_image
 
 
-@pytest.mark.skipif(os.name != 'nt', reason='Windows CNG runtime')
+@pytest.mark.skipif(os.name != 'nt' and sys.platform != 'darwin', reason='Windows or macOS AES runtime')
 def test_aes_known_vector_and_full_block_padding():
     # FIPS 197 AES-128 example plus an independently computed PKCS7 block.
     key = bytes.fromhex('000102030405060708090a0b0c0d0e0f')
@@ -16,7 +17,7 @@ def test_aes_known_vector_and_full_block_padding():
     assert encrypted[16:] == encrypt_image(b'', key)
 
 
-@pytest.mark.skipif(os.name != 'nt', reason='Windows CNG runtime')
+@pytest.mark.skipif(os.name != 'nt' and sys.platform != 'darwin', reason='Windows or macOS AES runtime')
 @pytest.mark.parametrize('length', [0, 1, 15, 16, 17, 1024])
 def test_matches_independent_crypto_library(length):
     crypto = pytest.importorskip('cryptography.hazmat.primitives.ciphers')

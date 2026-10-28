@@ -273,8 +273,9 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
       return box;
     };
 
-    const renderAdvancedQQ = (box) => {
+    const renderAdvancedQQ = (box, open = false) => {
       const details = document.createElement("details");
+      details.open = open;
       const summary = node("summary", t("高级：连接已有 NapCat / OneBot"));
       details.append(summary);
       const fields = node("div", null, "olivia-chat-fields");
@@ -316,16 +317,19 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
       top.append(left);
       box.append(top);
 
+      const managedNapcatSupported = status.managed_napcat_supported !== false;
       const napcat = status.napcat || {};
       const component = node("div", null, "olivia-chat-subcard");
       const componentTop = node("div", null, "olivia-chat-row");
       const componentLeft = document.createElement("div");
       componentLeft.append(
         node("div", t("QQ 本地组件"), "olivia-chat-name"),
-        node("div", `${stateLabel(napcat.state)} · ${napcat.version || ""}`, "olivia-chat-state"),
+        node("div", managedNapcatSupported ? `${stateLabel(napcat.state)} · ${napcat.version || ""}` : stateLabel("UNSUPPORTED"), "olivia-chat-state"),
       );
       componentTop.append(componentLeft);
-      if (!napcat.installed && !["DOWNLOADING", "INSTALLER_OPENED"].includes(napcat.state)) {
+      if (!managedNapcatSupported) {
+        componentTop.append(node("div", t("macOS 不会安装或启动 NapCat。请展开下方“高级：连接已有 NapCat / OneBot”，填写你本机正在运行的连接。"), "olivia-chat-copy"));
+      } else if (!napcat.installed && !["DOWNLOADING", "INSTALLER_OPENED"].includes(napcat.state)) {
         componentTop.append(action(t("一键安装"), async () => {
           try {
             await request(NAPCAT_INSTALL, {method: "POST", body: {}});
@@ -345,7 +349,9 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
         componentTop.append(startButton);
       }
       component.append(componentTop);
-      if (napcat.state === "STARTING") {
+      if (!managedNapcatSupported) {
+        // The manual OneBot form below is the only supported QQ path on macOS.
+      } else if (napcat.state === "STARTING") {
         component.append(node("div", t("正在检查 QQ 运行依赖并启动登录页。首次准备需从 Olivia 下载服务获取约 427 MB 完整包，已下载文件可复用；无需重复点击。"), "olivia-chat-copy"));
       } else if (napcat.state === "DOWNLOADING") {
         component.append(node("div", t("正在从 Olivia 下载服务获取并校验 QQ 完整组件包。"), "olivia-chat-copy"));
@@ -380,10 +386,10 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
       } else {
         component.append(node("div", t("点击一键安装即可。从 Olivia 下载服务获取固定版本 QQ 组件及运行依赖，安装前校验 SHA-256。"), "olivia-chat-copy"));
       }
-      if (napcat.error) renderError(component, {code: napcat.error});
+      if (managedNapcatSupported && napcat.error) renderError(component, {code: napcat.error});
       box.append(component);
 
-      if (napcat.state === "ONEBOT_READY") {
+      if (managedNapcatSupported && napcat.state === "ONEBOT_READY") {
         const managed = node("div", null, "olivia-chat-subcard");
         managed.append(node("div", t("OneBot 已就绪"), "olivia-chat-name"));
         managed.append(node("div", t("刚扫码登录的是机器人账号，已自动识别。下方请填写你用来和机器人聊天的个人 QQ 号。"), "olivia-chat-copy"));
@@ -445,7 +451,7 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
           "olivia-chat-copy"));
       }
 
-      box.append(renderAdvancedQQ(box));
+      box.append(renderAdvancedQQ(box, !managedNapcatSupported));
       if (status.qq?.error) renderError(box, {code: status.qq.error});
       return box;
     };
@@ -506,6 +512,13 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
       if (qqSaving) { pollTimer = setTimeout(() => refresh(true), 2000); return; }
       try {
         const status = await request(STATUS);
+        try {
+          const native = await window.olivia?.status?.();
+          if (native && native.managedNapcatSupported === false) status.managed_napcat_supported = false;
+        } catch (_) { /* Browser-only original client keeps the managed default. */ }
+        copy.textContent = status.managed_napcat_supported === false
+          ? t("在这里绑定 QQ。macOS 使用你自行运行的 NapCat / OneBot；请填写本机 WebSocket 地址和 Token。")
+          : t("在这里绑定 QQ。Olivia 可以一键准备本地 QQ 组件，不需要手填 OneBot 参数。请使用 QQ 小号扫码登录，再填写你用来聊天的个人 QQ 号。");
         if (!root.isConnected) return;
         if (qqSaving) { pollTimer = setTimeout(() => refresh(true), 2000); return; }
         const selected = Array.isArray(status.selected_channels) ? status.selected_channels.filter(name => name === 'qq') : [];

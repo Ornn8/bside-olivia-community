@@ -4,7 +4,7 @@ import asyncio
 import re
 import secrets
 from aiohttp import ClientSession, ClientTimeout, ClientError, ClientSSLError, ClientConnectionError, web
-from original_client_setup_api import LLMSetupError, _authorize, _body, _headers, SESSION_HEADER
+from original_client_setup_api import LLMSetupError, _authorize, _body, _discard_protected, _headers, SESSION_HEADER
 from runtime.remote_generation import gpu_tls_context
 from runtime.official_endpoints import API_BASE, canonical_api_base
 from runtime import ui_language
@@ -87,12 +87,14 @@ def mount_relay_api(app, setup):
     pending_path = setup._config_root / 'olivia_relay_registration.pending'
 
     def stored_key():
-        if key_path.is_file():
-            return setup._unprotect(key_path.read_text(encoding='utf-8').strip())
         config = setup._config()
         active = setup._active_key_path()
         if config.base_url.rstrip('/') == RELAY_BASE and active:
             return setup._unprotect(active.read_text(encoding='utf-8').strip())
+        # Keep the legacy file as a one-way migration fallback for installs
+        # that predate llm.json. A current managed binding always wins.
+        if key_path.is_file() and not setup._config_path.is_file():
+            return setup._unprotect(key_path.read_text(encoding='utf-8').strip())
         return None
 
     def store_key(key):
@@ -104,6 +106,22 @@ def mount_relay_api(app, setup):
         if refresh is not None:
             refresh()  # Cloud generation uses the same account key.
 
+    def sync_key_reference():
+        """Point the relay compatibility file at the setup service's one item."""
+        active = setup._active_key_path()
+        if active is None:
+            return
+        try:
+            reference = active.read_text(encoding='utf-8').strip()
+            previous = key_path.read_text(encoding='utf-8').strip() if key_path.is_file() else None
+        except OSError:
+            return
+        staging = key_path.with_suffix('.staging')
+        staging.write_text(reference, encoding='utf-8')
+        staging.replace(key_path)
+        if previous and previous != reference:
+            _discard_protected(previous)
+
     async def connect(key, model=None):
         if model is None:
             config = setup._config()
@@ -111,6 +129,7 @@ def mount_relay_api(app, setup):
         payload = {'base_url':RELAY_BASE, 'model':model, 'api_key':key}
         await setup.test(payload)
         setup.save(payload)
+        sync_key_reference()
 
     async def action(request):
         origin = _authorize(request, confirm=True)
@@ -205,7 +224,6 @@ def mount_relay_api(app, setup):
                 if operation == 'export_key':
                     return web.json_response({'key':key}, headers=_headers(origin))
                 await connect(key)
-                store_key(key)
                 pending_path.unlink(missing_ok=True)
                 return web.json_response({'connected':True, 'key_prefix':key[:15]}, headers=_headers(origin))
         try:

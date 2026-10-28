@@ -94,6 +94,25 @@ def test_import_with_bundled_ffmpeg_without_ffprobe(tmp_path, monkeypatch):
     assert 0.9 <= library.songs()[0]['duration'] <= 1.2
 
 
+def test_import_audio_file_with_bundled_ffmpeg(tmp_path, monkeypatch):
+    import imageio_ffmpeg
+    from runtime.media.managed_subprocess import run_managed_process
+    import runtime.media.local_song_library as module
+
+    ffmpeg = Path(imageio_ffmpeg.get_ffmpeg_exe())
+    monkeypatch.setattr(module, 'resolve_ffmpeg_executable', lambda env: ffmpeg)
+    source = tmp_path / 'song.mp3'
+    result = run_managed_process([str(ffmpeg), '-y', '-f', 'lavfi', '-i',
+        'sine=frequency=440:duration=1', str(source)], timeout_seconds=30)
+    assert result.returncode == 0
+    library = LocalSongLibrary(tmp_path / 'data', {})
+    assert library.import_path(str(source))['added'] == 1
+    assert library.import_path(str(source))['skipped'] == 1
+    song = library.songs()[0]
+    assert song['media_type'] == 'audio' and 0.9 <= song['duration'] <= 1.2
+    assert library.media_path(song['id']).suffix == '.wav'
+
+
 def test_import_failure_logs_safe_specific_code(library, tmp_path, monkeypatch):
     source = tmp_path / 'private-title.mp4'
     source.write_bytes(b'video')

@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -164,6 +165,26 @@ def _atomic_text(path: Path, value: str) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def _read_protected_reference(path: Path) -> str | None:
+    """Read an opaque credential reference without ever decoding its value."""
+
+    try:
+        value = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return value or None
+
+
+def _discard_protected_reference(value: str | None) -> None:
+    """Delete a platform credential when its reference is replaced."""
+
+    if not value:
+        return
+    from original_client_setup_api import _discard_protected
+
+    _discard_protected(value)
+
+
 def _write_config(server, value: dict[str, object]) -> None:
     if not value or set(value) - {"wechat", "qq"}:
         raise RuntimeError("PERSONAL_CHAT_CONFIG_INVALID")
@@ -300,6 +321,7 @@ def _public_status(request: web.Request, server) -> dict[str, object]:
         "reply_error_at": {name: stamp for name, stamp in failures[1].items() if name in selected},
         "wechat": wechat,
         "qq": qq,
+        "managed_napcat_supported": sys.platform == "win32",
         "napcat": napcat_installer.public_status(_root(server), runtime),
     }
 
@@ -348,13 +370,18 @@ async def _wechat_login(server, runtime: dict[str, object]) -> None:
                     from original_client_setup_api import _dpapi_protect
 
                     secret = _root(server) / "personal-chat" / "wechat.dpapi"
-                    _atomic_text(
-                        secret,
-                        _dpapi_protect(json.dumps(credentials, ensure_ascii=False)),
-                    )
-                    config = _read_config(server)
-                    config["wechat"] = {"credentials_file": str(secret)}
-                    _write_config(server, config)
+                    previous_reference = _read_protected_reference(secret)
+                    protected = _dpapi_protect(json.dumps(credentials, ensure_ascii=False))
+                    try:
+                        _atomic_text(secret, protected)
+                        config = _read_config(server)
+                        config["wechat"] = {"credentials_file": str(secret)}
+                        _write_config(server, config)
+                    except Exception:
+                        _discard_protected_reference(protected)
+                        raise
+                    if previous_reference != protected:
+                        _discard_protected_reference(previous_reference)
                     state.clear()
                     state.update(state="READY_RESTART")
                     return
@@ -872,20 +899,25 @@ def install_setup_routes(app: web.Application, server) -> None:
             from original_client_setup_api import _dpapi_protect
 
             secret = _root(server) / "personal-chat" / "qq.dpapi"
-            _atomic_text(
-                secret,
-                _dpapi_protect(json.dumps({"token": token}, ensure_ascii=False)),
-            )
-            config = _read_config(server)
-            config["qq"] = {
-                "url": url,
-                "account": account,
-                "owner": owner,
-                "credentials_file": str(secret),
-                "managed": managed,
-                "backfill_enabled": body.get('backfill_enabled', False),
-            }
-            _write_config(server, config)
+            previous_reference = _read_protected_reference(secret)
+            protected = _dpapi_protect(json.dumps({"token": token}, ensure_ascii=False))
+            try:
+                _atomic_text(secret, protected)
+                config = _read_config(server)
+                config["qq"] = {
+                    "url": url,
+                    "account": account,
+                    "owner": owner,
+                    "credentials_file": str(secret),
+                    "managed": managed,
+                    "backfill_enabled": body.get('backfill_enabled', False),
+                }
+                _write_config(server, config)
+            except Exception:
+                _discard_protected_reference(protected)
+                raise
+            if previous_reference != protected:
+                _discard_protected_reference(previous_reference)
             from .backend import ACTIVATE_SAVED_CONFIG
             activate = request.app.get(ACTIVATE_SAVED_CONFIG)
             activated = await activate() if activate is not None else False

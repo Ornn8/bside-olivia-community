@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "personal_chat_setup_status.schema.json",
+  "title": "Personal chat setup status extensions",
+  "description": "The status response has a platform capability field; other fields are channel-specific and may evolve independently.",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "managed_napcat_supported": {"type": "boolean"}
+  }
+}

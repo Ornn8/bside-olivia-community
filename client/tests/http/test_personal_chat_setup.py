@@ -47,6 +47,26 @@ class _Server:
         self.persist_calls += 1
 
 
+@pytest.mark.parametrize("platform,supported", [("darwin", False), ("win32", True)])
+def test_setup_status_reports_managed_napcat_platform(tmp_path, monkeypatch, platform, supported):
+    from runtime.personal_chat import setup, napcat_installer
+
+    monkeypatch.setattr(setup.sys, "platform", platform)
+    monkeypatch.setattr(setup, "_selected_channels", lambda server: {"qq"})
+    monkeypatch.setattr(napcat_installer, "find_shell", lambda root: None)
+    app = web.Application()
+    setup.install_setup_routes(app, _Server(tmp_path))
+
+    async def scenario():
+        async with TestClient(TestServer(app)) as client:
+            response = await client.get(setup.STATUS_PATH,
+                headers={setup.CONFIRM_HEADER: setup.CONFIRM_VALUE})
+            assert response.status == 200
+            assert (await response.json())["managed_napcat_supported"] is supported
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize('saved,expected', [
     ({'managed': True, 'account': '12345', 'owner': '54321'}, 200),
     ({'managed': False, 'account': '12345', 'owner': '54321'}, 400),
