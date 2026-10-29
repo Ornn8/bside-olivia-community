@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import re
@@ -468,6 +468,22 @@ def _spaced_indexes(total: int, count: int) -> tuple[int, ...]:
     return tuple(round(index * (total - 1) / (count - 1)) for index in range(count))
 
 
+_DAY_ZONE = timezone(timedelta(hours=8))  # the zone of live relationship days (runtime/relationship_growth.py)
+
+
+def exchange_days(
+    exchanges: Iterable[HistoricalExchange],
+    *,
+    now: datetime | None = None,
+) -> tuple[str, ...]:
+    """The calendar days these exchanges took place on, only where the time is known.
+
+    A day after today (a wrong clock in the source) is not a day they talked."""
+    today = (now or datetime.now(timezone.utc)).astimezone(_DAY_ZONE).date()
+    days = {item.occurred_at.astimezone(_DAY_ZONE).date() for item in exchanges if item.timestamp_known}
+    return tuple(sorted(day.isoformat() for day in days if day <= today))
+
+
 def apply_historical_private_world(
     exchanges: Iterable[HistoricalExchange],
     *,
@@ -507,6 +523,7 @@ def apply_historical_private_world(
         comfort=assessment.comfort,
         tension=assessment.tension,
         relationship_stage=assessment.relationship_stage,
+        history_days=exchange_days(ordered),
     )
     result = command_service.execute(command)
     status = getattr(result, "status", None)
@@ -778,6 +795,7 @@ __all__ = [
     "HistoricalRelationshipAssessment",
     "apply_historical_private_world",
     "assess_historical_relationship",
+    "exchange_days",
     "exchanges_from_legacy_payload",
     "historical_relationship_command_id",
     "migrate_historical_exchanges",

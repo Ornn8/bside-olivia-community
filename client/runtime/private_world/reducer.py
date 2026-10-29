@@ -633,23 +633,18 @@ def reduce_private_world_command(
             # The service protects confirmed live stages during ordered import.
             if command.relationship_stage is not None:
                 updates['relationship_stage'] = command.relationship_stage.value
-            return _apply_updates(snapshot, updates, reason_code="APPLY_HISTORICAL_RELATIONSHIP_EVIDENCE",
-                                  unchanged_reason="HISTORICAL_RELATIONSHIP_EVIDENCE_NO_CHANGE")
-        return _apply_updates(
-            snapshot,
-            {
-                "familiarity": max(
-                    snapshot.familiarity,
-                    command.familiarity,
-                ),
-                "closeness": max(
-                    snapshot.closeness,
-                    command.closeness,
-                ),
-            },
-            reason_code="APPLY_HISTORICAL_RELATIONSHIP_EVIDENCE",
-            unchanged_reason="HISTORICAL_RELATIONSHIP_EVIDENCE_NO_CHANGE",
-        )
+        else:
+            updates = {
+                "familiarity": max(snapshot.familiarity, command.familiarity),
+                "closeness": max(snapshot.closeness, command.closeness),
+            }
+        if command.history_days:
+            # The days of the imported letters count like days of live chats, so
+            # the story volume and stage reflect how long they have known each other.
+            from runtime.relationship_growth import history_day_updates
+            updates = history_day_updates(snapshot, command.history_days, updates)
+        return _apply_updates(snapshot, updates, reason_code="APPLY_HISTORICAL_RELATIONSHIP_EVIDENCE",
+                              unchanged_reason="HISTORICAL_RELATIONSHIP_EVIDENCE_NO_CHANGE")
 
     if isinstance(command, InitializeHistoricalRelationship):
         if snapshot != PrivateWorldSnapshot():

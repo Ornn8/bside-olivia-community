@@ -300,19 +300,29 @@ def _start_history_relationships(*, retry=False):
         return
     async def work():
         try:
+            from runtime.auto_update import replies_in_flight
             from runtime.imports.relationship_batches import archive_exchanges
+            # Batches that failed on a refusal that passes (busy, server error, timeout) are taken up again whenever
+            # the re-read starts: at startup, after an import, on a retry. Other failures wait for the explicit retry.
+            await asyncio.to_thread(queue.retry_transient)
             rows = await asyncio.to_thread(_legacy_import_adapter().list_legacy)
             queue.enqueue(archive_exchanges(rows))
             if private_world_command_service is not None and _llm_runtime_ready():
                 await queue.run(gateway=letters_adapter.gateway,
                     persona_policy=letters_adapter.get_persona_policy(),
                     command_service=private_world_command_service,
-                    snapshot=private_world_port.snapshot)
+                    snapshot=private_world_port.snapshot,
+                    busy=replies_in_flight)
                 state = queue.status()
                 if state.get('status') == 'FAILED':
                     from runtime.diagnostics.support_bundle import project_history_relationship_failure
                     event = project_history_relationship_failure(state)
                     _safe_log(event.pop('event'), **event)
+            if private_world_command_service is not None:
+                # Imports assessed by earlier versions did not count the days of their letters.
+                added = await asyncio.to_thread(queue.merge_history_days, private_world_port)
+                if added:
+                    _safe_log('history_relationship_days_merged', count=added)
         except asyncio.CancelledError:
             raise
         except Exception:
