@@ -609,8 +609,8 @@ def test_personal_chat_setup_ui_stays_inside_existing_settings_surface() -> None
         '"/toy/personal-chat/setup/qq/napcat/install"',
         '"/toy/personal-chat/setup/qq/napcat/start"',
         'status.wechat?.qr_data',
-        '"QQ（实验功能）"',
-        '"一键安装"',
+        '"林离的 QQ"',
+        '"下载并准备"',
         '"X-Olivia-Companion-Action"',
     ):
         assert required in script
