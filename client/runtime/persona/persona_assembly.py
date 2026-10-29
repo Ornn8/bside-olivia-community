@@ -478,7 +478,10 @@ def _persona_blocks(
                 # The delivered conversation tail is continuity, not optional
                 # retrieval. Do not drop what we just said before old memories.
                 (PromptSection.RECENT_DIALOGUE if fragment.fragment_id == 'chat.recent' else
-                 PromptSection.PRIVATE_BEHAVIOR if fragment.fragment_id in {'chat.relationship', 'chat.diary'} else PromptSection.HISTORY),
+                 # A recognized quoted letter is a small, exact note about this turn;
+                 # it outlasts optional retrieval, as the relationship notes do.
+                 PromptSection.PRIVATE_BEHAVIOR if fragment.fragment_id in {
+                     'chat.relationship', 'chat.diary', 'memory.quoted_letter'} else PromptSection.HISTORY),
                 {"untrusted": True, "text": fragment.text},
             )
         )

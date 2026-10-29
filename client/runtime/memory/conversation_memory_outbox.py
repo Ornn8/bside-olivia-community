@@ -269,6 +269,9 @@ class CanonicalMemoryOutbox:
         # so a question naming that day finds those letters. Originals stay unchanged.
         from runtime.imports.letter_maintenance import key as maintenance_key
         restored_dates = self._restored_dates()
+        from .archive_dates import estimate_dates
+        rows = [row for row in rows if isinstance(row, Mapping)]
+        estimates = estimate_dates(rows)
         for row in rows:
             if not isinstance(row, Mapping):
                 continue
@@ -291,14 +294,18 @@ class CanonicalMemoryOutbox:
                 user_message=user_text, assistant_message=reply, occurred_at=stamp,
                 lifecycle_at=_timestamp(row.get("imported_at")) or stamp or datetime.fromtimestamp(0, timezone.utc),
                 content_hash=hashlib.sha256(json.dumps([user_text, reply, occurred], ensure_ascii=False).encode("utf-8")).hexdigest())
-            deliveries.append(delivery)
+            # An undated letter keeps an unknown index time, but is indexed in its place
+            # among dated neighbours instead of after the whole dated archive.
+            estimate = estimates.get(source) if stamp is None else None
+            deliveries.append((stamp or (estimate.stamp if estimate else None), delivery))
         register = getattr(self.committer, "register_archive_sources", None)
         if callable(register):
             try:
-                await register(self.user_id, [delivery.source_id for delivery in deliveries])
+                await register(self.user_id, [delivery.source_id for _, delivery in deliveries])
             except Exception:
                 pass  # Progress is optional; indexing still proceeds.
-        for delivery in sorted(deliveries, key=lambda d: d.occurred_at or datetime.fromtimestamp(0, timezone.utc), reverse=True):
+        epoch = datetime.fromtimestamp(0, timezone.utc)
+        for _, delivery in sorted(deliveries, key=lambda item: item[0] or epoch, reverse=True):
             indexed += bool(await index(delivery))
             if indexed >= 20:
                 break

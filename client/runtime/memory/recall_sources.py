@@ -61,11 +61,12 @@ def read_archive_sources(archive, source_ids, *, excluded_sources=()) -> tuple[M
     if not callable(reader):
         raise MemoryUnavailable("ARCHIVE_SOURCE_READ_UNAVAILABLE")
     groups = {}
+    from .archive_dates import estimate_dates
+    rows = [row for row in reader() if isinstance(row, Mapping)]
+    estimates = estimate_dates(rows)
     # Existing list_legacy owns user isolation and the read transaction. Exact
     # pair identity matches relationship import; similarity is insufficient.
-    for row in reader():
-        if not isinstance(row, Mapping):
-            continue
+    for row in rows:
         metadata = row.get("metadata")
         if not isinstance(metadata, Mapping) or metadata.get("import_kind") not in {
             "official_text_reply", "offline_recovered_text_reply", "local_letter_backup_v1",
@@ -93,6 +94,7 @@ def read_archive_sources(archive, source_ids, *, excluded_sources=()) -> tuple[M
             continue
         source, user, reply, stamp, _ = next(entry for entry in entries if matched in entry[4])
         original_time = stamp.isoformat() if stamp else None
+        estimate = estimates.get(source) if stamp is None else None
         indexed_source = _history_id(source)
         for actor, text in (("user", user), ("linli", reply)):
             result.append(MemoryRecord(
@@ -107,6 +109,7 @@ def read_archive_sources(archive, source_ids, *, excluded_sources=()) -> tuple[M
                           "speaker": actor, "history_actor": actor, "start": 0, "end": len(text),
                           "part_count": 1, "retrieval_route": "archive_source",
                           "requested_source_id": matched,
-                          "source_aliases": json.dumps(sorted(aliases), ensure_ascii=False)},
+                          "source_aliases": json.dumps(sorted(aliases), ensure_ascii=False),
+                          **(estimate.to_dict() if estimate else {})},
             ))
     return tuple(result)

@@ -1143,7 +1143,16 @@ def _assemble_reply_evidence(adapter, snapshot, context, content, *, max_input_c
     disabled = callable(limit) and limit() == 0
     from runtime.memory.history_continuity import plan_history_query, HistoryQuery
     exclusions = getattr(adapter, '_memory_source_exclusions', lambda: ())()
-    query_plan = HistoryQuery(content) if disabled else plan_history_query(content, recent, excluded=exclusions)
+    quoted, quoted_sources = None, ()
+    if not disabled:
+        # A long passage he quotes back is matched to the stored letter by its own
+        # sentences; the passage itself is then the search anchor, not a pointer.
+        from runtime.memory.quoted_letters import lookup as quoted_lookup
+        quoted, quoted_sources = quoted_lookup(adapter, content, excluded=exclusions)
+        if quoted is not None:
+            recent = (*recent, quoted)
+    query_plan = (HistoryQuery(content) if disabled or quoted is not None
+                  else plan_history_query(content, recent, excluded=exclusions))
     hint = query_plan.fragment()
     if hint is not None:
         recent = (*recent, hint)
@@ -1179,6 +1188,9 @@ def _assemble_reply_evidence(adapter, snapshot, context, content, *, max_input_c
             exclusions = getattr(adapter, '_memory_source_exclusions', lambda: ())()
             recall = deepen_recall(builder, recall, query=content,
                 source_ids=_life_source_ids(life), exclude_source_ids=exclusions)
+        if quoted_sources:
+            from runtime.memory.quoted_letters import lead_quoted_sources
+            recall = lead_quoted_sources(adapter, recall, quoted_sources, excluded=exclusions)
         states = dict(recall.source_status)
         states['world'] = 'available' if context.world_state_available else 'unavailable'
         recall = replace(recall, source_status=tuple(states.items()))
