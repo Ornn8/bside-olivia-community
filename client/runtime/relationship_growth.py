@@ -109,6 +109,19 @@ def growth_updates(state, signals, now, policy):
     return changes
 
 
+def history_day_updates(state, days, changes=None):
+    """The days of imported letters count as days they talked, like the days of live chats.
+
+    The days are merged into ``relationship_days`` (nothing is removed) and the
+    story volume follows from the merged span through ``volume_updates``,
+    which never lowers a volume already reached."""
+    changes = dict(changes or {})
+    merged = tuple(sorted(set(state.relationship_days) | set(days)))
+    changes['relationship_days'] = merged
+    changes.update(volume_updates(state, changes, len(merged)))
+    return changes
+
+
 def route(state):
     return state.relationship_route or ('romantic' if state.relationship_stage in {'close', 'committed'} else 'undecided')
 

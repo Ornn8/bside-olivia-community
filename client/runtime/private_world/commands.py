@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from enum import StrEnum
 import re
 from typing import ClassVar, TypeAlias
@@ -96,6 +96,25 @@ def _evidence_refs(values: tuple[str, ...]) -> tuple[str, ...]:
     ):
         raise PrivateWorldCommandError("evidence refs are invalid")
     return values
+
+
+_MAX_HISTORY_DAYS = 4000
+
+
+def _calendar_days(values: object) -> tuple[str, ...]:
+    if isinstance(values, (str, bytes)) or not isinstance(values, (tuple, list)):
+        raise PrivateWorldCommandError("history days must be a sequence")
+    days = tuple(values)
+    for day in days:
+        try:
+            valid = isinstance(day, str) and len(day) == 10 and date.fromisoformat(day).isoformat() == day
+        except ValueError:
+            valid = False
+        if not valid:
+            raise PrivateWorldCommandError("history day is invalid")
+    if len(days) > _MAX_HISTORY_DAYS or tuple(sorted(set(days))) != days:
+        raise PrivateWorldCommandError("history days are invalid")
+    return days
 
 
 def _nickname(value: object) -> str:
@@ -305,6 +324,9 @@ class ApplyHistoricalRelationshipEvidence(PrivateWorldCommand):
     comfort: int | None = None
     tension: int | None = None
     relationship_stage: RelationshipStage | None = None
+    # Calendar days (UTC+8) on which the assessed exchanges took place, only
+    # those with a known time. They count as days the two talked.
+    history_days: tuple[str, ...] = ()
 
     kind: ClassVar[PrivateWorldCommandKind] = (
         PrivateWorldCommandKind.APPLY_HISTORICAL_RELATIONSHIP_EVIDENCE
@@ -312,6 +334,7 @@ class ApplyHistoricalRelationshipEvidence(PrivateWorldCommand):
 
     def __post_init__(self) -> None:
         super().__post_init__()
+        object.__setattr__(self, "history_days", _calendar_days(self.history_days))
         for field_name in ("familiarity", "closeness"):
             value = getattr(self, field_name)
             if type(value) is not int or not 0 <= value <= 100:
@@ -333,6 +356,7 @@ class ApplyHistoricalRelationshipEvidence(PrivateWorldCommand):
             **({"trust": self.trust, "comfort": self.comfort, "tension": self.tension}
                if self.trust is not None else {}),
             **({'relationship_stage': self.relationship_stage.value} if self.relationship_stage is not None else {}),
+            **({'history_days': list(self.history_days)} if self.history_days else {}),
         }
 
 
