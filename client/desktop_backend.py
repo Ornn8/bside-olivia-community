@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import signal
 import shutil
+import sys
 
 from aiohttp import ClientSession
 from aiohttp import web
@@ -16,6 +17,46 @@ from aiohttp import web
 
 DESKTOP_TOKEN_HEADER = "X-Olivia-Desktop-Token"
 DESKTOP_HANDSHAKE_SCHEMA = "olivia-ready.v1"
+# Electron maps this exit status to BACKEND_ALREADY_RUNNING.
+DESKTOP_LOCKED_EXIT_CODE = 75
+
+
+class DesktopBackendLocked(RuntimeError):
+    """Another backend process already owns this data root."""
+
+
+def acquire_data_root_lock(root: Path):
+    """Hold an exclusive lock on the data root for this process's lifetime.
+
+    The kernel releases the lock when the process exits, so a crashed backend
+    never blocks a restart, while two live backends can never share one root.
+    """
+
+    import fcntl  # The Electron backend only runs on macOS.
+
+    root.mkdir(parents=True, exist_ok=True)
+    handle = (root / "desktop-backend.lock").open("a+")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        raise DesktopBackendLocked("DESKTOP_BACKEND_ALREADY_RUNNING") from None
+    return handle
+
+
+def watch_parent_pipe(loop: asyncio.AbstractEventLoop, fd: int, stopped: asyncio.Event) -> None:
+    """Stop when Electron's end of the stdin pipe closes, even after SIGKILL."""
+
+    def readable() -> None:
+        try:
+            data = os.read(fd, 4096)
+        except OSError:
+            data = b""
+        if not data:
+            loop.remove_reader(fd)
+            stopped.set()
+
+    loop.add_reader(fd, readable)
 
 
 def desktop_ready_message(*, port: int, pid: int, nonce: str) -> dict[str, object]:
@@ -124,7 +165,7 @@ async def serve() -> None:
     root = Path(os.environ["OLIVIA_LOCAL_DATA_ROOT"])
     if not root.is_absolute():
         raise ValueError("OLIVIA_LOCAL_DATA_ROOT must be absolute")
-    root.mkdir(parents=True, exist_ok=True)
+    root_lock = acquire_data_root_lock(root)  # noqa: F841 - held until exit
 
     # Match the installed client runtime, but keep every writable path in this
     # app's own Application Support directory.
@@ -196,10 +237,15 @@ async def serve() -> None:
         loop = asyncio.get_running_loop()
         for signum in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(signum, stopped.set)
+        if os.environ.get("OLIVIA_DESKTOP_PARENT_PIPE") == "1":
+            watch_parent_pipe(loop, sys.stdin.fileno(), stopped)
         await stopped.wait()
     finally:
         await runner.cleanup()
 
 
 if __name__ == "__main__":
-    asyncio.run(serve())
+    try:
+        asyncio.run(serve())
+    except DesktopBackendLocked:
+        sys.exit(DESKTOP_LOCKED_EXIT_CODE)

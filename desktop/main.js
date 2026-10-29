@@ -129,7 +129,11 @@ function createApplicationMenu() {
 
 function prepareFrontend() {
   return new Promise((resolve, reject) => {
-    const output = fs.mkdtempSync(path.join(app.getPath("temp"), "olivia-original-"));
+    // A fixed per-profile directory (guarded by the single-instance lock) is
+    // wiped on every start, so a crash never leaves extracted assets behind.
+    const output = path.join(path.dirname(dataRoot), "Frontend");
+    fs.rmSync(output, { recursive: true, force: true });
+    fs.mkdirSync(output, { recursive: true, mode: 0o700 });
     frontendOutput = output;
     let settled = false;
     const child = spawn(python, [path.join(backendRoot, "desktop_original_frontend.py"),
@@ -239,8 +243,10 @@ function startBackend() {
         OLIVIA_DESKTOP_REQUEST_TOKEN: backendToken,
         OLIVIA_DESKTOP_VERSION: app.getVersion(),
         ...(app.isPackaged ? { OLIVIA_DESKTOP_MODEL_CACHE: path.join(process.resourcesPath, "memory-model-cache") } : {}),
-        PYTHONUNBUFFERED: "1", PYTHONDONTWRITEBYTECODE: "1" },
-      stdio: ["ignore", "pipe", "pipe"],
+        OLIVIA_DESKTOP_PARENT_PIPE: "1", PYTHONUNBUFFERED: "1", PYTHONDONTWRITEBYTECODE: "1" },
+      // stdin stays open for the backend's lifetime; when this process dies
+      // (even by SIGKILL) the pipe closes and the backend stops itself.
+      stdio: ["pipe", "pipe", "pipe"],
     });
     backend = child;
     let settled = false;
@@ -264,12 +270,18 @@ function startBackend() {
       } catch { /* Content-free backend logs are not protocol messages. */ }
     });
     child.stderr.resume();
+    child.stdin.on("error", () => { /* The backend already exited. */ });
     child.on("error", (error) => {
       if (!settled) { settled = true; clearTimeout(timeout); reject(error); }
     });
-    child.on("exit", () => {
+    child.on("exit", (code) => {
       backendPort = undefined;
-      if (!settled) { settled = true; clearTimeout(timeout); reject(new Error("BACKEND_EXITED")); }
+      if (!settled) {
+        settled = true;
+        clearTimeout(timeout);
+        // 75: another backend still owns this data root (desktop_backend.py).
+        reject(new Error(code === 75 ? "BACKEND_ALREADY_RUNNING" : "BACKEND_EXITED"));
+      }
       if (ready && !backendStopping && !quitting) handleBackendStopped();
     });
   });

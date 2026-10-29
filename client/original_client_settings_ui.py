@@ -2521,14 +2521,19 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       key.input.value = "";
     }
     const claimKey = !setup.llm.key_configured && offerClaim;
+    // Only the macOS app has the secure key window; Windows keeps the paste field.
     const state = text("p", setup.llm.key_configured
-        ? t("已找到保存的 Key，无需重新输入。")
+      ? t("已找到保存的 Key，无需重新填写。")
       : claimKey
-        ? t("已有 Key 请点击连接并在安全窗口输入，没有的话点「去领取 Key」。")
-        : t("还没有 Key？请先在「Olivia 账户」获取，再点击连接并在安全窗口输入。"), "text-text-secondary text-body-m font-regular");
+        ? (nativeKeyEntry
+          ? t("已有 Key 请点击连接并在安全窗口输入，没有的话点「去领取 Key」。")
+          : t("已有 Key 请粘贴在上方，没有的话点「去领取 Key」。"))
+        : (nativeKeyEntry
+          ? t("还没有 Key？请先在「Olivia 账户」获取，再点击连接并在安全窗口输入。")
+          : t("还没有 Key？请先在「Olivia 账户」获取，或在上方粘贴已有的 Key。")), "text-text-secondary text-body-m font-regular");
     state.setAttribute("aria-live", "polite");
     let setupBusy = false;
-    const errors = {RELAY_NOT_CONFIGURED:t("请先在「Olivia 账户」获取 Key。"), LLM_SETUP_KEY_UNAVAILABLE:t("无法读取 macOS 钥匙串，请在系统提示中允许 Olivia 访问后重试。"),
+    const errors = {RELAY_NOT_CONFIGURED:nativeKeyEntry ? t("请先在「Olivia 账户」获取 Key。") : t("请先在「Olivia 账户」获取 Key，或粘贴已有的 Key。"), LLM_SETUP_KEY_UNAVAILABLE:t("无法读取 macOS 钥匙串，请在系统提示中允许 Olivia 访问后重试。"),
       LLM_SETUP_FIELDS_INVALID:t("Key 格式不正确，应以 olivia- 开头。"),
       RELAY_AUTH_FAILED:t("Key 已失效，请检查或联系管理员。"),
       KEY_PROMPT_FAILED:t("无法打开安全输入窗口，请重试。"),
