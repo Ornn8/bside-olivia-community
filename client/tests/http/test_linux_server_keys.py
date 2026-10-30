@@ -12,6 +12,8 @@ from installer import start_local
 
 def test_keys_round_trip_on_linux(monkeypatch, tmp_path):
     monkeypatch.setattr(os, 'name', 'posix')
+    monkeypatch.setattr(setup_api.sys, 'platform', 'linux')
+    monkeypatch.setattr(start_local.sys, 'platform', 'linux')
     protected = setup_api._dpapi_protect('olivia-test-key-value')
     assert protected.startswith('posix-v1:') and 'olivia-test-key-value' not in protected
     assert setup_api._dpapi_unprotect(protected) == 'olivia-test-key-value'

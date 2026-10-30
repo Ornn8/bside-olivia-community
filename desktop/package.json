@@ -1,0 +1,42 @@
+{
+  "name": "olivia-mac",
+  "version": "2.5.8",
+  "private": true,
+  "productName": "BSide Olivia",
+  "description": "Olivia companion app for macOS.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test tests/*.test.js",
+    "dist:arm64": "bash scripts/build-mac.sh arm64",
+    "dist:x64": "bash scripts/build-mac.sh x64"
+  },
+  "dependencies": {
+    "lucide": "1.59.0"
+  },
+  "devDependencies": {
+    "electron": "44.9.0",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "community.bside.olivia.mac",
+    "productName": "BSide Olivia",
+    "directories": { "output": "dist" },
+    "files": ["main.js", "frontend-server.js", "native-files.js", "mac-updates.js", "original-assets.js", "preload.js", "tray-icon.js", "package.json", "THIRD_PARTY_NOTICES.md"],
+    "extraResources": [
+      { "from": "../.context/mac-package/current/backend", "to": "backend" },
+      { "from": "../.context/mac-package/current/python", "to": "python" },
+      { "from": "../.context/mac-package/current/memory-model-cache", "to": "memory-model-cache" },
+      { "from": "../LICENSE", "to": "LICENSE" }
+    ],
+    "mac": {
+      "category": "public.app-category.lifestyle",
+      "icon": "icon.icns",
+      "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "minimumSystemVersion": "14.0",
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "target": [{ "target": "dmg", "arch": ["arm64", "x64"] }]
+    }
+  }
+}

@@ -11,6 +11,7 @@ import threading
 import subprocess
 import time
 import shutil
+import sys
 import wave
 
 from runtime.media.latentsync_reply import resolve_ffmpeg_executable
@@ -20,6 +21,7 @@ _LOCK = threading.RLock()
 _IMPORT_LOCK = threading.Lock()
 _ID = re.compile(r'[0-9a-f]{64}')
 _VIDEO = {'.mp4', '.mov', '.mkv', '.webm', '.m4v', '.avi', '.flv', '.wmv'}
+_AUDIO = {'.mp3', '.wav', '.m4a', '.flac', '.ogg'}
 
 
 class LocalSongError(RuntimeError):
@@ -96,6 +98,12 @@ class LocalSongLibrary:
             if not any(row['id'] == song_id for row in self._read()):
                 raise LocalSongError('LOCAL_SONG_NOT_FOUND')
             path = self.media_path(song_id)
+        if sys.platform == 'darwin':
+            try:
+                subprocess.Popen(['/usr/bin/open', '-R', str(path)], shell=False)
+            except OSError:
+                raise LocalSongError('LOCAL_SONG_REVEAL_FAILED') from None
+            return
         if os.name != 'nt':
             raise LocalSongError('LOCAL_SONG_REVEAL_UNSUPPORTED')
         try:
@@ -212,6 +220,18 @@ class LocalSongLibrary:
             raise LocalSongError('LOCAL_SONG_VIDEO_INVALID')
         return duration
 
+    def _prepare_audio(self, source, output):
+        try:
+            ffmpeg = resolve_ffmpeg_executable(self.environment)
+        except RuntimeError as exc:
+            raise LocalSongError('LOCAL_SONG_FFMPEG_UNAVAILABLE') from exc
+        result = run_managed_process(
+            [str(ffmpeg), '-v', 'error', '-nostdin', '-y', '-i', str(source),
+             '-vn', '-c:a', 'pcm_s16le', '-f', 'wav', str(output)],
+            timeout_seconds=1800)
+        if result.returncode or not output.is_file() or output.stat().st_size == 0:
+            raise LocalSongError('LOCAL_SONG_AUDIO_INVALID')
+
     @staticmethod
     def _titles(source):
         root = source if source.is_dir() and not source.name.startswith('midi_') else source.parent
@@ -302,7 +322,7 @@ class LocalSongLibrary:
         if not source.exists() or source == self.root or self.root in source.parents:
             raise LocalSongError('LOCAL_SONG_PATH_INVALID')
         if source.is_file():
-            if source.suffix.lower() not in _VIDEO:
+            if source.suffix.lower() not in _VIDEO | _AUDIO:
                 raise LocalSongError('LOCAL_SONG_FORMAT_UNSUPPORTED')
             files = [source]
         else:
@@ -329,7 +349,7 @@ class LocalSongLibrary:
                     continue
                 for name in sorted(names):
                     path = Path(directory) / name
-                    if path.suffix.lower() in _VIDEO and not path.is_symlink() and self.root not in path.resolve().parents:
+                    if path.suffix.lower() in _VIDEO | _AUDIO and not path.is_symlink() and self.root not in path.resolve().parents:
                         files.append(path)
                     if len(files) > 5000:
                         raise LocalSongError('LOCAL_SONG_TOO_MANY_FILES')
@@ -339,6 +359,16 @@ class LocalSongLibrary:
         for path in files:
             temporary = None
             try:
+                if path.suffix.lower() in _AUDIO:
+                    fd, name = tempfile.mkstemp(dir=self.root, suffix='.wav')
+                    os.close(fd)
+                    temporary = Path(name)
+                    self._prepare_audio(path, temporary)
+                    title = titles.get(path.parent.name)
+                    title = title if isinstance(title, str) and title.strip() else path.stem
+                    imported = self.import_audio(temporary, title[:120])
+                    report['added' if imported['added'] else 'skipped'] += 1
+                    continue
                 with path.open('rb') as stream:
                     song_id = hashlib.file_digest(stream, 'sha256').hexdigest()
                 with _LOCK:

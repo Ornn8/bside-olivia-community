@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import secrets
 import subprocess
+import sys
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -43,7 +44,7 @@ PUBLIC_ROUTE_CONTRACT = {
         "request_fields": [],
         "response_fields": [
             "schema_version", "status", "login_observed", "setup_completed",
-            "show_initial_setup", "skipped", "llm", "session_token?",
+            "show_initial_setup", "skipped", "llm", "llm.keychain_status", "session_token?",
         ],
     },
     LLM_TEST_PATH: {
@@ -123,6 +124,12 @@ _POSIX_PREFIX = "posix-v1:"
 
 
 def _dpapi_protect(value: str) -> str:
+    if sys.platform == "darwin":
+        try:
+            from runtime.mac_keychain import protect
+            return protect(value)
+        except Exception as exc:
+            raise LLMSetupError("LLM_SETUP_KEY_UNAVAILABLE", status=503) from exc
     if os.name != "nt":
         import base64
         if not isinstance(value, str) or not value:
@@ -150,6 +157,12 @@ def _dpapi_protect(value: str) -> str:
 
 
 def _dpapi_unprotect(value: str) -> str:
+    if sys.platform == "darwin":
+        try:
+            from runtime.mac_keychain import unprotect
+            return unprotect(value)
+        except Exception as exc:
+            raise LLMSetupError("LLM_SETUP_KEY_UNAVAILABLE", status=503) from exc
     if os.name != "nt":
         import base64
         import binascii
@@ -189,6 +202,18 @@ def _dpapi_unprotect(value: str) -> str:
     if result.returncode or not secret:
         raise LLMSetupError("LLM_SETUP_KEY_UNAVAILABLE", status=503)
     return secret
+
+
+def _discard_protected(value: str | None) -> None:
+    """Remove a macOS Keychain item once its reference is no longer active."""
+    if not isinstance(value, str) or not value.startswith("keychain-v1:"):
+        return
+    try:
+        from runtime.mac_keychain import discard
+        discard(value)
+    except Exception:
+        # Credential cleanup must not make a successful config update fail.
+        pass
 
 
 def _is_relay(config: ManagedLLMConfig) -> bool:
@@ -329,6 +354,7 @@ class LLMSetupService:
                 "model": config.model,
                 "max_retries": config.max_retries,
                 "key_configured": self._active_key_path() is not None,
+                "keychain_status": os.environ.get("OLIVIA_KEYCHAIN_STATUS", "NOT_CONFIGURED"),
             },
         }
         if self._session_token is not None:
@@ -415,6 +441,14 @@ class LLMSetupService:
         if self._tested_digest != self._digest(config.base_url, config.model, api_key):
             raise LLMSetupError("LLM_SETUP_TEST_REQUIRED", status=409)
         config = replace(config, requires_api_key=bool(api_key))
+        previous_references: set[str] = set()
+        legacy_relay_path = self._config_root / "olivia_relay_key.dpapi"
+        for candidate in (self._active_key_path(), self._key_path, legacy_relay_path):
+            if candidate is not None and candidate.is_file():
+                try:
+                    previous_references.add(candidate.read_text(encoding="utf-8").strip())
+                except OSError:
+                    pass
         protected_bytes = (self._protect(api_key) + "\n").encode("utf-8") if api_key else b""
         self._config_root.mkdir(parents=True, exist_ok=True)
         try:
@@ -443,6 +477,7 @@ class LLMSetupService:
         except OSError as exc:
             key_staging.unlink(missing_ok=True)
             key_path.unlink(missing_ok=True)
+            _discard_protected(protected_bytes.decode("utf-8").strip() if protected_bytes else None)
             raise LLMSetupError("LLM_SETUP_SAVE_FAILED", status=503) from exc
         if self._apply_runtime is not None:
             try:
@@ -460,6 +495,7 @@ class LLMSetupService:
                     rollback_succeeded = False
                 if rollback_succeeded:
                     key_path.unlink(missing_ok=True)
+                    _discard_protected(protected_bytes.decode("utf-8").strip() if protected_bytes else None)
                 raise LLMSetupError("LLM_SETUP_SAVE_FAILED", status=503) from exc
         for stale in self._config_root.glob("deepseek_api_key.*.dpapi"):
             if stale != key_path and _KEY_FILE_RE.fullmatch(stale.name):
@@ -471,12 +507,41 @@ class LLMSetupService:
             self._key_path.unlink(missing_ok=True)
         except OSError:
             pass
+        current_reference = protected_bytes.decode("utf-8").strip() if protected_bytes else None
+        if current_reference:
+            # The relay account file is the durable account identity; point it at
+            # the same protected item so a later delete() can keep the account.
+            try:
+                staging = legacy_relay_path.with_suffix(".staging")
+                staging.write_text(current_reference, encoding="utf-8")
+                staging.replace(legacy_relay_path)
+            except OSError:
+                pass
+        for reference in previous_references:
+            if reference != current_reference:
+                _discard_protected(reference)
         self._tested_digest = None
         return self._apply_runtime is not None
 
     def delete(self) -> bool:
         configured = self._config()
         active = self._active_key_path()
+        previous_references: set[str] = set()
+        for candidate in (active, self._key_path):
+            if candidate is not None and candidate.is_file():
+                try:
+                    previous_references.add(candidate.read_text(encoding="utf-8").strip())
+                except OSError:
+                    pass
+        # Deleting the reply connection keeps the relay account identity, so the
+        # user can reconnect, check balance or export the key afterwards.
+        legacy_relay_path = self._config_root / "olivia_relay_key.dpapi"
+        try:
+            if legacy_relay_path.is_file():
+                previous_references.discard(legacy_relay_path.read_text(encoding="utf-8").strip())
+        except OSError:
+            # Without knowing the account reference, keep every protected item.
+            previous_references.clear()
         try:
             previous_config = (
                 self._config_path.read_bytes() if self._config_path.is_file() else None
@@ -515,6 +580,8 @@ class LLMSetupService:
             self._key_path.unlink(missing_ok=True)
         except OSError:
             pass
+        for reference in previous_references:
+            _discard_protected(reference)
         self._tested_digest = None
         return self._apply_runtime is not None
 

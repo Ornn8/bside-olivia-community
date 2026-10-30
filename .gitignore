@@ -94,6 +94,7 @@ __pycache__/
 
 # Local audit mirrors and scratch exports
 _audit_*/
+**/.context/
 dist/
 build/
 *.egg-info/

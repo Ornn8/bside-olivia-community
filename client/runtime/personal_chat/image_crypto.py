@@ -1,15 +1,21 @@
-"""WeChat's AES-128-ECB/PKCS7 wire format using Windows' built-in CNG.
+"""WeChat's AES-128-ECB/PKCS7 wire format.
 
 https://learn.microsoft.com/windows/win32/api/bcrypt/nf-bcrypt-bcryptencrypt
 The algorithm is required by the transport, not used for local secret storage.
 """
 import ctypes as c
 import os
+import sys
 
 
 def encrypt_image(raw: bytes, key: bytes) -> bytes:
     if len(key) != 16:
         raise ValueError('WECHAT_IMAGE_KEY_INVALID')
+    if sys.platform == 'darwin':
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+        padding = 16 - len(raw) % 16
+        encryptor = Cipher(algorithms.AES(key), modes.ECB()).encryptor()
+        return encryptor.update(raw + bytes([padding]) * padding) + encryptor.finalize()
     if os.name != 'nt':
         raise RuntimeError('WECHAT_IMAGE_PLATFORM_UNSUPPORTED')
     api = c.WinDLL('bcrypt.dll', winmode=0x00000800)

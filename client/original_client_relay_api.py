@@ -87,12 +87,15 @@ def mount_relay_api(app, setup):
     pending_path = setup._config_root / 'olivia_relay_registration.pending'
 
     def stored_key():
-        if key_path.is_file():
-            return setup._unprotect(key_path.read_text(encoding='utf-8').strip())
         config = setup._config()
         active = setup._active_key_path()
         if config.base_url.rstrip('/') == RELAY_BASE and active:
             return setup._unprotect(active.read_text(encoding='utf-8').strip())
+        # A current managed binding always wins. Without one (first claim, or
+        # after the reply connection was deleted) the account file still holds
+        # the user's relay identity.
+        if key_path.is_file():
+            return setup._unprotect(key_path.read_text(encoding='utf-8').strip())
         return None
 
     def store_key(key):
@@ -110,7 +113,11 @@ def mount_relay_api(app, setup):
             model = config.model if config.base_url.rstrip('/') == RELAY_BASE and config.model in RELAY_MODELS else RELAY_MODEL
         payload = {'base_url':RELAY_BASE, 'model':model, 'api_key':key}
         await setup.test(payload)
+        # save() also points the account file at the newly protected item.
         setup.save(payload)
+        refresh = app.get('olivia_gpu_refresh')
+        if refresh is not None:
+            refresh()  # Cloud generation uses the same account key.
 
     async def action(request):
         origin = _authorize(request, confirm=True)
@@ -205,7 +212,6 @@ def mount_relay_api(app, setup):
                 if operation == 'export_key':
                     return web.json_response({'key':key}, headers=_headers(origin))
                 await connect(key)
-                store_key(key)
                 pending_path.unlink(missing_ok=True)
                 return web.json_response({'connected':True, 'key_prefix':key[:15]}, headers=_headers(origin))
         try:

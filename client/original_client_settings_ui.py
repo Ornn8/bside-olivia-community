@@ -2161,7 +2161,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const key = setupInput(t("我的 Olivia Key"), "password");
     key.input.readOnly = true;
     key.input.autocomplete = "off";
-    const errors = {RELAY_AUTH_FAILED:t("Key 已失效，请检查或联系管理员。"), RELAY_ORDER_LIMIT:t("申请过于频繁，请稍后重试。"), RELAY_NOT_CONFIGURED:t("请先申请 Key，或导入已有 Key。")};
+    const errors = {RELAY_AUTH_FAILED:t("Key 已失效，请检查或联系管理员。"), RELAY_ORDER_LIMIT:t("申请过于频繁，请稍后重试。"), RELAY_NOT_CONFIGURED:t("请先申请 Key，或导入已有 Key。"), LLM_SETUP_KEY_UNAVAILABLE:t("无法读取 macOS 钥匙串，请在系统提示中允许 Olivia 访问后重试。")};
     Object.assign(errors, {RELAY_TLS_FAILED:t("无法验证回信服务证书，请检查系统时间和网络代理。"), RELAY_TIMEOUT:t("连接回信服务超时，请稍后重试。"), RELAY_CONNECTION_FAILED:t("无法连接回信服务，请检查网络或代理。"), RELAY_RESPONSE_INVALID:t("回信服务返回了无法识别的响应，请稍后重试。")});
     // A connected account is one short page: the balance card, then tabs instead of one long
     // scroll of models, records and key. Before the key exists, only the key part shows.
@@ -2382,7 +2382,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       const option = document.createElement("option"); option.value = String(value*100);
       option.textContent = t('充值 ¥{value}', {value}); select.append(option);
     }
-    const errors = {RELAY_NOT_CONFIGURED:t("请先申请 Key，或导入已有 Key。"),
+    const errors = {RELAY_NOT_CONFIGURED:t("请先申请 Key，或导入已有 Key。"), LLM_SETUP_KEY_UNAVAILABLE:t("无法读取 macOS 钥匙串，请在系统提示中允许 Olivia 访问后重试。"),
       RELAY_AUTH_FAILED:t("Key 已失效，请联系管理员。"), RELAY_PHONE_OFFLINE:t("收款服务暂时离线，请稍后再充值。"),
       RELAY_ORDER_LIMIT:t("创建订单过于频繁，请稍后重试。"), RELAY_SLOTS_FULL:t("当前充值人数较多，请稍后重试。")};
     const call = payload => requestSetup("/toy/relay/action", payload);
@@ -2513,34 +2513,50 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       panel.append(text("p", t("初始设置服务暂不可用。"), "text-text-secondary text-body-m font-regular"));
       return;
     }
-    const key = setupInput(t("导入已有的 Olivia Key（已获取 Key 时留空）"), "password");
-    key.input.maxLength = 128;
-    key.input.value = "";
+    const nativeKeyEntry = typeof window.olivia?.connectAccount === "function";
+    const secureEntry = text("p", t("点击连接后，在 macOS 安全窗口中输入 Olivia Key，无需在页面里粘贴。"), "text-text-secondary text-body-m font-regular");
+    const key = nativeKeyEntry ? null : setupInput(t("导入已有的 Olivia Key（已获取 Key 时留空）"), "password");
+    if (key) {
+      key.input.maxLength = 128;
+      key.input.value = "";
+    }
     const claimKey = !setup.llm.key_configured && offerClaim;
+    // Only the macOS app has the secure key window; Windows keeps the paste field.
     const state = text("p", setup.llm.key_configured
       ? t("已找到保存的 Key，无需重新填写。")
       : claimKey
-        ? t("已有 Key 请粘贴在上方，没有的话点「去领取 Key」。")
-        : t("还没有 Key？请先在「Olivia 账户」获取，或在上方粘贴已有的 Key。"), "text-text-secondary text-body-m font-regular");
+        ? (nativeKeyEntry
+          ? t("已有 Key 请点击连接并在安全窗口输入，没有的话点「去领取 Key」。")
+          : t("已有 Key 请粘贴在上方，没有的话点「去领取 Key」。"))
+        : (nativeKeyEntry
+          ? t("还没有 Key？请先在「Olivia 账户」获取，再点击连接并在安全窗口输入。")
+          : t("还没有 Key？请先在「Olivia 账户」获取，或在上方粘贴已有的 Key。")), "text-text-secondary text-body-m font-regular");
     state.setAttribute("aria-live", "polite");
     let setupBusy = false;
-    const errors = {RELAY_NOT_CONFIGURED:t("请先在「Olivia 账户」获取 Key，或粘贴已有的 Key。"),
+    const errors = {RELAY_NOT_CONFIGURED:nativeKeyEntry ? t("请先在「Olivia 账户」获取 Key。") : t("请先在「Olivia 账户」获取 Key，或粘贴已有的 Key。"), LLM_SETUP_KEY_UNAVAILABLE:t("无法读取 macOS 钥匙串，请在系统提示中允许 Olivia 访问后重试。"),
       LLM_SETUP_FIELDS_INVALID:t("Key 格式不正确，应以 olivia- 开头。"),
-      RELAY_AUTH_FAILED:t("Key 已失效，请检查或联系管理员。")};
+      RELAY_AUTH_FAILED:t("Key 已失效，请检查或联系管理员。"),
+      KEY_PROMPT_FAILED:t("无法打开安全输入窗口，请重试。"),
+      KEY_INVALID:t("Key 格式不正确，应以 olivia- 开头。"),
+      KEY_PROMPT_CANCELLED:t("已取消连接。")};
     const connect = button(t("连接并保存"), async () => {
       if (setupBusy) return;
-      const typed = key.input.value.trim();
       setupBusy = true;
       setButtonsBusy([connect, removeKey], true);
       state.textContent = t("正在连接 Olivia 回信服务…");
       try {
-        await requestSetup("/toy/relay/action", typed ? {action:"import_key", key:typed} : {action:"connect"});
-        key.input.value = "";
+        if (nativeKeyEntry) {
+          if (!await window.olivia.connectAccount()) throw new Error("KEY_PROMPT_CANCELLED");
+        } else {
+          const typed = key.input.value.trim();
+          await requestSetup("/toy/relay/action", typed ? {action:"import_key", key:typed} : {action:"connect"});
+          key.input.value = "";
+        }
         setup.llm.key_configured = true;
         removeKey.hidden = false;
         state.textContent = t("已连接并保存 Olivia 回信服务，下一次发送生效。");
       } catch (e) {
-        state.textContent = errors[e.code] || t("连接失败，请检查 Key 或稍后重试。");
+        state.textContent = errors[e.code] || errors[e.message] || t("连接失败，请检查 Key 或稍后重试。");
       } finally {
         setupBusy = false;
         setButtonsBusy([connect, removeKey], false);
@@ -2554,7 +2570,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       setButtonsBusy([connect, removeKey], true);
       try {
         await requestSetup(LLM_DELETE_PATH, {});
-        key.input.value = "";
+        if (key) key.input.value = "";
         state.textContent = t("连接已删除。下一次发送立即生效。");
       } catch (_error) {
         state.textContent = t("删除失败，请重试。");
@@ -2572,7 +2588,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       controls.append(claim);
     }
     controls.append(connect, removeKey);
-    panel.append(key.wrapper, controls, state);
+    panel.append(nativeKeyEntry ? secureEntry : key.wrapper, controls, state);
   };
 
   const formatBytes = (value) => {

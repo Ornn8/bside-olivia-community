@@ -233,6 +233,7 @@ def test_test_then_save_persists_only_dpapi_key_and_non_secret_config(
                 "max_retries": 2,
                 "model": RELAY_MODEL,
                 "provider": "openai_compatible",
+                "keychain_status": "NOT_CONFIGURED",
             }
             assert "fixture-private-key" not in json.dumps(status_payload)
 
@@ -432,6 +433,8 @@ def test_setup_delete_removes_only_managed_key(tmp_path: Path) -> None:
         config_root.mkdir(parents=True)
         key_path = config_root / "deepseek_api_key.dpapi"
         key_path.write_text("protected:fixture\n", encoding="utf-8")
+        legacy_path = config_root / "olivia_relay_key.dpapi"
+        legacy_path.write_text("protected:legacy\n", encoding="utf-8")
         retained = config_root / "retained.txt"
         retained.write_text("keep", encoding="utf-8")
         app = web.Application()
@@ -458,6 +461,8 @@ def test_setup_delete_removes_only_managed_key(tmp_path: Path) -> None:
                 "restart_required": True,
             }
         assert not key_path.exists()
+        # The relay account identity survives deleting the reply connection.
+        assert legacy_path.read_text(encoding="utf-8") == "protected:legacy\n"
         assert retained.read_text(encoding="utf-8") == "keep"
 
     asyncio.run(scenario())

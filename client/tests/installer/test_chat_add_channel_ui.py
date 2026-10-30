@@ -21,6 +21,7 @@ const root={isConnected:true};
 const updateReplyHealth=()=>{};
 const STATUS='status', CHANNEL_CHOICE='choice', WECHAT_START='wechat-start';
 const node=(_tag,text)=>({text,children:[],append(...items){this.children.push(...items)}});
+const copy=node('div');
 const document={createDocumentFragment:()=>node('fragment')};
 const content={contains:()=>false,replaceChildren(fragment){rendered=fragment}};
 const renderWechat=()=>node('div','wechat-card'), renderQQ=()=>node('div','qq-card');
