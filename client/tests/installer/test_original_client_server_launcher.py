@@ -909,7 +909,7 @@ def test_fresh_profile_retries_known_first_exit_once(
     assert {run[1] for run in client_runs} == {root.resolve() / "app"}
     assert client_events == [
         {"attempt": 1, "event": "client_start"},
-        {"attempt": 1, "event": "client_layout", "status": "skipped"},
+        {"attempt": 1, "event": "client_layout", "status": "unsupported"},
         {"attempt": 1, "event": "client_exit", "exit_code": 0x0E000003},
         {
             "attempt": 2,
@@ -917,7 +917,7 @@ def test_fresh_profile_retries_known_first_exit_once(
             "reason": "known_fresh_profile_exit",
         },
         {"attempt": 2, "event": "client_start"},
-        {"attempt": 2, "event": "client_layout", "status": "skipped"},
+        {"attempt": 2, "event": "client_layout", "status": "unsupported"},
         {"attempt": 2, "event": "client_exit", "exit_code": 0},
     ]
     assert str(root.resolve()) not in launcher_log

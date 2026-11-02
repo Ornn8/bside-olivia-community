@@ -15,8 +15,7 @@ The app also bundles the following pinned runtimes and dependencies. Their licen
 - Python 3.12.15 standalone runtime: PSF License.
 - Electron 44.9.0: MIT License.
 - electron-builder 26.15.3: MIT License.
-- lucide 1.59.0: ISC License.
-- aiohttp 3.14.5, Pillow 12.3.0, imageio-ffmpeg 0.6.0, jsonschema 4.26.0, keyring 25.7.0, cryptography 46.0.7.
+- aiohttp 3.14.5, Pillow 12.3.0, imageio-ffmpeg 0.6.0, jsonschema 4.26.0, keyring 25.7.0.
 - mem0ai 2.0.18 and the architecture-specific NumPy, PyTorch, Transformers and sentence-transformers packages.
 
 The project license is shipped separately as `LICENSE`. The original Olivia client and all original assets are excluded from the application package and remain the user's separately obtained files.

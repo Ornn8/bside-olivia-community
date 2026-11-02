@@ -113,7 +113,6 @@ def mount_relay_api(app, setup):
             model = config.model if config.base_url.rstrip('/') == RELAY_BASE and config.model in RELAY_MODELS else RELAY_MODEL
         payload = {'base_url':RELAY_BASE, 'model':model, 'api_key':key}
         await setup.test(payload)
-        # save() also points the account file at the newly protected item.
         setup.save(payload)
         refresh = app.get('olivia_gpu_refresh')
         if refresh is not None:

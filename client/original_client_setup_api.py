@@ -206,7 +206,7 @@ def _dpapi_unprotect(value: str) -> str:
 
 def _discard_protected(value: str | None) -> None:
     """Remove a macOS Keychain item once its reference is no longer active."""
-    if not isinstance(value, str) or not value.startswith("keychain-v1:"):
+    if sys.platform != "darwin" or not isinstance(value, str) or not value.startswith("keychain-v1:"):
         return
     try:
         from runtime.mac_keychain import discard
@@ -339,6 +339,9 @@ class LLMSetupService:
     def status(self) -> dict[str, object]:
         completed, skipped = self._completion()
         config = self._config()
+        key_configured = self._active_key_path() is not None
+        relay_account_key = self._config_root / "olivia_relay_key.dpapi"
+        key_saved = key_configured or relay_account_key.is_file()
         if self._session_token is None:
             self._session_token = secrets.token_urlsafe(32)
         result: dict[str, object] = {
@@ -353,8 +356,12 @@ class LLMSetupService:
                 "base_url": config.base_url,
                 "model": config.model,
                 "max_retries": config.max_retries,
-                "key_configured": self._active_key_path() is not None,
-                "keychain_status": os.environ.get("OLIVIA_KEYCHAIN_STATUS", "NOT_CONFIGURED"),
+                "key_configured": key_configured,
+                "keychain_status": (
+                    "AVAILABLE" if os.name == "nt" and key_saved
+                    else "NOT_CONFIGURED" if os.name == "nt"
+                    else os.environ.get("OLIVIA_KEYCHAIN_STATUS", "NOT_CONFIGURED")
+                ),
             },
         }
         if self._session_token is not None:
@@ -508,9 +515,7 @@ class LLMSetupService:
         except OSError:
             pass
         current_reference = protected_bytes.decode("utf-8").strip() if protected_bytes else None
-        if current_reference:
-            # The relay account file is the durable account identity; point it at
-            # the same protected item so a later delete() can keep the account.
+        if sys.platform == "darwin" and current_reference:
             try:
                 staging = legacy_relay_path.with_suffix(".staging")
                 staging.write_text(current_reference, encoding="utf-8")
@@ -533,15 +538,13 @@ class LLMSetupService:
                     previous_references.add(candidate.read_text(encoding="utf-8").strip())
                 except OSError:
                     pass
-        # Deleting the reply connection keeps the relay account identity, so the
-        # user can reconnect, check balance or export the key afterwards.
         legacy_relay_path = self._config_root / "olivia_relay_key.dpapi"
-        try:
-            if legacy_relay_path.is_file():
-                previous_references.discard(legacy_relay_path.read_text(encoding="utf-8").strip())
-        except OSError:
-            # Without knowing the account reference, keep every protected item.
-            previous_references.clear()
+        if sys.platform == "darwin":
+            try:
+                if legacy_relay_path.is_file():
+                    previous_references.discard(legacy_relay_path.read_text(encoding="utf-8").strip())
+            except OSError:
+                previous_references.clear()
         try:
             previous_config = (
                 self._config_path.read_bytes() if self._config_path.is_file() else None

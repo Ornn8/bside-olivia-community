@@ -322,6 +322,7 @@ def _public_status(request: web.Request, server) -> dict[str, object]:
         "wechat": wechat,
         "qq": qq,
         "managed_napcat_supported": sys.platform == "win32",
+        "managed_napcat_platform": sys.platform,
         "napcat": napcat_installer.public_status(_root(server), runtime),
     }
 
@@ -329,6 +330,10 @@ def _public_status(request: web.Request, server) -> dict[str, object]:
 async def _wechat_login(server, runtime: dict[str, object]) -> None:
     state = runtime["wechat"]
     assert isinstance(state, dict)
+    if sys.platform == "darwin":
+        state.clear()
+        state.update(state="FAILED", error="WECHAT_UNSUPPORTED")
+        return
     base = "https://ilinkai.weixin.qq.com"
     try:
         timeout = aiohttp.ClientTimeout(total=45)
@@ -370,18 +375,13 @@ async def _wechat_login(server, runtime: dict[str, object]) -> None:
                     from original_client_setup_api import _dpapi_protect
 
                     secret = _root(server) / "personal-chat" / "wechat.dpapi"
-                    previous_reference = _read_protected_reference(secret)
-                    protected = _dpapi_protect(json.dumps(credentials, ensure_ascii=False))
-                    try:
-                        _atomic_text(secret, protected)
-                        config = _read_config(server)
-                        config["wechat"] = {"credentials_file": str(secret)}
-                        _write_config(server, config)
-                    except Exception:
-                        _discard_protected_reference(protected)
-                        raise
-                    if previous_reference != protected:
-                        _discard_protected_reference(previous_reference)
+                    _atomic_text(
+                        secret,
+                        _dpapi_protect(json.dumps(credentials, ensure_ascii=False)),
+                    )
+                    config = _read_config(server)
+                    config["wechat"] = {"credentials_file": str(secret)}
+                    _write_config(server, config)
                     state.clear()
                     state.update(state="READY_RESTART")
                     return

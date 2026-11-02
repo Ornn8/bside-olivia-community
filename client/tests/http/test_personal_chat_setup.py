@@ -47,7 +47,7 @@ class _Server:
         self.persist_calls += 1
 
 
-@pytest.mark.parametrize("platform,supported", [("darwin", False), ("win32", True)])
+@pytest.mark.parametrize("platform,supported", [("darwin", False), ("linux", False), ("win32", True)])
 def test_setup_status_reports_managed_napcat_platform(tmp_path, monkeypatch, platform, supported):
     from runtime.personal_chat import setup, napcat_installer
 

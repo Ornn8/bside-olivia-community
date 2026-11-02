@@ -318,6 +318,7 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
       box.append(top);
 
       const managedNapcatSupported = status.managed_napcat_supported !== false;
+      const managedNapcatPlatform = status.managed_napcat_platform || (managedNapcatSupported ? "" : "darwin");
       const napcat = status.napcat || {};
       const component = node("div", null, "olivia-chat-subcard");
       const componentTop = node("div", null, "olivia-chat-row");
@@ -328,7 +329,9 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
       );
       componentTop.append(componentLeft);
       if (!managedNapcatSupported) {
-        componentTop.append(node("div", t("macOS 不会安装或启动 NapCat。请展开下方“高级：连接已有 NapCat / OneBot”，填写你本机正在运行的连接。"), "olivia-chat-copy"));
+        componentTop.append(node("div", managedNapcatPlatform === "darwin"
+          ? t("macOS 不会安装或启动 NapCat。请展开下方“高级：连接已有 NapCat / OneBot”，填写你本机正在运行的连接。")
+          : t("当前系统不支持内置 NapCat。请展开下方“高级：连接已有 NapCat / OneBot”，填写你本机正在运行的连接。"), "olivia-chat-copy"));
       } else if (!napcat.installed && !["DOWNLOADING", "INSTALLER_OPENED"].includes(napcat.state)) {
         componentTop.append(action(t("一键安装"), async () => {
           try {
@@ -516,8 +519,11 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
           const native = await window.olivia?.status?.();
           if (native && native.managedNapcatSupported === false) status.managed_napcat_supported = false;
         } catch (_) { /* Browser-only original client keeps the managed default. */ }
+        const managedNapcatPlatform = status.managed_napcat_platform || "darwin";
         copy.textContent = status.managed_napcat_supported === false
-          ? t("在这里绑定 QQ。macOS 使用你自行运行的 NapCat / OneBot；请填写本机 WebSocket 地址和 Token。")
+          ? (managedNapcatPlatform === "darwin"
+            ? t("在这里绑定 QQ。macOS 使用你自行运行的 NapCat / OneBot；请填写本机 WebSocket 地址和 Token。")
+            : t("在这里绑定 QQ。请填写你本机正在运行的 NapCat / OneBot 的 WebSocket 地址和 Token。"))
           : t("在这里绑定 QQ。Olivia 可以一键准备本地 QQ 组件，不需要手填 OneBot 参数。请使用 QQ 小号扫码登录，再填写你用来聊天的个人 QQ 号。");
         if (!root.isConnected) return;
         if (qqSaving) { pollTimer = setTimeout(() => refresh(true), 2000); return; }

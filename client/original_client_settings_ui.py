@@ -2150,6 +2150,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
 
   const mountRelayAccount = (panel, keyExtras = null) => {
     panel.style.cssText = "display:grid;gap:16px;min-width:0";
+    const macKeychainBridge = typeof window.olivia?.connectAccount === "function";
     const account = text("p", t("正在读取账户…"), "text-text-secondary text-body-m");
     account.setAttribute("role", "status");
     const controls = actions(); controls.style.cssText = "display:flex;flex-wrap:wrap;gap:12px";
@@ -2161,7 +2162,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const key = setupInput(t("我的 Olivia Key"), "password");
     key.input.readOnly = true;
     key.input.autocomplete = "off";
-    const errors = {RELAY_AUTH_FAILED:t("Key 已失效，请检查或联系管理员。"), RELAY_ORDER_LIMIT:t("申请过于频繁，请稍后重试。"), RELAY_NOT_CONFIGURED:t("请先申请 Key，或导入已有 Key。"), LLM_SETUP_KEY_UNAVAILABLE:t("无法读取 macOS 钥匙串，请在系统提示中允许 Olivia 访问后重试。")};
+    const errors = {RELAY_AUTH_FAILED:t("Key 已失效，请检查或联系管理员。"), RELAY_ORDER_LIMIT:t("申请过于频繁，请稍后重试。"), RELAY_NOT_CONFIGURED:t("请先申请 Key，或导入已有 Key。"), LLM_SETUP_KEY_UNAVAILABLE:macKeychainBridge?t("无法读取 macOS 钥匙串，请在系统提示中允许 Olivia 访问后重试。"):t("无法读取已保存的 Key，请重新导入或重试。")};
     Object.assign(errors, {RELAY_TLS_FAILED:t("无法验证回信服务证书，请检查系统时间和网络代理。"), RELAY_TIMEOUT:t("连接回信服务超时，请稍后重试。"), RELAY_CONNECTION_FAILED:t("无法连接回信服务，请检查网络或代理。"), RELAY_RESPONSE_INVALID:t("回信服务返回了无法识别的响应，请稍后重试。")});
     // A connected account is one short page: the balance card, then tabs instead of one long
     // scroll of models, records and key. Before the key exists, only the key part shows.
@@ -2357,6 +2358,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
 
   const mountRelayBalance = (panel, {records = null} = {}) => {
     const box = document.createElement("section"); box.setAttribute("data-olivia-relay-billing", "true");
+    const macKeychainBridge = typeof window.olivia?.connectAccount === "function";
     box.style.cssText = "display:grid;grid-template-columns:minmax(0,1fr);min-width:0;max-width:100%;gap:12px";
     const balance = text("p", t("读取已保存的 Olivia 服务账户。"), "text-text-secondary text-body-m");
     const usage = text("p", t("调用量待读取。"), "text-text-secondary text-body-m");
@@ -2382,7 +2384,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       const option = document.createElement("option"); option.value = String(value*100);
       option.textContent = t('充值 ¥{value}', {value}); select.append(option);
     }
-    const errors = {RELAY_NOT_CONFIGURED:t("请先申请 Key，或导入已有 Key。"), LLM_SETUP_KEY_UNAVAILABLE:t("无法读取 macOS 钥匙串，请在系统提示中允许 Olivia 访问后重试。"),
+    const errors = {RELAY_NOT_CONFIGURED:t("请先申请 Key，或导入已有 Key。"), LLM_SETUP_KEY_UNAVAILABLE:macKeychainBridge?t("无法读取 macOS 钥匙串，请在系统提示中允许 Olivia 访问后重试。"):t("无法读取已保存的 Key，请重新导入或重试。"),
       RELAY_AUTH_FAILED:t("Key 已失效，请联系管理员。"), RELAY_PHONE_OFFLINE:t("收款服务暂时离线，请稍后再充值。"),
       RELAY_ORDER_LIMIT:t("创建订单过于频繁，请稍后重试。"), RELAY_SLOTS_FULL:t("当前充值人数较多，请稍后重试。")};
     const call = payload => requestSetup("/toy/relay/action", payload);
@@ -2514,7 +2516,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       return;
     }
     const nativeKeyEntry = typeof window.olivia?.connectAccount === "function";
-    const secureEntry = text("p", t("点击连接后，在 macOS 安全窗口中输入 Olivia Key，无需在页面里粘贴。"), "text-text-secondary text-body-m font-regular");
+    const secureEntry = nativeKeyEntry ? text("p", t("点击连接后，在 macOS 安全窗口中输入 Olivia Key，无需在页面里粘贴。"), "text-text-secondary text-body-m font-regular") : null;
     const key = nativeKeyEntry ? null : setupInput(t("导入已有的 Olivia Key（已获取 Key 时留空）"), "password");
     if (key) {
       key.input.maxLength = 128;
@@ -2533,7 +2535,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           : t("还没有 Key？请先在「Olivia 账户」获取，或在上方粘贴已有的 Key。")), "text-text-secondary text-body-m font-regular");
     state.setAttribute("aria-live", "polite");
     let setupBusy = false;
-    const errors = {RELAY_NOT_CONFIGURED:nativeKeyEntry ? t("请先在「Olivia 账户」获取 Key。") : t("请先在「Olivia 账户」获取 Key，或粘贴已有的 Key。"), LLM_SETUP_KEY_UNAVAILABLE:t("无法读取 macOS 钥匙串，请在系统提示中允许 Olivia 访问后重试。"),
+    const errors = {RELAY_NOT_CONFIGURED:nativeKeyEntry ? t("请先在「Olivia 账户」获取 Key。") : t("请先在「Olivia 账户」获取 Key，或粘贴已有的 Key。"), LLM_SETUP_KEY_UNAVAILABLE:nativeKeyEntry?t("无法读取 macOS 钥匙串，请在系统提示中允许 Olivia 访问后重试。"):t("无法读取已保存的 Key，请重新导入或重试。"),
       LLM_SETUP_FIELDS_INVALID:t("Key 格式不正确，应以 olivia- 开头。"),
       RELAY_AUTH_FAILED:t("Key 已失效，请检查或联系管理员。"),
       KEY_PROMPT_FAILED:t("无法打开安全输入窗口，请重试。"),

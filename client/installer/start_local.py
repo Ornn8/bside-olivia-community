@@ -84,6 +84,7 @@ def _load_dpapi_key(path: Path) -> str:
     try:
         protected = path.read_text(encoding="utf-8").strip()
         if not protected:
+            _KEYCHAIN_STATUS = "UNAVAILABLE"
             return ""
         modern = protected.startswith("dpapi-v1:")
         script = (
@@ -102,8 +103,14 @@ def _load_dpapi_key(path: Path) -> str:
             capture_output=True,
             check=False,
         )
-        return result.stdout.strip() if result.returncode == 0 else ""
+        value = result.stdout.strip()
+        if result.returncode == 0 and value:
+            _KEYCHAIN_STATUS = "AVAILABLE"
+            return value
+        _KEYCHAIN_STATUS = "UNAVAILABLE"
+        return ""
     except (OSError, UnicodeError):
+        _KEYCHAIN_STATUS = "UNAVAILABLE"
         return ""
 
 
@@ -897,12 +904,6 @@ def _run_client_with_native_layout(
             if outcome and not worker.is_alive()
             else LayoutStatus.FAILED
         )
-        # The Mac launcher has no Win32 layout adapter.  Treat that optional
-        # companion-window adjustment as skipped in the lifecycle log so the
-        # cross-platform launcher contract keeps the same non-error status as
-        # a Windows run where no native pair was observed.
-        if status is LayoutStatus.UNSUPPORTED:
-            status = LayoutStatus.SKIPPED
         _append_launcher_event(
             data_root,
             "client_layout",

@@ -10,7 +10,6 @@ readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.12"
 dependencies = [
-    "cryptography>=44,<47; sys_platform == 'darwin'",
     "Pillow>=12.3,<13",
     "aiohttp>=3.9,<4",
     "imageio-ffmpeg>=0.6,<1",

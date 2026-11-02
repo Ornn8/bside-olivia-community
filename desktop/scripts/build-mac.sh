@@ -57,7 +57,7 @@ if [[ "$can_run_python" == 1 ]]; then
   "${runner[@]}" "$python" -m ensurepip --upgrade
   "${runner[@]}" "$python" -m pip install --disable-pip-version-check --no-cache-dir \
     'aiohttp==3.14.5' 'Pillow==12.3.0' 'imageio-ffmpeg==0.6.0' \
-    'jsonschema==4.26.0' 'keyring==25.7.0' 'cryptography==46.0.7' \
+    'jsonschema==4.26.0' 'keyring==25.7.0' \
     'mem0ai==2.0.18' "${memory_packages[@]}"
 
   model_cache="$package_root/model-cache"

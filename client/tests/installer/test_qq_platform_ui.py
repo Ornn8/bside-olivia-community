@@ -7,7 +7,7 @@ import pytest
 from runtime.personal_chat.setup_ui import PERSONAL_CHAT_SETUP_JAVASCRIPT
 
 
-@pytest.mark.parametrize("mode", ["mac-backend", "mac-native", "windows"])
+@pytest.mark.parametrize("mode", ["mac-backend", "mac-native", "linux", "windows"])
 def test_qq_settings_offer_supported_connection_and_save_manual_binding(tmp_path, mode):
     node = shutil.which("node")
     if node is None:
@@ -37,6 +37,7 @@ const status = {
   selected_channels: ['qq'], listeners: {qq: 'SETUP_REQUIRED'}, qq: {},
   napcat: {state: 'FAILED', error: 'NAPCAT_WINDOWS_REQUIRED', version: 'v4.18.28'},
   ...(mode === 'mac-backend' ? {managed_napcat_supported: false} : {}),
+  ...(mode === 'linux' ? {managed_napcat_supported: false, managed_napcat_platform: 'linux'} : {}),
 };
 const context = {
   window: mode === 'mac-native' ? {olivia: {status: async () => ({managedNapcatSupported: false})}} : {},
@@ -64,7 +65,12 @@ setImmediate(async () => {
       return;
     }
     assert.equal(install, undefined, 'Mac exposed the Windows-only installer');
-    assert.ok(anchor.textContent.includes('macOS 使用你自行运行的 NapCat / OneBot'));
+    if (mode === 'linux') {
+      assert.ok(anchor.textContent.includes('请填写你本机正在运行的 NapCat / OneBot'));
+      assert.ok(!anchor.textContent.includes('macOS 使用'));
+    } else {
+      assert.ok(anchor.textContent.includes('macOS 使用你自行运行的 NapCat / OneBot'));
+    }
     assert.ok(!anchor.textContent.includes('NAPCAT_WINDOWS_REQUIRED'));
     const manual = elements.find(el => el.tag === 'details');
     assert.equal(manual.open, true, 'the supported Mac connection form is hidden');

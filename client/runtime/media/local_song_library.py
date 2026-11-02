@@ -24,6 +24,10 @@ _VIDEO = {'.mp4', '.mov', '.mkv', '.webm', '.m4v', '.avi', '.flv', '.wmv'}
 _AUDIO = {'.mp3', '.wav', '.m4a', '.flac', '.ogg'}
 
 
+def _importable_extensions():
+    return _VIDEO | (_AUDIO if sys.platform == 'darwin' else set())
+
+
 class LocalSongError(RuntimeError):
     pass
 
@@ -321,8 +325,9 @@ class LocalSongLibrary:
         source = Path(value).resolve()
         if not source.exists() or source == self.root or self.root in source.parents:
             raise LocalSongError('LOCAL_SONG_PATH_INVALID')
+        extensions = _importable_extensions()
         if source.is_file():
-            if source.suffix.lower() not in _VIDEO | _AUDIO:
+            if source.suffix.lower() not in extensions:
                 raise LocalSongError('LOCAL_SONG_FORMAT_UNSUPPORTED')
             files = [source]
         else:
@@ -349,7 +354,7 @@ class LocalSongLibrary:
                     continue
                 for name in sorted(names):
                     path = Path(directory) / name
-                    if path.suffix.lower() in _VIDEO | _AUDIO and not path.is_symlink() and self.root not in path.resolve().parents:
+                    if path.suffix.lower() in extensions and not path.is_symlink() and self.root not in path.resolve().parents:
                         files.append(path)
                     if len(files) > 5000:
                         raise LocalSongError('LOCAL_SONG_TOO_MANY_FILES')

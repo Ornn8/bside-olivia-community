@@ -11,9 +11,6 @@
     "dist:arm64": "bash scripts/build-mac.sh arm64",
     "dist:x64": "bash scripts/build-mac.sh x64"
   },
-  "dependencies": {
-    "lucide": "1.59.0"
-  },
   "devDependencies": {
     "electron": "44.9.0",
     "electron-builder": "26.15.3"

@@ -99,6 +99,7 @@ def test_import_audio_file_with_bundled_ffmpeg(tmp_path, monkeypatch):
     from runtime.media.managed_subprocess import run_managed_process
     import runtime.media.local_song_library as module
 
+    monkeypatch.setattr(module.sys, 'platform', 'darwin')
     ffmpeg = Path(imageio_ffmpeg.get_ffmpeg_exe())
     monkeypatch.setattr(module, 'resolve_ffmpeg_executable', lambda env: ffmpeg)
     source = tmp_path / 'song.mp3'
