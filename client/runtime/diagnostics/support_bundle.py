@@ -567,6 +567,22 @@ def _project_tasks(value: object) -> dict[str, object]:
     return result
 
 
+_DIARY_FAILURE_EVENTS = frozenset({'diary_write_failed', 'diary_memoir_failed'})
+_MODEL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+
+
+def project_diary_failure(source: Mapping[str, object]) -> dict[str, object]:
+    """Which writer's reply a diary could not use and how long it was; never what it said."""
+    record: dict[str, object] = {}
+    model = source.get('writer_model')
+    if isinstance(model, str) and _MODEL_NAME_RE.fullmatch(model):
+        record['writer_model'] = model
+    size = source.get('reply_chars')
+    if type(size) is int and 0 <= size <= 10_000_000:
+        record['reply_chars'] = size
+    return record
+
+
 def _project_tail_record(value: object, *, runtime: bool) -> dict[str, object]:
     source = _mapping(value)
     event = source.get("event")
@@ -642,6 +658,8 @@ def _project_tail_record(value: object, *, runtime: bool) -> dict[str, object]:
         from runtime.diagnostics.failure_context import project_failure_context
         record.update(project_failure_context(source))
         record.update(project_reply_quality(source))
+        if event in _DIARY_FAILURE_EVENTS:
+            record.update(project_diary_failure(source))
         if event == "history_recall":
             from runtime.diagnostics.recall_trace import project
             record.update(project(dict(source)))

@@ -544,6 +544,9 @@ def _runtime_diagnostic_record(event: object, fields: Mapping[str, object]) -> d
     record: dict[str, object] = {"event": event}
     from runtime.diagnostics.failure_context import project_failure_context
     record.update(project_failure_context(fields))
+    if event in {"diary_write_failed", "diary_memoir_failed"}:
+        from runtime.diagnostics.support_bundle import project_diary_failure
+        record.update(project_diary_failure(fields))
     for name in ("status", "error_code"):
         value = fields.get(name)
         if isinstance(value, str) and _RUNTIME_DIAGNOSTIC_CODE_RE.fullmatch(value):
@@ -4326,6 +4329,38 @@ def _diary_public_entry(entry):
 
 
 _diary_lock = asyncio.Lock()
+_diary_offered_cache: dict[str, object] = {"at": 0.0, "ids": None}
+
+
+async def _diary_offered_models():
+    """The model names the relay offers this account, or None when they cannot be read now. Asked at most every ten
+    minutes, and only when a writer's unusable reply makes the diary look for another writer."""
+    cached = _diary_offered_cache
+    if cached["ids"] is not None and time.monotonic() - float(cached["at"]) < 600:
+        return cached["ids"]
+    try:
+        from runtime import cloud_events
+        result = await cloud_events.request("GET", "/models")
+    except Exception:
+        return None
+    rows = result.get("data") if isinstance(result, dict) else None
+    if not isinstance(rows, list):
+        return None
+    ids = frozenset(item["id"] for item in rows if isinstance(item, dict) and isinstance(item.get("id"), str))
+    cached.update(at=time.monotonic(), ids=ids)
+    return ids
+
+
+def _diary_failure_fields(exc) -> dict[str, object]:
+    """The writer and the size of a reply that could not be used. Never the text of the reply."""
+    fields: dict[str, object] = {}
+    model = getattr(exc, "diary_model", None)
+    if isinstance(model, str):
+        fields["writer_model"] = model
+    reply = getattr(exc, "diary_reply", None)
+    if isinstance(reply, str):
+        fields["reply_chars"] = len(reply)
+    return fields
 
 
 async def _diary_tick(now=None) -> None:
@@ -4335,7 +4370,7 @@ async def _diary_tick(now=None) -> None:
 
 
 async def _diary_tick_once(now=None) -> None:
-    from runtime.diary.diary import due_days, write_day, day_life, unserved
+    from runtime.diary.diary import due_days, write_day, day_life, record_failure
     from runtime.private_world.daily_life_runtime import life_persona
     if diary_store is None or not diary_store.enabled():
         return
@@ -4350,13 +4385,12 @@ async def _diary_tick_once(now=None) -> None:
             outcome = await write_day(diary_store, letters_adapter.gateway, day, rows,
                 persona=life_persona(letters_adapter.persona_v2_path),
                 life=day_life(getattr(daily_life_runtime, 'store', None), day, outfit), now=now,
-                relationship_stage=stage, videos=videos, visits=_diary_visits(day))
+                relationship_stage=stage, videos=videos, visits=_diary_visits(day), offered=_diary_offered_models)
         except Exception as exc:
             # A request that never reached a service keeps its attempt; any other failure uses one up. Nothing
             # escapes this loop: an unexpected error must not stop the diary until the next start.
-            record = diary_store.deferred if unserved(exc) else diary_store.failed
-            record(day, type(exc).__name__)
-            _safe_log('diary_write_failed', error_code=getattr(exc, 'code', None) or type(exc).__name__)
+            code = record_failure(diary_store, day, exc)
+            _safe_log('diary_write_failed', error_code=code, **_diary_failure_fields(exc))
             continue
         if outcome == 'empty':
             diary_store.skip(day, 'EMPTY_DAY')
@@ -4382,7 +4416,7 @@ async def _write_memoirs(months) -> None:
 
 
 async def _write_memoirs_once(months) -> None:
-    from runtime.diary.diary import write_month, unserved
+    from runtime.diary.diary import write_month, record_failure
     from runtime.private_world.daily_life_runtime import life_persona
     _memoir_state.update(running=True, done=0, failed=0, total=len(months))
     try:
@@ -4393,13 +4427,13 @@ async def _write_memoirs_once(months) -> None:
                 stage, videos, _ = _diary_extras(month + '-01')
                 outcome = await write_month(diary_store, letters_adapter.gateway, month, rows,
                                   persona=life_persona(letters_adapter.persona_v2_path),
-                                  relationship_stage=stage, videos=videos, visits=_diary_visits(month))
+                                  relationship_stage=stage, videos=videos, visits=_diary_visits(month),
+                                  offered=_diary_offered_models)
                 _memoir_state['done' if outcome == 'written' or diary_store.entry(month) else 'failed'] += 1
             except Exception as exc:
                 _memoir_state['failed'] += 1
-                record = diary_store.deferred if unserved(exc) else diary_store.failed
-                record(month, type(exc).__name__)
-                _safe_log('diary_memoir_failed', error_code=getattr(exc, 'code', None) or type(exc).__name__)
+                code = record_failure(diary_store, month, exc)
+                _safe_log('diary_memoir_failed', error_code=code, **_diary_failure_fields(exc))
     finally:
         _memoir_state['running'] = False
 
