@@ -108,6 +108,11 @@ async def _recover_chat_loop(server, runtime, *, interval_seconds=30):
             pass
 
 
+async def deliver_cover(server, row, send):
+    from .cover_delivery import deliver
+    await deliver(server, row, send)
+
+
 async def deliver_piano(server, row, send):
     from .piano import deliver
     await deliver(server, row, send)
@@ -1566,6 +1571,7 @@ def install_personal_chat(app, server):
                 prepare_photo=lambda row, send: prepare_chat_photo(server, row, send),
                 speech=lambda row, send: deliver_speech(server,row,send),
                 piano=lambda row, send: deliver_piano(server, row, send),
+                cover=lambda row, send: deliver_cover(server, row, send),
                 default_voice=lambda row, send: deliver_default_voice(server,row,send), inspect_writer=inspect_writer)
             server._personal_chat_service = service
             # An update restart waits for a reply that is being written (runtime/auto_update.py).

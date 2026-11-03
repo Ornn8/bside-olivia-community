@@ -944,7 +944,8 @@ class PersonalChatService:
             from . import cover_chat
             if (not cover_chat.ENABLED or row.get('delivery_status') != 'DELIVERED' or row.get('channel') != 'qq'
                     or not callable(self.cover) or not callable(getattr(send, 'file', None))
-                    or key in self.speech_tasks or row.get('cover_status') in cover_chat.FINAL_STATUSES):
+                    or key in self.speech_tasks or row.get('cover_status') in cover_chat.FINAL_STATUSES
+                    or row.get('cover_status') == 'DELIVERED' and row.get('cover_finished')):
                 return
             async def sing():
                 try:
@@ -953,9 +954,12 @@ class PersonalChatService:
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
-                    if row.get('cover_status') not in cover_chat.FINAL_STATUSES:
-                        row.update(cover_status='FAILED', cover_error_code=getattr(exc, 'code', None) or str(exc)[:64])
+                    if row.get('cover_status') != 'DELIVERED':
+                        row['cover_error_code'] = cover_chat.error_code(exc)
+                        if row.get('cover_status') not in {'FAILED', 'UNKNOWN'}:
+                            row['cover_status'] = 'FAILED'
                         await persist_state(self.persist)
+                        # One plain message with the reason and its code, whatever stage it failed in.
                         await delivery_notice(row, send, self.persist, 'cover_failure_notice', cover_chat.failure_words(exc))
                 finally:
                     self.speech_tasks.pop(key, None)
