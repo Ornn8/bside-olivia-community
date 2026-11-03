@@ -120,6 +120,7 @@ class CanonicalMemoryOutbox:
         self.user_id = user_id
         self.archive_memory = archive_memory
         self._scan_lock = asyncio.Lock()
+        self._rejudge = None
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
@@ -253,6 +254,14 @@ class CanonicalMemoryOutbox:
                 pending=pending,
                 ignored=ignored,
             )
+
+    async def rejudge_step(self) -> str:
+        """One paced step of the one-time QQ second look (runtime.memory.qq_memory_rejudge)."""
+        if self._rejudge is None:
+            from .qq_memory_rejudge import QqMemoryRejudge
+
+            self._rejudge = QqMemoryRejudge(self)
+        return await self._rejudge.step()
 
     async def _index_archive_originals(self):
         list_legacy = getattr(self.archive_memory, "list_legacy", None)

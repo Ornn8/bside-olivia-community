@@ -237,6 +237,12 @@ class ConversationMemoryRuntime:
                 else:
                     self._reply_provider_ready = False
                 self.status()
+                if scan.status != "unavailable":
+                    try:
+                        # One-time second look at skipped QQ lines; paced, never on the reply path.
+                        asyncio.run(self.outbox.rejudge_step())
+                    except Exception:
+                        pass
             except Exception:
                 with self._reply_status_lock:
                     self._reply_status = ConversationMemoryRuntimeStatus(
