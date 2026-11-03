@@ -225,7 +225,7 @@ def apply_sql(path, patches, *, restore=False):
             db.execute(statement)
 
 
-DIARY_TABLES = ('diary_entries', 'diary_comments', 'diary_work', 'diary_attempts')
+DIARY_TABLES = ('diary_entries', 'diary_comments', 'diary_work', 'diary_attempts', 'diary_replies')
 
 
 def diary_plan(path, days):
