@@ -118,7 +118,7 @@ def test_a_body_a_little_over_the_limit_is_kept_and_one_far_over_it_ends_at_a_se
     ({'title': '有题目', 'mood': '平静', 'body': '', 'facts': []}, 'DIARY_ENTRY_EMPTY'),
     ({'title': '有题目', 'mood': '平静', 'facts': []}, 'DIARY_ENTRY_EMPTY'),
     ({'title': '有题目', 'mood': '平静', 'body': 12, 'facts': []}, 'DIARY_ENTRY_EMPTY'),
-    ('我无法写这篇日记。', 'DIARY_NOT_JSON'),
+    ('我无法写这篇日记。', 'DIARY_REFUSED'),   # a clear refusal is named as one
     ('["一", "二"]', 'DIARY_ENTRY_INVALID'),
     ('{"title": "没写完', 'DIARY_NOT_JSON'),
 ])
