@@ -797,6 +797,11 @@ class ReplyPipeline:
         clean_text, sticker_id = (split_selection(unwrap_envelope(candidate.text), sticker_choices) if sticker_note
                                   else (candidate.text, None))
         clean_text, signature = split_signature(clean_text) if sticker_note else (clean_text, None)
+        if not sticker_note and not (chat_metadata is not None and chat_metadata.get('structured')):
+            # A spoken letter can come back wrapped as JSON too; the voice and the saved text need the plain letter.
+            unwrapped = unwrap_envelope(clean_text)
+            if unwrapped != clean_text:
+                clean_text, signature = split_signature(unwrapped)
         if not clean_text.strip():
             return PipelineResult(candidate.request_id, ReplyState.FAILED, error_code="PROVIDER_PROTOCOL")
         quality = None

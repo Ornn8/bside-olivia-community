@@ -1,4 +1,5 @@
 """Letter presentation metadata stays outside canonical spoken/memory text."""
+import ast
 import json
 import re
 
@@ -45,14 +46,84 @@ _ENVELOPE_KEYS = frozenset({'text', 'delivery', 'signature', 'sticker', 'title',
                             'skip', 'speech'})
 
 
+# A letter can also come back as a list of parts: [{"content": "...", "part": "speech"}, {"content": "林离",
+# "part": "signature"}] (2026-11-03, a voice letter whose audio failed showed that list on the paper).
+_BODY_PARTS = frozenset({'speech', 'text', 'body'})
+_PART_KEYS = frozenset({'content', 'part'})
+_PART_OBJECT = re.compile(r'\{\s*"content"\s*:\s*"(.*?)"\s*,\s*"part"\s*:\s*"(\w+)"\s*\}'
+                          r'|\{\s*"part"\s*:\s*"(\w+)"\s*,\s*"content"\s*:\s*"(.*?)"\s*\}', re.S)
+
+
+def _unescape(value):
+    if '\\n' in value and '\n' not in value:  # newlines written as a literal backslash and n
+        value = value.replace('\\r\\n', '\n').replace('\\n', '\n')
+    return value.replace('\\"', '"')
+
+
+def _part_items(raw):
+    """[(part, content)] when raw is, apart from a few words around it, a list (or one object) of letter parts."""
+    start = min((i for i in (raw.find('[{'), raw.find('{"content"'), raw.find('{"part"'), raw.find("[{'"),
+                             raw.find("{'content'"), raw.find("{'part'")) if i >= 0), default=-1)
+    if start < 0 or not re.search(r'''["']part["']''', raw) or not re.search(r'''["']content["']''', raw):
+        return None
+    closer = raw.rfind('}]' if raw[start] == '[' else '}')
+    if closer < 0:
+        return None
+    end = closer + (2 if raw[start] == '[' else 1)
+    if len(raw) - (end - start) > 80:  # a few words around the list are tolerated, a long letter is not a list
+        return None
+    region = raw[start:end]
+    value = None
+    for load in (lambda t: json.loads(t, strict=False), ast.literal_eval):
+        try:
+            value = load(region)
+            break
+        except (ValueError, SyntaxError, MemoryError, RecursionError):
+            continue
+    if value is None:
+        found = _PART_OBJECT.findall(region)  # unescaped quotes inside the content broke the list
+        if not found:
+            return None
+        return [(a[1] or a[2], _unescape(a[0] or a[3])) for a in found]
+    if isinstance(value, dict):
+        value = [value]
+    if not isinstance(value, list) or not value:
+        return None
+    items = []
+    for entry in value:
+        if (not isinstance(entry, dict) or not entry or not set(entry) <= _PART_KEYS
+                or not isinstance(entry.get('content'), str) or not isinstance(entry.get('part'), str)):
+            return None
+        items.append((entry['part'], _unescape(entry['content'])))
+    return items
+
+
+def _parts_envelope(raw):
+    items = _part_items(raw)
+    if not items or any(part.strip().lower() not in _BODY_PARTS | {'signature'} for part, _ in items):
+        return None
+    body = '\n\n'.join(content.strip() for part, content in items
+                       if part.strip().lower() in _BODY_PARTS and content.strip())
+    if not body:
+        return None
+    signature = next((content.strip() for part, content in items if part.strip().lower() == 'signature'), None)
+    return body, signature if signature and valid_signature(signature) else None, None
+
+
 def envelope_parts(text):
-    """(body, signature, sticker) when a letter came back as a chat-style JSON object, else None."""
+    """(body, signature, sticker) when a letter came back as a chat-style JSON object or a list of parts, else None."""
     if not isinstance(text, str):
         return None
     raw = text.strip()
-    fenced = re.fullmatch(r'```(?:json)?\s*(.*?)\s*```', raw, re.S)
-    if fenced:
+    fenced = re.search(r'```(?:json)?\s*(.*?)\s*```', raw, re.S)
+    if fenced and len(raw) - len(fenced.group(0)) <= 80:
         raw = fenced.group(1).strip()
+    try:
+        listed = _parts_envelope(raw)
+    except Exception:
+        listed = None
+    if listed is not None:
+        return listed
     if not raw.startswith('{') or '"text"' not in raw:
         return None
     try:
