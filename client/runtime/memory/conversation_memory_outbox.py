@@ -468,9 +468,12 @@ class CanonicalMemoryOutbox:
         call_rows = tuple(item for row in calls if isinstance(row, Mapping) for item in call_memory_rows(row))
         piano_rows = tuple(item for row in (*chats, *jobs) if isinstance(row, Mapping)
                            for item in piano_memory_rows(row))
+        from runtime.personal_chat.cover_chat import memory_rows as cover_memory_rows
+        cover_rows = tuple(item for row in chats if isinstance(row, Mapping) for item in cover_memory_rows(row))
         return (*tuple(row for row in letters if isinstance(row, Mapping)),
                 *tuple(row for row in chats if isinstance(row, Mapping)
-                       and row.get("delivery_status") == "DELIVERED"), *image_rows, *media_rows, *video_rows, *piano_rows, *call_rows)
+                       and row.get("delivery_status") == "DELIVERED"), *image_rows, *media_rows, *video_rows, *piano_rows,
+                *cover_rows, *call_rows)
 
     def _terminal_sources(self) -> set[str]:
         try:

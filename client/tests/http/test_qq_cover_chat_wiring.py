@@ -23,6 +23,10 @@ def covers(tmp_path, monkeypatch):
     monkeypatch.setenv('OLIVIA_GPU_API_KEY', 'synthetic-key')
     monkeypatch.setattr(cover_chat, 'ENABLED', True)
 
+    async def ready(environment):
+        return True
+    monkeypatch.setattr(cover_chat, 'relay_ready', ready)
+
     def validate(raw, destination, environment):
         destination.write_bytes(b'RIFF' + raw.read_bytes())
         raw.unlink()
@@ -183,5 +187,5 @@ def test_a_failed_cover_is_told_at_once_with_its_reason_and_code_and_not_retried
         service.resume_speech('qq', send)
         assert not service.speech_tasks
     asyncio.run(scenario())
-    assert calls == [1] and row['cover_status'] == 'FAILED' and row['cover_error_code'] == 'GPU_TASK_FAILED'
+    assert calls == [1] and row['cover_status'] == 'FAILED' and row['cover_error_code'] == 'YUE2_TEMPO_OUT_OF_RANGE'
     assert len(send.texts) == 1 and 'YUE2_TEMPO_OUT_OF_RANGE' in send.texts[0]

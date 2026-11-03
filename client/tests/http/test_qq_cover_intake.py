@@ -231,6 +231,10 @@ def intake(tmp_path, monkeypatch):
     monkeypatch.setenv('OLIVIA_GPU_API_URL', 'https://gpu.example')
     monkeypatch.setenv('OLIVIA_GPU_API_KEY', 'synthetic-key')
     monkeypatch.setattr(cover_chat, 'ENABLED', True)
+
+    async def ready(environment):
+        return True
+    monkeypatch.setattr(cover_chat, 'relay_ready', ready)
     calls = SimpleNamespace(resolve=[], sent=[], validated=[])
 
     def validate(raw, destination, environment):
@@ -565,7 +569,7 @@ def test_failure_words_name_the_reason_and_the_code():
     error = CloudError('GPU_TASK_FAILED', 502)
     error.detail = 'YUE2_TEMPO_OUT_OF_RANGE'
     assert '错误码 YUE2_TEMPO_OUT_OF_RANGE' in cover_chat.failure_words(error)
-    assert '余额不足' in cover_chat.failure_words(CloudError('GPU_INSUFFICIENT_BALANCE', 402))
+    assert '需要充值' in cover_chat.failure_words(CloudError('GPU_INSUFFICIENT_BALANCE', 402))
     assert '错误码 GPU_LANE_BUSY' in cover_chat.failure_words(CloudError('GPU_LANE_BUSY', 429))
     assert '错误码 COVER_FAILED' in cover_chat.failure_words(ValueError('weird text'))
 

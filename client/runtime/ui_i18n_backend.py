@@ -57,22 +57,48 @@ EN: dict[str, str] = {
         "I'm still writing another letter to you. I'll sing once it's done.",
     "我还在唱上一首，等它好了再唱这一首。":
         "I'm still working on the previous song. I'll do this one when it's finished.",
-    "Olivia 可用余额不足":
-        "your Olivia balance is too low",
     "制作服务一直忙着，等了很久也没排上":
         "the service stayed busy and my turn never came",
     "制作服务正忙，没排上":
         "the service is busy and my turn didn't come",
     "做了很久还没做好，就取消了":
         "it took too long and was cancelled",
-    "制作过程中出了问题":
-        "something went wrong while making it",
     "制作服务暂时没有翻唱这项功能":
         "the service doesn't offer covers at the moment",
     "找不到这首歌的音频了":
         "the song's audio can't be found any more",
-    "出了点问题":
-        "something went wrong",
+    "余额不够，需要充值":
+        "your balance is too low and needs a top-up",
+    "还没有同意计费，需要先在设置里确认":
+        "billing hasn't been agreed to yet, so it needs confirming in Settings first",
+    "这次翻唱被取消了":
+        "the cover was cancelled",
+    "Olivia 云服务没有认可这次请求，请检查是否已登录":
+        "the Olivia cloud service didn't accept the request; please check that you're signed in",
+    "连不上做歌的服务":
+        "the song service can't be reached",
+    "做好的歌没能完整取回来":
+        "the finished song couldn't be fetched in full",
+    "这首歌的音频打不开":
+        "the song's audio can't be opened",
+    "做好的歌转成 mp3 时出了问题":
+        "something went wrong turning the finished song into an mp3",
+    "QQ 没有接收这个文件":
+        "QQ didn't accept the file",
+    "没能确认文件有没有发出去，没收到的话告诉我":
+        "I couldn't confirm the file went out; tell me if it didn't arrive",
+    "唱歌那边处理不了这首歌":
+        "the singing service can't handle this song",
+    "做歌的服务出了问题":
+        "the song service ran into a problem",
+    "中间出了点问题":
+        "something went wrong along the way",
+    "这台电脑现在没有连上 Olivia 云服务":
+        "this computer isn't connected to the Olivia cloud service right now",
+    "{title}（翻唱）":
+        "{title} (cover)",
+    "给你唱了《{title}》的翻唱，发给你了。":
+        "I sang you a cover of “{title}” and sent it over.",
     "这次翻唱没能做成：{reason}（错误码 {code}）。":
         "The cover didn't work out this time: {reason} (error code {code}).",
     "这段音频暂时没能生成成功，稿子已经保留，稍后可以重试。":

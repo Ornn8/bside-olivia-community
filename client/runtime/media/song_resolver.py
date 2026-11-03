@@ -144,3 +144,23 @@ async def _failure(response) -> SongError:
     if response.status == 429:
         return SongError('SONG_RATE_LIMITED', response.status)
     return SongError('SONG_FETCH_FAILED', response.status)
+
+
+async def probe(url: str, token: str) -> bool:
+    """Does the relay know this call? An empty request must be answered 400 SONG_BAD_REQUEST by a relay that has it;
+    any other answer (not found, not available, a page, no answer) means the call is not there."""
+    if not url or not token:
+        return False
+    try:
+        base = canonical_api_origin(endpoint(url))
+        headers = {'Authorization': 'Bearer ' + token, 'Accept': 'application/json',
+                   **ui_language.headers(), **contact_context.headers()}
+        async with ClientSession(timeout=ClientTimeout(total=10, sock_connect=5), trust_env=False,
+                                 connector=TCPConnector(ssl=client_tls_context())) as session:
+            async with session.post(base + PATH, json={}, headers=headers, allow_redirects=False) as response:
+                if response.status != 400:
+                    return False
+                value = json.loads(await response.content.read(16384))
+                return isinstance(value, dict) and value.get('error_code') == 'SONG_BAD_REQUEST'
+    except (ValueError, TimeoutError, ClientError, OSError, CloudError):
+        return False
