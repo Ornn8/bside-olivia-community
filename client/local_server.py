@@ -2235,6 +2235,8 @@ def letter_to_out(l):
         if imported_history
         else l.get("reply_text") or l.get("content")
     )
+    from runtime.reply.letter_presentation import envelope_parts as _summary_letter_parts
+    summary = (_summary_letter_parts(summary) or (summary,))[0] if isinstance(summary, str) else summary
     summary = summary or ""
     return {
         "letter_id": l["letter_id"],
@@ -5804,6 +5806,8 @@ async def route(
                 _persist_store_state()
                 _refresh_proactive_context()
         reply_text = l.get("reply_text", "") if reply_published else ""
+        from runtime.reply.letter_presentation import envelope_parts as _saved_letter_parts
+        reply_text = (_saved_letter_parts(reply_text) or (reply_text,))[0]  # a saved JSON-wrapped letter shows its text
         error_code, retryable = _public_llm_error(l.get("error_code"))
         media_detail = contract.project_letter_detail_media(
             l.get("media_status", "NOT_REQUESTED"),
@@ -6826,6 +6830,21 @@ def _schedule_pending_reply_jobs() -> int:
     return scheduled
 
 
+def _store_wrapped_reply_plain(letter: dict) -> None:
+    """A saved reply that holds a JSON-wrapped letter is stored again as the plain letter before it is voiced."""
+    from runtime.reply.letter_presentation import envelope_parts
+    parts = envelope_parts(letter.get('reply_text'))
+    if parts is None:
+        return
+    _prepare_private_world_delivery(letter, parts[0])
+    letter['reply_text'] = parts[0]
+    if parts[1] and not letter.get('reply_signature'):
+        letter['reply_signature'] = parts[1]
+    _persist_store_state()
+    _commit_private_world_letter(letter)
+    _persist_store_state()
+
+
 def _schedule_pending_media_jobs() -> int:
     """Resume only durable completed replies whose media render was interrupted."""
 
@@ -6839,6 +6858,7 @@ def _schedule_pending_media_jobs() -> int:
             continue
         letter_id = str(letter.get("letter_id", "")).strip()
         content = letter.get("content")
+        _store_wrapped_reply_plain(letter)
         reply_text = letter.get("reply_text")
         reply_mode = _exact_reply_mode(letter.get("reply_mode"))
         if (
@@ -7663,6 +7683,10 @@ async def _generate_reply_billed(letter_id, content, *, idempotency_key=None):
             _safe_log("letter_failed", error_code="LLM_PROTOCOL_ERROR")
             return False
         result = _replace_result(result, text=cleaned)
+    from runtime.reply.letter_presentation import envelope_parts as _wrapped_letter_parts
+    wrapped = _wrapped_letter_parts(result.text)
+    if wrapped is not None:  # JSON-wrapped text must not reach the voice, the saved letter or the memory
+        result = _replace_result(result, text=wrapped[0], signature=getattr(result, 'signature', None) or wrapped[1])
     if (
         exact_mode
         in {
