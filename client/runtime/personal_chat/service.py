@@ -75,6 +75,7 @@ def _clear_draft(row):
                 'generation_retryable', 'generation_failure_context', 'generation_failures', 'generation_notice_code',
                 'silence_reason', 'skip_reason', 'proactive_skip', 'user_controls_applied',
                 'daily_video_request', 'daily_video_status', 'daily_video_error_code', 'daily_video_candidates',
+                'cover_request', 'cover_status', 'cover_error_code', 'cover_sources', 'cover_request_dropped',
                 'writer_checkpoint', 'generation_run_id', 'generation_attempt_id', 'generation_recovery',
                 'send_attempt_id', 'send_input_revision', 'delivery_receipt'):
         row.pop(key, None)
@@ -116,8 +117,9 @@ async def delivery_notice(row, send, persist, key, text):
 
 
 class PersonalChatService:
-    def __init__(self, rows, persist, generate, commit, bindings, *, sticker_allowed=lambda key: True, sticker_asset=None, photo=None, prepare_photo=None, speech=None, default_voice=None, inspect_writer=None, piano=None):
+    def __init__(self, rows, persist, generate, commit, bindings, *, sticker_allowed=lambda key: True, sticker_asset=None, photo=None, prepare_photo=None, speech=None, default_voice=None, inspect_writer=None, piano=None, cover=None):
         self.piano = piano
+        self.cover = cover
         self.rows, self.persist = rows, persist
         self.generate, self.commit = generate, commit
         self.bindings = dict(bindings)
@@ -302,11 +304,14 @@ class PersonalChatService:
         media_token = MEDIA_RESOLVER.set(getattr(send, 'resolve_media', None))
         from .qq_games import THROWER
         thrower = THROWER.set(getattr(send, 'game', None))  # her answer to his dice or rock-paper-scissors
+        from .song_intake import QUICK_SEND
+        quick = QUICK_SEND.set(send)  # her short line before a slow fetch of a song he shared
         current = TURN_IS_CURRENT.set(lambda: not self._new_inputs(row))
         try:
             return await self.generate(event, row)
         finally:
             TURN_IS_CURRENT.reset(current)
+            QUICK_SEND.reset(quick)
             THROWER.reset(thrower)
             MEDIA_RESOLVER.reset(media_token)
 
@@ -934,6 +939,31 @@ class PersonalChatService:
         key=row['letter_id']
         binding=self.bindings.get('qq')
         if not binding or row.get('binding_id')!=PersonalMessage('qq',*binding,'','').binding_id:
+            return
+        if row.get('cover_request'):
+            from . import cover_chat
+            if (not cover_chat.ENABLED or row.get('delivery_status') != 'DELIVERED' or row.get('channel') != 'qq'
+                    or not callable(self.cover) or not callable(getattr(send, 'file', None))
+                    or key in self.speech_tasks or row.get('cover_status') in cover_chat.FINAL_STATUSES
+                    or row.get('cover_status') == 'DELIVERED' and row.get('cover_finished')):
+                return
+            async def sing():
+                try:
+                    await self.cover(row, send)
+                    self._schedule_commit(row)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    if row.get('cover_status') != 'DELIVERED':
+                        row['cover_error_code'] = cover_chat.error_code(exc)
+                        if row.get('cover_status') not in {'FAILED', 'UNKNOWN'}:
+                            row['cover_status'] = 'FAILED'
+                        await persist_state(self.persist)
+                        # One plain message with the reason and its code, whatever stage it failed in.
+                        await delivery_notice(row, send, self.persist, 'cover_failure_notice', cover_chat.failure_words(exc))
+                finally:
+                    self.speech_tasks.pop(key, None)
+            self.speech_tasks[key] = asyncio.create_task(sing())
             return
         if row.get('piano_input'):
             if (row.get('delivery_status') != 'DELIVERED' or row.get('channel') != 'qq'

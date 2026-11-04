@@ -17,8 +17,18 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "if": {"required": ["daily_video_result"]},
-        "then": {"properties": {"stage": {"const": "media"}}},
+        "if": {
+          "required": [
+            "daily_video_result"
+          ]
+        },
+        "then": {
+          "properties": {
+            "stage": {
+              "const": "media"
+            }
+          }
+        },
         "required": [
           "event_id",
           "trace_id",
@@ -327,6 +337,7 @@
               "QQ_FILE_ACK_UNCONFIRMED",
               "QQ_FILE_INVALID",
               "QQ_FILE_REJECTED",
+              "QQ_FILE_UNCONFIRMED",
               "QQ_LIKE_INVALID",
               "QQ_LOGIN_DISCONNECTED",
               "QQ_LOGIN_UNAVAILABLE",
