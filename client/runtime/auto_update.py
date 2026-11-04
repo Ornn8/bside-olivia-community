@@ -156,10 +156,27 @@ def clean_notes(notes):
     return {'title': text(notes.get('title'), 120), 'items': [i for i in items if i['title'] or i['text']]}
 
 
+def _is_install(root):
+    """A real installation: the installer's own marker names this very folder and the backend is there.
+
+    A fresh install has no .olivia-update-state.json until the first update is applied (the launcher then runs
+    local_backend as it is), so that file cannot be what switches updating on. A source checkout or a dev
+    folder has no marker, and so never updates itself.
+    """
+    if (root / '.olivia-update-state.json').is_file():
+        return True
+    marker = _read_json(root / '.olivia-full-patch.json')
+    return (marker is not None and marker.get('schema_version') == 'olivia.full-patch.install.v2'
+            and marker.get('owned_root') == str(root) and (root / 'local_backend').is_dir())
+
+
 def _root():
     raw = os.environ.get('OLIVIA_INSTALL_ROOT', '').strip()
     root = Path(raw) if raw else None
-    return root.resolve() if root and root.is_absolute() and (root / '.olivia-update-state.json').is_file() else None
+    if root is None or not root.is_absolute():
+        return None
+    root = root.resolve()
+    return root if _is_install(root) else None
 
 
 def _base():
