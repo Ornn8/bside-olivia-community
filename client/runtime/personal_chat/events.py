@@ -68,6 +68,8 @@ def _card(data):
     words = [value.strip()[:120] for value in (detail.get('title') if mini else detail.get('tag'),
                                                detail.get('desc') if mini else detail.get('title'))
              if isinstance(value, str) and value.strip()]
+    if 'music' in meta and not mini and isinstance(detail.get('desc'), str) and detail['desc'].strip() and len(words) == 2:
+        words.append(detail['desc'].strip()[:120])  # a music card names its singer in desc
     if not words and isinstance(card.get('prompt'), str) and card['prompt'].strip():
         words = [card['prompt'].strip()[:120]]
     text = '[分享卡片：' + ' · '.join(words) + ']' if words else '[分享卡片]'

@@ -1,10 +1,13 @@
 """Explicit remote routing for existing synchronous generation stages."""
 import asyncio
+import contextvars
 import json
 from contextvars import ContextVar
 from concurrent.futures import ThreadPoolExecutor
 import os
 from pathlib import Path
+# Songs keep a receipt while their task runs: a restart polls and downloads the task it already ordered.
+SONG_KINDS = ('cover',)
 PROGRESS_CALLBACK = ContextVar('remote_generation_progress', default=None)
 
 
@@ -15,7 +18,8 @@ def enabled(environment=None):
 def run_sync(execute):
     try: asyncio.get_running_loop()
     except RuntimeError: return execute()
-    with ThreadPoolExecutor(max_workers=1) as pool: return pool.submit(execute).result()
+    context = contextvars.copy_context()
+    with ThreadPoolExecutor(max_workers=1) as pool: return pool.submit(context.run, execute).result()
 
 
 def capabilities(environment):
@@ -63,14 +67,19 @@ def generate(kind, data, output, *, environment=None, assets=None):
         duration = _media_duration_seconds(path, required_streams=('0:a:0', '0:v:0') if kind in ('video', 'lipsync') else ('0:a:0',), ffmpeg_path=Path(ffmpeg) if ffmpeg else None)
         if duration is None or duration <= 0: raise CloudError('GPU_OUTPUT_INVALID', 502)
         metadata['duration_seconds'] = duration
-    # A night-batch order can wait for hours: its receipt lets a restart resume it instead of ordering again.
+    # A night-batch order can wait for hours, and a cover can run for minutes: the receipt lets a restart resume the
+    # task already ordered instead of ordering again.
     receipt = (Path(output).with_name(Path(output).stem + '-remote-order.private.json')
-               if kind in ('video', 'lipsync') or kind in night else None)
+               if kind in ('video', 'lipsync', *SONG_KINDS) or kind in night else None)
     try:
         task = run_sync(lambda: asyncio.run(api.generate(kind, data, output, assets=assets, validate=validate,
             capabilities=caps, **({'receipt_path': receipt} if receipt is not None else {}))))
     finally:
         if marker is not None:
             marker.unlink(missing_ok=True)
+    if receipt is not None and kind in SONG_KINDS and kind not in night:
+        # The result is here and checked: the receipt has done its work, and the same inputs ordered again later are
+        # never handed this finished task. (A failed or cancelled task's receipt goes in RemoteGeneration.generate.)
+        receipt.unlink(missing_ok=True)
     return {**metadata, 'remote_task_id': task['task_id'],
             'audio_provider': 'remote', 'visual_provider': 'remote' if kind in ('video','lipsync') else ''}
