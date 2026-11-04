@@ -523,6 +523,14 @@ async def _contact_qq_media(row):
     return codes
 
 
+def _plan_allows_sticker(row, event) -> bool:
+    """A sticker may follow a QQ reply the media plan made as plain text or a voice message (2026-11-05: the plan used
+    to drop every sticker). A photo, video, long audio, piano or cover turn carries its own media and goes without."""
+    plan = row.get('companion_decision') or {}
+    return (event.channel == 'qq' and row.get('companion_delivery') in ('text', 'audio_speech')
+            and not plan.get('speech_request') and not plan.get('piano_request') and not row.get('photo_with_words'))
+
+
 async def generate(server, event, row):
     from runtime.reply.jev_billing import billing_scope
     from runtime.model_routes import using
@@ -875,7 +883,6 @@ async def _generate_billed(server, event, row):
             row.update(companion_timing=getattr(result, 'companion_timing', None),
                        companion_delivery=getattr(result, 'companion_delivery', None),
                        photo_with_words=getattr(result, 'photo_with_words', False) is True)
-            row.pop('sticker_id', None)
             row.pop('mailbox_notice_letter_id', None)
         elif result.state is ReplyState.COMPLETED:
             for key in ('companion_decision', 'companion_timing', 'companion_delivery', 'photo_with_words'):
@@ -1042,8 +1049,9 @@ async def _generate_billed(server, event, row):
         if companion is None and contact is None and not asked and not row.get('degraded_stages'):
             text = attach_notice(getattr(server.store, 'letters', []), row, text)
         row['letter_invitation'] = contact is None and not asked and allowed and decision.get('letter_invitation', False)
+        row.pop('sticker_id', None)  # a rewritten turn chooses again
         sticker = decision['sticker'] if decision['sticker'] in sticker_choices else None
-        if sticker and companion is None and contact is None and not unprompted:
+        if sticker and contact is None and not unprompted and (companion is None or _plan_allows_sticker(row, event)):
             row['sticker_id'] = sticker
         if (event.channel == 'qq' and companion is None and contact is None and not asked
                 and _qq_extras(server)['gestures']):
@@ -1070,6 +1078,7 @@ async def _generate_billed(server, event, row):
         if decision.get('cover_request') and not unprompted and not asked and event.channel == 'qq':
             # The writer chose to sing a song the user asked for; the order itself is made by cover_chat.deliver.
             row.update(cover_request=decision['cover_request'], cover_status=cover_chat.PENDING)
+            row.pop('sticker_id', None)
         elif decision.get('dropped_cover'):
             row['cover_request_dropped'] = decision['dropped_cover']
         if decision.get('daily_video_request') and not unprompted:
