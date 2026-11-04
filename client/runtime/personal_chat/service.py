@@ -796,7 +796,7 @@ class PersonalChatService:
             await persist_state(self.persist)
             if event.channel == 'qq' and await self._after_delivery(row, event, send):
                 await persist_state(self.persist)
-            if (row.get('companion_decision') is None and row.get('proactive_decision') is None
+            if (row.get('proactive_decision') is None
                     and row.get('sticker_id') and not unprompted(row) and callable(getattr(send, 'image', None))):
                 from pathlib import Path
                 if (not re.fullmatch(r'linli-\d{2,3}', row['sticker_id'])

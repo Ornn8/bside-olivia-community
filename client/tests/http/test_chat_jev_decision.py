@@ -442,7 +442,7 @@ def test_failed_writer_result_retains_pre_writer_decision(monkeypatch, tmp_path)
 
 
 @pytest.mark.parametrize('enabled', [False, True])
-def test_single_jev_plan_does_not_append_mailbox_notice_or_sticker(monkeypatch, tmp_path, enabled):
+def test_single_jev_plan_does_not_append_mailbox_notice_and_keeps_a_qq_sticker(monkeypatch, tmp_path, enabled):
     import runtime.personal_chat.stickers
     from runtime.personal_chat.mailbox_notice import NOTICE_TEXT
     result = pipeline_result(record=enabled, text=envelope(text='Hello', sticker='linli-01'))
@@ -452,11 +452,46 @@ def test_single_jev_plan_does_not_append_mailbox_notice_or_sticker(monkeypatch, 
         reply_mode='text_letter', reply_text='Earlier letter', is_read=0, published_at=1)]
     text = asyncio.run(backend.generate(server, PersonalMessage('qq', 'b', 'u', '1', 'Hello'), row))
     if enabled:
+        # A plain-text plan adds no mailbox notice, but a QQ sticker the writer chose still follows (2026-11-05).
         assert text == 'Hello'
-        assert 'mailbox_notice_letter_id' not in row and 'sticker_id' not in row
+        assert 'mailbox_notice_letter_id' not in row and row['sticker_id'] == 'linli-01'
     else:
         assert NOTICE_TEXT in text
         assert row['mailbox_notice_letter_id'] == 'unread' and row['sticker_id'] == 'linli-01'
+
+
+@pytest.mark.parametrize('delivery,plan,kept', [('text', {}, True), ('audio_speech', {}, True), ('text', {'piano_request': {'source': 'midi'}}, False),
+                                                 ('text', {'speech_request': {'mode': 'story'}}, False)])
+def test_a_qq_sticker_follows_only_plain_text_or_voice_plans(monkeypatch, tmp_path, delivery, plan, kept):
+    import runtime.personal_chat.stickers
+    record = {**RECORD, **plan}
+    result = pipeline_result(delivery=delivery, text=envelope(text='Hello', sticker='linli-01'))
+    result.companion_decision = deepcopy(record)
+    server, row, _, _, _ = server_fixture(monkeypatch, tmp_path, result)
+    monkeypatch.setattr(runtime.personal_chat.stickers, 'choices', lambda *a, **k: {'linli-01': 'synthetic'})
+    asyncio.run(backend.generate(server, PersonalMessage('qq', 'b', 'u', '1', 'Hello'), row))
+    assert ('sticker_id' in row) is kept
+
+
+def test_service_sends_the_sticker_of_a_turn_that_has_a_media_plan():
+    async def run():
+        rows, sent = [], []
+        async def generate(event, row):
+            row.update(sticker_id='linli-01', companion_decision=deepcopy(RECORD), companion_delivery='text')
+            return 'ok'
+        async def send(text):
+            sent.append('text')
+            return 'ack'
+        async def image(path):
+            sent.append(path.name)
+            return 'ack'
+        async def commit(row):
+            pass
+        send.image = image
+        service = PersonalChatService(rows, lambda: None, generate, commit, {'qq': ('bot', 'owner')})
+        await service.handle(PersonalMessage('qq', 'bot', 'owner', '1', 'Hello'), send)
+        assert sent == ['text', 'linli-01.png'] and rows[0]['sticker_delivery_status'] == 'DELIVERED'
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize('timing,reason', [('wait_user', 'USER_REQUESTED_WAIT'),

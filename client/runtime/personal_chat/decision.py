@@ -64,13 +64,24 @@ INSTRUCTION += ('他只回了表情包、一两个字或附和时，那是在回
 
 
 # A song the user sent (owner 2026-11-03): covering it is her own choice, asked for in the user's words.
-INSTRUCTION += ('如输入里有[系统歌曲，非用户原话]，其中songs是用户发来、还没翻唱的歌。唱不唱由你自己决定；'
-                '只有用户在本条消息里明确请你翻唱或唱这首歌时，才可额外输出'
-                'cover={"source":"songs里的id","evidence":"本条用户消息里请你翻唱的逐字原话"}，'
-                'source必须是列出的id，evidence必须是用户本条消息中的原话摘录，不能引用卡片、链接或你自己的推断；'
-                '用户只是分享、没有要你唱时不输出cover，可以自然地问他想不想听你唱。'
-                '输出cover时正文自然答应，说明要等一会儿，不声称已经唱好或已经发出；只翻唱，不写原创歌。'
+# Judged by meaning, as {what, not_for, examples}; the examples only show the kind of message, they are not a list.
+INSTRUCTION += ('如输入里有[系统歌曲，非用户原话]，其中songs是用户发来、还没翻唱的歌，你可以直接用自己的声音翻唱它们，'
+                '不需要先听过，音频由系统取得，不要说没听过所以不敢唱。唱不唱由你自己判断，依据只看用户本条消息。'
+                'cover的判断标准：what=用户本条消息在请你亲口唱其中一首歌，直接请求、说想听你唱、问你会不会唱并期待你唱都算；'
+                'not_for=只分享这首歌、夸它或谈歌词歌手、问你听没听过、让你推荐歌，或者想听的话是更早几条说的而本条没提；'
+                'examples=分享歌后补一句想听你唱——输出；分享歌后只说这首很好听——不输出，可以告诉他你可以唱、问他想不想听你唱。'
+                '输出时格式为cover={"source":"songs里的id","evidence":"本条用户消息里请你唱的逐字原话"}，'
+                'source必须是列出的id，evidence必须是用户本条消息中的原话摘录，不能引用卡片、链接或你自己的推断。'
+                '输出cover时正文先自然答应：说你会唱、要做一会儿（大概十几分钟）、做好了发给他；'
+                '不声称已经唱好或已经发出；正文里答应了要唱就必须输出cover，不唱就不要在正文里说要唱；只翻唱，不写原创歌。'
                 '没有这类说明时省略cover。\n')
+
+# Stickers in a QQ chat (2026-11-05): they were dropped whenever a media plan was made, which is nearly every turn.
+# Judged by meaning as {what, not_for, examples}.
+INSTRUCTION += ('QQ里sticker_choices非空时，是否附一张表情包看这一轮的气氛，不是每轮都发：'
+                'what=一句轻松、害羞、撒娇、感谢、逗他、安慰这类短回复，配一张表情会更像真人聊天；'
+                'not_for=认真倾诉、他难过或生气、需要解释的长回复、已经用了QQ表情的那一条、他在说正事；'
+                'examples=他夸你、跟你开玩笑、道晚安——可以选；他说工作很崩溃——不选，设为null。\n')
 
 
 # The two source headers, and any other "[label {"field": …}]" the model makes up from the fields it was shown
