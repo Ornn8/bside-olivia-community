@@ -1904,7 +1904,9 @@ class Mem0ConversationMemoryAdapter:
     ) -> MemoryWriteResult:
         self._evidence_cache.clear()
         self._fact_cache = None
-        _after_delivery(self._shadow_reply, self._normalized_user_id(user_id), source_id, user_message, assistant_message)
+        from runtime.reply.jev_billing import REJUDGE
+        if REJUDGE.get() is None:  # a repeated judgment is not a new reply to measure
+            _after_delivery(self._shadow_reply, self._normalized_user_id(user_id), source_id, user_message, assistant_message)
         if self._originals.letter_deleted(self._normalized_user_id(user_id), source_id):
             return MemoryWriteResult(MemoryWriteStatus.SKIPPED, source_id)
         try:

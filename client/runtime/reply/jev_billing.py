@@ -38,6 +38,24 @@ CURRENT = ContextVar('jev_billing_turn', default=None)
 SERVER_PRICE_VERSION = 'jev-input-cny-20261027-v7'
 MINIMUM_HEADER = {'X-Olivia-Billing-Minimum': '1', 'X-Olivia-JEV-Price': SERVER_PRICE_VERSION}
 _account_key = None
+# A one-time repeat of an old judgment (runtime.memory.qq_memory_rejudge). While it is
+# set, the request names itself with REJUDGE_HEADER, under a turn id of its own; the body stays the ordinary packet.
+REJUDGE = ContextVar('jev_rejudge', default=None)
+REJUDGE_HEADER = 'X-Olivia-Rejudge'
+REJUDGE_VALUE = 'memory-extraction.v1'
+REJUDGE_CHARGED = False
+
+
+@contextmanager
+def rejudge_scope(source_id):
+    """Judgments made inside are re-judgments of `source_id`; settlement follows the usual receipt path."""
+    turn_id = 'rejudge:' + hashlib.sha256(source_id.encode()).hexdigest()[:40]
+    token = REJUDGE.set(turn_id)
+    try:
+        with billing_scope(turn_id):
+            yield
+    finally:
+        REJUDGE.reset(token)
 
 
 def configure_account(get_key):
@@ -90,7 +108,8 @@ def billing_headers():
     if turn is None:
         return {}
     return {'X-Olivia-Account-Digest': hashlib.sha256(turn.key.encode()).hexdigest(),
-            'X-Olivia-Turn-Id': turn.turn_id, **MINIMUM_HEADER}
+            'X-Olivia-Turn-Id': turn.turn_id, **MINIMUM_HEADER,
+            **({REJUDGE_HEADER: REJUDGE_VALUE} if REJUDGE.get() is not None else {})}
 
 
 def cloud_request_headers(body_digest):
@@ -104,8 +123,8 @@ def cloud_request_headers(body_digest):
         raise ValueError('JEV_BILLING_ACCOUNT_UNAVAILABLE')
     return {'Authorization': 'Bearer ' + key,
             'X-Olivia-Account-Digest': hashlib.sha256(key.encode()).hexdigest(),
-            'X-Olivia-Turn-Id': turn.turn_id if turn is not None else 'jev:' + body_digest,
-            **MINIMUM_HEADER}
+            'X-Olivia-Turn-Id': turn.turn_id if turn is not None else REJUDGE.get() or 'jev:' + body_digest,
+            **MINIMUM_HEADER, **({REJUDGE_HEADER: REJUDGE_VALUE} if REJUDGE.get() is not None else {})}
 
 
 def _settlement_opener():
@@ -189,6 +208,11 @@ def _settle(turn, billing, receipt):
             or type(result.get('debited_units')) is not int
             or result['debited_units'] != (0 if result['replayed'] else result['charged_units'])):
         raise ValueError('JEV_BILLING_RESPONSE_INVALID')
+    if turn.turn_id.startswith('rejudge:') and result['charged_units'] > 0:
+        # A service that does not know the repeat bills it like any judgment: stop repeating until the next start.
+        global REJUDGE_CHARGED
+        REJUDGE_CHARGED = True
+        raise ValueError('JEV_REJUDGE_CHARGED')
     return result
 
 
