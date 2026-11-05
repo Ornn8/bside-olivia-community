@@ -23,6 +23,7 @@ def judgment_recall_unless_r3(request, monkeypatch):
     value = "1" if request.node.get_closest_marker("r3") else "0"
     monkeypatch.setenv("OLIVIA_R3_RECALL", value)
     monkeypatch.setenv("OLIVIA_R3_FORMAT", value)
+    monkeypatch.setenv("OLIVIA_R3_COMPACT", "1")
 
 
 @pytest.fixture(autouse=True)

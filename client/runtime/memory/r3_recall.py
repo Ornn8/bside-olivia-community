@@ -2,7 +2,7 @@
 
 The exchanges retrieved for a message (cloud vectors, or the local model when the cloud index is not ready; plus the
 word index) are up to ``CANDIDATES`` whole exchanges. The relay's /v1/rerank orders them against the message
-alone and the best ``KEEP`` reach the writer, oldest first, in the dated form of ``r3_format``. It replaces the
+alone and the best ``KEEP`` reach the writer, oldest first, as the dated lines of ``r3_block``. It replaces the
 recall-selection judgment, one call for one call, so a turn makes the same number of model calls.
 
 Any failure, or more than ``TIMEOUT`` seconds, raises ``Unavailable`` with a content-free reason code; the caller
@@ -10,6 +10,8 @@ then runs the former judgment, so a failed rerank never lowers the quality of th
 
 Switch (default ON): ``OLIVIA_R3_RECALL=0`` or ``{"enabled": false}`` in
 ``<data root>/r3-recall.json``; the same file may set ``keep`` (1-10) and ``recall_chars`` (800-8000).
+The compact lines of the recalled block have their own switch (default ON, ``OLIVIA_R3_COMPACT=0`` or
+``{"compact": false}``): off, the block holds the former records again.
 """
 from __future__ import annotations
 
@@ -29,7 +31,7 @@ TIMEOUT = 5.0
 QUERY_CHARS = 2000
 DOC_CHARS = 2500            # relay: each document <= 4000 characters, all together <= 120000
 MIN_SCORE = 0.5            # of the benchmark's top-10 scores about one in ten is below this
-RECALL_CHARS = 1250         # the recalled block never exceeds this; measured on production 11-05 the judgment adds 1243 chars on average (QQ 1161, letters 1843)
+RECALL_CHARS = 1250         # the recalled block never exceeds this, measured on the whole rendered element; on production 11-05 the judgment added 1243 chars on average (QQ 1161, letters 1843)
 _COOLDOWN = 120.0           # after a refusal or an outage the former judgment runs without trying again first
 _failed_at = 0.0
 
@@ -49,7 +51,7 @@ def _setting(name):
     try:
         path = Path(root) / 'r3-recall.json'
         if path.exists() and path.stat().st_size <= 4096:
-            value = json.loads(path.read_text(encoding='utf-8'))
+            value = json.loads(path.read_text(encoding='utf-8-sig'))   # a file saved by Windows tools may start with a BOM
             return value.get(name) if isinstance(value, dict) else None
     except (OSError, ValueError):
         pass                # an unreadable setting is the default
@@ -60,6 +62,13 @@ def enabled() -> bool:
     """On unless switched off: ``OLIVIA_R3_RECALL=0`` or ``{"enabled": false}`` in ``<data root>/r3-recall.json``.
     The environment wins over the file. This is the retrieval change only (rerank instead of the judgment)."""
     return _switch('OLIVIA_R3_RECALL', 'enabled', default=True)
+
+
+def compact_enabled() -> bool:
+    """The recalled block as dated lines (``r3_block``), on unless switched off: ``OLIVIA_R3_COMPACT=0`` or
+    ``{"compact": false}`` in ``<data root>/r3-recall.json``. It only changes how the exchanges are written down;
+    which exchanges are chosen and the size bound are the same."""
+    return _switch('OLIVIA_R3_COMPACT', 'compact', default=True)
 
 
 def format_enabled() -> bool:

@@ -15,6 +15,8 @@ import threading
 import uuid
 
 _PENDING: ContextVar[dict | None] = ContextVar('olivia_recall_diagnostic', default=None)
+# Sources of the exchanges the writer will read, when their text no longer carries source ids (see shown()).
+_SHOWN: ContextVar[frozenset | None] = ContextVar('olivia_recall_shown', default=None)
 _TAIL: deque[dict] = deque(maxlen=32)
 _LOCK = threading.Lock()
 _COUNTS = frozenset({'archive_count', 'indexed_letters', 'archive_total', 'archive_indexed',
@@ -97,6 +99,7 @@ def begin(builder, mode):
         except Exception:
             pass  # Unknown is not zero and a provider is never queried for this.
     _PENDING.set(project(values))
+    _SHOWN.set(None)
 
 
 def selection(recall, selected):
@@ -116,6 +119,24 @@ def selection(recall, selected):
     _PENDING.set(project(value))
 
 
+def group_source(group):
+    """The source of an exchange of original records; None for a group of summaries only."""
+    if not isinstance(group, list) or not group or all(r.get('evidence_scope') == 'retrieved_summary' for r in group):
+        return None
+    first = group[0]
+    source = first.get('provenance', {}).get('source_record_id') or first.get('source_id')
+    return source or ':'.join(str(first.get('citation', '')).split(':')[:-1])
+
+
+def shown(groups):
+    """Name the exchanges that reach the writer. The recalled block is written as dated lines without source ids,
+    so the final count cannot be read back from its text; finish() adds these (opaque, like the others)."""
+    try:
+        _SHOWN.set(frozenset(_opaque(s) for s in (group_source(g) for g in groups) if s is not None))
+    except (AttributeError, TypeError):
+        _SHOWN.set(None)
+
+
 def _original_groups(messages):
     from runtime.memory.memory_prompt import _unescape_reserved
     sources = set()
@@ -130,13 +151,9 @@ def _original_groups(messages):
                 for line in text.split('\n'):
                     if not line.startswith('[{'):
                         continue
-                    group = json.loads(line)
-                    if all(r.get('evidence_scope') == 'retrieved_summary' for r in group):
-                        continue
-                    first = group[0]
-                    source = first.get('provenance', {}).get('source_record_id') or first.get('source_id')
-                    source = source or ':'.join(str(first.get('citation', '')).split(':')[:-1])
-                    sources.add(_opaque(source))
+                    source = group_source(json.loads(line))
+                    if source is not None:
+                        sources.add(_opaque(source))
             except (ValueError, TypeError, AttributeError, IndexError):
                 continue
     return sources
@@ -146,7 +163,8 @@ def finish(before, after, check):
     value = dict(_PENDING.get() or {'event': 'history_recall', 'trace_id': uuid.uuid4().hex})
     _PENDING.set(None)
     try:
-        initial, final = _original_groups(before), _original_groups(after)
+        initial, final = _original_groups(before), _original_groups(after) | (_SHOWN.get() or frozenset())
+        _SHOWN.set(None)
         findings = check.get('findings', [])
         value.update(before_groups=len(initial), final_groups=len(final), final_ids=sorted(final)[:16],
                      check_status=check.get('status', 'checked'), reason=check.get('reason'),
