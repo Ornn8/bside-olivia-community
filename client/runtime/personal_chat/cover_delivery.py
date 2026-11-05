@@ -43,15 +43,18 @@ def to_mp3(wav: Path, mp3: Path) -> None:
         staging.unlink(missing_ok=True)
 
 
-def _order(source: Path, output: Path) -> None:
+def _order(source: Path, output: Path, style: str = '') -> None:
     """The cover pipeline with her own singing voice; waits for the account's lane instead of failing at once."""
     from runtime import remote_pipeline
     from runtime.media import cover_options
     from runtime.remote_generation import LANE_WAIT, LaneWait
+    options = {'engine': 'yue2'}
+    if style:
+        options['arrangement'] = style
     token = LANE_WAIT.set(LaneWait(cover_chat.LANE_WAIT_SECONDS))
     try:
         remote_pipeline.generate('cover', {'lyrics': '', 'language': 'unknown',
-                                           'cover_options': cover_options.validate({'engine': 'yue2'})},
+                                           'cover_options': cover_options.validate(options)},
                                  output, environment=os.environ, assets={'source_asset': source})
     finally:
         LANE_WAIT.reset(token)
@@ -99,7 +102,9 @@ async def deliver(server, row, send):
                 source = source_path(root, song['id'])
             except ValueError:
                 raise CoverFailure('COVER_SOURCE_REQUIRED') from None
-            await asyncio.to_thread(_order, source, wav)
+            style = request.get('style')
+            style = style.strip() if isinstance(style, str) else ''
+            await asyncio.to_thread(*((_order, source, wav, style) if style else (_order, source, wav)))
         await asyncio.to_thread(to_mp3, wav, mp3)
     row.update(cover_file=str(mp3), cover_status='SENDING')
     await persist_chat(server)
