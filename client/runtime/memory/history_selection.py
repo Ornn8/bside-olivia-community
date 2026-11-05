@@ -7,7 +7,7 @@ import logging
 import re
 from datetime import datetime
 
-from . import r3_format, r3_recall
+from . import r3_block, r3_format, r3_recall
 from .memory_prompt import _unescape_reserved
 from .history_dependencies import (
     recent_records, expand_group, validate_dependencies,
@@ -70,6 +70,8 @@ def _split(messages):
         try:
             wrapper = json.loads(match.group(1))
             text = _unescape_reserved(wrapper.get('text', ''))
+            if r3_block.is_compact(text):
+                return match.group(0)   # already chosen and written as dated lines; its exchanges are not offered again
             try:
                 packet = json.loads(text)
             except ValueError:
@@ -185,7 +187,7 @@ async def _select_history_messages(messages, gateway, *, max_input_chars, reques
                                   current_source_ids=(), current_user_text=None,
                                   persona_snapshot=None, persona_mode=None, persona_development=None,
                                   persona_decision_port=None, persona_selection_task=None):
-    from runtime.diagnostics.recall_trace import finish
+    from runtime.diagnostics.recall_trace import finish, shown
     from llm_gateway import GatewayRequestScope
     from runtime.reply.jev_questions import configured_questions
     from runtime.reply.companion_decision import CompanionDecisionError
@@ -292,6 +294,12 @@ async def _select_history_messages(messages, gateway, *, max_input_chars, reques
         if r3_reason:
             log.info('R3_RECALL_FALLBACK %s', r3_reason)
     shape = (lambda group: r3_format.compact_group(group, now)) if r3_recall.format_enabled() else (lambda group: group)
+    render, plain = _block, shape
+    if r3_state is not None and r3_recall.compact_enabled():
+        # Recalled exchanges are written as dated lines (r3_block); the cap below is measured on that rendered element.
+        known, annotate = {r3_block.source(r) for r in visible_recent} - {None}, r3_recall.format_enabled()
+        render = lambda groups: r3_block.block(groups, now, annotate=annotate, known_sources=known, legacy=shape)
+        plain = lambda group: group
     if r3_state is not None or (offered or visible_recent or persona_offered) and len(_encode(packet)) <= candidate_limit:
         status, reason, stage = 'unavailable', 'provider', 'prepare'
         try:
@@ -372,8 +380,8 @@ async def _select_history_messages(messages, gateway, *, max_input_chars, reques
                             max_input_chars - sum(len(m['content']) for m in base) - 128)
             for source in ids:
                 complete = close_group(offered[source], offered, dependencies)
-                shaped = shape(complete)
-                if len(_block([*selected, shaped])) <= remaining:
+                shaped = plain(complete)
+                if len(render([*selected, shaped])) <= remaining:
                     selected.append(shaped)
                     said[id(shaped)] = _earliest(complete)
                 elif complete != offered[source] or any(r.get('interpretation_dependencies') for r in complete):
@@ -387,8 +395,8 @@ async def _select_history_messages(messages, gateway, *, max_input_chars, reques
                     if len(selected) == 2:
                         break
                     if any((r.get('provenance') or {}).get('requested_reference') in {'date', 'diary'} for r in group):
-                        complete = shape(close_group(group, offered, dependencies))
-                        if len(_block([*selected, complete])) <= remaining:
+                        complete = plain(close_group(group, offered, dependencies))
+                        if len(render([*selected, complete])) <= remaining:
                             selected.append(complete)
             status, reason = 'checked', (reason if reason == 'dependency_store' else None)
         except Exception as error:
@@ -403,8 +411,8 @@ async def _select_history_messages(messages, gateway, *, max_input_chars, reques
         reason = r3_reason          # the judgment answered this turn; the trace still says why rerank did not
     for citation, complete in required:
         remaining = min(8000, max_input_chars - sum(len(m['content']) for m in base) - 256)
-        complete = shape(complete) if complete else complete
-        if complete and len(_block([*selected, complete])) <= remaining:
+        complete = plain(complete) if complete else complete
+        if complete and len(render([*selected, complete])) <= remaining:
             selected.append(complete)
         else:
             # Keep the current input intact; remove only the stale native source.
@@ -414,7 +422,7 @@ async def _select_history_messages(messages, gateway, *, max_input_chars, reques
             gap = True
     if selected:
         index = next(i for i, m in enumerate(base) if m.get('role') == 'system')
-        base[index]['content'] += '\n' + _block(selected)
+        base[index]['content'] += '\n' + render(selected)
     if groups and sum(len(m['content']) for m in base) + len(_SELECTED) <= max_input_chars:
         base.insert(len(base) - 1, {'role': 'system', 'content': _SELECTED})
     if gap and sum(len(m['content']) for m in base) + len(_DEPENDENCY_GAP) <= max_input_chars:
@@ -428,5 +436,7 @@ async def _select_history_messages(messages, gateway, *, max_input_chars, reques
             persona_ids, persona_unavailable = await persona_selection_task
         base = project_persona_selection(base, persona_snapshot, persona_mode, persona_ids,
             max_input_chars=max_input_chars, unavailable=persona_unavailable, development=persona_development)
+    if render is not _block:
+        shown(selected)             # dated lines carry no source ids; the trace still counts the exchanges
     finish(messages, base, {'status': status, 'reason': reason, 'findings': []})
     return tuple(base)

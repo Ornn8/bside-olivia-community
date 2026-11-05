@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from runtime.memory import r3_format, r3_recall
+from runtime.memory import r3_block, r3_format, r3_recall
 from runtime.memory.history_selection import _block, select_history_messages
 
 pytestmark = pytest.mark.r3
@@ -246,7 +246,9 @@ def _selected(result):
     return [json.loads(line) for line in lines]
 
 
-def test_rerank_replaces_the_judgment_and_shows_dated_exchanges_oldest_first(monkeypatch):
+def test_rerank_replaces_the_judgment_and_shows_dated_records_oldest_first_when_compact_is_off(monkeypatch):
+    monkeypatch.setenv('OLIVIA_R3_COMPACT', '0')
+
     async def fake(query, documents):
         assert query == '你还记得我说过什么吗' and len(documents) == 30
         return [7, 2, 11, 0, 5]
@@ -440,8 +442,9 @@ def test_no_account_key_means_no_call(monkeypatch):
     assert error.value.code == 'r3_rerank_no_key'
 
 
-def test_retrieval_alone_keeps_the_former_record_format(monkeypatch):
+def test_retrieval_alone_keeps_the_former_record_format_when_compact_is_off(monkeypatch):
     monkeypatch.setenv('OLIVIA_R3_FORMAT', '0')
+    monkeypatch.setenv('OLIVIA_R3_COMPACT', '0')
 
     async def fake(query, documents):
         return [0, 1]
@@ -451,3 +454,175 @@ def test_retrieval_alone_keeps_the_former_record_format(monkeypatch):
     assert gateway.calls == []
     record = _selected(result)[0][0]
     assert 'when' not in record and 'occurred_at' in record
+
+
+# ---- the recalled block as dated lines (r3_block) ----------------------------------------------------------------
+
+def _element(result):
+    content = result[0]['content']
+    return content[content.index('<untrusted_history>'):content.index('</untrusted_history>') + len('</untrusted_history>')]
+
+
+def _text(result):
+    """The recalled block as the writer reads it: the decoded text of the one history element."""
+    element = _element(result)
+    return json.loads(element[len('<untrusted_history>'):-len('</untrusted_history>')])['text']
+
+
+def _exchanges(element_or_text):
+    text = element_or_text
+    if text.startswith('<untrusted_history>'):
+        text = json.loads(text[len('<untrusted_history>'):-len('</untrusted_history>')])['text']
+    return sum(1 for line in text.split('\n') if line.startswith('[{') or line.startswith('[2'))
+
+
+def _chat(i, days_ago, user, reply):
+    """An exchange as the real converters build its records (production-length ids and provenance)."""
+    when = (NOW - timedelta(days=days_ago)).replace(hour=20 + i % 3, minute=5).isoformat()
+    base = {'occurred_at': when, 'ago': f'{days_ago}天前', 'evidence_scope': 'recorded_utterance',
+            'provenance': {'domain': 'conversation_memory', 'source': 'original_text', 'source_record_id': f'reply:{i:032x}:1',
+                           'occurred_at': when, 'current_conversation': True, 'verbatim': True}}
+    return [{**base, 'citation': 'original:' + f'{i:064x}', 'speaker': 'user', 'text': user,
+             'provenance': {**base['provenance'], 'speaker': 'user'}},
+            {**base, 'citation': 'original:' + f'{i + 5000:064x}', 'speaker': 'linli', 'text': reply,
+             'provenance': {**base['provenance'], 'speaker': 'linli'}}]
+
+
+def _chats(n=30):
+    return [_chat(i, i + 1, '周六想去海边，你觉得带什么好？' * 3 + f'（第{i}件）', '带上防晒和一件薄外套，海边风大，傍晚会凉。' * 3 + f'（第{i}件）')
+            for i in range(n)]
+
+
+def _chat_messages():
+    return ({'role': 'system', 'content': '人设\n' + _block(_chats())}, {'role': 'user', 'content': '你还记得海边的事吗'})
+
+
+def test_rerank_shows_dated_lines_oldest_first_inside_one_envelope(monkeypatch):
+    async def fake(query, documents):
+        assert query == '你还记得我说过什么吗' and len(documents) == 30
+        return [7, 2, 11, 0, 5]
+    monkeypatch.setattr(r3_recall, '_ask', fake)
+    monkeypatch.setattr(r3_recall, 'RECALL_CHARS', 3000)
+    gateway = Gateway()
+    result = _run(_messages(), gateway)
+    assert gateway.calls == []                                         # no judgment: one rerank instead
+    assert result[0]['content'].count('<untrusted_history>') == 1
+    lines = _text(result).split('\n')
+    assert lines[:2] == ['[ORIGINAL_CORRESPONDENCE_UNTRUSTED]', 'recorded_utterance']
+    heads = [line for line in lines if line.startswith('[2')]
+    stamps = [(head[1:11], head.split(' ')[2]) for head in heads]
+    assert len(heads) == 5 and stamps == sorted(stamps)                # oldest first
+    assert heads[0].startswith('[2026-') and ' 周' in heads[0] and heads[0].endswith('天前]')
+    # i-th exchange was said (i + 1) days ago in the evening: its 明天 is i days before today
+    expected = {f'user: 第{i}件事，明天{r3_format.day_mark(NOW.date() - timedelta(days=i))}再说' for i in (7, 2, 11, 0, 5)}
+    assert {line for line in lines if line.startswith('user: ')} == expected
+    assert {line for line in lines if line.startswith('linli: ')} == {f'linli: 回应{i}' for i in (7, 2, 11, 0, 5)}
+    for gone in ('citation', 'provenance', 'evidence_scope', 'occurred_at', 'source_record_id', 'ago'):
+        assert gone not in _text(result)
+    assert 'trace' not in json.dumps(result)
+
+
+def test_the_cap_is_on_the_whole_rendered_element_and_it_holds_far_more_than_the_former_block(monkeypatch):
+    async def fake(query, documents):
+        return list(range(10))
+    monkeypatch.setattr(r3_recall, '_ask', fake)
+    compact = _element(_run(_chat_messages(), Gateway()))
+    monkeypatch.setenv('OLIVIA_R3_COMPACT', '0')
+    former = _element(_run(_chat_messages(), Gateway()))
+    assert len(compact) <= r3_recall.RECALL_CHARS == 1250 and len(former) <= 1250
+    assert _exchanges(former) == 1                                      # records of this size: one exchange fits
+    assert _exchanges(compact) >= 3 * _exchanges(former) and _exchanges(compact) >= 5
+    # the real text kept grows with the exchanges; the block does not grow past the same bound
+    assert compact.count('海边风大') >= 3 * former.count('海边风大')
+
+
+def test_compact_off_is_exactly_the_former_block(monkeypatch):
+    async def fake(query, documents):
+        return [3, 1, 0]
+    monkeypatch.setattr(r3_recall, '_ask', fake)
+    monkeypatch.setattr(r3_recall, 'RECALL_CHARS', 4000)
+    monkeypatch.setenv('OLIVIA_R3_COMPACT', '0')
+    result = _run(_messages(), Gateway())
+    groups = _selected(result)
+    assert [g[0]['citation'] for g in groups] == ['u3', 'u1', 'u0']
+    assert groups[0][0]['when'].startswith('2026-') and 'evidence_scope' in groups[0][0] and 'citation' in groups[0][1]
+    assert not r3_block.is_compact(_text(result))
+
+
+def test_the_dated_format_switch_decides_the_day_marks_not_the_dates(monkeypatch):
+    async def fake(query, documents):
+        return [5, 4]
+    monkeypatch.setattr(r3_recall, '_ask', fake)
+    monkeypatch.setenv('OLIVIA_R3_FORMAT', '0')
+    text = _text(_run(_messages(), Gateway()))
+    assert r3_block.is_compact(text) and '〔=' not in text and '周' in text and '天前' in text
+    monkeypatch.setenv('OLIVIA_R3_FORMAT', '1')
+    assert '〔=' in _text(_run(_messages(), Gateway()))
+
+
+def test_compact_switch_defaults_on_and_follows_environment_then_file(monkeypatch, tmp_path):
+    monkeypatch.delenv('OLIVIA_R3_COMPACT', raising=False)
+    monkeypatch.setenv('OLIVIA_LOCAL_DATA_ROOT', str(tmp_path))
+    assert r3_recall.compact_enabled() is True
+    (tmp_path / 'r3-recall.json').write_text('{"compact": false}', encoding='utf-8')
+    assert r3_recall.compact_enabled() is False
+    monkeypatch.setenv('OLIVIA_R3_COMPACT', '1')
+    assert r3_recall.compact_enabled() is True
+    (tmp_path / 'r3-recall.json').write_text('{"compact": true}', encoding='utf-8')
+    monkeypatch.setenv('OLIVIA_R3_COMPACT', '0')
+    assert r3_recall.compact_enabled() is False
+
+
+def test_the_selection_note_is_unchanged():
+    import hashlib
+    from runtime.memory.history_selection import _SELECTED
+    # The note names the speaker tags the lines use; its text (and so the server-side copy keyed by its hash) did not change.
+    assert hashlib.sha256(_SELECTED.encode()).hexdigest().startswith('58468aa471') and len(_SELECTED) == 118
+    assert 'speaker' in _SELECTED and 'user' in _SELECTED and 'linli' in _SELECTED
+
+
+def test_a_chosen_block_is_not_offered_again_when_the_history_is_split_once_more(monkeypatch):
+    from runtime.memory.history_selection import _split
+    async def fake(query, documents):
+        return [0, 1]
+    monkeypatch.setattr(r3_recall, '_ask', fake)
+    monkeypatch.setattr(r3_recall, 'RECALL_CHARS', 4000)
+    chosen = _run(_messages(), Gateway())
+    base, offered = _split(chosen)
+    assert offered == [] and _element(base) == _element(chosen)
+
+
+def test_trace_counts_the_exchanges_the_dated_lines_show(monkeypatch):
+    async def fake(query, documents):
+        return [4, 2, 9]
+    monkeypatch.setattr(r3_recall, '_ask', fake)
+    monkeypatch.setattr(r3_recall, 'RECALL_CHARS', 4000)
+    from runtime.diagnostics import recall_trace
+    recall_trace._PENDING.set({'event': 'history_recall', 'trace_id': 'a' * 32})
+    assert r3_block.is_compact(_text(_run(_messages(), Gateway())))
+    record = recall_trace.snapshot()[-1]
+    assert record['before_groups'] == 30 and record['final_groups'] == 3 and len(record['final_ids']) == 3
+    assert record['evidence_used'] is True
+
+
+def test_later_stages_read_the_dated_block(monkeypatch):
+    from runtime.reply.fact_attribution import finalize_reply_messages, prepare_dialogue_messages
+    async def fake(query, documents):
+        return list(range(10))
+    monkeypatch.setattr(r3_recall, '_ask', fake)
+    prepared = prepare_dialogue_messages(_run(_chat_messages(), Gateway()), max_input_chars=40000, now=NOW)
+    before = _element(prepared)
+    assert r3_block.is_compact(_text(prepared))                         # compact_evidence left the dated lines alone
+    total = sum(len(m['content']) for m in prepared)
+    tight = finalize_reply_messages(prepared, '', max_input_chars=total - len(before) // 2)
+    full, kept = _text(prepared).split('\n'), _text(tight).split('\n')
+    heads = [line for line in full if line.startswith('[2')]
+    kept_heads = [line for line in kept if line.startswith('[2')]
+    assert 0 < len(kept_heads) < len(heads)
+    assert kept_heads == heads[len(heads) - len(kept_heads):]           # oldest exchanges go first
+    for head in kept_heads:                                             # an exchange is never cut in half
+        at = kept.index(head)
+        assert kept[at + 1].startswith('user: ') and kept[at + 2].startswith('linli: ')
+    assert kept[:2] == ['[ORIGINAL_CORRESPONDENCE_UNTRUSTED]', 'recorded_utterance']
+    assert any('省略' in m['content'] for m in tight)
+    assert sum(len(m['content']) for m in tight) <= total - len(before) // 2
