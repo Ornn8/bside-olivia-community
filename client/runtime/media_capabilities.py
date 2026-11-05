@@ -13,20 +13,21 @@ import time
 FRESH_SECONDS = 60
 STALE_SECONDS = 1800
 TIMEOUT_SECONDS = 3
+RETRY_TIMEOUT_SECONDS = 8
 _state = {}
 
 
-async def _fetch(url, token):
+async def _fetch(url, token, timeout=TIMEOUT_SECONDS):
     from runtime.remote_generation import RemoteGeneration
     try:
-        value = await asyncio.wait_for(RemoteGeneration(url, token).request('capabilities', {}), TIMEOUT_SECONDS)
+        value = await asyncio.wait_for(RemoteGeneration(url, token).request('capabilities', {}), timeout)
     except Exception:
         return None
     return value if isinstance(value, dict) else None
 
 
-async def _refresh(key, url, token):
-    value = await _fetch(url, token)
+async def _refresh(key, url, token, timeout=TIMEOUT_SECONDS):
+    value = await _fetch(url, token, timeout)
     entry = _state.get(key)
     if value is not None:
         _state[key] = {'value': value, 'at': time.monotonic(), 'task': None}
@@ -35,8 +36,11 @@ async def _refresh(key, url, token):
     return value
 
 
-async def current(environment):
-    """The service's capabilities, or None when none has been read in the last STALE_SECONDS."""
+async def current(environment, retry=False):
+    """The service's capabilities, or None when none has been read in the last STALE_SECONDS.
+
+    ``retry`` reads again at once with a longer wait even if the last read just failed (a caller whose feature would
+    otherwise be switched off silently by one slow answer)."""
     url, token = environment.get('OLIVIA_GPU_API_URL', ''), environment.get('OLIVIA_GPU_API_KEY', '')
     if not url or not token:
         return None
@@ -52,11 +56,11 @@ async def current(environment):
             entry['task'] = asyncio.get_running_loop().create_task(_refresh(key, url, token))
         return entry['value']
     task = entry.get('task') if entry else None
-    if task is None and entry and time.monotonic() - entry.get('failed_at', -FRESH_SECONDS) < FRESH_SECONDS:
+    if not retry and task is None and entry and time.monotonic() - entry.get('failed_at', -FRESH_SECONDS) < FRESH_SECONDS:
         return None  # nothing good yet and the last read failed: do not hold every reply for another 3 s
     if task is None:
-        task = asyncio.get_running_loop().create_task(_refresh(key, url, token))
-        _state[key] = {'value': None, 'at': 0.0, 'task': task}
+        task = asyncio.get_running_loop().create_task(_refresh(key, url, token, RETRY_TIMEOUT_SECONDS if retry else TIMEOUT_SECONDS))
+        _state[key] = {'value': entry.get('value') if entry else None, 'at': entry.get('at', 0.0) if entry else 0.0, 'task': task}
     try:
         return await asyncio.shield(task)
     except Exception:

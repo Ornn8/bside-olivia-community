@@ -387,27 +387,30 @@ def test_a_relay_that_does_not_answer_or_has_no_key_is_not_ready():
     assert asyncio.run(song_resolver.probe('', '')) is False
 
 
-def test_the_probe_is_remembered_for_ten_minutes_and_keeps_covers_off(monkeypatch):
+def test_a_yes_is_remembered_for_ten_minutes_a_no_for_half_a_minute_and_a_no_is_asked_twice(monkeypatch):
     monkeypatch.setattr(cover_chat, 'ENABLED', True)
     cover_chat._probe.clear()
     calls = []
-    answers = [False, True]
+    answers = [False, False, True]
 
     async def probe(url, token):
         calls.append(1)
         return answers.pop(0)
     monkeypatch.setattr(song_resolver, 'probe', probe)
 
-    async def caps(environment):
+    async def caps(environment, retry=False):
         return {'kinds': ['cover']}
     monkeypatch.setattr('runtime.media_capabilities.current', caps)
     env = {'OLIVIA_GPU_API_URL': 'https://gpu.example', 'OLIVIA_GPU_API_KEY': 'k'}
     clock = [1000.0]
     monkeypatch.setattr(cover_chat.time, 'monotonic', lambda: clock[0])
-    assert asyncio.run(cover_chat.available(env)) is False and asyncio.run(cover_chat.available(env)) is False
-    assert len(calls) == 1                                       # not asked again within the time
-    clock[0] += cover_chat.PROBE_SECONDS + 1
-    assert asyncio.run(cover_chat.available(env)) is True and len(calls) == 2
+    assert asyncio.run(cover_chat.availability(env)) == (False, 'COVER_RELAY_PROBE_FAILED')
+    assert len(calls) == 2                                       # one dropped connection is asked again at once
+    assert asyncio.run(cover_chat.available(env)) is False and len(calls) == 2   # then remembered for a short time
+    clock[0] += cover_chat.PROBE_RETRY_SECONDS + 1
+    assert asyncio.run(cover_chat.available(env)) is True and len(calls) == 3
+    clock[0] += cover_chat.PROBE_RETRY_SECONDS + 1
+    assert asyncio.run(cover_chat.available(env)) is True and len(calls) == 3    # a yes stays for ten minutes
     assert asyncio.run(cover_chat.offered(SimpleNamespace(_local_data_root=lambda: None), {'channel': 'qq'}, env)) == []
     cover_chat._probe.clear()
 

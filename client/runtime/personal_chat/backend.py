@@ -599,10 +599,15 @@ async def _generate_billed(server, event, row):
     cover_offered = []
     if event.channel == 'qq' and cover_chat.ENABLED and row.get('origin') != 'proactive' and row.get('contact_id') is None:
         # A song the user shares (card, link, B站 video) becomes a cover source she may choose to sing.
-        from .song_intake import receive_shares
-        if await cover_chat.available(os.environ):
+        from .song_intake import receive_shares, defer_share
+        on, why = await cover_chat.availability(os.environ)
+        if on:
             await receive_shares(server, event, row)
+        else:
+            defer_share(server, event, row, why)  # said plainly to the user with its code, picked up on a later turn
+            row['cover_sources'] = []
         cover_offered = await cover_chat.offered(server, row, os.environ)
+        row['cover_orders'] = cover_chat.in_flight(server, row)
         observation_context += cover_chat.context(row)
     if event.channel == 'qq':
         from .bilibili import link_context
