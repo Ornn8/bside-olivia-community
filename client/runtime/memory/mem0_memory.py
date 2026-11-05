@@ -1537,13 +1537,16 @@ class Mem0ConversationMemoryAdapter:
         from . import remote_embedding
         try:
             hits, floor = None, 0.45
+            # Rerank recall (r3) chooses among the nearest exchanges itself: more of them, no score floor.
+            from .r3_recall import CANDIDATES, enabled as r3_enabled
+            pool = CANDIDATES if r3_enabled() else 12
             if (remote_embedding.available()
                     and self._originals.vector_coverage(user_id, remote_embedding.MODEL) >= 0.9):
                 vector = remote_embedding.embed_query(query)
                 if vector is not None:
-                    hits = self._originals.nearest_sources(user_id, remote_embedding.MODEL, vector, limit=12,
+                    hits = self._originals.nearest_sources(user_id, remote_embedding.MODEL, vector, limit=pool,
                                                            exclude_source_ids=excluded)
-                    floor = remote_embedding.SCORE_FLOOR
+                    floor = remote_embedding.SCORE_FLOOR if pool == 12 else 0.0
             if hits is None:
                 embed = self._embedder()
                 if embed is None:
@@ -1553,7 +1556,7 @@ class Mem0ConversationMemoryAdapter:
                 vector = embed(query[:500], 'search')
                 norm = sum(value * value for value in vector) ** 0.5 or 1.0
                 hits = self._originals.nearest_sources(user_id, self.config.embedding_model,
-                                                       [value / norm for value in vector], limit=12,
+                                                       [value / norm for value in vector], limit=pool,
                                                        exclude_source_ids=excluded)
             return tuple(ConversationMemoryRecord(memory_id='vector:' + hashlib.sha256(source.encode()).hexdigest()[:32],
                                                   text=snippet, user_id=user_id, source_id=source,

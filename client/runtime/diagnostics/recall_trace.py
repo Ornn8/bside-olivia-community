@@ -28,6 +28,8 @@ _INTENTS = frozenset({'sharing', 'recall_question', 'action_request', 'correctio
 _JEV_REASON = re.compile(r'JEV_[A-Z0-9_]{2,60}')
 # Unexpected failures: the step that failed and the exception class, never a message.
 _ERROR_REASON = re.compile(r'error_(?:prepare|select|validate|save|group)_[A-Za-z][A-Za-z0-9]{0,40}')
+# Rerank recall could not answer and the former judgment ran: r3_rerank_timeout, r3_rerank_http_402 and the like.
+_R3_REASON = re.compile(r'r3_[a-z0-9_]{2,40}')
 _REASONS = frozenset({'capacity', 'timeout', 'validation', 'provider', 'source_parse', 'dependency_store',
                      'input_capacity', 'no_history', 'not_enabled'})
 
@@ -53,7 +55,7 @@ def project(value):
                          ('reply_intent', _INTENTS)):
         item = value.get(key)
         if isinstance(item, str) and (item in allowed or key == 'reason' and (
-                _JEV_REASON.fullmatch(item) or _ERROR_REASON.fullmatch(item))):
+                _JEV_REASON.fullmatch(item) or _ERROR_REASON.fullmatch(item) or _R3_REASON.fullmatch(item))):
             result[key] = item
     states = value.get('source_status')
     if isinstance(states, dict):
