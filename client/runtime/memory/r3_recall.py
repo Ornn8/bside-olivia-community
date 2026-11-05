@@ -8,7 +8,7 @@ history-selection judgment (one rerank is priced as one judgment), so a turn mak
 Any failure, or more than ``TIMEOUT`` seconds, raises ``Unavailable`` with a content-free reason code; the caller
 then runs the former judgment, so a failed rerank never lowers the quality of that reply and never fails it.
 
-Switch (default OFF until the owner turns it on): ``OLIVIA_R3_RECALL=1`` or ``{"enabled": true}`` in
+Switch (default ON): ``OLIVIA_R3_RECALL=0`` or ``{"enabled": false}`` in
 ``<data root>/r3-recall.json``; the same file may set ``keep`` (1-10) and ``recall_chars`` (800-8000).
 """
 from __future__ import annotations
@@ -57,9 +57,9 @@ def _setting(name):
 
 
 def enabled() -> bool:
-    """Off unless switched on: ``OLIVIA_R3_RECALL=1`` or ``{"enabled": true}`` in ``<data root>/r3-recall.json``.
-    ``OLIVIA_R3_RECALL=0`` wins over the file. This is the retrieval change only (rerank instead of the judgment)."""
-    return _switch('OLIVIA_R3_RECALL', 'enabled')
+    """On unless switched off: ``OLIVIA_R3_RECALL=0`` or ``{"enabled": false}`` in ``<data root>/r3-recall.json``.
+    The environment wins over the file. This is the retrieval change only (rerank instead of the judgment)."""
+    return _switch('OLIVIA_R3_RECALL', 'enabled', default=True)
 
 
 def format_enabled() -> bool:
@@ -67,13 +67,14 @@ def format_enabled() -> bool:
     return _switch('OLIVIA_R3_FORMAT', 'format')
 
 
-def _switch(variable, name) -> bool:
+def _switch(variable, name, default=False) -> bool:
     env = os.environ.get(variable, '').strip().lower()
     if env in {'0', 'off', 'false', 'no'}:
         return False
     if env in {'1', 'on', 'true', 'yes'}:
         return True
-    return _setting(name) is True
+    value = _setting(name)
+    return value if isinstance(value, bool) else default
 
 
 def min_score() -> float:

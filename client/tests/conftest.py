@@ -18,8 +18,8 @@ def immediate_reply_rhythm(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def judgment_recall_unless_r3(request, monkeypatch):
-    # Rerank recall (runtime/memory/r3_recall) is off by default; tests/memory/test_r3_*.py switch it on with the
-    # `r3` marker, and no test depends on the machine's own r3-recall.json.
+    # Rerank recall (runtime/memory/r3_recall) is on by default in the product; other tests keep the former judgment and
+    # tests/memory/test_r3_*.py switch it on with the `r3` marker, and no test depends on the machine's own r3-recall.json.
     value = "1" if request.node.get_closest_marker("r3") else "0"
     monkeypatch.setenv("OLIVIA_R3_RECALL", value)
     monkeypatch.setenv("OLIVIA_R3_FORMAT", value)

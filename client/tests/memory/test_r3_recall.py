@@ -185,23 +185,26 @@ def test_rerank_answer_is_validated():
             r3_recall._order(bad, 3)
 
 
-def test_switch_is_off_by_default_and_the_file_sets_the_limits(monkeypatch, tmp_path):
+def test_retrieval_is_on_by_default_format_is_off_and_the_file_sets_the_limits(monkeypatch, tmp_path):
     monkeypatch.delenv('OLIVIA_R3_RECALL', raising=False)
+    monkeypatch.delenv('OLIVIA_R3_FORMAT', raising=False)
     monkeypatch.setenv('OLIVIA_LOCAL_DATA_ROOT', str(tmp_path))
-    assert r3_recall.enabled() is False
+    assert r3_recall.enabled() is True and r3_recall.format_enabled() is False
     assert (r3_recall.keep(), r3_recall.recall_chars()) == (r3_recall.KEEP, r3_recall.RECALL_CHARS)
     setting = tmp_path / 'r3-recall.json'
-    setting.write_text('{"enabled": true, "keep": 4, "recall_chars": 2000}', encoding='utf-8')
+    setting.write_text('{"keep": 4, "recall_chars": 2000}', encoding='utf-8')
     assert r3_recall.enabled() is True and (r3_recall.keep(), r3_recall.recall_chars()) == (4, 2000)
     setting.write_text('{"enabled": true, "keep": 99, "recall_chars": "x"}', encoding='utf-8')
     assert (r3_recall.keep(), r3_recall.recall_chars()) == (r3_recall.KEEP, r3_recall.RECALL_CHARS)
     setting.write_text('not json', encoding='utf-8')
-    assert r3_recall.enabled() is False
-    setting.write_text('{"enabled": true}', encoding='utf-8')
-    monkeypatch.setenv('OLIVIA_R3_RECALL', '0')                           # the environment turns it off
-    assert r3_recall.enabled() is False
-    monkeypatch.setenv('OLIVIA_R3_RECALL', '1')
+    assert r3_recall.enabled() is True                                    # an unreadable file is the default
+    setting.write_text('{"enabled": false, "format": true}', encoding='utf-8')
+    assert r3_recall.enabled() is False and r3_recall.format_enabled() is True   # the file turns retrieval off
+    monkeypatch.setenv('OLIVIA_R3_RECALL', '1')                           # the environment wins over the file
     assert r3_recall.enabled() is True
+    setting.write_text('{"enabled": true}', encoding='utf-8')
+    monkeypatch.setenv('OLIVIA_R3_RECALL', '0')
+    assert r3_recall.enabled() is False
 
 
 # ---- inside the history selection ---------------------------------------------------------------------------------
