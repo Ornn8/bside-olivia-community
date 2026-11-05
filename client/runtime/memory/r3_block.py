@@ -1,7 +1,7 @@
 """The recalled exchanges in the form the writer reads them (rerank recall).
 
-One JSON envelope, once: the ``<untrusted_history>{"untrusted":true,"text":...}</untrusted_history>`` shape every later
-stage already reads. Inside it are plain lines, not records encoded a second time::
+One JSON envelope, once: the untrusted ``{"untrusted":true,"text":...}`` element (see ``encode``) every later stage
+already reads. Inside it are plain lines, not records encoded a second time::
 
     [ORIGINAL_CORRESPONDENCE_UNTRUSTED]
     recorded_utterance
@@ -39,7 +39,7 @@ def _encode(value):
 
 
 def encode(text):
-    """The envelope around the block text; the angle brackets of the history cannot close it."""
+    """The envelope around the block text; angle brackets in the recalled text cannot close it."""
     value = _encode({'untrusted': True, 'text': text})
     return '<untrusted_history>' + value.replace('<', r'\u003c').replace('>', r'\u003e') + '</untrusted_history>'
 
@@ -128,12 +128,12 @@ def text(groups, now, **options):
 
 
 def block(groups, now, **options):
-    """The whole ``<untrusted_history>`` element, the thing whose length the recall cap bounds."""
+    """The whole untrusted element, the thing whose length the recall cap bounds."""
     return encode(text(groups, now, **options))
 
 
 def is_compact(block_text):
-    """The decoded text of a history block is in this form (its second line is the shared evidence kind)."""
+    """The decoded text of a recalled block is in this form (its second line is the shared evidence kind)."""
     head = block_text.split('\n', 2)
     return len(head) >= 2 and head[0] == MARKER and head[1] == KIND
 
