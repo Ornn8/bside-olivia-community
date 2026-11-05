@@ -670,7 +670,7 @@ class ReplyPipeline:
         if isinstance(prepared, ReplyRequest) and prepared.messages:
             from .fact_attribution import prepare_dialogue_messages
             prepared = replace(prepared, messages=prepare_dialogue_messages(
-                prepared.messages, max_input_chars=max(1, context_budget)))
+                prepared.messages, max_input_chars=max(1, context_budget), now=context.trusted_time.instant))
         if isinstance(prepared, ReplyRequest) and prepared.messages:
             from .fact_attribution import finalize_reply_messages
             try:
@@ -785,6 +785,11 @@ class ReplyPipeline:
             candidate = await measure('writer', self.orchestrator.run(prepared))
             if recovery is not None:
                 recovery.put_writer(candidate, token=token)
+        if candidate.state is ReplyState.COMPLETED and isinstance(candidate.text, str):
+            # Day marks and date tags are data the writer read, never words it says.
+            from runtime.memory import r3_format, r3_recall
+            if r3_recall.format_enabled():
+                candidate = replace(candidate, text=r3_format.strip_marks(candidate.text))
         if candidate.state is not ReplyState.COMPLETED:
             return PipelineResult(
                 candidate.request_id,

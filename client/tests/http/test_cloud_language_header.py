@@ -312,7 +312,7 @@ CLIENT_PATTERN = re.compile(
 CLOUD_CLIENTS = {
     "llm_gateway.py", "original_client_relay_api.py", "runtime/remote_generation.py", "runtime/call/http.py",
     "runtime/call/desk.py", "runtime/cloud_policy.py", "runtime/image_assets.py", "runtime/image_understanding.py",
-    "runtime/relationship_batch.py", "runtime/memory/remote_embedding.py", "runtime/reply/companion_decision.py",
+    "runtime/relationship_batch.py", "runtime/memory/remote_embedding.py", "runtime/memory/r3_recall.py", "runtime/reply/companion_decision.py",
     "runtime/reply/jev_billing.py", "runtime/improve/upload.py", "runtime/personal_chat/napcat_bundle.py",
     "runtime/incoming_media.py", "runtime/media/song_resolver.py",
 }
