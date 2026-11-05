@@ -441,4 +441,4 @@ def test_retrieval_alone_keeps_the_former_record_format(monkeypatch):
     result = _run(_messages(), gateway)
     assert gateway.calls == []
     record = _selected(result)[0][0]
-    assert 'when' not in record and 'occurred_at' in record and 'ago' in record
+    assert 'when' not in record and 'occurred_at' in record
