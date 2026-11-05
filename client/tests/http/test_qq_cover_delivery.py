@@ -101,7 +101,7 @@ def world(tmp_path, monkeypatch):
     return state
 
 
-def asked_row(world, letter_id='turn-1', *, share=NETEASE_CARD, words='你翻唱这首歌吧'):
+def asked_row(world, letter_id='turn-1', *, share=NETEASE_CARD, words='你翻唱这首歌吧', style=None):
     """A turn in which he shared a song and asked for a cover: the writer's answer decoded as the backend does."""
     row = {'letter_id': letter_id, 'channel': 'qq', 'delivery_status': 'DELIVERED', 'letter_status': 'COMPLETED',
            'binding_id': PersonalMessage('qq', 'b', 'u', '', '').binding_id}
@@ -112,7 +112,7 @@ def asked_row(world, letter_id='turn-1', *, share=NETEASE_CARD, words='你翻唱
         await song_intake.receive_shares(world.server, event, row)
         return await cover_chat.offered(world.server, row, {})
     offered = asyncio.run(prepare())
-    written = decision.decode(envelope(text='好呀，我唱给你听。', cover={'source': offered[0]['id'], 'evidence': words}),
+    written = decision.decode(envelope(text='好呀，我唱给你听。', cover={'source': offered[0]['id'], 'evidence': words, **({} if style is None else {'style': style})}),
                               user=text, now=time.time(), cover_sources=offered)
     row.update(cover_request=written['cover_request'], cover_status=cover_chat.PENDING)
     world.rows.append(row)
@@ -331,6 +331,31 @@ def test_a_busy_lane_is_waited_for_with_the_same_order(pipeline, monkeypatch):
     assert len(submitted) == 3 and len({item['request_id'] for item in submitted}) == 1
     assert submitted[0]['kind'] == 'cover' and submitted[0]['input']['cover_options']['engine'] == 'yue2'
     assert submitted[0]['input']['lyrics'] == '' and row['cover_status'] == 'DELIVERED' and world.slept[:2] == [2, 4]
+
+
+def test_the_users_style_is_the_arrangement_of_the_order_and_survives_a_restart(pipeline, monkeypatch):
+    world = pipeline
+    row = asked_row(world, words='你翻唱这首歌吧，想听摇滚版的', style='摇滚版')
+    assert row['cover_request']['style'] == '摇滚版'
+    restarted = json.loads(json.dumps(row))                     # the row as it was saved before a restart
+    world.rows[:] = [restarted]
+    service = Service(submits=[task('task-3', 'queued', 'queued')],
+                      statuses=[task('task-3', 'succeeded', 'completed')]).install(monkeypatch)
+    run_service(world, restarted, Send())
+    assert service.of('submit')[0]['input']['cover_options'] == {
+        'audio_cover_strength': 0.6, 'cover_noise_strength': 0.25, 'engine': 'yue2', 'arrangement': '摇滚版'}
+    assert restarted['cover_status'] == 'DELIVERED'
+
+
+def test_without_a_style_the_order_has_no_arrangement(pipeline, monkeypatch):
+    world = pipeline
+    row = asked_row(world)
+    assert 'style' not in row['cover_request']
+    service = Service(submits=[task('task-4', 'queued', 'queued')],
+                      statuses=[task('task-4', 'succeeded', 'completed')]).install(monkeypatch)
+    run_service(world, row, Send())
+    options = service.of('submit')[0]['input']['cover_options']
+    assert options['engine'] == 'yue2' and 'arrangement' not in options
 
 
 def test_a_lane_that_stays_busy_ends_with_GPU_LANE_BUSY_told_once(pipeline, monkeypatch):

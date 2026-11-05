@@ -27,6 +27,7 @@ RETRY_SECONDS = 120
 KEEP_HANDLED = 200
 MAX_PENDING = 100
 MAX_ASSET_BYTES = 10 * 1024 * 1024
+SONG_WAIT_SECONDS = 900  # A finished song is fetched, encoded and uploaded to QQ after her words.
 MEDIA_WAIT_SECONDS = 300  # How long a contact waits for its picture before it is reported.
 DEFAULT_TITLE = '想和你说说话'
 CHANNELS = ('letter', 'qq', 'qq_then_letter', 'preferred')
@@ -418,6 +419,16 @@ LETTER_RULE = ('现在写一封云端指定要写的信，只输出最终正文�
                '不编造共同经历，不提云端、系统、任务或这条说明。')
 TITLE_RULE = ('云端指定要写一封信，现在只为它取标题。只输出 JSON：{"title":"简短标题"}，标题1到40个字，'
               '贴合这封信要写的内容，不写日期和落款。')
+
+
+def qq_song_fields(media):
+    """A finished song a contact names (by its task) goes to QQ as an mp3 file through the cover delivery: the row asks
+    for it like a cover she chose to sing, with the media brief as the song's title. Nothing is ordered."""
+    for item in media:
+        if item['type'] == 'song' and item.get('task_id'):
+            return {'cover_request': {'task_id': item['task_id'], 'title': (item.get('brief') or '').strip()[:80]},
+                    'cover_status': 'PENDING'}
+    return {}
 
 
 def normalize_media(media):

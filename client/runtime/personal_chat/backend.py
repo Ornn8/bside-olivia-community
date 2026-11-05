@@ -476,7 +476,7 @@ async def _contact_qq(server, runtime, initiative, event):
     exchange = PersonalMessage(old.channel, old.account_id, old.owner_id,
                                'contact-' + event['id'].removeprefix('contact:').replace('-', '') + '-' + str(event['attempts']), '')
     fresh = sender.for_exchange(exchange) if callable(getattr(sender, 'for_exchange', None)) else sender
-    await runtime['service'].proactive(exchange, fresh, runtime['qq_reachable'], contact=cloud_contact.row_fields(event))
+    await runtime['service'].proactive(exchange, fresh, runtime['qq_reachable'], contact={**cloud_contact.row_fields(event), **cloud_contact.qq_song_fields(cloud_contact.row_fields(event)['contact_media'])})
     row = next((r for r in server.store.personal_chats if r.get('letter_id') == exchange.exchange_id), None)
     if row is None:
         return Outcome('busy')  # The owner was writing, or QQ dropped, before anything began.
@@ -511,7 +511,14 @@ async def _contact_qq_media(row):
     if 'video' in kinds and not row.get('daily_video_request'):
         codes.append('MEDIA_VIDEO_UNAVAILABLE')
     if 'song' in kinds:
-        codes.append('MEDIA_SONG_UNAVAILABLE')  # a finished song rides a letter, never a chat message
+        if not row.get('cover_request'):
+            codes.append('MEDIA_SONG_UNAVAILABLE')  # a song named without its task cannot be fetched
+        else:
+            # The file goes out through the cover delivery after her words; a fetch, an encode and a 30 MB upload.
+            await cloud_contact.wait_until(lambda: row.get('cover_status') in {'DELIVERED', 'FAILED', 'UNKNOWN'},
+                                           cloud_contact.SONG_WAIT_SECONDS)
+            if row.get('cover_status') != 'DELIVERED':
+                codes.append(row.get('cover_error_code') or 'MEDIA_SONG_FAILED')
     if 'voice' in kinds and row.get('delivered_format') != 'audio':
         if row.get('default_voice_status') in {'PENDING', 'RENDERING', 'SENDING'}:
             await cloud_contact.wait_until(lambda: row.get('default_voice_status') not in {'PENDING', 'RENDERING', 'SENDING'},
