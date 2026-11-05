@@ -3,7 +3,7 @@
 The exchanges retrieved for a message (cloud vectors, or the local model when the cloud index is not ready; plus the
 word index) are up to ``CANDIDATES`` whole exchanges. The relay's /v1/rerank orders them against the message
 alone and the best ``KEEP`` reach the writer, oldest first, in the dated form of ``r3_format``. It replaces the
-history-selection judgment (one rerank is priced as one judgment), so a turn makes the same number of paid calls.
+recall-selection judgment, one call for one call, so a turn makes the same number of model calls.
 
 Any failure, or more than ``TIMEOUT`` seconds, raises ``Unavailable`` with a content-free reason code; the caller
 then runs the former judgment, so a failed rerank never lowers the quality of that reply and never fails it.
