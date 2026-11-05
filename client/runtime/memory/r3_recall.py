@@ -51,7 +51,7 @@ def _setting(name):
     try:
         path = Path(root) / 'r3-recall.json'
         if path.exists() and path.stat().st_size <= 4096:
-            value = json.loads(path.read_text(encoding='utf-8'))
+            value = json.loads(path.read_text(encoding='utf-8-sig'))   # a file saved by Windows tools may start with a BOM
             return value.get(name) if isinstance(value, dict) else None
     except (OSError, ValueError):
         pass                # an unreadable setting is the default

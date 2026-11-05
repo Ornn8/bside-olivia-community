@@ -573,6 +573,22 @@ def test_compact_switch_defaults_on_and_follows_environment_then_file(monkeypatc
     assert r3_recall.compact_enabled() is False
 
 
+def test_a_setting_file_saved_with_a_bom_still_switches(monkeypatch, tmp_path):
+    monkeypatch.delenv('OLIVIA_R3_COMPACT', raising=False)
+    monkeypatch.setenv('OLIVIA_LOCAL_DATA_ROOT', str(tmp_path))
+    (tmp_path / 'r3-recall.json').write_text('{"compact": false}', encoding='utf-8-sig')
+    assert r3_recall.compact_enabled() is False
+
+
+def test_no_block_when_every_chosen_line_is_already_in_the_dialogue(monkeypatch):
+    async def fake(query, documents):
+        return [0, 1]
+    monkeypatch.setattr(r3_recall, '_ask', fake)
+    monkeypatch.setattr(r3_block, 'lines', lambda *args, **options: [])
+    result = _run(_messages(), Gateway())
+    assert not any(r3_block.MARKER in m['content'] for m in result)
+
+
 def test_the_selection_note_is_unchanged():
     import hashlib
     from runtime.memory.history_selection import _SELECTED

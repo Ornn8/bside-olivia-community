@@ -294,12 +294,14 @@ async def _select_history_messages(messages, gateway, *, max_input_chars, reques
         if r3_reason:
             log.info('R3_RECALL_FALLBACK %s', r3_reason)
     shape = (lambda group: r3_format.compact_group(group, now)) if r3_recall.format_enabled() else (lambda group: group)
-    render, plain = _block, shape
+    render, plain, shows = _block, shape, bool
     if r3_state is not None and r3_recall.compact_enabled():
         # Recalled exchanges are written as dated lines (r3_block); the cap below is measured on that rendered element.
         known, annotate = {r3_block.source(r) for r in visible_recent} - {None}, r3_recall.format_enabled()
         render = lambda groups: r3_block.block(groups, now, annotate=annotate, known_sources=known, legacy=shape)
         plain = lambda group: group
+        # Only summaries of sources the writer already reads: no line to show, so no block at all.
+        shows = lambda groups: bool(r3_block.lines(groups, now, annotate=annotate, known_sources=known, legacy=shape))
     if r3_state is not None or (offered or visible_recent or persona_offered) and len(_encode(packet)) <= candidate_limit:
         status, reason, stage = 'unavailable', 'provider', 'prepare'
         try:
@@ -420,7 +422,7 @@ async def _select_history_messages(messages, gateway, *, max_input_chars, reques
             base = [m for i, m in enumerate(base) if i == current_index or
                     not any(r['citation'] == citation for r in recent_records([m, {'role':'user','content':''}]))]
             gap = True
-    if selected:
+    if shows(selected):
         index = next(i for i, m in enumerate(base) if m.get('role') == 'system')
         base[index]['content'] += '\n' + render(selected)
     if groups and sum(len(m['content']) for m in base) + len(_SELECTED) <= max_input_chars:
