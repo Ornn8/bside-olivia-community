@@ -29,7 +29,7 @@ TIMEOUT = 5.0
 QUERY_CHARS = 2000
 DOC_CHARS = 2500            # relay: each document <= 4000 characters, all together <= 120000
 MIN_SCORE = 0.5            # of the benchmark's top-10 scores about one in ten is below this
-RECALL_CHARS = 3000         # the recalled block never exceeds this (the former judgment allowed 8000)
+RECALL_CHARS = 1250         # the recalled block never exceeds this; measured on production 11-05 the judgment adds 1243 chars on average (QQ 1161, letters 1843)
 _COOLDOWN = 120.0           # after a refusal or an outage the former judgment runs without trying again first
 _failed_at = 0.0
 

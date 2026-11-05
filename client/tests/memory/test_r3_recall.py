@@ -248,6 +248,7 @@ def test_rerank_replaces_the_judgment_and_shows_dated_exchanges_oldest_first(mon
         assert query == '你还记得我说过什么吗' and len(documents) == 30
         return [7, 2, 11, 0, 5]
     monkeypatch.setattr(r3_recall, '_ask', fake)
+    monkeypatch.setattr(r3_recall, 'RECALL_CHARS', 3000)                # the default (1250) fits about two exchanges
     gateway = Gateway()
     result = _run(_messages(), gateway)
     assert gateway.calls == []                                         # no judgment: one rerank instead
@@ -263,10 +264,15 @@ def test_rerank_replaces_the_judgment_and_shows_dated_exchanges_oldest_first(mon
     assert 'trace' not in json.dumps(result)
 
 
+def test_default_cap_is_the_measured_production_average():
+    assert r3_recall.RECALL_CHARS == 1250 and r3_recall.KEEP == 10 and r3_recall.MIN_SCORE == 0.5
+
+
 def test_at_most_ten_exchanges_and_a_bounded_block(monkeypatch):
     async def fake(query, documents):
         return list(range(20))                                          # a model that answers with more than asked
     monkeypatch.setattr(r3_recall, '_ask', fake)
+    monkeypatch.setattr(r3_recall, 'RECALL_CHARS', 3000)
     result = _run(_messages(), Gateway())
     assert len(_selected(result)) <= r3_recall.KEEP
 
