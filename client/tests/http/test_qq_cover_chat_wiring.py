@@ -189,3 +189,60 @@ def test_a_failed_cover_is_told_at_once_with_its_reason_and_code_and_not_retried
     asyncio.run(scenario())
     assert calls == [1] and row['cover_status'] == 'FAILED' and row['cover_error_code'] == 'YUE2_TEMPO_OUT_OF_RANGE'
     assert len(send.texts) == 1 and 'YUE2_TEMPO_OUT_OF_RANGE' in send.texts[0]
+
+
+def _generate(server, row, text):
+    return asyncio.run(backend.generate(server, PersonalMessage('qq', 'b', 'u', '1', text), row))
+
+
+def test_one_slow_capabilities_answer_does_not_switch_covers_off_for_a_merged_card_and_request(monkeypatch, covers):
+    asked = []
+
+    async def caps(environment, retry=False):
+        asked.append(retry)
+        return {'kinds': ['cover']} if retry else None  # the first read times out, the second one answers
+    monkeypatch.setattr('runtime.media_capabilities.current', caps)
+    user = text_of(card(NETEASE_CARD)) + '\n我想听你唱这首歌'   # two QQ messages merged into one turn
+    server, row, seen, _, _ = server_fixture(monkeypatch, covers.tmp, pipeline_result())
+    server._local_data_root = lambda: covers.tmp
+    _generate(server, row, user)
+    assert asked[:2] == [False, True]
+    assert [item['title'] for item in seen[0]['cover_sources']] == ['晴天'] and 'cover_skip' not in row
+
+
+def test_a_song_shared_while_covers_are_unavailable_is_told_with_its_code_and_picked_up_later(monkeypatch, covers):
+    async def no_caps(environment, retry=False):
+        return None
+    monkeypatch.setattr('runtime.media_capabilities.current', no_caps)
+    server, row, seen, _, _ = server_fixture(monkeypatch, covers.tmp, pipeline_result())
+    server._local_data_root = lambda: covers.tmp
+    _generate(server, row, text_of(card(NETEASE_CARD)) + '\n你唱这首吧')
+    assert row['cover_skip'] == 'COVER_CAPABILITIES_UNREAD' and seen[0]['cover_sources'] == []
+    note = seen[0]['incoming_observation_context']
+    assert '系统歌曲' in note and 'COVER_CAPABILITIES_UNREAD' in note and 'song_arrivals' not in row
+    assert (covers.tmp / 'cover-inputs' / song_intake.PENDING_FILE).exists()
+
+    async def caps(environment, retry=False):
+        return {'kinds': ['cover']}
+    monkeypatch.setattr('runtime.media_capabilities.current', caps)
+    server2, row2, seen2, _, _ = server_fixture(monkeypatch, covers.tmp, pipeline_result())
+    server2._local_data_root = lambda: covers.tmp
+    _generate(server2, row2, '怎么样了')
+    offered = seen2[0]['cover_sources']
+    assert [(item['title'], item['arrived']) for item in offered] == [('晴天', 'earlier')]
+    assert not (covers.tmp / 'cover-inputs' / song_intake.PENDING_FILE).exists()
+
+
+def test_an_order_in_flight_and_a_request_that_never_became_an_order_are_shown_to_the_writer(monkeypatch, covers):
+    server, row, seen, _, _ = server_fixture(monkeypatch, covers.tmp, pipeline_result())
+    server._local_data_root = lambda: covers.tmp
+    binding = PersonalMessage('qq', 'b', 'u', '', '').binding_id
+    row['binding_id'] = binding
+    server.store.personal_chats[:] = [row, {'channel': 'qq', 'binding_id': binding, 'cover_status': 'MAKING', 'cover_title': '什么'}]
+    _generate(server, row, '好了吗')
+    assert row['cover_orders'] == [{'what': '翻唱', 'title': '什么', 'state': '制作中'}]
+    assert '"orders"' in seen[0]['incoming_observation_context'] and '什么' in seen[0]['incoming_observation_context']
+    import time
+    server.store.personal_chats[:] = [row, {'channel': 'qq', 'binding_id': binding, 'created_at': time.time(),
+                                            'cover_request_dropped': 'COVER_EVIDENCE_NOT_QUOTED'}]
+    assert cover_chat.in_flight(server, row) == [{'what': '翻唱', 'state': '没有成功下单', 'code': 'COVER_EVIDENCE_NOT_QUOTED'}]

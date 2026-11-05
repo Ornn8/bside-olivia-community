@@ -20,7 +20,7 @@ def clock(monkeypatch):
 def fetcher(monkeypatch, answers):
     calls = []
 
-    async def fetch(url, token):
+    async def fetch(url, token, timeout=3):
         calls.append(url)
         answer = answers.pop(0) if answers else None
         return answer
@@ -81,4 +81,14 @@ def test_speech_and_piano_share_one_read(clock, monkeypatch):
         assert await speech.supported(ENV) is True
         assert (await piano.capabilities(ENV))['enabled'] is True
         assert len(calls) == 1
+    asyncio.run(run())
+
+
+def test_a_retry_reads_again_at_once_with_a_longer_wait_even_right_after_a_failure(clock, monkeypatch):
+    calls = fetcher(monkeypatch, [None, {'kinds': ['cover']}])
+
+    async def run():
+        assert await mc.current(ENV) is None
+        assert await mc.current(ENV) is None and len(calls) == 1      # an ordinary caller is not held again
+        assert (await mc.current(ENV, retry=True))['kinds'] == ['cover'] and len(calls) == 2
     asyncio.run(run())

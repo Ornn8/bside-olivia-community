@@ -25,6 +25,7 @@ log = logging.getLogger(__name__)
 # Whole feature switch: the single constant that turns covers from a chat on.
 ENABLED = True
 PROBE_SECONDS = 600
+PROBE_RETRY_SECONDS = 30   # a failed probe is asked again soon: one hiccup must not switch covers off for ten minutes
 LANE_WAIT_SECONDS = 20 * 60
 OFFER_LIMIT = 5
 PENDING = 'PENDING'
@@ -85,12 +86,12 @@ _probe: dict = {}
 
 
 async def relay_ready(environment) -> bool:
-    """The relay has the song request (answered once per PROBE_SECONDS; a relay without it keeps covers off)."""
+    """The relay has the song request (a yes is kept PROBE_SECONDS, a no only PROBE_RETRY_SECONDS)."""
     from runtime.media import song_resolver
     url, token = environment.get('OLIVIA_GPU_API_URL', ''), environment.get('OLIVIA_GPU_API_KEY', '')
     key = (url, hashlib.sha256(token.encode()).hexdigest())
     found = _probe.get(key)
-    if found and time.monotonic() - found[1] < PROBE_SECONDS:
+    if found and time.monotonic() - found[1] < (PROBE_SECONDS if found[0] else PROBE_RETRY_SECONDS):
         return found[0]
     _probe.clear()
     ready = await song_resolver.probe(url, token)
@@ -98,14 +99,44 @@ async def relay_ready(environment) -> bool:
     return ready
 
 
-async def available(environment) -> bool:
-    """Covers are on, the service offers them (not held for a night batch) and the relay has the song request."""
+# Why covers are not offered this turn (content-free codes: kept on the row and in the log, shown to the user).
+SKIP_WORDS = {
+    'COVER_NOT_CONFIGURED': '还没有连接 Olivia 云服务',
+    'COVER_CAPABILITIES_UNREAD': '没能连上 Olivia 云服务确认翻唱功能（网络慢或没连上）',
+    'COVER_SERVICE_NO_COVER': 'Olivia 云服务现在没有翻唱这项功能',
+    'COVER_NIGHT_ONLY': '翻唱现在只在夜里统一制作',
+    'COVER_RELAY_PROBE_FAILED': '取歌的服务现在没有应答',
+}
+
+
+async def availability(environment, eager=False) -> tuple[bool, str]:
+    """(on, reason): covers are on, the service offers them (not held for a night batch) and the relay has the song
+    request. ``reason`` is '' when on, else one of SKIP_WORDS (COVER_DISABLED: the switch is off). ``eager``: a song
+    is waiting this turn, so a failed read or probe is asked once more at once (other turns never wait for it)."""
     if not ENABLED:
-        return False
+        return False, 'COVER_DISABLED'
     from runtime.media_capabilities import current
-    if not capable(await current(environment)):
-        return False
-    return await relay_ready(environment)
+    caps = await current(environment)
+    if caps is None and eager and environment.get('OLIVIA_GPU_API_URL') and environment.get('OLIVIA_GPU_API_KEY'):
+        caps = await current(environment, retry=True)  # one slow answer must not switch covers off
+    if caps is None:
+        configured = environment.get('OLIVIA_GPU_API_URL') and environment.get('OLIVIA_GPU_API_KEY')
+        return False, 'COVER_CAPABILITIES_UNREAD' if configured else 'COVER_NOT_CONFIGURED'
+    if 'cover' not in (caps.get('kinds') or ()):
+        return False, 'COVER_SERVICE_NO_COVER'
+    if not capable(caps):
+        return False, 'COVER_NIGHT_ONLY'
+    ready = await relay_ready(environment)
+    if not ready and eager:
+        _probe.clear()  # a single dropped connection looks the same as a relay without the call
+        ready = await relay_ready(environment)
+    if not ready:
+        return False, 'COVER_RELAY_PROBE_FAILED'
+    return True, ''
+
+
+async def available(environment) -> bool:
+    return (await availability(environment))[0]
 
 
 def capable(caps) -> bool:
@@ -114,14 +145,15 @@ def capable(caps) -> bool:
     return 'cover' not in ((caps.get('night_batch') or {}).get('kinds') or ())
 
 
-async def offered(server, row, environment) -> list[dict]:
+async def offered(server, row, environment, checked=None) -> list[dict]:
     """The songs the writer may be asked to cover this turn, frozen on the row (this turn's first, then earlier ones)."""
     if 'cover_sources' in row:
         return row['cover_sources']
     from runtime.media.song_sources import SongSources
     root = getattr(server, '_local_data_root', lambda: None)()
     songs = []
-    if root is not None and row.get('channel', 'qq') == 'qq' and await available(environment):
+    if root is not None and row.get('channel', 'qq') == 'qq' and (
+            checked if checked is not None else await available(environment)):
         store = SongSources(root)
         fresh = [store.get(item.get('source')) for item in row.get('song_arrivals') or []]
         seen = set()
@@ -135,14 +167,39 @@ async def offered(server, row, environment) -> list[dict]:
     return songs
 
 
+ORDERS_MEANING = ('系统整理的你已经下单的东西，不是用户原话。state=制作中：已经在做，做好会自动发给他，不要再答应一遍，'
+                  '也不要说没在做；要提到时用这里的title。state=没有成功下单：上次想唱但没有下单（带code），'
+                  '他问起就如实说那次没成功，不要说还在做。')
+ORDER_STATES = {PENDING: '制作中', 'MAKING': '制作中', 'SENDING': '制作中'}
+
+
+def in_flight(server, row) -> list[dict]:
+    """Covers of this chat that are ordered and not yet delivered, and the last request that never became an order."""
+    rows = [other for other in getattr(getattr(server, 'store', None), 'personal_chats', ()) or ()
+            if other is not row and other.get('channel') == 'qq' and other.get('binding_id') == row.get('binding_id')]
+    orders = [{'what': '翻唱', 'title': (other.get('cover_title') or (other.get('cover_request') or {}).get('title', ''))[:60],
+               'state': ORDER_STATES[other['cover_status']]}
+              for other in rows if other.get('cover_status') in ORDER_STATES]
+    dropped = [other for other in rows if other.get('cover_request_dropped') and not other.get('cover_status')]
+    if dropped and not orders:
+        last = max(dropped, key=lambda other: float(other.get('created_at') or 0))
+        if time.time() - float(last.get('created_at') or 0) < 3600:
+            orders.append({'what': '翻唱', 'state': '没有成功下单', 'code': str(last['cover_request_dropped'])[:64]})
+    return orders[-3:]
+
+
 def context(row) -> str:
     """The note the writer reads about songs: '' when there is nothing about songs this turn."""
     songs = [{key: item[key] for key in ('id', 'title', 'singer', 'seconds', 'arrived')}
              for item in row.get('cover_sources') or []]
     failed = [{'what': item.get('what', ''), 'reason': item.get('reason', '')} for item in row.get('song_failures') or []]
-    if not songs and not failed:
+    orders = row.get('cover_orders') or []
+    if not songs and not failed and not orders:
         return ''
     note = {'meaning': MEANING, 'songs': songs, 'not_fetched': failed}
+    if orders:
+        note['orders'] = orders
+        note['orders_meaning'] = ORDERS_MEANING
     if row.get('song_listening_line'):
         note['already_said_first'] = row['song_listening_line']
     return '\n[系统歌曲，非用户原话]\n' + json.dumps(note, ensure_ascii=False)

@@ -75,7 +75,7 @@ def _clear_draft(row):
                 'generation_retryable', 'generation_failure_context', 'generation_failures', 'generation_notice_code',
                 'silence_reason', 'skip_reason', 'proactive_skip', 'user_controls_applied',
                 'daily_video_request', 'daily_video_status', 'daily_video_error_code', 'daily_video_candidates',
-                'cover_request', 'cover_status', 'cover_error_code', 'cover_sources', 'cover_request_dropped',
+                'cover_request', 'cover_status', 'cover_error_code', 'cover_sources', 'cover_orders', 'cover_skip', 'cover_request_dropped',
                 'writer_checkpoint', 'generation_run_id', 'generation_attempt_id', 'generation_recovery',
                 'send_attempt_id', 'send_input_revision', 'delivery_receipt'):
         row.pop(key, None)
