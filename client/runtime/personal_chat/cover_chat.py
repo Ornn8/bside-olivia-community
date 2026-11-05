@@ -86,8 +86,7 @@ _probe: dict = {}
 
 
 async def relay_ready(environment) -> bool:
-    """The relay has the song request (a yes is kept PROBE_SECONDS, a no only PROBE_RETRY_SECONDS; a no is asked once
-    more at once, because a single dropped connection looks the same as a relay without the call)."""
+    """The relay has the song request (a yes is kept PROBE_SECONDS, a no only PROBE_RETRY_SECONDS)."""
     from runtime.media import song_resolver
     url, token = environment.get('OLIVIA_GPU_API_URL', ''), environment.get('OLIVIA_GPU_API_KEY', '')
     key = (url, hashlib.sha256(token.encode()).hexdigest())
@@ -95,7 +94,7 @@ async def relay_ready(environment) -> bool:
     if found and time.monotonic() - found[1] < (PROBE_SECONDS if found[0] else PROBE_RETRY_SECONDS):
         return found[0]
     _probe.clear()
-    ready = await song_resolver.probe(url, token) or await song_resolver.probe(url, token)
+    ready = await song_resolver.probe(url, token)
     _probe[key] = (ready, time.monotonic())
     return ready
 
@@ -110,14 +109,15 @@ SKIP_WORDS = {
 }
 
 
-async def availability(environment) -> tuple[bool, str]:
+async def availability(environment, eager=False) -> tuple[bool, str]:
     """(on, reason): covers are on, the service offers them (not held for a night batch) and the relay has the song
-    request. ``reason`` is '' when on, else one of SKIP_WORDS (COVER_DISABLED: the switch is off)."""
+    request. ``reason`` is '' when on, else one of SKIP_WORDS (COVER_DISABLED: the switch is off). ``eager``: a song
+    is waiting this turn, so a failed read or probe is asked once more at once (other turns never wait for it)."""
     if not ENABLED:
         return False, 'COVER_DISABLED'
     from runtime.media_capabilities import current
     caps = await current(environment)
-    if caps is None and environment.get('OLIVIA_GPU_API_URL') and environment.get('OLIVIA_GPU_API_KEY'):
+    if caps is None and eager and environment.get('OLIVIA_GPU_API_URL') and environment.get('OLIVIA_GPU_API_KEY'):
         caps = await current(environment, retry=True)  # one slow answer must not switch covers off
     if caps is None:
         configured = environment.get('OLIVIA_GPU_API_URL') and environment.get('OLIVIA_GPU_API_KEY')
@@ -126,7 +126,11 @@ async def availability(environment) -> tuple[bool, str]:
         return False, 'COVER_SERVICE_NO_COVER'
     if not capable(caps):
         return False, 'COVER_NIGHT_ONLY'
-    if not await relay_ready(environment):
+    ready = await relay_ready(environment)
+    if not ready and eager:
+        _probe.clear()  # a single dropped connection looks the same as a relay without the call
+        ready = await relay_ready(environment)
+    if not ready:
         return False, 'COVER_RELAY_PROBE_FAILED'
     return True, ''
 
@@ -141,14 +145,15 @@ def capable(caps) -> bool:
     return 'cover' not in ((caps.get('night_batch') or {}).get('kinds') or ())
 
 
-async def offered(server, row, environment) -> list[dict]:
+async def offered(server, row, environment, checked=None) -> list[dict]:
     """The songs the writer may be asked to cover this turn, frozen on the row (this turn's first, then earlier ones)."""
     if 'cover_sources' in row:
         return row['cover_sources']
     from runtime.media.song_sources import SongSources
     root = getattr(server, '_local_data_root', lambda: None)()
     songs = []
-    if root is not None and row.get('channel', 'qq') == 'qq' and await available(environment):
+    if root is not None and row.get('channel', 'qq') == 'qq' and (
+            checked if checked is not None else await available(environment)):
         store = SongSources(root)
         fresh = [store.get(item.get('source')) for item in row.get('song_arrivals') or []]
         seen = set()

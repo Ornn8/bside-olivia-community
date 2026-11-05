@@ -111,6 +111,11 @@ def _pending_read(server, now=None) -> list:
             and isinstance(item.get('key'), str) and now - float(item.get('at') or 0) < PENDING_HOURS * 3600][-PENDING_LIMIT:]
 
 
+def song_waiting(server, event) -> bool:
+    """This message shares a song, or one shared earlier is still waiting to be fetched."""
+    return song_shares.find(getattr(event, 'text', '')) is not None or bool(_pending_read(server))
+
+
 def _pending_write(server, items) -> None:
     path = _pending_path(server)
     if path is None:
