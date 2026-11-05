@@ -345,12 +345,15 @@ class CompanionMemoryPromptBuilder:
         # The old Archive tokenizer cuts Chinese into fixed-width pieces. Until
         # the original-text index has caught up, inspect the same read-only rows
         # once and match the existing bigrams locally, preserving both speakers.
-        scanned, scan_status = [], None
+        scanned, scan_status, estimates = [], None, {}
         reader = getattr(self.archive_memory, "list_legacy", None)
         if callable(reader) and view.enabled and not view.guard_failed:
             try:
+                from .archive_dates import estimate_dates
                 from .source_retrieval import terms
-                for row in reader():
+                rows = [row for row in reader() if isinstance(row, Mapping)]
+                estimates = estimate_dates(rows)
+                for row in rows:
                     if not isinstance(row, Mapping) or not isinstance(row.get("content"), str):
                         continue
                     record = MemoryRecord(memory_id=str(row.get("memory_id", row.get("source_record_id", ""))),
@@ -396,7 +399,7 @@ class CompanionMemoryPromptBuilder:
                 record = records[identity]
                 record = replace(record, metadata={**record.metadata,
                     "topic_indexes": ",".join(map(str, sorted(indexes[identity])))})
-                selected.extend(_archive_originals(record))
+                selected.extend(_archive_originals(record, estimates.get(source_id(record))))
         state = ("unavailable" if "unavailable" in statuses else
                  "degraded" if "degraded" in statuses else
                  "disabled" if statuses and all(status == "disabled" for status in statuses) else "available")
@@ -574,8 +577,12 @@ def _historical_source_id(source: str) -> str:
     return prefix + hashlib.sha256(source.encode("utf-8")).hexdigest()
 
 
-def _archive_originals(record: MemoryRecord):
-    """Keep imported speakers separate and use the index's stable source identity."""
+def _archive_originals(record: MemoryRecord, estimate=None):
+    """Keep imported speakers separate and use the index's stable source identity.
+
+    An undated letter keeps occurred_at unknown; a date estimated from its import
+    travels separately and is labelled as an estimate when rendered.
+    """
     metadata = record.metadata
     if (metadata.get("import_kind") not in {
             "official_text_reply", "offline_recovered_text_reply", "local_letter_backup_v1"}
@@ -583,6 +590,7 @@ def _archive_originals(record: MemoryRecord):
         return (record,)
     source = _historical_source_id(source_id(record))
     occurred_at = None if metadata.get("timestamp_known") is False else record.occurred_at
+    estimated = estimate.to_dict() if estimate is not None and not occurred_at else {}
     records = []
     for actor, key in (("user", "user_content"), ("linli", "reply_text")):
         text = metadata[key]
@@ -594,7 +602,7 @@ def _archive_originals(record: MemoryRecord):
             metadata={"canonical": True, "verbatim": True, "complete_original": True,
                       "history_actor": actor, "speaker": actor, "retrieval_route": "archive",
                       "topic_indexes": metadata.get("topic_indexes", ""),
-                      "start": 0, "end": len(text), "part_count": 1}))
+                      "start": 0, "end": len(text), "part_count": 1, **estimated}))
     return tuple(records)
 
 

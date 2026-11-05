@@ -312,9 +312,9 @@ CLIENT_PATTERN = re.compile(
 CLOUD_CLIENTS = {
     "llm_gateway.py", "original_client_relay_api.py", "runtime/remote_generation.py", "runtime/call/http.py",
     "runtime/call/desk.py", "runtime/cloud_policy.py", "runtime/image_assets.py", "runtime/image_understanding.py",
-    "runtime/relationship_batch.py", "runtime/memory/remote_embedding.py", "runtime/reply/companion_decision.py",
+    "runtime/relationship_batch.py", "runtime/memory/remote_embedding.py", "runtime/memory/r3_recall.py", "runtime/reply/companion_decision.py",
     "runtime/reply/jev_billing.py", "runtime/improve/upload.py", "runtime/personal_chat/napcat_bundle.py",
-    "runtime/incoming_media.py",
+    "runtime/incoming_media.py", "runtime/media/song_resolver.py",
 }
 # Files whose requests go elsewhere, with the reason. Their headers are not ours to extend.
 OTHER_CLIENTS = {
@@ -331,6 +331,7 @@ OTHER_CLIENTS = {
     "runtime/imports/official_letters.py": "the original game's own service",
     "runtime/media/music_reply.py": "the music generator running on this computer",
     "runtime/personal_chat/bilibili.py": "public video pages and media, fetched on this computer",
+    "runtime/personal_chat/song_intake.py": "reads where a B站 short link leads, on this computer",
     "runtime/personal_chat/napcat_installer.py": "QQ protocol software on this computer, public download",
     "runtime/personal_chat/probe.py": "QQ and WeChat transports",
     "runtime/personal_chat/qq.py": "QQ transport on this computer",

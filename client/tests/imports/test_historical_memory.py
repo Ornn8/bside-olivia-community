@@ -767,6 +767,12 @@ def test_server_migration_applies_historical_axes_to_an_existing_private_world(
         trust=44,
         comfort=42,
         tension=9,
+        # The corpus took place on one day (synthetic epoch times); it counts
+        # as a day they talked, and the confirmed close stage opens volume 5.
+        relationship_days=("1970-01-01",),
+        relationship_route="romantic",
+        relationship_volume=5,
+        volume_started_days=1,
     )
 
     class ExplodingGateway:

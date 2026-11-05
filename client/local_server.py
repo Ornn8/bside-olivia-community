@@ -300,19 +300,29 @@ def _start_history_relationships(*, retry=False):
         return
     async def work():
         try:
+            from runtime.auto_update import replies_in_flight
             from runtime.imports.relationship_batches import archive_exchanges
+            # Batches that failed on a refusal that passes (busy, server error, timeout) are taken up again whenever
+            # the re-read starts: at startup, after an import, on a retry. Other failures wait for the explicit retry.
+            await asyncio.to_thread(queue.retry_transient)
             rows = await asyncio.to_thread(_legacy_import_adapter().list_legacy)
             queue.enqueue(archive_exchanges(rows))
             if private_world_command_service is not None and _llm_runtime_ready():
                 await queue.run(gateway=letters_adapter.gateway,
                     persona_policy=letters_adapter.get_persona_policy(),
                     command_service=private_world_command_service,
-                    snapshot=private_world_port.snapshot)
+                    snapshot=private_world_port.snapshot,
+                    busy=replies_in_flight)
                 state = queue.status()
                 if state.get('status') == 'FAILED':
                     from runtime.diagnostics.support_bundle import project_history_relationship_failure
                     event = project_history_relationship_failure(state)
                     _safe_log(event.pop('event'), **event)
+            if private_world_command_service is not None:
+                # Imports assessed by earlier versions did not count the days of their letters.
+                added = await asyncio.to_thread(queue.merge_history_days, private_world_port)
+                if added:
+                    _safe_log('history_relationship_days_merged', count=added)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -534,6 +544,9 @@ def _runtime_diagnostic_record(event: object, fields: Mapping[str, object]) -> d
     record: dict[str, object] = {"event": event}
     from runtime.diagnostics.failure_context import project_failure_context
     record.update(project_failure_context(fields))
+    if event in {"diary_write_failed", "diary_memoir_failed"}:
+        from runtime.diagnostics.support_bundle import project_diary_failure
+        record.update(project_diary_failure(fields))
     for name in ("status", "error_code"):
         value = fields.get(name)
         if isinstance(value, str) and _RUNTIME_DIAGNOSTIC_CODE_RE.fullmatch(value):
@@ -2225,6 +2238,8 @@ def letter_to_out(l):
         if imported_history
         else l.get("reply_text") or l.get("content")
     )
+    from runtime.reply.letter_presentation import envelope_parts as _summary_letter_parts
+    summary = (_summary_letter_parts(summary) or (summary,))[0] if isinstance(summary, str) else summary
     summary = summary or ""
     return {
         "letter_id": l["letter_id"],
@@ -4316,6 +4331,38 @@ def _diary_public_entry(entry):
 
 
 _diary_lock = asyncio.Lock()
+_diary_offered_cache: dict[str, object] = {"at": 0.0, "ids": None}
+
+
+async def _diary_offered_models():
+    """The model names the relay offers this account, or None when they cannot be read now. Asked at most every ten
+    minutes, and only when a writer's unusable reply makes the diary look for another writer."""
+    cached = _diary_offered_cache
+    if cached["ids"] is not None and time.monotonic() - float(cached["at"]) < 600:
+        return cached["ids"]
+    try:
+        from runtime import cloud_events
+        result = await cloud_events.request("GET", "/models")
+    except Exception:
+        return None
+    rows = result.get("data") if isinstance(result, dict) else None
+    if not isinstance(rows, list):
+        return None
+    ids = frozenset(item["id"] for item in rows if isinstance(item, dict) and isinstance(item.get("id"), str))
+    cached.update(at=time.monotonic(), ids=ids)
+    return ids
+
+
+def _diary_failure_fields(exc) -> dict[str, object]:
+    """The writer and the size of a reply that could not be used. Never the text of the reply."""
+    fields: dict[str, object] = {}
+    model = getattr(exc, "diary_model", None)
+    if isinstance(model, str):
+        fields["writer_model"] = model
+    reply = getattr(exc, "diary_reply", None)
+    if isinstance(reply, str):
+        fields["reply_chars"] = len(reply)
+    return fields
 
 
 async def _diary_tick(now=None) -> None:
@@ -4325,7 +4372,7 @@ async def _diary_tick(now=None) -> None:
 
 
 async def _diary_tick_once(now=None) -> None:
-    from runtime.diary.diary import due_days, write_day, day_life, unserved
+    from runtime.diary.diary import due_days, write_day, day_life, record_failure
     from runtime.private_world.daily_life_runtime import life_persona
     if diary_store is None or not diary_store.enabled():
         return
@@ -4340,13 +4387,12 @@ async def _diary_tick_once(now=None) -> None:
             outcome = await write_day(diary_store, letters_adapter.gateway, day, rows,
                 persona=life_persona(letters_adapter.persona_v2_path),
                 life=day_life(getattr(daily_life_runtime, 'store', None), day, outfit), now=now,
-                relationship_stage=stage, videos=videos, visits=_diary_visits(day))
+                relationship_stage=stage, videos=videos, visits=_diary_visits(day), offered=_diary_offered_models)
         except Exception as exc:
             # A request that never reached a service keeps its attempt; any other failure uses one up. Nothing
             # escapes this loop: an unexpected error must not stop the diary until the next start.
-            record = diary_store.deferred if unserved(exc) else diary_store.failed
-            record(day, type(exc).__name__)
-            _safe_log('diary_write_failed', error_code=getattr(exc, 'code', None) or type(exc).__name__)
+            code = record_failure(diary_store, day, exc)
+            _safe_log('diary_write_failed', error_code=code, **_diary_failure_fields(exc))
             continue
         if outcome == 'empty':
             diary_store.skip(day, 'EMPTY_DAY')
@@ -4372,7 +4418,7 @@ async def _write_memoirs(months) -> None:
 
 
 async def _write_memoirs_once(months) -> None:
-    from runtime.diary.diary import write_month, unserved
+    from runtime.diary.diary import write_month, record_failure
     from runtime.private_world.daily_life_runtime import life_persona
     _memoir_state.update(running=True, done=0, failed=0, total=len(months))
     try:
@@ -4383,13 +4429,13 @@ async def _write_memoirs_once(months) -> None:
                 stage, videos, _ = _diary_extras(month + '-01')
                 outcome = await write_month(diary_store, letters_adapter.gateway, month, rows,
                                   persona=life_persona(letters_adapter.persona_v2_path),
-                                  relationship_stage=stage, videos=videos, visits=_diary_visits(month))
+                                  relationship_stage=stage, videos=videos, visits=_diary_visits(month),
+                                  offered=_diary_offered_models)
                 _memoir_state['done' if outcome == 'written' or diary_store.entry(month) else 'failed'] += 1
             except Exception as exc:
                 _memoir_state['failed'] += 1
-                record = diary_store.deferred if unserved(exc) else diary_store.failed
-                record(month, type(exc).__name__)
-                _safe_log('diary_memoir_failed', error_code=getattr(exc, 'code', None) or type(exc).__name__)
+                code = record_failure(diary_store, month, exc)
+                _safe_log('diary_memoir_failed', error_code=code, **_diary_failure_fields(exc))
     finally:
         _memoir_state['running'] = False
 
@@ -5796,6 +5842,8 @@ async def route(
                 _persist_store_state()
                 _refresh_proactive_context()
         reply_text = l.get("reply_text", "") if reply_published else ""
+        from runtime.reply.letter_presentation import envelope_parts as _saved_letter_parts
+        reply_text = (_saved_letter_parts(reply_text) or (reply_text,))[0]  # a saved JSON-wrapped letter shows its text
         error_code, retryable = _public_llm_error(l.get("error_code"))
         media_detail = contract.project_letter_detail_media(
             l.get("media_status", "NOT_REQUESTED"),
@@ -6818,6 +6866,21 @@ def _schedule_pending_reply_jobs() -> int:
     return scheduled
 
 
+def _store_wrapped_reply_plain(letter: dict) -> None:
+    """A saved reply that holds a JSON-wrapped letter is stored again as the plain letter before it is voiced."""
+    from runtime.reply.letter_presentation import envelope_parts
+    parts = envelope_parts(letter.get('reply_text'))
+    if parts is None:
+        return
+    _prepare_private_world_delivery(letter, parts[0])
+    letter['reply_text'] = parts[0]
+    if parts[1] and not letter.get('reply_signature'):
+        letter['reply_signature'] = parts[1]
+    _persist_store_state()
+    _commit_private_world_letter(letter)
+    _persist_store_state()
+
+
 def _schedule_pending_media_jobs() -> int:
     """Resume only durable completed replies whose media render was interrupted."""
 
@@ -6831,6 +6894,7 @@ def _schedule_pending_media_jobs() -> int:
             continue
         letter_id = str(letter.get("letter_id", "")).strip()
         content = letter.get("content")
+        _store_wrapped_reply_plain(letter)
         reply_text = letter.get("reply_text")
         reply_mode = _exact_reply_mode(letter.get("reply_mode"))
         if (
@@ -7655,6 +7719,10 @@ async def _generate_reply_billed(letter_id, content, *, idempotency_key=None):
             _safe_log("letter_failed", error_code="LLM_PROTOCOL_ERROR")
             return False
         result = _replace_result(result, text=cleaned)
+    from runtime.reply.letter_presentation import envelope_parts as _wrapped_letter_parts
+    wrapped = _wrapped_letter_parts(result.text)
+    if wrapped is not None:  # JSON-wrapped text must not reach the voice, the saved letter or the memory
+        result = _replace_result(result, text=wrapped[0], signature=getattr(result, 'signature', None) or wrapped[1])
     if (
         exact_mode
         in {

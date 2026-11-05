@@ -149,9 +149,12 @@ async def understand_incoming(server, event, row):
     attempted = row.setdefault('incoming_media_attempted', [])
     failed = 0
     from runtime.personal_chat.piano import receive_midi
+    from runtime.personal_chat.song_intake import receive_audio_file
     for identifier, kind, reference, name in event.media:
         if kind == 'file' and await receive_midi(server, event, row, identifier, reference, name):
             continue
+        if kind == 'file' and await receive_audio_file(server, event, row, identifier, reference, name):
+            continue  # a song sent as a file: kept for her to cover
         identity = hashlib.sha256(json.dumps([identifier, kind, reference, name]).encode()).hexdigest()
         if any(item.get('input_id') == identity for item in observations):
             continue

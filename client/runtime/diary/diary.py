@@ -29,7 +29,16 @@ UNSERVED_CODES = {'PROVIDER_QUOTA_EXHAUSTED', 'PROVIDER_BUSY', 'PROVIDER_AUTH_FA
 # What the last try of a day failed with when the writer answered but nothing could be used, or did not answer in
 # the time it was given (see retry_rejected). Offline and unreachable are not among them.
 REOPEN_REASONS = ('ProviderProtocolError', 'ProviderEmptyResponse', 'JSONDecodeError', 'ValidationError', 'ValueError',
-                  'TimeoutError')
+                  'TimeoutError', 'DIARY_NOT_JSON', 'DIARY_REFUSED', 'DIARY_ENTRY_INVALID', 'DIARY_ENTRY_EMPTY',
+                  'DIARY_TOLD_FROM_HIS_SIDE')
+# A writer reply that came back (and was paid for) but could not be turned into an entry. The next try of the day goes
+# to another writer: asking the same model the same thing again mostly buys the same refusal. Network failures and
+# timeouts are not here; they retry the same model.
+REPLY_FAILURES = frozenset({'DIARY_NOT_JSON', 'DIARY_REFUSED', 'DIARY_ENTRY_INVALID', 'DIARY_ENTRY_EMPTY',
+                            'DIARY_TOLD_FROM_HIS_SIDE'})
+FALLBACK_WRITERS = ('deepseek-flash', 'gemini-4-argon')  # rarely refuse or answer in the wrong shape
+REPLY_KEEP_CHARS = 400      # the start of an unusable reply kept in the user's own diary file
+REPLY_KEEP_ROWS = 100
 RETRY_ONCE_KEY = 'retry_rejected_once'
 # Each key reopens the lost days of the catch-up window once, with that many tries. The second came after the
 # supplier dropped Sonnet's and Opus's system text (2026-10-17..19): their diaries came back unusable until the
@@ -403,6 +412,166 @@ def _json_value(text):
     raise ValueError('DIARY_NOT_JSON')
 
 
+# How a refusal opens. Only the opening of the reply is read, and only to tell a refusal from a diary: a diary may
+# say "无法" or "抱歉" anywhere in its text.
+_CANNOT = r'(?:无法|不能|不会|没办法|不可以|不便)'
+_REFUSED_TASK = r'(?:协助|帮助|帮你|提供|完成|满足|按照|按你|写|生成|撰写|继续|扮演|创作|代写|回应|处理)'
+_REFUSAL_OPENERS = re.compile(
+    r'^\W{0,6}(?:'
+    r'(?:很|非常)?(?:抱歉|对不起)[，,。！!\s]{0,3}(?:但|不过)?.{0,14}?' + _CANNOT +
+    r'|我?' + _CANNOT + _REFUSED_TASK +
+    r'|作为(?:一个)?(?:AI|ai|人工智能|语言模型)'
+    r"|I(?:'m| am) (?:so |very )?(?:sorry|unable).{0,40}?(?:can(?:'|’)?t|cannot|unable|won(?:'|’)?t)"
+    r"|I (?:can(?:'|’)?t|cannot|won(?:'|’)?t) (?:help|assist|write|provide|continue)"
+    r'|As an AI)', re.IGNORECASE)
+_AI_SELF_REFERENCE = re.compile(r'作为(?:一个)?(?:AI|ai|人工智能|语言模型)|as an AI\b|language model', re.IGNORECASE)
+_LABELS = {'title': ('标题', '题目', '题', 'title'), 'mood': ('心情', '情绪', 'mood'),
+           'body': ('正文', '日记', '内容', 'body', 'diary')}
+_LABELLED = re.compile(r'^\W{0,3}(标题|题目|题|title|心情|情绪|mood|正文|日记|内容|body|diary)\W{0,3}\s*[:：]\s*(.*)$',
+                       re.IGNORECASE)
+_FENCE = re.compile(r'```[A-Za-z]*[ \t]*\n(.*?)\n?```', re.DOTALL)
+_JSON_STRING = r'"((?:[^"\\]|\\.)*)"'
+
+
+def _refused(text):
+    return bool(_REFUSAL_OPENERS.match((text or '').lstrip(' \t\r\n#*>"“「[(（-')))
+
+
+def _json_string(text, key):
+    """The value of "key": "..." in JSON that does not parse as a whole (cut off, trailing commas, broken facts)."""
+    found = re.search(r'"%s"\s*:\s*%s' % (key, _JSON_STRING), text)
+    if not found:
+        return None
+    try:
+        return json.loads('"' + found.group(1) + '"')
+    except ValueError:
+        return None
+
+
+def _prose_entry(text, bounds=None):
+    """An entry from a reply that is not (clean) JSON, or None. Accepted shapes: JSON in a code fence with other text
+    around it or with a broken tail, and plain text or Markdown with 标题/心情 lines above the body. A refusal, an
+    AI talking about itself, and anything too short for a diary are never taken as an entry."""
+    text = (text or '').strip()
+    if not text or _refused(text) or _AI_SELF_REFERENCE.search(text):
+        return None
+    candidates = [match.group(1) for match in _FENCE.finditer(text)]
+    for block in candidates:
+        try:
+            found = _entry_object(json.loads(block))
+        except ValueError:
+            continue
+        if isinstance(found, dict) and 'body' in found:
+            return _plausible({'title': found.get('title'), 'mood': found.get('mood'), 'body': found.get('body'),
+                               'facts': found.get('facts')}, bounds)
+    if '"body"' in text:
+        body = _json_string(text, 'body')
+        if body is not None:
+            return _plausible({'title': _json_string(text, 'title'), 'mood': _json_string(text, 'mood'),
+                               'body': body, 'facts': []}, bounds)
+        return None
+    lines = [line.rstrip() for line in text.splitlines()]
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    if lines and len(lines[0].strip()) <= 30 and lines[0].strip()[-1:] in '：:' and not _LABELLED.match(lines[0]):
+        lines.pop(0)  # "好的，这是今天的日记："
+    fields, body_lines, in_body = {}, [], False
+    for line in lines:
+        label = None if in_body else _LABELLED.match(line)
+        if label:
+            name = next(key for key, words in _LABELS.items() if label.group(1).lower() in words)
+            if name == 'body':
+                in_body = True
+                if label.group(2).strip():
+                    body_lines.append(label.group(2))
+            elif name not in fields:
+                fields[name] = label.group(2).strip().strip('*“”"「」')
+            continue
+        heading = re.match(r'^#{1,3}\s+(.+)$', line)
+        if heading and 'title' not in fields and not body_lines:
+            fields['title'] = heading.group(1).strip().strip('*')
+            continue
+        if line.strip() or body_lines:
+            body_lines.append(line)
+            in_body = True
+    body = '\n'.join(body_lines).strip().strip('`').strip()
+    if _refused(body) or body.lstrip().startswith(('{', '[')) or '```' in body:
+        return None
+    return _plausible({'title': fields.get('title'), 'mood': fields.get('mood'), 'body': body, 'facts': []}, bounds)
+
+
+def _plausible(entry, bounds):
+    """The entry when its body is a believable diary: at least half the length asked for, no more than twice."""
+    body = _paragraphs(entry.get('body'))
+    if not body or _refused(body):
+        return None
+    low, high = bounds or (60, 900)
+    if not _length_in_range(body, (max(1, low // 2), high * 2)):
+        return None
+    return {**entry, 'body': body}
+
+
+def _draft_value(text, bounds=None):
+    """The reply to the draft call as an entry: strict JSON first, then the tolerant readings. A clear refusal is
+    named as one."""
+    try:
+        return _json_value(text)
+    except ValueError as error:
+        if str(error) != 'DIARY_NOT_JSON':
+            raise
+    found = _prose_entry(text, bounds)
+    if found is not None:
+        return found
+    if _refused(text):
+        raise ValueError('DIARY_REFUSED')
+    raise ValueError('DIARY_NOT_JSON')
+
+
+def _annotate(error, model, text):
+    """Remember which writer produced a failed reply, and its text, for record_failure()."""
+    try:
+        error.diary_model = model
+        error.diary_reply = text if isinstance(text, str) else None
+        if isinstance(error, ValueError) and str(error) in REPLY_FAILURES:
+            error.code = str(error)
+    except AttributeError:
+        pass
+    return error
+
+
+def reply_failure_code(error):
+    """The bounded code that names why a paid reply was thrown away, or None for any other failure."""
+    code = getattr(error, 'code', None)
+    if isinstance(code, str) and code in REPLY_FAILURES:
+        return code
+    from llm_gateway import ProviderEmptyResponse, ProviderProtocolError
+    if isinstance(error, (ProviderProtocolError, ProviderEmptyResponse)):
+        detail = re.sub(r'[^A-Z0-9]+', '_', str(error).upper()).strip('_')[:40]
+        return 'DIARY_PROVIDER_' + (detail or type(error).__name__.upper())
+    return None
+
+
+def record_failure(store, day, error):
+    """Count one failed try of a day. A reply that came back and could not be used also marks its model as failed for
+    the day and keeps the start of its text locally, so the next try goes to another writer and the cause can be
+    looked at. Returns the code to log."""
+    if unserved(error):
+        store.deferred(day, type(error).__name__)
+        return getattr(error, 'code', None) or type(error).__name__
+    code = reply_failure_code(error)
+    model = getattr(error, 'diary_model', None)
+    if code is None:
+        store.failed(day, type(error).__name__)
+        return getattr(error, 'code', None) or type(error).__name__
+    text = getattr(error, 'diary_reply', None)
+    store.failed(day, code if code in REPLY_FAILURES else type(error).__name__, model=model)
+    try:
+        store.keep_reply(day, code, model, text)
+    except Exception:
+        pass  # a diagnostic note must never turn into another failure
+    return code
+
+
 def unserved(error):
     """Whether the request never got a service to answer it (offline, unreachable, refused at the door)."""
     from llm_gateway import GatewayError, ProviderUnavailable
@@ -428,7 +597,14 @@ class DiaryStore:
                 CREATE TABLE IF NOT EXISTS diary_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS diary_work (day TEXT PRIMARY KEY, stage TEXT NOT NULL, payload TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS diary_rewrite (day TEXT PRIMARY KEY);
+                CREATE TABLE IF NOT EXISTS diary_replies (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, day TEXT NOT NULL, at REAL NOT NULL, code TEXT NOT NULL,
+                    model TEXT, reply_chars INTEGER, reply_head TEXT);
             ''')
+            attempt_columns = {row[1] for row in db.execute('PRAGMA table_info(diary_attempts)')}
+            if 'failed_models' not in attempt_columns:
+                # Writers whose reply for this day came back unusable, comma separated: the next try goes elsewhere.
+                db.execute('ALTER TABLE diary_attempts ADD COLUMN failed_models TEXT')
             columns = {row[1] for row in db.execute('PRAGMA table_info(diary_entries)')}
             if 'style' not in columns:
                 db.execute("ALTER TABLE diary_entries ADD COLUMN style TEXT NOT NULL DEFAULT 'ordinary'")
@@ -661,7 +837,7 @@ class DiaryStore:
         """A day with nothing to write is never attempted again."""
         with self._db() as db:
             db.execute('DELETE FROM diary_rewrite WHERE day=?', (day,))
-            db.execute('INSERT INTO diary_attempts VALUES (?,?,?,?) ON CONFLICT(day) DO UPDATE SET '
+            db.execute('INSERT INTO diary_attempts (day,attempts,last_at,reason) VALUES (?,?,?,?) ON CONFLICT(day) DO UPDATE SET '
                        'attempts=excluded.attempts,last_at=excluded.last_at,reason=excluded.reason',
                        (day, MAX_ATTEMPTS, time.time(), reason))
 
@@ -758,6 +934,7 @@ class DiaryStore:
             db.execute('DELETE FROM diary_entries WHERE day=?', (day,))
             db.execute('DELETE FROM diary_comments WHERE day=?', (day,))
             db.execute('DELETE FROM diary_work WHERE day=?', (day,))
+            db.execute('DELETE FROM diary_replies WHERE day=?', (day,))
             db.execute('INSERT OR IGNORE INTO diary_deleted VALUES (?)', (day,))
             db.execute('DELETE FROM diary_rewrite WHERE day=?', (day,))
 
@@ -771,6 +948,7 @@ class DiaryStore:
                        (day, now.astimezone(timezone.utc).isoformat(), entry['title'], entry['mood'], entry['body'],
                         json.dumps(entry['facts'], ensure_ascii=False), model, int(short), style, local_photo(photo)))
             db.execute('DELETE FROM diary_attempts WHERE day=?', (day,))
+            db.execute('DELETE FROM diary_replies WHERE day=?', (day,))
             db.execute('DELETE FROM diary_work WHERE day=?', (day,))
             db.execute('DELETE FROM diary_rewrite WHERE day=?', (day,))
         return True
@@ -783,15 +961,46 @@ class DiaryStore:
             row = db.execute('SELECT attempts,last_at FROM diary_attempts WHERE day=?', (day,)).fetchone()
         return row is None or row['attempts'] < MAX_ATTEMPTS and time.time() - row['last_at'] >= RETRY_AFTER
 
-    def failed(self, day, reason):
+    def failed(self, day, reason, *, model=None):
+        """One try used up. model names the writer whose unusable reply it was; that writer is not asked again for
+        this day while another is available."""
         with self._db() as db:
-            db.execute('INSERT INTO diary_attempts VALUES (?,1,?,?) ON CONFLICT(day) DO UPDATE SET '
-                       'attempts=attempts+1,last_at=excluded.last_at,reason=excluded.reason', (day, time.time(), reason))
+            db.execute('INSERT INTO diary_attempts (day,attempts,last_at,reason) VALUES (?,1,?,?) '
+                       'ON CONFLICT(day) DO UPDATE SET attempts=attempts+1,last_at=excluded.last_at,'
+                       'reason=excluded.reason', (day, time.time(), reason))
+            if model:
+                known = self._failed_models(db, day)
+                db.execute('UPDATE diary_attempts SET failed_models=? WHERE day=?',
+                           (','.join(sorted({*known, model})), day))
+
+    @staticmethod
+    def _failed_models(db, day):
+        row = db.execute('SELECT failed_models FROM diary_attempts WHERE day=?', (day,)).fetchone()
+        return {name for name in (row[0] or '').split(',') if name} if row else set()
+
+    def failed_models(self, day):
+        with self._db() as db:
+            return self._failed_models(db, day)
+
+    def keep_reply(self, day, code, model, text):
+        """Why a paid reply was thrown away, for the user's own diary file: the code, the writer, the size of its
+        reply and its first characters. Kept only until the day is written."""
+        text = text if isinstance(text, str) else ''
+        with self._db() as db:
+            db.execute('INSERT INTO diary_replies (day,at,code,model,reply_chars,reply_head) VALUES (?,?,?,?,?,?)',
+                       (day, time.time(), code, model, len(text), text[:REPLY_KEEP_CHARS]))
+            db.execute('DELETE FROM diary_replies WHERE id NOT IN (SELECT id FROM diary_replies ORDER BY id DESC LIMIT ?)',
+                       (REPLY_KEEP_ROWS,))
+
+    def kept_replies(self, day):
+        with self._db() as db:
+            return [dict(row) for row in db.execute(
+                'SELECT code,model,reply_chars,reply_head FROM diary_replies WHERE day=? ORDER BY id', (day,))]
 
     def deferred(self, day, reason):
         """Nothing reached a service (offline, unreachable): wait before the next try without using one up."""
         with self._db() as db:
-            db.execute('INSERT INTO diary_attempts VALUES (?,0,?,?) ON CONFLICT(day) DO UPDATE SET '
+            db.execute('INSERT INTO diary_attempts (day,attempts,last_at,reason) VALUES (?,0,?,?) ON CONFLICT(day) DO UPDATE SET '
                        'last_at=excluded.last_at,reason=excluded.reason', (day, time.time(), reason))
 
     def retry_rejected(self, days):
@@ -897,10 +1106,10 @@ def memoir_months(store, rows, now):
 
 
 async def write_month(store, gateway, month, rows, *, persona, now=None, timeout_seconds=WRITE_TIMEOUT_SECONDS,
-                      relationship_stage='unknown', videos=(), visits=()):
+                      relationship_stage='unknown', videos=(), visits=(), offered=None):
     return await _write(store, gateway, month, rows, persona=persona, now=now,
                         timeout_seconds=timeout_seconds, relationship_stage=relationship_stage, videos=videos,
-                        visits=visits)
+                        visits=visits, offered=offered)
 
 
 def due_facts(store, now):
@@ -920,14 +1129,16 @@ def due_facts(store, now):
 
 
 async def write_day(store, gateway, day, rows, *, persona, life=None, now=None, timeout_seconds=WRITE_TIMEOUT_SECONDS,
-                    relationship_stage='unknown', videos=(), visits=()):
+                    relationship_stage='unknown', videos=(), visits=(), offered=None):
     """Write a draft and edit it once; optional enrichment never costs a completed draft.
 
     visits are the local times ('HH:MM') the owner came by that day; they are passed on as times only.
+    offered is the set of model names the relay offers this user (or a function, sync or async, that returns it); a
+    writer whose reply for the day was unusable is replaced from it on the next try.
     """
     return await _write(store, gateway, day, rows, persona=persona, life=life, now=now,
                         timeout_seconds=timeout_seconds, relationship_stage=relationship_stage, videos=videos,
-                        visits=visits)
+                        visits=visits, offered=offered)
 
 
 def _optional(read, default):
@@ -1041,8 +1252,30 @@ def day_gifts(store, day):
     return items
 
 
+async def _writer_model(store, day, model, base_url, offered):
+    """The model for a new draft. The user's own, unless its reply for this day already came back unusable: then the
+    first writer of FALLBACK_WRITERS that the relay offers this user and that has not failed this day. When none is
+    available the user's model stays."""
+    avoid = _optional(lambda: store.failed_models(day), set())
+    if model not in avoid or not offered:
+        return model
+    from original_client_relay_api import RELAY_BASE, RELAY_MODELS
+    if (base_url or '').rstrip('/') != RELAY_BASE.rstrip('/'):
+        return model
+    try:
+        available = offered() if callable(offered) else offered
+        if asyncio.iscoroutine(available):
+            available = await available
+    except Exception:
+        return model
+    if not available:
+        return model
+    return next((name for name in FALLBACK_WRITERS if name in available and name in RELAY_MODELS and name not in avoid),
+                model)
+
+
 async def _write(store, gateway, day, rows, *, persona, life=None, now=None, timeout_seconds,
-                 relationship_stage, videos, visits=()):
+                 relationship_stage, videos, visits=(), offered=None):
     gateway = getattr(gateway, 'primary', gateway)
     key = (str(store.path.resolve()), day)
     lock = _write_locks.setdefault(key, asyncio.Lock())
@@ -1079,13 +1312,20 @@ async def _write(store, gateway, day, rows, *, persona, life=None, now=None, tim
             from runtime.model_routes import routed_model
             config = getattr(gateway, 'config', None)
             base_url = getattr(config, 'base_url', '')
-            model = routed_model(base_url, getattr(config, 'model', None))
-            entry = await _complete(gateway, prefix + ':' + day, (MEMOIR_PROMPT if memoir else PROMPT) + QUALITY_PROMPT,
-                                    packet, _formats()[2], timeout_seconds, model=model)
-            entry = validate(entry, packet['messages'])
-            if not await told_by_her(gateway, prefix + '-check:' + day, entry['body'], packet['messages'],
-                                     timeout_seconds):
-                raise ValueError('DIARY_TOLD_FROM_HIS_SIDE')
+            model = await _writer_model(store, day, routed_model(base_url, getattr(config, 'model', None)),
+                                        base_url, offered)
+            captured = {}
+            try:
+                entry = await _complete(gateway, prefix + ':' + day, (MEMOIR_PROMPT if memoir else PROMPT) + QUALITY_PROMPT,
+                                        packet, _formats()[2], timeout_seconds, model=model, capture=captured,
+                                        parse=lambda text: _draft_value(text, bounds))
+                entry = validate(entry, packet['messages'])
+                if not await told_by_her(gateway, prefix + '-check:' + day, entry['body'], packet['messages'],
+                                         timeout_seconds):
+                    raise ValueError('DIARY_TOLD_FROM_HIS_SIDE')
+            except Exception as error:
+                _annotate(error, model, captured.get('text'))
+                raise
             work = dict(entry=entry, packet=packet, short=short, style=style, photos=photos,
                         model=model, base_url=base_url, source_window_version=1)
             try:
@@ -1150,7 +1390,7 @@ def for_writer(packet):
     return {**packet, 'messages': renamed}
 
 
-async def _complete(gateway, request_id, system, packet, response_format, timeout, *, model):
+async def _complete(gateway, request_id, system, packet, response_format, timeout, *, model, parse=None, capture=None):
     from llm_gateway import GatewayRequestScope
     from runtime.model_routes import pinned_model
     structured = getattr(gateway, 'complete_structured_scoped', None)
@@ -1164,7 +1404,9 @@ async def _complete(gateway, request_id, system, packet, response_format, timeou
     with pinned_model(getattr(getattr(gateway, 'config', None), 'base_url', ''), model):
         result = await asyncio.wait_for(structured(prompt, request_id=request_id,
             scope=GatewayRequestScope.BACKGROUND_REASONING, response_format=response_format), timeout=timeout)
-    return _json_value(result.text)
+    if capture is not None:
+        capture['text'] = result.text
+    return (parse or _json_value)(result.text)
 
 
 async def told_by_her(gateway, request_id, body, messages, timeout):

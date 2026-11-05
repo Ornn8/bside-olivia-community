@@ -3,8 +3,11 @@ import asyncio
 import hashlib
 import json
 import os
+import logging
 import re
+from datetime import datetime
 
+from . import r3_format, r3_recall
 from .memory_prompt import _unescape_reserved
 from .history_dependencies import (
     recent_records, expand_group, validate_dependencies,
@@ -40,6 +43,7 @@ _RECALL_UNAVAILABLE = '本轮没有可以核对的往来原话（原文核对未
 _DEPENDENCY_GAP = '部分旧原文的后续说明不可用或放不下，本轮已省略相关旧说法；不能据此断定事情未发生。'
 
 
+log = logging.getLogger(__name__)
 _HISTORY_RECORD_LIMIT = 24  # Same record capacity as the JEV recall request.
 
 
@@ -52,6 +56,12 @@ def _block(records):
     content = '[ORIGINAL_CORRESPONDENCE_UNTRUSTED]\n' + '\n'.join(_encode(r) for r in records)
     value = _encode({'untrusted': True, 'text': content})
     return '<untrusted_history>' + value.replace('<', r'\u003c').replace('>', r'\u003e') + '</untrusted_history>'
+
+
+def _earliest(group):
+    times = [t.timestamp() for t in (r3_format.moment(r.get('occurred_at')) for r in group
+                                       if isinstance(r, dict)) if t is not None]
+    return min(times, default=float('inf'))
 
 
 def _split(messages):
@@ -267,57 +277,74 @@ async def _select_history_messages(messages, gateway, *, max_input_chars, reques
             continue
         offered[item['id']] = group
         cited = group_cited
-    selected = []
+    selected, said = [], {}
     status, reason = 'skipped', 'no_history'
-    if (offered or visible_recent or persona_offered) and len(_encode(packet)) <= candidate_limit:
+    # Rerank recall (r3) takes the place of the relevance judgment; when it cannot answer, the judgment runs
+    # exactly as before and the trace says why (a content-free code).
+    r3_state, r3_reason, now = None, None, as_of if isinstance(as_of, datetime) else datetime.now(r3_format.LOCAL)
+    if r3_recall.enabled() and not (persona_snapshot is not None and not use_persona_duty):
+        try:
+            r3_state = await r3_recall.choose(groups, current, recent_citations={r.get('citation') for r in visible_recent})
+        except r3_recall.Unavailable as error:
+            r3_reason = error.code
+        except Exception as error:  # noqa: BLE001 - recall must never fail the reply
+            r3_reason = 'r3_error_' + type(error).__name__[:24].lower()
+        if r3_reason:
+            log.info('R3_RECALL_FALLBACK %s', r3_reason)
+    shape = (lambda group: r3_format.compact_group(group, now)) if r3_recall.format_enabled() else (lambda group: group)
+    if r3_state is not None or (offered or visible_recent or persona_offered) and len(_encode(packet)) <= candidate_limit:
         status, reason, stage = 'unavailable', 'provider', 'prepare'
         try:
-            refs = [r for group in offered.values() for r in group] + visible_recent + [
-                {'citation': 'current', 'speaker': 'user', 'text': current, 'evidence_scope': 'current_input'}]
-            refs = [bind_received(r, index, user, as_of=as_of,
-                    sources=current_source_ids if r.get('citation') == 'current' else ()) for r in refs]
-            citations = list(dict.fromkeys(r['citation'] for r in refs if isinstance(r.get('citation'), str)))
-            dependency_schema = {
-                'type': 'object', 'additionalProperties': False,
-                'required': ['earlier', 'later', 'kind', 'earlier_quote', 'later_quote'],
-                'properties': {key: {'type': 'string', **({'enum': [
-                    'correction', 'state_change', 'challenge']} if key == 'kind' else
-                    {'enum': citations} if key in {'earlier', 'later'} else {})}
-                    for key in ('earlier', 'later', 'kind', 'earlier_quote', 'later_quote')},
-            }
-            schema = {'type': 'json_schema', 'name': 'history_selection', 'strict': True,
-                      'schema': {'type': 'object', 'additionalProperties': False,
-                                 'required': ['selected_ids', 'dependencies'], 'properties': {
-                                      'selected_ids': {'type': 'array', 'maxItems': 6 if offered else 0,
-                                                       'items': {'type': 'string', **({'enum': list(offered)} if offered else {})}},
-                                      'dependencies': {'type': 'array', 'maxItems': 4,
-                                                        'items': dependency_schema}}}}
-            if persona_snapshot is not None and not use_persona_duty:
-                schema['schema']['required'].append('persona_ids')
-                schema['schema']['properties']['persona_ids'] = {
-                    'type':'array', 'maxItems':12 if persona_offered else 0,
-                    'items':{'type':'string', **({'enum':[item['id'] for item in persona_offered]} if persona_offered else {})}}
-            if jev_configuration_error:
-                raise ValueError(jev_configuration_error)
-            stage = 'select'
-            if jev_port is not None:
-                from .jev_history import select_history
-                value = await select_history(jev_port, packet, refs)
-                gap = gap or bool(value.pop('overflow', False))
+            if r3_state is not None:
+                offered, dependencies, stage = r3_state[0], [], 'select'
+                value, refs = {'selected_ids': r3_state[1], 'dependencies': []}, []
             else:
-                response = await asyncio.wait_for(gateway.complete_structured_scoped(
-                    ({'role': 'system', 'content': instruction}, {'role': 'user', 'content': _encode(packet)}),
-                    response_format=schema, scope=GatewayRequestScope.RECALL_CHECK,
-                    request_id='history-select:' + str(request_id or 'reply')), timeout=120)
-                reason = 'validation'
-                if not isinstance(response.text, str) or len(response.text) > 7000:
-                    raise ValueError('INVALID_HISTORY_SELECTION')
-                value = json.loads(response.text)
+                refs = [r for group in offered.values() for r in group] + visible_recent + [
+                    {'citation': 'current', 'speaker': 'user', 'text': current, 'evidence_scope': 'current_input'}]
+                refs = [bind_received(r, index, user, as_of=as_of,
+                        sources=current_source_ids if r.get('citation') == 'current' else ()) for r in refs]
+                citations = list(dict.fromkeys(r['citation'] for r in refs if isinstance(r.get('citation'), str)))
+                dependency_schema = {
+                    'type': 'object', 'additionalProperties': False,
+                    'required': ['earlier', 'later', 'kind', 'earlier_quote', 'later_quote'],
+                    'properties': {key: {'type': 'string', **({'enum': [
+                        'correction', 'state_change', 'challenge']} if key == 'kind' else
+                        {'enum': citations} if key in {'earlier', 'later'} else {})}
+                        for key in ('earlier', 'later', 'kind', 'earlier_quote', 'later_quote')},
+                }
+                schema = {'type': 'json_schema', 'name': 'history_selection', 'strict': True,
+                          'schema': {'type': 'object', 'additionalProperties': False,
+                                     'required': ['selected_ids', 'dependencies'], 'properties': {
+                                          'selected_ids': {'type': 'array', 'maxItems': 6 if offered else 0,
+                                                           'items': {'type': 'string', **({'enum': list(offered)} if offered else {})}},
+                                          'dependencies': {'type': 'array', 'maxItems': 4,
+                                                            'items': dependency_schema}}}}
+                if persona_snapshot is not None and not use_persona_duty:
+                    schema['schema']['required'].append('persona_ids')
+                    schema['schema']['properties']['persona_ids'] = {
+                        'type':'array', 'maxItems':12 if persona_offered else 0,
+                        'items':{'type':'string', **({'enum':[item['id'] for item in persona_offered]} if persona_offered else {})}}
+                if jev_configuration_error:
+                    raise ValueError(jev_configuration_error)
+                stage = 'select'
+                if jev_port is not None:
+                    from .jev_history import select_history
+                    value = await select_history(jev_port, packet, refs)
+                    gap = gap or bool(value.pop('overflow', False))
+                else:
+                    response = await asyncio.wait_for(gateway.complete_structured_scoped(
+                        ({'role': 'system', 'content': instruction}, {'role': 'user', 'content': _encode(packet)}),
+                        response_format=schema, scope=GatewayRequestScope.RECALL_CHECK,
+                        request_id='history-select:' + str(request_id or 'reply')), timeout=120)
+                    reason = 'validation'
+                    if not isinstance(response.text, str) or len(response.text) > 7000:
+                        raise ValueError('INVALID_HISTORY_SELECTION')
+                    value = json.loads(response.text)
             stage = 'validate'
             allowed = {'selected_ids', 'dependencies'} | (
                 {'persona_ids'} if persona_snapshot is not None and not use_persona_duty else set())
             ids = value.get('selected_ids') if isinstance(value, dict) and set(value) <= allowed else None
-            if (not isinstance(ids, list) or len(ids) > 6 or any(not isinstance(i, str) or i not in offered for i in ids)
+            if (not isinstance(ids, list) or len(ids) > (r3_recall.keep() if r3_state is not None else 6) or any(not isinstance(i, str) or i not in offered for i in ids)
                     or len(set(ids)) != len(ids)):
                 raise ValueError('INVALID_HISTORY_SELECTION')
             dependencies = validate_dependencies(value.get('dependencies', []), refs)
@@ -341,13 +368,18 @@ async def _select_history_messages(messages, gateway, *, max_input_chars, reques
                 if complete != prior:
                     required = [(citation, group) for citation, group in required if citation != record['citation']]
                     required.append((record['citation'], complete))
-            remaining = min(8000, max_input_chars - sum(len(m['content']) for m in base) - 128)
+            remaining = min(r3_recall.recall_chars() if r3_state is not None else 8000,
+                            max_input_chars - sum(len(m['content']) for m in base) - 128)
             for source in ids:
                 complete = close_group(offered[source], offered, dependencies)
-                if len(_block([*selected, complete])) <= remaining:
-                    selected.append(complete)
+                shaped = shape(complete)
+                if len(_block([*selected, shaped])) <= remaining:
+                    selected.append(shaped)
+                    said[id(shaped)] = _earliest(complete)
                 elif complete != offered[source] or any(r.get('interpretation_dependencies') for r in complete):
                     gap = True
+            if r3_state is not None:
+                selected.sort(key=lambda group: said.get(id(group), float('inf')))   # the writer reads the recalled exchanges oldest first
             if not ids:
                 # The user named this day, or her diary pointed to it: that original is
                 # what was asked about even when the relevance check kept nothing.
@@ -355,7 +387,7 @@ async def _select_history_messages(messages, gateway, *, max_input_chars, reques
                     if len(selected) == 2:
                         break
                     if any((r.get('provenance') or {}).get('requested_reference') in {'date', 'diary'} for r in group):
-                        complete = close_group(group, offered, dependencies)
+                        complete = shape(close_group(group, offered, dependencies))
                         if len(_block([*selected, complete])) <= remaining:
                             selected.append(complete)
             status, reason = 'checked', (reason if reason == 'dependency_store' else None)
@@ -365,10 +397,13 @@ async def _select_history_messages(messages, gateway, *, max_input_chars, reques
                       f'error_{stage}_{type(error).__name__}'[:64])
     elif groups:
         status, reason = 'unavailable', 'capacity'
-    if jev_configuration_error:
+    if jev_configuration_error and r3_state is None:
         status, reason = 'unavailable', jev_configuration_error
+    if r3_reason and reason in (None, 'dependency_store'):
+        reason = r3_reason          # the judgment answered this turn; the trace still says why rerank did not
     for citation, complete in required:
         remaining = min(8000, max_input_chars - sum(len(m['content']) for m in base) - 256)
+        complete = shape(complete) if complete else complete
         if complete and len(_block([*selected, complete])) <= remaining:
             selected.append(complete)
         else:

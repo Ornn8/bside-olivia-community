@@ -438,3 +438,60 @@ def test_the_page_says_she_is_finishing_a_reply_while_the_restart_waits():
     text = '她正在写完一条回复，写完就重启'
     assert text in JAVASCRIPT and 'waiting_for_reply' in JAVASCRIPT
     assert ui_i18n.EN[text] == 'She is finishing a reply; restarting right after'
+
+
+def _fresh_install(root):
+    """What the installer leaves behind: the marker and the backend, but no .olivia-update-state.json."""
+    (root / 'local_backend' / 'installer').mkdir(parents=True)
+    (root / '.olivia-full-patch.json').write_text(
+        json.dumps({'schema_version': 'olivia.full-patch.install.v2', 'owned_root': str(root.resolve())}), encoding='utf-8')
+    return root.resolve()
+
+
+def test_a_fresh_install_without_a_state_file_updates_itself(monkeypatch, tmp_path):
+    monkeypatch.setattr(auto_update, 'PUBLIC_KEY', ed25519.public_key(SEED))
+    monkeypatch.setattr(auto_update, 'running_version', lambda: '2.4.11')
+    monkeypatch.setattr(auto_update, '_state', {'state': 'idle', 'version': None, 'notes': None, 'checked_at': 0.0,
+                                                'failures': {}, 'restarting': False})
+    monkeypatch.delenv('OLIVIA_UPDATE_BASE', raising=False)
+    root = _fresh_install(tmp_path / 'install')
+    assert not (root / '.olivia-update-state.json').exists()
+    monkeypatch.setenv('OLIVIA_INSTALL_ROOT', str(root))
+    assert auto_update._root() == root
+    installed = []
+    monkeypatch.setattr(auto_update, '_install', lambda r, path, manifest: installed.append(manifest['version']))
+    zip_bytes = bundle('2.5.14')
+    session = Session(site('2.5.14', zip_bytes))
+    state = asyncio.run(auto_update.check(auto_update._root(), session_factory=lambda: session))
+    assert state['state'] == 'ready' and state['version'] == '2.5.14' and installed == ['2.5.14']
+    # the installed version itself is not installed again
+    monkeypatch.setattr(auto_update, '_state', {'state': 'idle', 'version': None, 'notes': None, 'checked_at': 0.0,
+                                                'failures': {}, 'restarting': False})
+    monkeypatch.setattr(auto_update, 'running_version', lambda: '2.5.14')
+    same = Session(site('2.5.14', zip_bytes))
+    assert asyncio.run(auto_update.check(root, session_factory=lambda: same))['state'] == 'idle' and installed == ['2.5.14']
+
+
+def test_a_source_folder_and_a_foreign_marker_do_not_switch_updating_on(monkeypatch, tmp_path):
+    source = tmp_path / 'source'
+    (source / 'local_backend').mkdir(parents=True)
+    (source / 'runtime').mkdir()
+    monkeypatch.setenv('OLIVIA_INSTALL_ROOT', str(source))
+    assert auto_update._root() is None                                          # no marker at all
+    (source / '.olivia-full-patch.json').write_text(
+        json.dumps({'schema_version': 'olivia.full-patch.install.v2', 'owned_root': str(tmp_path / 'elsewhere')}), encoding='utf-8')
+    assert auto_update._root() is None                                          # marker of another folder (a copy)
+    (source / '.olivia-full-patch.json').write_text('{"schema_version": "other"}', encoding='utf-8')
+    assert auto_update._root() is None
+    monkeypatch.delenv('OLIVIA_INSTALL_ROOT')
+    assert auto_update._root() is None                                          # development: no install root set
+    monkeypatch.setenv('OLIVIA_INSTALL_ROOT', 'relative/path')
+    assert auto_update._root() is None
+
+
+def test_a_real_install_still_needs_its_backend_folder(monkeypatch, tmp_path):
+    root = _fresh_install(tmp_path / 'install')
+    (root / 'local_backend' / 'installer').rmdir()
+    (root / 'local_backend').rmdir()
+    monkeypatch.setenv('OLIVIA_INSTALL_ROOT', str(root))
+    assert auto_update._root() is None

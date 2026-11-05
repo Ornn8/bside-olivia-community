@@ -60,6 +60,10 @@ def play(ledger, step):
             relationship_lite.change_route(ledger, step['route'], ledger.snapshot().version, now=at)
         finally:
             relationship_lite.uuid = previous
+    elif step['op'] == 'history_days':
+        # The one-time repair that counts the days of a history imported by an earlier version.
+        from runtime.imports.relationship_batches import add_history_days
+        add_history_days(ledger, step['days'], at=at)
     elif step['op'] == 'baseline':
         from runtime.private_world.commands import InitializeHistoricalRelationship
         from runtime.reply.reply_context import RelationshipStage
@@ -272,6 +276,19 @@ def test_relationship_choice_after_the_deleted_letter_is_made_again_on_the_rebui
              letter('d', 50), letter('e', 20)]
     for victim in ('a', 'b', 'c', 'd', 'e'):
         check(tmp_path, steps, victim)
+
+
+def test_counted_history_days_after_the_deleted_letter_are_counted_again_on_the_rebuilt_state(tmp_path):
+    days = tuple(f'2026-09-{day:02}' for day in range(1, 12))
+    steps = [letter('a', 0, 'meaningful_exchange', 'tired', stage='familiar'), letter('b', 3, quote='other'),
+             letter('c', 30, 'shared_experience', 'x'),
+             {'op': 'history_days', 'id': 'days', 'at': NOW + 40 * HOUR, 'days': days},
+             letter('d', 50), letter('e', 20, quote='late')]
+    for victim in ('a', 'b', 'c', 'd', 'e'):
+        check(tmp_path, steps, victim)
+    original = build(tmp_path / 'kept.db', steps)
+    delete(original, 'a')
+    assert set(days) <= set(original.snapshot().relationship_days)
 
 
 @pytest.mark.parametrize('refs, victims', [(('source.import',), ('a', 'b', 'c')), (('a:1',), ('a',))])

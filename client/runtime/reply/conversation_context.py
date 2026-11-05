@@ -84,6 +84,13 @@ def conversation_context(rows, *, query, now, excluded_sources=(), max_chars=600
         deliveries = delivery_references(row)
         from runtime.image_understanding import image_evidence
         images = image_evidence(row)
+        for image in images:
+            # Earlier turns keep the gist of a photographed page; the full reading
+            # belongs to the turn that sent it and must not crowd out recent dialogue.
+            text = image.get('text', '')
+            if len(text) > 600:
+                image['text'] = text[:400] + '\n[中间文字省略]\n' + text[-160:]
+                image['text_truncated'] = True
         if images:
             item['image_observations'] = images
         from runtime.incoming_media import evidence, BOUNDARY as MEDIA_BOUNDARY
@@ -116,6 +123,10 @@ def conversation_context(rows, *, query, now, excluded_sources=(), max_chars=600
                         if len(summary) > edge * 2:
                             image['summary'] = summary[:edge] + '\n[中间观察省略]\n' + summary[-edge:]
                             image['summary_truncated'] = True
+                        text = image.get('text', '')
+                        if len(text) > edge * 2:
+                            image['text'] = text[:edge] + '\n[中间文字省略]\n' + text[-edge:]
+                            image['text_truncated'] = True
                     if len(json.dumps(packet, ensure_ascii=False, separators=(',', ':'))) <= recent_budget:
                         break
                 while images and len(json.dumps(packet, ensure_ascii=False, separators=(',', ':'))) > recent_budget:

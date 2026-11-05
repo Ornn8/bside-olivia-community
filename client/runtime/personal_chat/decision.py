@@ -63,6 +63,37 @@ INSTRUCTION += ('他只回了表情包、一两个字或附和时，那是在回
                 '不把你上一条回复原样或换个说法再发一遍，上一条里问过的问题也不原样再问。\n')
 
 
+# A song the user sent (owner 2026-11-03): covering it is her own choice, asked for in the user's words.
+# Judged by meaning, as {what, not_for, examples}; the examples only show the kind of message, they are not a list.
+INSTRUCTION += ('如输入里有[系统歌曲，非用户原话]，其中songs是用户发来、还没翻唱的歌，你可以直接用自己的声音翻唱它们，'
+                '不需要先听过，音频由系统取得，不要说没听过所以不敢唱。唱不唱由你自己判断，依据只看用户本条消息。'
+                'cover的判断标准：what=用户本条消息在请你亲口唱其中一首歌，直接请求、说想听你唱、问你会不会唱并期待你唱都算；'
+                'not_for=只分享这首歌、夸它或谈歌词歌手、问你听没听过、让你推荐歌，或者想听的话是更早几条说的而本条没提；'
+                'examples=分享歌后补一句想听你唱——输出；分享歌后只说这首很好听——不输出，可以告诉他你可以唱、问他想不想听你唱。'
+                '输出时格式为cover={"source":"songs里的id","evidence":"本条用户消息里请你唱的逐字原话"}，'
+                'source必须是列出的id，evidence必须是用户本条消息中的原话摘录，不能引用卡片、链接或你自己的推断。'
+                '输出cover时正文先自然答应：说你会唱、要做一会儿（大概十几分钟）、做好了发给他；'
+                '不声称已经唱好或已经发出；正文里答应了要唱就必须输出cover，不唱就不要在正文里说要唱；只翻唱，不写原创歌。'
+                '没有这类说明时省略cover。\n')
+
+# Empty promises (owner 2026-11-05): she said she would sing "right away" for hours and never ordered anything.
+# Judged by meaning as {what, not_for, examples}.
+INSTRUCTION += ('答应以后把歌、照片、视频或语音发给他的标准：'
+                'what=本轮真的下了单——你这条回复带了对应的媒体字段（比如cover），或系统说明的orders里已有同一件事在做——'
+                '这时可以说正在做、做好会发给他，orders里已有的不要再答应一遍；'
+                'not_for=本轮没有下任何单，却用将来的口气承诺之后会唱、会拍、会发，或说要先练习、先听几遍、晚点再来；'
+                '也不能为了安抚他而假装手头有进度；'
+                'examples=他想听你唱但这条回复没有输出cover——直接说这次没唱成和原因（系统给了错误码就带上），不说等一下；'
+                'orders里已有这首在做——告诉他还在做就行。做不到就直白说做不到，能做的这轮就下单，不要留到以后。\n')
+
+# Stickers in a QQ chat (2026-11-05): they were dropped whenever a media plan was made, which is nearly every turn.
+# Judged by meaning as {what, not_for, examples}.
+INSTRUCTION += ('QQ里sticker_choices非空时，是否附一张表情包看这一轮的气氛，不是每轮都发：'
+                'what=一句轻松、害羞、撒娇、感谢、逗他、安慰这类短回复，配一张表情会更像真人聊天；'
+                'not_for=认真倾诉、他难过或生气、需要解释的长回复、已经用了QQ表情的那一条、他在说正事；'
+                'examples=他夸你、跟你开玩笑、道晚安——可以选；他说工作很崩溃——不选，设为null。\n')
+
+
 # The two source headers, and any other "[label {"field": …}]" the model makes up from the fields it was shown
 # (2026-10-26 a letter began with [语音回复 {"source_id": "media:…", "status": "sent"}]). Her faces ([微笑]) have no JSON.
 PROVENANCE_HEADER = re.compile(r'\[(?:历史消息|当前消息)\s*\{.*?\}\s*\]\s*'
@@ -87,7 +118,7 @@ _RESERVED_CONTROL = re.compile(r'\[\[\s*(?:(?:chat|delivery|initiative|letter|co
 NEUTRAL_METADATA = dict(delivery='text', listening='keep', initiative='keep', pause_until=None,
                         letter='keep', letter_until=None, followup_at=None, evidence='', skip=False)
 OPTIONAL_FIELDS = frozenset({'letter_invitation', 'sticker', 'text_reason', 'speech', 'silence', 'daily_video',
-                             'poke', 'reaction'})
+                             'poke', 'reaction', 'cover'})
 
 
 def _control_body(text):
@@ -180,7 +211,7 @@ def _silence_kind(data, *, user, proactive, allow_user_silence):
 
 
 def decode(raw, *, user, now, proactive=False, allow_user_silence=False, allow_speech=True,
-           daily_video_candidates=()):
+           daily_video_candidates=(), cover_sources=()):
     try:
         # Tolerate a whole JSON code block, never extract JSON from mixed prose.
         if isinstance(raw, str):
@@ -276,6 +307,8 @@ def decode(raw, *, user, now, proactive=False, allow_user_silence=False, allow_s
             except (ValueError, TypeError, KeyError):
                 data.pop('daily_video', None)
                 data['dropped_daily_video'] = True
+        from .cover_chat import decode_field
+        decode_field(data, user=user, offered=cover_sources, proactive=proactive)
         if defaulted:
             data['defaulted_fields'] = defaulted
         return data

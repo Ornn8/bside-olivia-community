@@ -24,7 +24,9 @@ REPLAY_UNSUPPORTED = 'LETTER_DELETE_RELATIONSHIP_REPLAY_UNSUPPORTED'
 LEGACY_UNSUPPORTED = 'LETTER_DELETE_LEGACY_RELATIONSHIP_UNSUPPORTED'
 TOMBSTONE = 'letter_source_removed'
 _INITIALIZED = 'initialize_historical_relationship'
-_CHOICES = ('relationship_route', 'relationship_route_ask')
+# Checkpoints written by an explicit rule: a page choice, and the days of imported letters
+# (the one-time day repair in runtime/imports/relationship_batches.py).
+_CHOICES = ('relationship_route', 'relationship_route_ask', 'relationship_history_days')
 _SCORES = ('familiarity', 'trust', 'comfort', 'closeness')
 _STEP_LIMIT = 300_000  # a record set this tangled would also stall the live projection
 _log = logging.getLogger(__name__)
@@ -290,14 +292,17 @@ class Replay:
             previous = stored
 
     def _reapply(self, event, state, before, row):
-        """Re-derive an explicit relationship-page choice on a rebuilt state."""
+        """Re-derive an explicit relationship-page choice (or the days of imported letters) on a rebuilt state."""
         payload = self.audit(event)
         try:
-            from runtime.relationship_growth import volume_updates
+            from runtime.relationship_growth import history_day_updates, volume_updates
             from runtime.relationship_lite import route_changes
             if event['event_type'] == 'relationship_route':
                 def derive(snapshot):
                     return replace(snapshot, **route_changes(snapshot, payload['route']))
+            elif event['event_type'] == 'relationship_history_days':
+                def derive(snapshot):
+                    return replace(snapshot, **history_day_updates(snapshot, payload['days']))
             else:
                 def derive(snapshot):
                     return replace(snapshot, route_asked=True, **volume_updates(snapshot, {}, len(snapshot.relationship_days)))

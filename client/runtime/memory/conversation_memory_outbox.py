@@ -120,6 +120,7 @@ class CanonicalMemoryOutbox:
         self.user_id = user_id
         self.archive_memory = archive_memory
         self._scan_lock = asyncio.Lock()
+        self._rejudge = None
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
@@ -254,6 +255,14 @@ class CanonicalMemoryOutbox:
                 ignored=ignored,
             )
 
+    async def rejudge_step(self) -> str:
+        """One paced step of the one-time QQ second look (runtime.memory.qq_memory_rejudge)."""
+        if self._rejudge is None:
+            from .qq_memory_rejudge import QqMemoryRejudge
+
+            self._rejudge = QqMemoryRejudge(self)
+        return await self._rejudge.step()
+
     async def _index_archive_originals(self):
         list_legacy = getattr(self.archive_memory, "list_legacy", None)
         index = getattr(self.committer, "index_original", None)
@@ -269,6 +278,9 @@ class CanonicalMemoryOutbox:
         # so a question naming that day finds those letters. Originals stay unchanged.
         from runtime.imports.letter_maintenance import key as maintenance_key
         restored_dates = self._restored_dates()
+        from .archive_dates import estimate_dates
+        rows = [row for row in rows if isinstance(row, Mapping)]
+        estimates = estimate_dates(rows)
         for row in rows:
             if not isinstance(row, Mapping):
                 continue
@@ -291,14 +303,18 @@ class CanonicalMemoryOutbox:
                 user_message=user_text, assistant_message=reply, occurred_at=stamp,
                 lifecycle_at=_timestamp(row.get("imported_at")) or stamp or datetime.fromtimestamp(0, timezone.utc),
                 content_hash=hashlib.sha256(json.dumps([user_text, reply, occurred], ensure_ascii=False).encode("utf-8")).hexdigest())
-            deliveries.append(delivery)
+            # An undated letter keeps an unknown index time, but is indexed in its place
+            # among dated neighbours instead of after the whole dated archive.
+            estimate = estimates.get(source) if stamp is None else None
+            deliveries.append((stamp or (estimate.stamp if estimate else None), delivery))
         register = getattr(self.committer, "register_archive_sources", None)
         if callable(register):
             try:
-                await register(self.user_id, [delivery.source_id for delivery in deliveries])
+                await register(self.user_id, [delivery.source_id for _, delivery in deliveries])
             except Exception:
                 pass  # Progress is optional; indexing still proceeds.
-        for delivery in sorted(deliveries, key=lambda d: d.occurred_at or datetime.fromtimestamp(0, timezone.utc), reverse=True):
+        epoch = datetime.fromtimestamp(0, timezone.utc)
+        for _, delivery in sorted(deliveries, key=lambda item: item[0] or epoch, reverse=True):
             indexed += bool(await index(delivery))
             if indexed >= 20:
                 break
@@ -461,9 +477,12 @@ class CanonicalMemoryOutbox:
         call_rows = tuple(item for row in calls if isinstance(row, Mapping) for item in call_memory_rows(row))
         piano_rows = tuple(item for row in (*chats, *jobs) if isinstance(row, Mapping)
                            for item in piano_memory_rows(row))
+        from runtime.personal_chat.cover_chat import memory_rows as cover_memory_rows
+        cover_rows = tuple(item for row in chats if isinstance(row, Mapping) for item in cover_memory_rows(row))
         return (*tuple(row for row in letters if isinstance(row, Mapping)),
                 *tuple(row for row in chats if isinstance(row, Mapping)
-                       and row.get("delivery_status") == "DELIVERED"), *image_rows, *media_rows, *video_rows, *piano_rows, *call_rows)
+                       and row.get("delivery_status") == "DELIVERED"), *image_rows, *media_rows, *video_rows, *piano_rows,
+                *cover_rows, *call_rows)
 
     def _terminal_sources(self) -> set[str]:
         try:

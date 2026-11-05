@@ -108,6 +108,11 @@ async def _recover_chat_loop(server, runtime, *, interval_seconds=30):
             pass
 
 
+async def deliver_cover(server, row, send):
+    from .cover_delivery import deliver
+    await deliver(server, row, send)
+
+
 async def deliver_piano(server, row, send):
     from .piano import deliver
     await deliver(server, row, send)
@@ -518,6 +523,14 @@ async def _contact_qq_media(row):
     return codes
 
 
+def _plan_allows_sticker(row, event) -> bool:
+    """A sticker may follow a QQ reply the media plan made as plain text or a voice message (2026-11-05: the plan used
+    to drop every sticker). A photo, video, long audio, piano or cover turn carries its own media and goes without."""
+    plan = row.get('companion_decision') or {}
+    return (event.channel == 'qq' and row.get('companion_delivery') in ('text', 'audio_speech')
+            and not plan.get('speech_request') and not plan.get('piano_request') and not row.get('photo_with_words'))
+
+
 async def generate(server, event, row):
     from runtime.reply.jev_billing import billing_scope
     from runtime.model_routes import using
@@ -582,6 +595,20 @@ async def _generate_billed(server, event, row):
     observation_context = incoming_context(row)
     if event.media:
         observation_context += incoming_media.incoming_context(row)
+    from . import cover_chat
+    cover_offered = []
+    if event.channel == 'qq' and cover_chat.ENABLED and row.get('origin') != 'proactive' and row.get('contact_id') is None:
+        # A song the user shares (card, link, B站 video) becomes a cover source she may choose to sing.
+        from .song_intake import receive_shares, defer_share, song_waiting
+        on, why = await cover_chat.availability(os.environ, eager=song_waiting(server, event))
+        if on:
+            await receive_shares(server, event, row)
+        else:
+            defer_share(server, event, row, why)  # said plainly to the user with its code, picked up on a later turn
+            row['cover_sources'] = []
+        cover_offered = await cover_chat.offered(server, row, os.environ, checked=on)
+        row['cover_orders'] = cover_chat.in_flight(server, row)
+        observation_context += cover_chat.context(row)
     if event.channel == 'qq':
         from .bilibili import link_context
         observation_context += await link_context(server, event, row)
@@ -795,6 +822,7 @@ async def _generate_billed(server, event, row):
                                                    and r.get('delivery_status') == 'DELIVERED'
                                                    and isinstance(r.get('reply_text'), str)][-40:],
                                 'daily_video_candidates': daily_candidates,
+                                'cover_sources': cover_offered,
                                 'incoming_observation_context': observation_context,
                                 'semantic_kinds': semantic_kinds,
                                 'received_source_id': f'reply:{event.exchange_id}:user',
@@ -860,7 +888,6 @@ async def _generate_billed(server, event, row):
             row.update(companion_timing=getattr(result, 'companion_timing', None),
                        companion_delivery=getattr(result, 'companion_delivery', None),
                        photo_with_words=getattr(result, 'photo_with_words', False) is True)
-            row.pop('sticker_id', None)
             row.pop('mailbox_notice_letter_id', None)
         elif result.state is ReplyState.COMPLETED:
             for key in ('companion_decision', 'companion_timing', 'companion_delivery', 'photo_with_words'):
@@ -909,7 +936,7 @@ async def _generate_billed(server, event, row):
                               allow_user_silence=getattr(result, 'silence_authorized', False) is True,
                               allow_speech=bool(event.channel == 'qq'
                                    and (row.get('companion_decision') or {}).get('speech_request')),
-                               daily_video_candidates=daily_candidates)
+                               daily_video_candidates=daily_candidates, cover_sources=cover_offered)
         except ValueError as exc:
             # Diagnostic categories only; never persist rejected model text.
             reason = getattr(exc, 'reason', 'UNKNOWN')
@@ -1027,8 +1054,9 @@ async def _generate_billed(server, event, row):
         if companion is None and contact is None and not asked and not row.get('degraded_stages'):
             text = attach_notice(getattr(server.store, 'letters', []), row, text)
         row['letter_invitation'] = contact is None and not asked and allowed and decision.get('letter_invitation', False)
+        row.pop('sticker_id', None)  # a rewritten turn chooses again
         sticker = decision['sticker'] if decision['sticker'] in sticker_choices else None
-        if sticker and companion is None and contact is None and not unprompted:
+        if sticker and contact is None and not unprompted and (companion is None or _plan_allows_sticker(row, event)):
             row['sticker_id'] = sticker
         if (event.channel == 'qq' and companion is None and contact is None and not asked
                 and _qq_extras(server)['gestures']):
@@ -1052,6 +1080,12 @@ async def _generate_billed(server, event, row):
         row.update(requested_format=mode, listening_preference='voice_ok', delivery_basis=basis)
         if not turn_is_current():
             return text  # The service merges new input before any draft is sent.
+        if decision.get('cover_request') and not unprompted and not asked and event.channel == 'qq':
+            # The writer chose to sing a song the user asked for; the order itself is made by cover_chat.deliver.
+            row.update(cover_request=decision['cover_request'], cover_status=cover_chat.PENDING)
+            row.pop('sticker_id', None)
+        elif decision.get('dropped_cover'):
+            row['cover_request_dropped'] = decision['dropped_cover']
         if decision.get('daily_video_request') and not unprompted:
             if companion is None or row.get('companion_delivery') == 'video_speech':
                 row.update(daily_video_request=decision['daily_video_request'], daily_video_status='PENDING_ACK')
@@ -1551,6 +1585,7 @@ def install_personal_chat(app, server):
                 prepare_photo=lambda row, send: prepare_chat_photo(server, row, send),
                 speech=lambda row, send: deliver_speech(server,row,send),
                 piano=lambda row, send: deliver_piano(server, row, send),
+                cover=lambda row, send: deliver_cover(server, row, send),
                 default_voice=lambda row, send: deliver_default_voice(server,row,send), inspect_writer=inspect_writer)
             server._personal_chat_service = service
             # An update restart waits for a reply that is being written (runtime/auto_update.py).

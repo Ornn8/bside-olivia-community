@@ -7,6 +7,9 @@ from pathlib import Path
 import tempfile
 import time
 import uuid
+from contextvars import ContextVar
+from dataclasses import dataclass
+from typing import Callable
 from runtime.tls import client_tls_context as gpu_tls_context
 from urllib.parse import urlsplit
 from aiohttp import ClientSession, ClientTimeout, ClientError, ClientSSLError, ClientConnectorError, TCPConnector
@@ -25,6 +28,24 @@ def connection_error(exc):
 
 NIGHT_POLL_SECONDS = 30  # a task held for the night batch is checked every half minute
 OUTAGE_POLL_SECONDS = 60  # a long wait that lost the service looks again every minute, for as long as it waits
+
+
+# A busy answer (429) to a status read is the service being loaded, not the task failing: a task that is running and
+# already ordered is read again with backoff for up to half an hour of such answers.
+STATUS_BUSY_SECONDS = 1800
+
+
+@dataclass(frozen=True)
+class LaneWait:
+    """How long a background order waits for the account's lane; ``cancelled()`` is checked before each retry."""
+    seconds: float = 1200
+    cancelled: Callable[[], bool] = lambda: False
+
+
+# The media service runs one task per lane per account and answers a second one 429. A background order (a cover made
+# in chat) sets a LaneWait and retries its submission until the lane frees. Orders that set nothing fail at once, as
+# before.
+LANE_WAIT: ContextVar = ContextVar('remote_generation_lane_wait', default=None)
 
 
 def _transient(exc) -> bool:
@@ -252,7 +273,12 @@ class RemoteGeneration:
                 from runtime.piano import validate_meta
                 # Status reads have no input; enforce the source bound at the owning task.
                 piano_meta = validate_meta(piano_meta, source=None)
+            # A failed task's own code, so the order can say why it failed; anything else from the service is dropped.
+            error_code = result.get('error_code')
+            error_code = (error_code if result['status'] == 'failed' and isinstance(error_code, str)
+                          and re.fullmatch(r'[A-Z][A-Z0-9_]{2,63}', error_code) else None)
             return {'task_id': result['task_id'], 'status': result['status'], 'outputs': cleaned,
+                    **({'error_code': error_code} if error_code else {}),
                     **({'piano_meta': piano_meta} if piano_meta is not None else {}),
                     'stage': result.get('stage', ''), **({'media_plan':plan} if plan is not None else {}),
                     **({'speech':speech} if speech is not None else {}),
@@ -453,7 +479,7 @@ class RemoteGeneration:
         # and recovery of the same CPU export under its original idempotency key.
         task_id = saved.get('task_id')
         task = (await self._status(task_id) if task_id is not None
-                else await self.request('submit', submission))
+                else await self._submit(submission))
         if (task_id is not None and kind == 'tts' and data.get('speech_mode')
                 and task.get('status') == 'failed' and task.get('stage') == 'speech_postprocess_failed'):
             # Resume the original CPU export, never a second GPU generation/order.
@@ -509,16 +535,59 @@ class RemoteGeneration:
                 await acknowledge_result(self, task['task_id'], output)
         return result
 
+    async def _submit(self, submission):
+        """The order sent. Under a LaneWait a 429 (the account's lane, or the whole service, is full) is waited out:
+        the very same submission, same idempotency key, is sent again with backoff until it is taken, the order is
+        cancelled (GPU_ORDER_CANCELLED) or the wait is over (GPU_LANE_BUSY). Without one a 429 fails at once."""
+        wait = LANE_WAIT.get()
+        if wait is None:
+            return await self.request('submit', submission)
+        deadline = time.monotonic() + wait.seconds
+        delay = 2
+        while True:
+            try:
+                task = await self.request('submit', submission)
+            except CloudError as exc:
+                if exc.code != 'GPU_QUEUE_FULL':
+                    raise
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise CloudError('GPU_LANE_BUSY', 429) from None
+                await asyncio.sleep(min(delay, remaining))
+                delay = min(delay * 2, 30)
+                if wait.cancelled():
+                    raise CloudError('GPU_ORDER_CANCELLED', 409) from None
+                continue
+            if wait.cancelled():
+                # Taken back while it was being sent: the task just accepted is cancelled before it starts.
+                try:
+                    await self.request('cancel', {'task_id': task['task_id']})
+                except CloudError:
+                    pass
+                raise CloudError('GPU_ORDER_CANCELLED', 409)
+            return task
+
     async def _status(self, task_id):
         # Ten minutes of bounded backoff lets the API survive a service switch.
         # Only reads are retried; authentication/contract errors fail immediately.
-        for attempt in range(24):
+        # A 429 never abandons the task (it is running, and paid for): it is read again after 2, 4, 8 ... 30 s, for up
+        # to STATUS_BUSY_SECONDS of 429s, without using up the attempts kept for a service switch.
+        attempt, busy, busy_since = 0, 0, None
+        while True:
             try:
                 return await self.request('status', {'task_id': task_id})
             except CloudError as exc:
+                if exc.status == 429:
+                    busy_since = time.monotonic() if busy_since is None else busy_since
+                    if time.monotonic() - busy_since >= STATUS_BUSY_SECONDS:
+                        raise
+                    await asyncio.sleep(min(2 ** (busy + 1), 30))
+                    busy += 1
+                    continue
                 if not _transient(exc) or attempt == 23:
                     raise
                 await asyncio.sleep(min(2 ** (attempt + 1), 30))
+                attempt += 1
 
     async def download_task(self, task_id, output, *, validate=None):
         """Recover an existing result without submitting or charging another job."""
@@ -541,7 +610,9 @@ class RemoteGeneration:
 
     async def _download_once(self, task, output, *, validate=None):
         if task['status'] != 'succeeded' or len(task['outputs']) != 1:
-            raise CloudError('GPU_TASK_FAILED', 502)
+            error = CloudError('GPU_TASK_FAILED', 502)
+            error.detail = task.get('error_code')   # the most specific code, for whoever tells the user
+            raise error
         output = Path(output); output.parent.mkdir(parents=True, exist_ok=True)
         # Atomic replacement preserves an existing valid output if transport fails.
         temporary = None

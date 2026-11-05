@@ -1,7 +1,7 @@
 """Durable, sequential five-exchange assessments, independent of Mem0 extraction."""
 import asyncio
 from contextlib import contextmanager
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime, timezone, timedelta
 import hashlib
 import json
@@ -10,9 +10,47 @@ import sqlite3
 from runtime.diagnostics.history_relationship import project_history_failure_context
 from runtime.imports.historical_memory import (
     HistoricalExchange, HistoricalRelationshipAssessment, assess_historical_relationship,
-    apply_historical_private_world, historical_relationship_command_id,
+    apply_historical_private_world, exchange_days, historical_relationship_command_id,
 )
 from runtime.reply.reply_context import RelationshipStage
+
+
+# Refusals that pass: the relay or JEV is busy (429), a server error, or no answer in time. A batch that meets one
+# is tried again in place after growing pauses and only then marked failed; a batch failed this way is taken up again
+# the next time the re-read starts (startup, an import, a retry). Any other failure stays failed until a retry.
+TRANSIENT_ERRORS = frozenset('PRIVATE_WORLD_HISTORY_' + code for code in (
+    *(f'JEV_HTTP_{status}' for status in (429, 502, 503, 504)),
+    *(f'JEV_PROVIDER_HTTP_{status}' for status in (429, 500, 502, 503, 504, 529)),
+    *(f'JEV_BILLING_HTTP_{status}' for status in (429, 502, 503, 504)),
+    'JEV_TIMEOUT', 'JEV_UNAVAILABLE', 'JEV_PROVIDER_CONNECT_FAILED', 'JEV_PROVIDER_READ_FAILED',
+    'JEV_BILLING_UNAVAILABLE', 'LLM_RATE_LIMITED', 'LLM_TIMEOUT', 'LLM_UNAVAILABLE', 'LLM_RETRYABLE'))
+RETRY_DELAYS = (15, 40, 120, 300)  # seconds before the 2nd to 5th try of one batch
+# The re-read waits while a reply to him is being written: one account has few requests in flight at the relay.
+LIVE_POLL_SECONDS = 2
+LIVE_WAIT_SECONDS = 300  # a reply that never reports done cannot hold the re-read back for good
+HISTORY_DAYS_EVENT = 'relationship_history_days'
+_HISTORY_DAYS_KEY = 'history_days_merged'
+_HISTORY_DAYS_PER_EVENT = 400  # an event payload holds at most 8 KiB
+
+
+def transient_failure(code, exc=None):
+    if code in TRANSIENT_ERRORS:
+        return True
+    # A status the code does not name: a plain server error from the JEV endpoint.
+    context = getattr(getattr(exc, '__cause__', None), 'failure_context', None)
+    status = context.get('http_status') if isinstance(context, dict) else None
+    return code == 'PRIVATE_WORLD_HISTORY_JEV_HTTP_ERROR' and type(status) is int and 500 <= status <= 599
+
+
+def _exchanges(payload):
+    return tuple(HistoricalExchange(**{**x,'occurred_at':datetime.fromisoformat(x['occurred_at'])}) for x in json.loads(payload))
+
+
+def _busy(source):
+    try:
+        return bool(source())
+    except Exception:
+        return False  # a broken source must never stop the re-read
 
 
 def archive_exchanges(rows):
@@ -51,6 +89,10 @@ def archive_exchanges(rows):
 
 
 class RelationshipBatches:
+    retry_delays = RETRY_DELAYS
+    live_poll_seconds = LIVE_POLL_SECONDS
+    live_wait_seconds = LIVE_WAIT_SECONDS
+
     def __init__(self,path):
         self.path=path;path.parent.mkdir(parents=True,exist_ok=True)
         self.running=False
@@ -59,6 +101,7 @@ class RelationshipBatches:
             if 'failure_context' not in {row[1] for row in db.execute('PRAGMA table_info(batches)')}:
                 db.execute('ALTER TABLE batches ADD COLUMN failure_context TEXT')
             db.execute('CREATE TABLE IF NOT EXISTS seen (source TEXT PRIMARY KEY)')
+            db.execute('CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
 
     @contextmanager
     def connect(self):
@@ -81,6 +124,20 @@ class RelationshipBatches:
     def retry(self):
         with self.connect() as db:db.execute("UPDATE batches SET state='pending',error=NULL,failure_context=NULL WHERE state='failed'")
 
+    def retry_transient(self):
+        """Take up again the batches that failed on a refusal that passes; others stay failed."""
+        with self.connect() as db:
+            ids=[]
+            for batch_id,error,context in db.execute("SELECT id,error,failure_context FROM batches WHERE state='failed'").fetchall():
+                try:
+                    marked=bool(context) and json.loads(context).get('transient') is True
+                except (ValueError,TypeError,AttributeError):
+                    marked=False
+                if error in TRANSIENT_ERRORS or marked:
+                    ids.append((batch_id,))
+            db.executemany("UPDATE batches SET state='pending',error=NULL,failure_context=NULL WHERE id=?",ids)
+        return len(ids)
+
     def status(self):
         with self.connect() as db:
             rows=db.execute('SELECT state,payload,error,failure_context FROM batches ORDER BY id').fetchall()
@@ -98,7 +155,19 @@ class RelationshipBatches:
             result['failure_context']=project_history_failure_context(context)
         return result
 
-    async def run(self,*,gateway,persona_policy,command_service,snapshot):
+    async def _yield_to_live(self,busy):
+        """Wait while a reply to him is being written, so the re-read never takes its place at the relay."""
+        if busy is None:return
+        waited=0
+        while waited<self.live_wait_seconds and _busy(busy):
+            await asyncio.sleep(self.live_poll_seconds);waited+=self.live_poll_seconds
+
+    async def run(self,*,gateway,persona_policy,command_service,snapshot,busy=None):
+        """Assess the waiting batches one at a time, oldest first.
+
+        A refusal that passes (TRANSIENT_ERRORS) is tried again after each pause of retry_delays; the batch is
+        marked failed after the last one, or at once for any other failure, and the run stops there. `busy`
+        (optional) is true while a live reply is being written; each model call waits for it first."""
         if self.running:return
         self.running=True
         try:
@@ -106,7 +175,7 @@ class RelationshipBatches:
             with self.connect() as db:
                 completed = db.execute("SELECT payload,assessment FROM batches WHERE state='done' AND assessment IS NOT NULL ORDER BY id").fetchall()
             for payload, saved in completed:
-                exchanges=tuple(HistoricalExchange(**{**x,'occurred_at':datetime.fromisoformat(x['occurred_at'])}) for x in json.loads(payload))
+                exchanges=_exchanges(payload)
                 command=historical_relationship_command_id(exchanges) + '.stage-v2'
                 if await asyncio.to_thread(command_service.lookup_command, command) is not None:
                     continue
@@ -114,6 +183,7 @@ class RelationshipBatches:
                 await asyncio.to_thread(apply_historical_private_world, exchanges,
                     assessment=HistoricalRelationshipAssessment(**values), command_service=command_service,
                     preserve_order=True, stage_backfill=True)
+            tries={}
             while True:
                 with self.connect() as db:
                     row=db.execute("SELECT id,payload,state,assessment FROM batches WHERE state!='done' ORDER BY id LIMIT 1").fetchone()
@@ -121,10 +191,11 @@ class RelationshipBatches:
                 batch_id,payload,_,saved=row
                 stage='prepare'
                 exchange_count=0
+                pause=None
                 try:
                     values=json.loads(payload)
                     exchange_count=len(values)
-                    exchanges=tuple(HistoricalExchange(**{**x,'occurred_at':datetime.fromisoformat(x['occurred_at'])}) for x in values)
+                    exchanges=_exchanges(payload)
                     command=historical_relationship_command_id(exchanges)
                     stage='commit'
                     existing=await asyncio.to_thread(command_service.lookup_command,command)
@@ -135,6 +206,7 @@ class RelationshipBatches:
                             assessment=HistoricalRelationshipAssessment(**values)
                         else:
                             stage='prepare'
+                            await self._yield_to_live(busy)
                             current=snapshot()
                             previous={name:getattr(current,name) for name in ('familiarity','trust','comfort','closeness','tension')}
                             previous['relationship_stage'] = current.relationship_stage
@@ -149,11 +221,69 @@ class RelationshipBatches:
                 except Exception as exc:
                     code=getattr(exc,'code','HISTORY_RELATIONSHIP_FAILED')
                     if not isinstance(code,str) or not code.replace('_','').isalnum():code='HISTORY_RELATIONSHIP_FAILED'
-                    context=project_history_failure_context(getattr(exc,'failure_context',None))
-                    context.setdefault('cause_code','UNKNOWN')
-                    context.setdefault('failure_stage',stage)
-                    context.setdefault('exception_type',project_history_failure_context({'exception_type':type(exc).__name__}).get('exception_type','OTHER'))
-                    context=project_history_failure_context({**context,'batch_id':batch_id,'exchange_count':exchange_count})
-                    with self.connect() as db:db.execute("UPDATE batches SET state='failed',error=?,failure_context=? WHERE id=?",(code,json.dumps(context),batch_id))
-                    return
+                    transient=transient_failure(code,exc)
+                    used=tries.get(batch_id,0)
+                    if transient and used<len(self.retry_delays):
+                        tries[batch_id]=used+1
+                        pause=self.retry_delays[used]
+                    else:
+                        context=project_history_failure_context(getattr(exc,'failure_context',None))
+                        context.setdefault('cause_code','UNKNOWN')
+                        context.setdefault('failure_stage',stage)
+                        context.setdefault('exception_type',project_history_failure_context({'exception_type':type(exc).__name__}).get('exception_type','OTHER'))
+                        context=project_history_failure_context({**context,'batch_id':batch_id,'exchange_count':exchange_count})
+                        # Kept beside the projected context (status() projects it away): taken up at the next start.
+                        if transient:context['transient']=True
+                        with self.connect() as db:db.execute("UPDATE batches SET state='failed',error=?,failure_context=? WHERE id=?",(code,json.dumps(context),batch_id))
+                        return
+                if pause is not None:
+                    await asyncio.sleep(pause)
         finally:self.running=False
+
+    def history_days(self,*,now=None):
+        """The days of every assessed exchange whose time is known."""
+        with self.connect() as db:
+            rows=db.execute("SELECT payload FROM batches WHERE state='done' ORDER BY id").fetchall()
+        return exchange_days((exchange for (payload,) in rows for exchange in _exchanges(payload)),now=now)
+
+    def merge_history_days(self,ledger,*,now=None):
+        """Count the days of imported letters that were assessed before their days counted.
+
+        Earlier versions applied such an assessment without its days, so a user who moved with weeks of letters
+        stayed in the first volume. Once the whole re-read is done, the days missing from the relationship are
+        added (see the function below). The state key records the assessed batches it was done for, so it runs
+        again only after new batches, and it writes nothing when no day is missing. Returns the days added."""
+        state=self.status()
+        if state['status']!='APPLIED' or not state['batches']:return 0
+        with self.connect() as db:
+            marker=json.dumps(db.execute("SELECT COUNT(*),COALESCE(MAX(id),0) FROM batches WHERE state='done'").fetchone())
+            stored=db.execute('SELECT value FROM meta WHERE key=?',(_HISTORY_DAYS_KEY,)).fetchone()
+        if stored is not None and stored[0]==marker:return 0
+        added=add_history_days(ledger,self.history_days(now=now),at=now or datetime.now(timezone.utc))
+        with self.connect() as db:
+            db.execute('INSERT OR REPLACE INTO meta(key,value) VALUES (?,?)',(_HISTORY_DAYS_KEY,marker))
+        return added
+
+
+def add_history_days(ledger,days,*,at):
+    """Add the days missing from the relationship as explicit checkpoints; nothing is removed or lowered.
+
+    The state follows the day rule of runtime/relationship_growth.py; letter deletion derives it the same way
+    (runtime/imports/letter_delete_replay.py). Returns the number of days added."""
+    from runtime.private_world.ledger import LedgerEvent, LedgerVersionConflictError
+    from runtime.relationship_growth import history_day_updates
+    for attempt in range(3):
+        added=0
+        try:
+            missing=sorted(set(days)-set(ledger.snapshot().relationship_days))
+            for offset in range(0,len(missing),_HISTORY_DAYS_PER_EVENT):
+                chunk=missing[offset:offset+_HISTORY_DAYS_PER_EVENT]
+                identity='history-days.'+hashlib.sha256(json.dumps(chunk).encode('utf-8')).hexdigest()[:40]
+                current=ledger.snapshot()
+                if ledger.apply_once(LedgerEvent(identity,identity,HISTORY_DAYS_EVENT,{'days':chunk},at.isoformat()),
+                        replace(current,version=current.version+1,**history_day_updates(current,chunk)),
+                        expected_snapshot_version=current.version):
+                    added+=len(chunk)
+            return added
+        except LedgerVersionConflictError:
+            if attempt==2:raise  # a live write won every time; the next start tries again

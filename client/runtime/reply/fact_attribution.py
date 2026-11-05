@@ -1,4 +1,5 @@
 """Local dialogue projection shared by reply modes; no model verification call."""
+from runtime.memory import r3_format
 import json
 import re
 
@@ -228,7 +229,15 @@ def compact_evidence(messages):
     return tuple(result)
 
 
-def prepare_dialogue_messages(messages, *, max_input_chars):
+def _dated(now):
+    from datetime import datetime
+    if not isinstance(now, datetime) or now.tzinfo is None:
+        return False
+    from runtime.memory import r3_recall
+    return r3_recall.format_enabled()
+
+
+def prepare_dialogue_messages(messages, *, max_input_chars, now=None):
     """Move the frozen recent tail to native roles, without duplicating its text.
 
     Older retrieval stays in the source-bearing evidence blocks. Trim oldest
@@ -246,6 +255,7 @@ def prepare_dialogue_messages(messages, *, max_input_chars):
             return original
     result = [dict(message) for message in original]
     dialogue = []
+    dated = now is not None and _dated(now)
     def project(match):
         try:
             wrapper = json.loads(match.group(1))
@@ -271,6 +281,12 @@ def prepare_dialogue_messages(messages, *, max_input_chars):
                     provenance = {key: row[key] for key in ('source_message_ids', 'delivery_state') if key in row}
                     if role == 'assistant' and row.get('image_delivery_confirmed') is True:
                         provenance['image_delivery_confirmed'] = True
+                    when = r3_format.moment(stamp) if dated else None
+                    if when is not None:
+                        # Weekday and calendar days since, by the program; day words in the text get their date.
+                        provenance['day'] = r3_format.WEEKDAYS[when.weekday()] + '·' + (
+                            r3_format.age_label(when.date(), now.astimezone(r3_format.LOCAL).date()) or '之后')
+                        text = r3_format.annotate(text, r3_format.turn_day(when))
                     metadata = json.dumps({'source': source, 'event_id': source + ':' + actor,
                         'actor': actor, 'evidence_kind': 'statement_only', 'time': stamp,
                         'channel': row.get('channel'), 'truncated': row.get('truncated', False), **provenance}, ensure_ascii=False)
@@ -303,6 +319,11 @@ def prepare_dialogue_messages(messages, *, max_input_chars):
     # Keep the current-turn boundary adjacent to the input, after older dialogue
     # and evidence, rather than burying it before a long dialogue window.
     result.insert(current + len(dialogue), {'role': 'system', 'content': note})
+    if dated:
+        # The clock, the calendar and the memory principles, when the request has room for them.
+        dated_note = r3_format.now_note(now)
+        if sum(len(m.get('content', '')) for m in result) + len(dated_note) <= max_input_chars:
+            result.insert(current + len(dialogue) + 1, {'role': 'system', 'content': dated_note})
     result = compact_evidence(result)
     try:
         return finalize_reply_messages(result, '', max_input_chars=max_input_chars)

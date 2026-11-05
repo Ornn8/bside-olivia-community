@@ -670,7 +670,7 @@ class ReplyPipeline:
         if isinstance(prepared, ReplyRequest) and prepared.messages:
             from .fact_attribution import prepare_dialogue_messages
             prepared = replace(prepared, messages=prepare_dialogue_messages(
-                prepared.messages, max_input_chars=max(1, context_budget)))
+                prepared.messages, max_input_chars=max(1, context_budget), now=context.trusted_time.instant))
         if isinstance(prepared, ReplyRequest) and prepared.messages:
             from .fact_attribution import finalize_reply_messages
             try:
@@ -785,6 +785,11 @@ class ReplyPipeline:
             candidate = await measure('writer', self.orchestrator.run(prepared))
             if recovery is not None:
                 recovery.put_writer(candidate, token=token)
+        if candidate.state is ReplyState.COMPLETED and isinstance(candidate.text, str):
+            # Day marks and date tags are data the writer read, never words it says.
+            from runtime.memory import r3_format, r3_recall
+            if r3_recall.format_enabled():
+                candidate = replace(candidate, text=r3_format.strip_marks(candidate.text))
         if candidate.state is not ReplyState.COMPLETED:
             return PipelineResult(
                 candidate.request_id,
@@ -797,6 +802,11 @@ class ReplyPipeline:
         clean_text, sticker_id = (split_selection(unwrap_envelope(candidate.text), sticker_choices) if sticker_note
                                   else (candidate.text, None))
         clean_text, signature = split_signature(clean_text) if sticker_note else (clean_text, None)
+        if not sticker_note and not (chat_metadata is not None and chat_metadata.get('structured')):
+            # A spoken letter can come back wrapped as JSON too; the voice and the saved text need the plain letter.
+            unwrapped = unwrap_envelope(clean_text)
+            if unwrapped != clean_text:
+                clean_text, signature = split_signature(unwrapped)
         if not clean_text.strip():
             return PipelineResult(candidate.request_id, ReplyState.FAILED, error_code="PROVIDER_PROTOCOL")
         quality = None
@@ -825,7 +835,9 @@ class ReplyPipeline:
                 options = dict(user=user_text, now=now, proactive=bool(chat_metadata.get('proactive')),
                                allow_user_silence=bool(ordinary_chat),
                                 allow_speech=bool(speech_request and chat_metadata.get('channel') == 'qq'),
-                                daily_video_candidates=daily_candidates)
+                                daily_video_candidates=daily_candidates,
+                                cover_sources=((chat_metadata or {}).get('cover_sources') or []
+                                               if chat_metadata.get('channel') == 'qq' else []))
                 decision = decode(clean_text, **options)
                 if reconsidered_silence and decision.get('speech'):
                     return PipelineResult(candidate.request_id, ReplyState.FAILED,
@@ -1143,7 +1155,16 @@ def _assemble_reply_evidence(adapter, snapshot, context, content, *, max_input_c
     disabled = callable(limit) and limit() == 0
     from runtime.memory.history_continuity import plan_history_query, HistoryQuery
     exclusions = getattr(adapter, '_memory_source_exclusions', lambda: ())()
-    query_plan = HistoryQuery(content) if disabled else plan_history_query(content, recent, excluded=exclusions)
+    quoted, quoted_sources = None, ()
+    if not disabled:
+        # A long passage he quotes back is matched to the stored letter by its own
+        # sentences; the passage itself is then the search anchor, not a pointer.
+        from runtime.memory.quoted_letters import lookup as quoted_lookup
+        quoted, quoted_sources = quoted_lookup(adapter, content, excluded=exclusions)
+        if quoted is not None:
+            recent = (*recent, quoted)
+    query_plan = (HistoryQuery(content) if disabled or quoted is not None
+                  else plan_history_query(content, recent, excluded=exclusions))
     hint = query_plan.fragment()
     if hint is not None:
         recent = (*recent, hint)
@@ -1179,6 +1200,9 @@ def _assemble_reply_evidence(adapter, snapshot, context, content, *, max_input_c
             exclusions = getattr(adapter, '_memory_source_exclusions', lambda: ())()
             recall = deepen_recall(builder, recall, query=content,
                 source_ids=_life_source_ids(life), exclude_source_ids=exclusions)
+        if quoted_sources:
+            from runtime.memory.quoted_letters import lead_quoted_sources
+            recall = lead_quoted_sources(adapter, recall, quoted_sources, excluded=exclusions)
         states = dict(recall.source_status)
         states['world'] = 'available' if context.world_state_available else 'unavailable'
         recall = replace(recall, source_status=tuple(states.items()))

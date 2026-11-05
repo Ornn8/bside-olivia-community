@@ -51,8 +51,12 @@ class CanonicalMemoryDelivery:
     occurred_at: datetime
     user_id: str = "local-user"
     origin: str = "user"
+    # A one-time repeat of an earlier judgment (runtime.memory.qq_memory_rejudge); same source, same text.
+    rejudge: bool = False
 
     def __post_init__(self) -> None:
+        if type(self.rejudge) is not bool:
+            raise CanonicalMemoryDeliveryError("rejudge is invalid")
         for value, field_name in ((self.letter_id, "letter_id"),):
             if not isinstance(value, str) or not _ID_RE.fullmatch(value):
                 raise CanonicalMemoryDeliveryError(f"{field_name} is invalid")
@@ -391,6 +395,10 @@ def _deliver_to_provider(
         }
         if delivery.origin == "proactive":
             values["origin"] = delivery.origin
+        if delivery.rejudge:
+            from runtime.reply.jev_billing import rejudge_scope
+            with rejudge_scope(delivery.source_id):
+                return memory.remember_exchange(**values)
         return memory.remember_exchange(
             **values,
         )
