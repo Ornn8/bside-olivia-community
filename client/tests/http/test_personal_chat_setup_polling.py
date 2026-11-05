@@ -39,7 +39,7 @@ const setTimeout=(fn,ms)=>{timer=fn;delay=ms;return 1;},clearTimeout=()=>{};
  await refresh(true);
  assert.equal(calls,1); assert.equal(delay,10000);
  assert.equal(health.children[1].code,'PERSONAL_CHAT_GENERATION_FAILED');
- assert.match(health.children[2].textContent,/那条消息的失败/);
+ assert.match(health.children[2].textContent,/那条）再发一条消息/);
  assert.equal(field.value,'unsaved-owner');assert.equal(field.selectionStart,3);
  status={...status,reply_errors:{}};
  await refresh(true);assert.equal(health.children.length,0);
