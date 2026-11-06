@@ -222,4 +222,3 @@ def test_the_memoir_asked_again_after_the_reopen_is_written(tmp_path):
     outcome = asyncio.run(diary.write_month(store, writer, '2026-09', rows, persona='p', now=NOW,
                                             offered=frozenset({'deepseek-flash'})))
     assert outcome == 'written' and store.entry('2026-09') is not None
-
