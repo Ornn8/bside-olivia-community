@@ -92,3 +92,45 @@ def test_relay_transport_failures_are_distinguishable_without_secret_leaks(monke
                 raise AssertionError('failure was swallowed')
     failure = None
     asyncio.run(scenario())
+
+
+def test_deleting_the_connection_keeps_the_account_key_and_refreshes_generation(tmp_path, monkeypatch):
+    import original_client_relay_api as relay
+    registered = []
+    async def remote(base, key, method, path, payload=None):
+        registered.append(key)
+        return {'registered':True}
+    async def probe(*args):
+        pass
+    monkeypatch.setattr(relay,'relay_request',remote)
+    service = LLMSetupService(tmp_path, protect=lambda key:'encrypted:'+key[::-1], unprotect=lambda value:value.removeprefix('encrypted:')[::-1], probe=probe)
+    service.observe_login(success=True)
+    refreshes = []
+    async def scenario():
+        app=web.Application();mount_original_client_setup_api(app,service,trusted_origins=('https://client.example',))
+        app['olivia_gpu_refresh'] = lambda: refreshes.append(relay_key())
+        relay_key = app['olivia_relay_stored_key']
+        headers={'Origin':'https://client.example','X-Olivia-Setup-Action':'confirmed','X-Olivia-Setup-Session':service._session_token}
+        async with TestClient(TestServer(app)) as client:
+            assert (await client.post('/toy/relay/action',headers=headers,json={'action':'claim'})).status == 200
+            refreshes.clear()
+            assert (await client.post('/toy/relay/action',headers=headers,json={'action':'connect'})).status == 200
+            account_key = registered[0]
+            # Generation follows the account key as soon as the connection is saved.
+            assert refreshes and refreshes[-1] == account_key
+            deleted=await client.post('/toy/setup/llm/delete',headers=headers,json={})
+            assert deleted.status == 200
+            # Removing the reply connection must not destroy the paid account identity.
+            account=await client.post('/toy/relay/action',headers=headers,json={'action':'account'})
+            account_data=await account.json()
+            assert account_data['configured'] is True
+            assert account_data['connected'] is False
+            exported=await client.post('/toy/relay/action',headers=headers,json={'action':'export_key'})
+            assert (await exported.json())['key'] == account_key
+            # Claiming again reuses the stored identity instead of registering a new account.
+            assert (await client.post('/toy/relay/action',headers=headers,json={'action':'claim'})).status == 200
+            assert set(registered) == {account_key}
+            reconnected=await client.post('/toy/relay/action',headers=headers,json={'action':'connect'})
+            assert reconnected.status == 200
+            assert (await (await client.post('/toy/relay/action',headers=headers,json={'action':'account'})).json())['connected'] is True
+    asyncio.run(scenario())

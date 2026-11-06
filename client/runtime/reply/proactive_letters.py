@@ -17,6 +17,10 @@ DAY = 86400
 
 
 def settings(value: dict) -> dict:
+    if os.environ.get('OLIVIA_DESKTOP_PROACTIVE_OPT_IN') == '1':
+        return {key: value.get(key) if type(value.get(key)) is bool else
+                (False if key == 'enabled' else default)
+                for key, default in DEFAULTS.items()}
     return {key: True if key in ('enabled', 'allow_voice') else value.get(key) if type(value.get(key)) is bool else default
             for key, default in DEFAULTS.items()}
 

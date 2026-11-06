@@ -102,6 +102,41 @@ def _service(tmp_path: Path, probes: list[tuple[str, str, str]]) -> LLMSetupServ
     )
 
 
+def test_windows_keychain_status_tracks_saved_key(tmp_path: Path, monkeypatch) -> None:
+    import original_client_setup_api as setup_api
+    from types import SimpleNamespace
+
+    service = _service(tmp_path, [])
+    monkeypatch.setattr(setup_api, "os", SimpleNamespace(name="nt"))
+    assert service.status()["llm"]["keychain_status"] == "NOT_CONFIGURED"
+    service._key_path.parent.mkdir(parents=True, exist_ok=True)
+    service._key_path.write_text("protected-key", encoding="utf-8")
+    assert service.status()["llm"]["keychain_status"] == "AVAILABLE"
+
+
+def test_relay_stored_key_prefers_active_managed_binding(tmp_path: Path, monkeypatch) -> None:
+    import original_client_relay_api as relay
+
+    service = _service(tmp_path, [])
+    service._config_root.mkdir(parents=True, exist_ok=True)
+    service._config_path.write_text(
+        '{"schema_version": 3, "provider": "openai_compatible", '
+        '"base_url": "' + RELAY_BASE + '", "model": "qwen3.7-flash", '
+        '"max_retries": 2, "key_file": "deepseek_api_key.active.dpapi", '
+        '"key_sha256": "' + hashlib.sha256(b"active").hexdigest() + '"}',
+        encoding="utf-8",
+    )
+    active = service._config_root / "deepseek_api_key.active.dpapi"
+    active.write_text("active", encoding="utf-8")
+    (service._config_root / "olivia_relay_key.dpapi").write_text("legacy", encoding="utf-8")
+    monkeypatch.setattr(service, "_active_key_path", lambda: active)
+    service._unprotect = lambda value: value
+
+    app = web.Application()
+    relay.mount_relay_api(app, service)
+    assert app["olivia_relay_stored_key"]() == "active"
+
+
 def test_setup_opens_before_sign_in_and_never_returns_secret(tmp_path: Path) -> None:
     async def scenario() -> None:
         service = _service(tmp_path, [])
@@ -233,6 +268,7 @@ def test_test_then_save_persists_only_dpapi_key_and_non_secret_config(
                 "max_retries": 2,
                 "model": RELAY_MODEL,
                 "provider": "openai_compatible",
+                "keychain_status": "NOT_CONFIGURED",
             }
             assert "fixture-private-key" not in json.dumps(status_payload)
 
@@ -432,6 +468,8 @@ def test_setup_delete_removes_only_managed_key(tmp_path: Path) -> None:
         config_root.mkdir(parents=True)
         key_path = config_root / "deepseek_api_key.dpapi"
         key_path.write_text("protected:fixture\n", encoding="utf-8")
+        legacy_path = config_root / "olivia_relay_key.dpapi"
+        legacy_path.write_text("protected:legacy\n", encoding="utf-8")
         retained = config_root / "retained.txt"
         retained.write_text("keep", encoding="utf-8")
         app = web.Application()
@@ -458,6 +496,8 @@ def test_setup_delete_removes_only_managed_key(tmp_path: Path) -> None:
                 "restart_required": True,
             }
         assert not key_path.exists()
+        # The relay account identity survives deleting the reply connection.
+        assert legacy_path.read_text(encoding="utf-8") == "protected:legacy\n"
         assert retained.read_text(encoding="utf-8") == "keep"
 
     asyncio.run(scenario())

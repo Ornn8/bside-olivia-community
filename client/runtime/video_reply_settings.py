@@ -70,6 +70,8 @@ def require_image_model(image, capabilities):
 def tier_preferences(tier):
     if not isinstance(tier, str) or tier not in REPLY_TIERS:
         raise VideoReplySettingsError("VIDEO_REPLY_SETTING_PAYLOAD_INVALID", status=400)
+    if os.environ.get("OLIVIA_DESKTOP_MEDIA_OPT_IN") == "1":
+        return dict.fromkeys(REPLY_ROUTES, tier != "text"), dict.fromkeys(REPLY_ROUTES, tier == "video")
     return {**dict.fromkeys(REPLY_ROUTES, tier != "text"), "voice_reply": True}, dict.fromkeys(REPLY_ROUTES, tier == "video")
 
 def routed_video(mode, contexts, ceilings):
@@ -130,6 +132,8 @@ class VideoReplySettingsStore:
             if self._committed.state != "available":
                 raise VideoReplySettingsError(_UNAVAILABLE)
             saved = self._document.get("settings", {}).get("routes")
+            if os.environ.get("OLIVIA_DESKTOP_MEDIA_OPT_IN") == "1":
+                return dict(saved) if saved is not None else dict.fromkeys(REPLY_ROUTES, False)
             return {**(dict(saved) if saved is not None else dict.fromkeys(REPLY_ROUTES, self._committed.enabled is True)), "voice_reply": True}
     def videos_snapshot(self) -> dict[str, bool]:
         with self._lock:
@@ -143,7 +147,8 @@ class VideoReplySettingsStore:
             if self._committed.state != 'available':
                 return {'enabled': False, 'resolution': '1K'}
             # Photos are on until the user turns them off; an explicit choice is stored and kept.
-            image = dict(self._document.get('settings', {}).get('image', DEFAULT_IMAGE))
+            default_image = {'enabled': False, 'resolution': '1K'} if os.environ.get('OLIVIA_DESKTOP_MEDIA_OPT_IN') == '1' else DEFAULT_IMAGE
+            image = dict(self._document.get('settings', {}).get('image', default_image))
             style = self._document.get('settings', {}).get('wardrobe', {'style_id': 'original'})['style_id']
             if style != 'original': image['wardrobe_style'] = style
             return image
