@@ -6,6 +6,7 @@ service. When the phone dials, the service rings here and this computer answers 
 context pack and pickup as a call from the desktop page (or "missed" while she is in the bath).
 During the call it looks up memories for what the user says and sends her world when it changes;
 afterwards it keeps the end report exactly as the desktop page does (memory, diary, her life).
+The same line carries the chat with the phone app (the `app` channel, runtime/personal_chat/app.py).
 The service closes the line with 4404 when no phone is paired; the line then rests until the call
 page pairs one again (it reads the phone list while showing the QR code).
 """
@@ -97,6 +98,8 @@ class Line:
             await self.ws.send_json(value)
 
     async def serve(self):
+        from runtime.personal_chat import app as chat_app
+        chat_app.hub.attach(self)   # chat with the phone app rides on the same line (runtime/personal_chat/app.py)
         try:
             async for msg in self.ws:
                 if msg.type != WSMsgType.TEXT:
@@ -108,6 +111,7 @@ class Line:
                 if isinstance(message, dict):
                     await self.handle(message)
         finally:
+            chat_app.hub.detach(self)
             for call in self.calls.values():
                 call['world'].cancel()
             for task in list(self.tasks):
@@ -126,6 +130,9 @@ class Line:
             self.spawn(self.recall(m['call_id'], m.get('text')))
         elif kind == 'end' and isinstance(m.get('report'), dict):
             await self.keep(m['report'])
+        elif isinstance(kind, str) and kind.startswith('app_'):
+            from runtime.personal_chat import app as chat_app
+            chat_app.hub.frame(self, m)
 
     async def answer(self, ring):
         from runtime.call.context import build

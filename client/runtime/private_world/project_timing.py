@@ -114,9 +114,9 @@ def attach_source_context(data, rows):
         if not isinstance(row, dict) or row.get('read_only') or not row.get('letter_id'):
             continue
         source = f"reply:{row['letter_id']}:{row.get('reply_revision', 1)}"
-        if source not in wanted or (row.get('channel') or 'letter') not in {'letter', 'qq', 'wechat'}:
+        if source not in wanted or (row.get('channel') or 'letter') not in {'letter', 'qq', 'wechat', 'app'}:
             continue
-        chat = row.get('channel') in {'qq', 'wechat'}
+        chat = row.get('channel') in {'qq', 'wechat', 'app'}
         if (row.get('delivery_status') != 'DELIVERED' if chat else
                 row.get('letter_status') != 'COMPLETED' or row.get('private_world_status') != 'COMMITTED'):
             continue

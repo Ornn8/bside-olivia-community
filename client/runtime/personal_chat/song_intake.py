@@ -6,6 +6,7 @@ normalised by ``cover_upload.validate_upload`` into ``cover-inputs/<id>/source.w
 """
 from __future__ import annotations
 
+from .channels import rich
 import asyncio
 from contextvars import ContextVar
 import hashlib
@@ -222,7 +223,7 @@ async def receive_audio_file(server, event, row, identifier, reference, name) ->
     """An audio file sent in the chat, kept as a cover source. False: not an audio file (or covers are off) and the
     ordinary media path decides."""
     from . import cover_chat
-    if event.channel != 'qq' or Path(str(name)).suffix.lower() not in AUDIO_SUFFIXES:
+    if not rich(event.channel) or Path(str(name)).suffix.lower() not in AUDIO_SUFFIXES:
         return False
     if not await cover_chat.available(os.environ):
         return False

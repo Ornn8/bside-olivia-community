@@ -176,7 +176,7 @@ def _write_config(server, value: dict[str, object]) -> None:
 def _selected_channels(server) -> set[str]:
     from .backend import selected_channels
 
-    return selected_channels(server)
+    return selected_channels(server, include_app=False)
 
 
 def _contact_access(server) -> dict[str, object]:

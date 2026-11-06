@@ -1,4 +1,5 @@
 """Bounded MIDI intake and acknowledged MP3 delivery for the current QQ turn."""
+from .channels import rich
 import asyncio
 import hashlib
 import os
@@ -9,7 +10,7 @@ from runtime.ui_i18n_backend import tr
 
 
 async def receive_midi(server, event, row, identifier, reference, name):
-    if event.channel != 'qq' or Path(name).suffix.lower() not in {'.mid', '.midi'}:
+    if not rich(event.channel) or Path(name).suffix.lower() not in {'.mid', '.midi'}:
         return False
     caps = await piano.capabilities(os.environ)
     if not caps:

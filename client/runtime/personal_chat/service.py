@@ -1,4 +1,5 @@
 """One owner, two transports, and the existing canonical exchange consumers."""
+from .channels import media_hint, rich
 import asyncio
 import re
 import inspect
@@ -209,7 +210,7 @@ class PersonalChatService:
         rows = [row for row in self.rows if row.get('channel') == channel
                 and row.get('binding_id') == binding_id
                 and (row.get('delivery_status') == 'RECEIVED'
-                     or channel == 'qq' and row.get('delivery_status') == 'GENERATED'
+                     or rich(channel) and row.get('delivery_status') == 'GENERATED'
                      and isinstance(row.get('reply_text'), str)
                      and row['reply_text'].strip() and len(row['reply_text']) <= 10000)
                 and not row.get('send_attempt_id') and not row.get('delivery_receipt')
@@ -700,7 +701,7 @@ class PersonalChatService:
             if not (audio and callable(getattr(send, 'audio', None))):
                 # Long speech is a separately persisted MP3 file. Its confirmation
                 # does not require a second, ordinary voice-bubble generation.
-                file_speech = (event.channel=='qq' and row.get('speech_script')
+                file_speech = (rich(event.channel) and row.get('speech_script')
                                and (row.get('companion_decision') or {}).get('speech_request'))
                 if file_speech:
                     from .speech import validate_script, validate_intent
@@ -756,7 +757,8 @@ class PersonalChatService:
                 from runtime.diagnostics.reply_telemetry import timing
                 with timing('send_ack', row):
                     if audio and callable(getattr(send, 'audio', None)):
-                        receipt = await send.audio(audio)
+                        with media_hint(text=row['reply_text']):
+                            receipt = await send.audio(audio)
                         row['delivered_format'] = 'audio'
                     else:
                         receipt = await send(row["reply_text"])
@@ -794,13 +796,13 @@ class PersonalChatService:
             row["private_world_semantic_key"] = "canonical." + hashlib.sha256(event.exchange_id.encode()).hexdigest()
             row.pop("error_code", None)
             await persist_state(self.persist)
-            if event.channel == 'qq' and await self._after_delivery(row, event, send):
+            if rich(event.channel) and await self._after_delivery(row, event, send):
                 await persist_state(self.persist)
             if (row.get('proactive_decision') is None
                     and row.get('sticker_id') and not unprompted(row) and callable(getattr(send, 'image', None))):
                 from pathlib import Path
                 if (not re.fullmatch(r'linli-\d{2,3}', row['sticker_id'])
-                        or (event.channel != 'qq' and int(row['sticker_id'][6:]) > 108)
+                        or (not rich(event.channel) and int(row['sticker_id'][6:]) > 108)
                         or not self.sticker_allowed(row['sticker_id'])):
                     row['sticker_delivery_status'] = 'LOCKED'
                 else:
@@ -812,7 +814,8 @@ class PersonalChatService:
                                 Path(__file__).resolve().parents[1] / 'letter_stickers' / asset_filename(row['sticker_id']))
                         row['sticker_delivery_status'] = 'SENDING'
                         await persist_state(self.persist)
-                        await send.image(path)
+                        with media_hint(kind='sticker', text=row['sticker_id']):
+                            await send.image(path)
                         row['sticker_delivery_status'] = 'DELIVERED'
                     except Exception:
                         row['sticker_delivery_status'] = ('FAILED' if row['sticker_delivery_status']=='DOWNLOADING' else 'UNKNOWN')
@@ -821,7 +824,7 @@ class PersonalChatService:
             from runtime.image_reply import is_companion_image
             # Only a photo the user asked for gets a failure notice; a casual
             # picture that did not come out is simply not sent.
-            if event.channel == 'qq' and row.get('image_status') == 'FAILED' and is_companion_image(row):
+            if rich(event.channel) and row.get('image_status') == 'FAILED' and is_companion_image(row):
                 await photo_notice(row, send, self.persist, 'failure', photo_failure_text(row))
             self._schedule_commit(row)
             await asyncio.sleep(0)
@@ -860,7 +863,7 @@ class PersonalChatService:
         primary_image = is_companion_image(row)
         from runtime.image_reply import secondary_photo_allowed
         if (not secondary_photo_allowed(row) or row.get('proactive_decision') is not None
-                or not callable(self.photo) or row.get('channel') != 'qq' or not callable(getattr(send, 'image', None))
+                or not callable(self.photo) or not rich(row.get('channel')) or not callable(getattr(send, 'image', None))
                 or key in self.photo_tasks or row.get('image_delivery_status') in {'SENDING', 'UNKNOWN', 'DELIVERED'}
                 or row.get('image_status') == 'FAILED' and not primary_image
                 or row.get('image_status') == 'SKIPPED' and not primary_image
@@ -911,7 +914,7 @@ class PersonalChatService:
         self.photo_tasks[key] = asyncio.create_task(scheduled())
 
     def resume_media(self, channel, send):
-        if channel != 'qq' or channel not in self.bindings:
+        if not rich(channel) or channel not in self.bindings:
             return
         account, owner = self.bindings[channel]
         binding = PersonalMessage(channel, account, owner, '', '').binding_id
@@ -937,12 +940,12 @@ class PersonalChatService:
 
     def _schedule_speech(self,row,send):
         key=row['letter_id']
-        binding=self.bindings.get('qq')
-        if not binding or row.get('binding_id')!=PersonalMessage('qq',*binding,'','').binding_id:
+        binding=self.bindings.get(row.get('channel'))
+        if not binding or row.get('binding_id')!=PersonalMessage(row['channel'],*binding,'','').binding_id:
             return
         if row.get('cover_request'):
             from . import cover_chat
-            if (not cover_chat.ENABLED or row.get('delivery_status') != 'DELIVERED' or row.get('channel') != 'qq'
+            if (not cover_chat.ENABLED or row.get('delivery_status') != 'DELIVERED' or not rich(row.get('channel'))
                     or not callable(self.cover) or not callable(getattr(send, 'file', None))
                     or key in self.speech_tasks or row.get('cover_status') in cover_chat.FINAL_STATUSES
                     or row.get('cover_status') == 'DELIVERED' and row.get('cover_finished')):
@@ -966,7 +969,7 @@ class PersonalChatService:
             self.speech_tasks[key] = asyncio.create_task(sing())
             return
         if row.get('piano_input'):
-            if (row.get('delivery_status') != 'DELIVERED' or row.get('channel') != 'qq'
+            if (row.get('delivery_status') != 'DELIVERED' or not rich(row.get('channel'))
                     or not callable(self.piano) or not callable(getattr(send, 'file', None))
                     or key in self.speech_tasks or row.get('piano_delivery_status') in {'SENDING', 'UNKNOWN'}
                     or row.get('piano_delivery_status') == 'DELIVERED' and row.get('piano_completed_at')
@@ -988,7 +991,7 @@ class PersonalChatService:
                     self.speech_tasks.pop(key, None)
             self.speech_tasks[key] = asyncio.create_task(play())
             return
-        if (row.get('delivery_status') == 'DELIVERED' and row.get('channel') == 'qq'
+        if (row.get('delivery_status') == 'DELIVERED' and rich(row.get('channel'))
                 and row.get('default_voice_status') == 'PENDING' and callable(self.default_voice)
                 and callable(getattr(send, 'audio', None)) and key not in self.speech_tasks):
             async def voice():
@@ -1003,7 +1006,7 @@ class PersonalChatService:
                     self.speech_tasks.pop(key, None)
             self.speech_tasks[key] = asyncio.create_task(voice())
             return
-        if (row.get('delivery_status')!='DELIVERED' or row.get('channel')!='qq'
+        if (row.get('delivery_status')!='DELIVERED' or not rich(row.get('channel'))
                 or not row.get('speech_script') or not callable(self.speech)
                 or not callable(getattr(send,'file',None)) or key in self.speech_tasks
                 or row.get('speech_delivery_status') in {'SENDING','UNKNOWN','DELIVERED'}):

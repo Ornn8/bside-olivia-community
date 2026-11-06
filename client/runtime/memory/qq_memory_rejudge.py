@@ -14,6 +14,7 @@ and a turn id of their own; the service accepts it only for this window and caps
 
 from __future__ import annotations
 
+from runtime.personal_chat.channels import rich
 from contextlib import closing
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -133,7 +134,7 @@ class QqMemoryRejudge:
         rows = payload.get("personal_chats", ()) if payload is not None else ()
         found = {}
         for row in rows:
-            if not isinstance(row, dict) or row.get("channel") != "qq" or row.get("delivery_status") != "DELIVERED":
+            if not isinstance(row, dict) or not rich(row.get("channel")) or row.get("delivery_status") != "DELIVERED":
                 continue
             delivery = _delivery_from_row(row, user_id=self.outbox.user_id)
             if delivery is None or delivery.origin != "user" or not delivery.user_message.strip():

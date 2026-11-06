@@ -149,7 +149,7 @@ def _mailbox_documents(rows, excluded) -> list[_Document]:
                if isinstance(source, str) and source.startswith("reply:") and source.count(":") >= 2}
     documents = []
     for row in rows:
-        if (not isinstance(row, Mapping) or row.get("channel") in {"qq", "wechat"} or row.get("read_only")
+        if (not isinstance(row, Mapping) or row.get("channel") in {"qq", "wechat", "app"} or row.get("read_only")
                 or not isinstance(row.get("letter_id"), str) or row["letter_id"] in current):
             continue
         deleted = set(row.get("_deleted_parts") or ())
