@@ -4070,23 +4070,23 @@ LETTER_TITLE_RULE = ('给下面这封她刚写好的信取个标题。只输出 
 
 async def _letter_title(intent: dict, body: str) -> str:
     """A title taken from the finished letter: one small request over its body alone, not the whole context.
-    Any failure keeps the letter and gives it the usual title."""
+    An answer that came back but holds no title is asked for once more. Any failure keeps the letter and gives it the
+    usual title."""
     from runtime import cloud_contact
+    from runtime.reply.letter_presentation import title_from_reply
     gateway = letters_adapter.gateway
     scope = GatewayRequestScope.PROACTIVE_PLANNING
-    try:
-        result = await asyncio.wait_for(gateway.complete_scoped(
-            ({'role': 'system', 'content': LETTER_TITLE_RULE}, {'role': 'user', 'content': body[:4000]}),
-            request_id='proactive:' + intent['id'] + ':title', scope=scope),
-            timeout=gateway.timeout_seconds_for_scope(scope, default=60))
-        plan = json.loads(result.text.strip())
-        title = plan.get('title') if isinstance(plan, dict) else None
-        if isinstance(title, str):
-            title = title.strip().strip('"\'“”「」《》').strip()
-            if 1 <= len(title) <= 40 and '\n' not in title:
-                return title
-    except Exception:
-        pass
+    for suffix in (':title', ':title2'):
+        try:
+            result = await asyncio.wait_for(gateway.complete_scoped(
+                ({'role': 'system', 'content': LETTER_TITLE_RULE}, {'role': 'user', 'content': body[:4000]}),
+                request_id='proactive:' + intent['id'] + suffix, scope=scope),
+                timeout=gateway.timeout_seconds_for_scope(scope, default=60))
+        except Exception:
+            break  # nothing came back: the letter is not held up for a second wait
+        title = title_from_reply(getattr(result, 'text', None))
+        if title:
+            return title
     return tr(cloud_contact.DEFAULT_TITLE)
 
 
