@@ -318,12 +318,14 @@ def test_initiative_photo_lets_a_picture_follow_what_she_starts_herself():
     from runtime.image_reply import secondary_photo_allowed
     own = {'origin': 'proactive', 'letter_id': 'a'}
     reply = {'origin': 'user', 'letter_id': 'b'}
-    assert not secondary_photo_allowed(own) and secondary_photo_allowed(reply)
-    proactive_config.adopt({'version': 'v', 'rules': {'initiative_photo': True}})
-    assert secondary_photo_allowed(own) and secondary_photo_allowed(reply)
-    assert not secondary_photo_allowed({**own, 'degraded_stages': ['x']})
+    asked_for = {**own, 'proactive_photo': True}   # A letter written knowing a photo goes with it.
+    assert not secondary_photo_allowed(own) and secondary_photo_allowed(reply)  # Nothing else she starts carries one.
+    assert secondary_photo_allowed(asked_for)   # On unless the cloud says otherwise.
+    assert not secondary_photo_allowed({**asked_for, 'degraded_stages': ['x']})
     proactive_config.adopt({'version': 'v', 'rules': {'initiative_photo': False}})
-    assert not secondary_photo_allowed(own)
+    assert not secondary_photo_allowed(asked_for) and secondary_photo_allowed(reply)
+    proactive_config.adopt({'version': 'v', 'rules': {'initiative_photo': True}})
+    assert secondary_photo_allowed(asked_for) and not secondary_photo_allowed(own)
 
 
 def owner_world(qq, letters, letters_on=True):

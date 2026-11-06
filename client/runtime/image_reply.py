@@ -84,6 +84,11 @@ def contact_photos(row):
     return [item for item in row.get('contact_media') or [] if isinstance(item, dict) and item.get('type') == 'photo']
 
 
+def proactive_photo(row):
+    """A letter she started herself that was written knowing a photo goes with it: the planner is told to make one."""
+    return row.get('proactive_photo') is True
+
+
 def contact_guidance(row):
     """What the cloud wants a generated photo of, when it said."""
     return next((item['brief'] for item in contact_photos(row)
@@ -101,8 +106,8 @@ def secondary_photo_allowed(row):
     if row.get('contact_id'):
         return bool(contact_photos(row))  # A cloud contact carries the photos it names and no others.
     from runtime.reply.proactive_runtime import unprompted
-    if unprompted(row) and not proactive_config.rule('initiative_photo'):
-        return False  # Contact she starts on her own carries no picture unless the cloud allows one.
+    if unprompted(row) and not (proactive_photo(row) and proactive_config.rule('initiative_photo')):
+        return False  # Contact she starts on her own carries a picture only when her letter was written for one.
     record = row.get('companion_decision')
     if not record or is_companion_image(row):
         return True
@@ -548,7 +553,7 @@ async def _prepare_once(server, row, content, text, *, channel='letter', on_read
             return
         if 'image_plan' not in row:
             reference = _photo_reference(row, text)
-            reference['requested_image'] = is_companion_image(row) or bool(contact_photos(row))
+            reference['requested_image'] = is_companion_image(row) or bool(contact_photos(row)) or proactive_photo(row)
             if contact_guidance(row):
                 reference['photo_guidance'] = contact_guidance(row)
             current_location = reference['world_current_location']
@@ -658,7 +663,7 @@ async def _server_photo(server, row, content, text, api, photo_id, settings, pro
         from runtime.wardrobe import CLOUD_CATALOG_PROTOCOL
         reference['wardrobe']={'mode':'daily','catalog_version':CLOUD_CATALOG_PROTOCOL}
     reference['requested_image'] = (is_companion_image(row) or row.get('share_video_photo_fallback') is True
-                                    or bool(contact_photos(row)))
+                                    or bool(contact_photos(row)) or proactive_photo(row))
     if contact_guidance(row):
         reference['photo_guidance'] = contact_guidance(row)
     if channel == 'qq' and not reference['requested_image'] and row.get('daily_video_candidates'):
