@@ -1109,6 +1109,9 @@ class LetterAdapter:
         rows = self.recent_letters() if READ_WINDOW.get() is None and self.recent_letters is not None else ()
         recent, historical = conversation_context(rows, query=content,
             now=now, excluded_sources=self._memory_source_exclusions(), include_history=not selection_only)
+        if not selection_only and self.recent_letters is not None:
+            from runtime.reply.proactive_photo import add_in_transit
+            recent = add_in_transit(recent, self.recent_letters())  # A letter of hers held for its photo is on its way.
         fragments = tuple(UntrustedFragment(name, text) for name, text in
                      (('chat.recent', recent), ('chat.historical', historical)) if text)
         if selection_only:
@@ -3961,6 +3964,14 @@ async def _publish_proactive(intent: dict, plan: dict, *, turn: dict) -> dict | 
         letter['reply_signature'] = signature
         store.letters.append(letter)
         _persist_store_state()
+        def draft_current():
+            return contact or (_proactive_turn_current(intent, turn)
+                               and _proactive_opportunity_current(intent, pending_draft=letter))
+        if not draft_current():
+            _observe_letter_initiative('deferred')
+            letter['letter_status'] = 'CANCELED'
+            _persist_store_state()
+            return
         if turn.get('photo') and not contact:
             # Held back, unseen, until the photo it speaks of is made; without it the letter is written again
             # as one with no photo, so it never claims one that is not there.
@@ -3971,6 +3982,11 @@ async def _publish_proactive(intent: dict, plan: dict, *, turn: dict) -> dict | 
             _persist_store_state()
             if not await _await_proactive_photo(letter):
                 turn['photo'] = False
+                if not draft_current():  # Nothing was paid for, so what he wrote meanwhile still withdraws the letter.
+                    _observe_letter_initiative('deferred')
+                    letter['letter_status'] = 'CANCELED'
+                    _persist_store_state()
+                    return
                 body, signature = await written()
                 for key in ('reply_revision', 'private_world_delivery_id'):
                     letter.pop(key, None)
@@ -3978,13 +3994,15 @@ async def _publish_proactive(intent: dict, plan: dict, *, turn: dict) -> dict | 
                 _prepare_private_world_delivery(letter, body)
                 letter['reply_text'] = body
                 letter['reply_signature'] = signature
-            _persist_store_state()
-        if not contact and (not _proactive_turn_current(intent, turn)
-                            or not _proactive_opportunity_current(intent, pending_draft=letter)):
-            _observe_letter_initiative('deferred')
-            letter['letter_status'] = 'CANCELED'
-            _persist_store_state()
-            return
+                _persist_store_state()
+                if not draft_current():
+                    _observe_letter_initiative('deferred')
+                    letter['letter_status'] = 'CANCELED'
+                    _persist_store_state()
+                    return
+            # Otherwise the photo is made and paid for: the letter goes out with it even if he wrote meanwhile.
+            # Letters cross in the mail, and her answer to his new message is a separate turn that knows this
+            # one is on its way.
         now = datetime.now(timezone.utc)
         letter.update(letter_status='COMPLETED', published_at=now.timestamp(),
                       created_at=int(now.timestamp()), replied_at=int(now.timestamp()),

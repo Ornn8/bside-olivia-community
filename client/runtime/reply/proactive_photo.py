@@ -4,6 +4,7 @@ The decision is a finite semantic question put to the configured Jev sidecar, li
 choice behind a reply photo. It is made first so the writer is told the outcome: the letter
 speaks of a photo only when one is on its way, and says nothing of one otherwise.
 """
+import json
 import os
 from datetime import datetime
 
@@ -72,3 +73,33 @@ async def decide(port, state):
     except Exception:
         return False
     return isinstance(answers, dict) and answers.get('photo') == 'yes'
+
+
+IN_TRANSIT_NOTE = ('她刚写的一封带照片的信还在路上，照片做好就送到他手上，他还没有读到。'
+                   '回复他这条新消息时不要重复这封信里已经写过的话，也不要当作他已经读过；信与回复可以前后脚到。')
+
+
+def in_transit(rows):
+    """Letters she wrote on her own that are held back for their photo: written, not yet in his mailbox."""
+    return [row for row in rows if isinstance(row, dict) and row.get('origin') == 'proactive'
+            and row.get('letter_status') == 'PROCESSING' and row.get('proactive_photo') is True
+            and isinstance(row.get('reply_text'), str) and row['reply_text'].strip()]
+
+
+def add_in_transit(recent, rows):
+    """The recent-dialogue text with such letters named in it, so her reply to a new message knows one is coming.
+
+    Nothing changes unless one is held back, which is rare.
+    """
+    held = in_transit(rows)
+    if not held:
+        return recent
+    try:
+        packet = json.loads(recent) if recent else {'kind': 'recent_dialogue', 'letters': []}
+    except ValueError:
+        return recent
+    if not isinstance(packet, dict):
+        return recent
+    packet['in_transit'] = {'note': IN_TRANSIT_NOTE, 'letters': [
+        {'channel': 'letter', 'origin': 'proactive', 'linli_letter': _clip(row['reply_text'])} for row in held[-1:]]}
+    return json.dumps(packet, ensure_ascii=False, separators=(',', ':'))

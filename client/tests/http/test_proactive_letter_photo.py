@@ -1,5 +1,6 @@
 """A letter she starts herself may carry a photo; the writer is told first, and the letter never claims one that is absent."""
 import asyncio
+import json
 from datetime import datetime, timezone
 
 import pytest
@@ -106,7 +107,7 @@ class Port:
         return {'photo': answer}
 import runtime.reply.jev_questions as jev_questions
 jev_questions.configured_questions = lambda: Port()
-asked, scheduled, bodies = [], [], []
+asked, scheduled, bodies, seen = [], [], [], []
 def photo_notes(messages):
     from runtime.reply.proactive_photo import WRITER_NOTES
     text = '\n'.join(m['content'] for m in messages)
@@ -130,10 +131,16 @@ server.PROACTIVE_PHOTO_WAIT_SECONDS = 1
 def make_photo(row):
     row.update(image_status='COMPLETED', prepared_image='/synthetic/photo.png',
                reply_image_url='http://127.0.0.1:1/toy/media/photo.png', image_plan={'attach': True})
+def he_writes(*_):
+    server.store.letters.append({'letter_id': 'newer', 'content': '在吗', 'letter_status': 'PENDING',
+                                'created_at': NOW.timestamp(), 'life_received_at': NOW.isoformat()})
+mid = None
 def fake_schedule(owner, row):
     scheduled.append(dict(row))
     async def run():
         await asyncio.sleep(0.02)
+        if mid is not None:
+            mid(row)
         if outcome == 'made':
             make_photo(row)
         elif outcome == 'skipped':
@@ -149,13 +156,13 @@ async def publish():
     turn = await server._prepare_proactive_turn(intent, now=NOW)
     plan = json.loads(await server._proactive_complete(intent, planning=True, turn=turn))
     await server._publish_proactive(intent, plan, turn=turn)
-    return server.store.letters[-1]
+    return [row for row in server.store.letters if row.get('origin') == 'proactive'][-1]
 '''
 
 
-def run(tmp_path, answer='yes', image_on=True, outcome='made', check=''):
+def run(tmp_path, answer='yes', image_on=True, outcome='made', check='', before='', mid=None):
     run_isolated(tmp_path, PUBLISH + f'\nanswer, image_on, outcome = {answer!r}, {image_on!r}, {outcome!r}\n'
-                 + 'letter = asyncio.run(publish())\n' + check)
+                 + before + (f'mid = {mid}\n' if mid else '') + 'letter = asyncio.run(publish())\n' + check)
 
 
 def test_a_letter_she_writes_knowing_a_photo_goes_with_it_is_published_with_the_photo(tmp_path):
@@ -207,3 +214,65 @@ proactive_config.adopt({'version': 'v', 'rules': {'initiative_photo': False}})
 letter = asyncio.run(publish())
 assert not asked and bodies == [(False,)] and not scheduled and letter['letter_status'] == 'COMPLETED'
 ''')
+
+
+# --- he writes while the letter is held
+
+def test_when_he_writes_after_the_photo_job_started_the_letter_still_goes_out_with_its_photo(tmp_path):
+    run(tmp_path, mid='he_writes', check=r"""
+assert letter['letter_status'] == 'COMPLETED' and letter['proactive_photo'] is True and letter['image_status'] == 'COMPLETED'
+assert letter['reply_image_url'].endswith('/photo.png') and letter['reply_text'] == '给你拍了一张琴房的照片。'
+assert bodies == [(True,)]   # Not written again: the paid photo is what the text speaks of.
+newer = next(row for row in server.store.letters if row['letter_id'] == 'newer')
+assert newer['letter_status'] == 'PENDING' and letter['published_at'] >= newer['created_at']   # Crossing in the mail.
+""")
+
+
+@pytest.mark.parametrize('outcome', ['skipped', 'failed'])
+def test_when_he_writes_and_the_photo_does_not_come_nothing_was_paid_so_the_letter_is_withdrawn(tmp_path, outcome):
+    run(tmp_path, outcome=outcome, mid='he_writes', check=r"""
+assert letter['letter_status'] == 'CANCELED' and bodies == [(True,)]
+assert 'reply_image_url' not in letter
+""")
+
+
+def test_when_he_writes_before_the_photo_job_starts_the_letter_is_withdrawn_as_before(tmp_path):
+    run(tmp_path, before=r"""
+original = server._prepare_private_world_delivery
+def prepare(letter, text):
+    original(letter, text)
+    he_writes()   # While the draft is being made, before any photo job.
+server._prepare_private_world_delivery = prepare
+""", check=r"""
+assert letter['letter_status'] == 'CANCELED' and not scheduled
+""")
+
+
+def test_her_reply_to_his_new_message_is_told_a_letter_with_a_photo_is_on_its_way(tmp_path):
+    run(tmp_path, mid='he_writes_and_she_reads', before=r"""
+server.letters_adapter.recent_letters = lambda: list(server.store.letters)
+def he_writes_and_she_reads(row):
+    he_writes()
+    fragments = {f.fragment_id: f.text for f in server.letters_adapter.recent_letter_fragments('在吗')}
+    seen.append(fragments.get('chat.recent', ''))
+""", check=r"""
+from runtime.reply.proactive_photo import IN_TRANSIT_NOTE
+packet = json.loads(seen[0])
+assert packet['in_transit']['note'] == IN_TRANSIT_NOTE
+assert packet['in_transit']['letters'] == [{'channel': 'letter', 'origin': 'proactive', 'linli_letter': '给你拍了一张琴房的照片。'}]
+assert letter['letter_status'] == 'COMPLETED'
+after = {f.fragment_id: f.text for f in server.letters_adapter.recent_letter_fragments('在吗')}
+assert 'in_transit' not in after.get('chat.recent', '')   # Once delivered it is an ordinary letter in the window.
+""")
+
+
+def test_only_a_letter_held_for_its_photo_is_named_to_the_reply_writer():
+    held = {'origin': 'proactive', 'letter_status': 'PROCESSING', 'proactive_photo': True, 'reply_text': '信' * 900}
+    packet = json.loads(proactive_photo.add_in_transit('{"kind":"recent_dialogue","letters":[]}', [held]))
+    assert packet['letters'] == [] and len(packet['in_transit']['letters'][0]['linli_letter']) == proactive_photo.STATE_TEXT_LIMIT
+    assert json.loads(proactive_photo.add_in_transit('', [held]))['kind'] == 'recent_dialogue'
+    quiet = '{"kind":"recent_dialogue","letters":[]}'
+    for row in ({**held, 'letter_status': 'COMPLETED'}, {**held, 'proactive_photo': False}, {**held, 'origin': 'user'},
+                {**held, 'reply_text': ' '}):
+        assert proactive_photo.add_in_transit(quiet, [row]) == quiet
+    assert proactive_photo.add_in_transit('not json', [held]) == 'not json'
