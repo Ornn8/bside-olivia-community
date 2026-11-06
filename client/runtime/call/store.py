@@ -11,6 +11,8 @@ import hashlib
 import re
 import uuid
 
+from runtime import ui_language
+
 CHUNK_CHARS = 3000
 CHUNK_SPANS = 56      # memory extraction judges at most 64 sentences of one message
 MEMORY_FORMAT = 2     # 2: what the user said is the message, what she said aloud is the reply
@@ -61,6 +63,15 @@ def _clean_notes(value):
     return notes
 
 
+def _call_language(body):
+    """'en' for a call spoken in English. The cloud states the call's language in its end report; an older
+    report does not, so the interface language now stands in for it."""
+    language = body.get('language') if isinstance(body, dict) else None
+    if isinstance(language, str) and language:
+        return 'en' if language == 'en' else ''
+    return 'en' if ui_language.is_english() else ''
+
+
 def record_call(server, body, now=None):
     """The call page's end report. Returns the stored row (idempotent by call_id)."""
     now = now or _now()
@@ -79,15 +90,17 @@ def record_call(server, body, now=None):
         'reason': str(body.get('reason') or '')[:40],
         'charge_cents': charge if type(charge) is int and charge >= 0 else None,
         'transcript': _clean_transcript(body.get('transcript')), 'notes': _clean_notes(body.get('notes')),
-        'memory_format': MEMORY_FORMAT, 'life_status': 'PENDING'})
+        'memory_format': MEMORY_FORMAT, 'life_status': 'PENDING',
+        **({'language': 'en'} if _call_language(body) == 'en' else {})})
 
 
 def _label(row):
     return '她' if row['role'] == 'her' else '用户'
 
 
-def _spans(text):
-    return len(re.findall(r'[^。！？!?\n]+[。！？!?\n]*', text))
+def _spans(text, english=False):
+    # English sentences end with a full stop too; a Chinese call keeps the original count.
+    return len(re.findall(r'[^.。！？!?\n]+[.。！？!?\n]*' if english else r'[^。！？!?\n]+[。！？!?\n]*', text))
 
 
 def memory_rows(row):
@@ -107,14 +120,18 @@ def memory_rows(row):
         return
     minutes = max(1, round(row.get('seconds', 0) / 60))
     notes = row.get('notes') or {}
+    english = row.get('language') == 'en'   # the call was in English: so are the frames and the notes
     note = ('通话笔记：' + notes['summary'] + (('；她答应：' + '、'.join(notes['her_promises'])) if notes.get('her_promises') else '')
             if notes.get('summary') else '')
+    if english:
+        note = ('Call notes: ' + notes['summary'] + (('; she promised: ' + ', '.join(notes['her_promises'])) if notes.get('her_promises') else '')
+                if notes.get('summary') else '')
     stretches, user, her = [], [], []
     for item in row['transcript']:
         mine = item['role'] == 'user'
         grown_user, grown_her = user + [item['text']] * mine, her + [item['text']] * (not mine)
-        too_big = (_spans('\n'.join(grown_user)) + 1 > CHUNK_SPANS  # + the heading
-                   or _spans('\n'.join(grown_her + [note] * (not stretches))) > CHUNK_SPANS
+        too_big = (_spans('\n'.join(grown_user), english) + 1 > CHUNK_SPANS  # + the heading
+                   or _spans('\n'.join(grown_her + [note] * (not stretches)), english) > CHUNK_SPANS
                    or sum(map(len, grown_user + grown_her)) > CHUNK_CHARS)
         if too_big and (user or her):
             stretches.append((user, her))
@@ -123,9 +140,14 @@ def memory_rows(row):
     if user or her:
         stretches.append((user, her))
     for index, (said, answered) in enumerate(stretches):
-        part = f'，第{index + 1}/{len(stretches)}段' if len(stretches) > 1 else ''
-        content = f'（语音电话里我对她说的话，约{minutes}分钟{part}）\n' + ('\n'.join(said) or '（这一段我没有说话）')
-        reply = '\n'.join(answered) or '（这一段她没有说话）'
+        if english:
+            part = f', part {index + 1}/{len(stretches)}' if len(stretches) > 1 else ''
+            content = f'(What I said to her in the voice call, about {minutes} min{part})\n' + ('\n'.join(said) or '(I said nothing in this part)')
+            reply = '\n'.join(answered) or '(She said nothing in this part)'
+        else:
+            part = f'，第{index + 1}/{len(stretches)}段' if len(stretches) > 1 else ''
+            content = f'（语音电话里我对她说的话，约{minutes}分钟{part}）\n' + ('\n'.join(said) or '（这一段我没有说话）')
+            reply = '\n'.join(answered) or '（这一段她没有说话）'
         if index == 0 and note:
             reply += '\n' + note
         identity = f"{row['call_id']}:v2:{index}"
@@ -205,12 +227,17 @@ def diary_rows(server):
         user = '\n'.join(r['text'] for r in row['transcript'] if r['role'] == 'user')
         her = '\n'.join(r['text'] for r in row['transcript'] if r['role'] == 'her')
         minutes = max(1, round((row.get('seconds') or 0) / 60))
+        heading = f'(Voice call, about {minutes} min)\n' if row.get('language') == 'en' else f'（语音电话，约{minutes}分钟）\n'
         rows.append({'channel': 'call', 'delivery_status': 'DELIVERED', 'life_received_at': row.get('started_at'),
-                     'content': f'（语音电话，约{minutes}分钟）\n' + user[:2000], 'reply_text': her[:2000]})
+                     'content': heading + user[:2000], 'reply_text': her[:2000]})
     return rows
 
 
 CONTEXT_HEADER = '\n\n[语音电话·背景：你们之间刚发生的事，供你知道；不是对方这条消息里的话，不要复述，也不要照着念]'
+
+
+CONTEXT_HEADER_EN = ('\n\n[Voice call - background: what just happened between the two of you, for you to know; it is not part of '
+                     'their message, so do not repeat it or read it back]')
 
 
 def recent_context(server, now=None) -> str:
@@ -234,7 +261,11 @@ def recent_context(server, now=None) -> str:
     parts = []
     missed = [r for r in calls if r.get('missed') and when(r['started_at']) > last_chat
               and now - when(r['started_at']) <= RECENT]
-    if missed:
+    english = ui_language.is_english()
+    if missed and english:
+        parts.append(f"They called you on {local_now_text(datetime.fromisoformat(missed[-1]['started_at']), True)}; "
+                     f"you were in the shower and missed it{' (they called ' + str(len(missed)) + ' times)' if len(missed) > 1 else ''}.")
+    elif missed:
         parts.append(f"对方在{local_now_text(datetime.fromisoformat(missed[-1]['started_at']))}给你打过电话，"
                      f"你当时在洗澡没接到{'（打了' + str(len(missed)) + '次）' if len(missed) > 1 else ''}。")
     done = [r for r in calls if not r.get('missed') and when(r.get('ended_at')) is not None
@@ -242,6 +273,11 @@ def recent_context(server, now=None) -> str:
     if done:
         last = done[-1]
         summary = (last.get('notes') or {}).get('summary') or ''
-        parts.append(f"你们在{local_now_text(datetime.fromisoformat(last['ended_at']))}通过电话，"
-                     f"约{max(1, round(last.get('seconds', 0) / 60))}分钟" + (f"，聊了：{summary}" if summary else '') + '。')
-    return (CONTEXT_HEADER + ''.join(parts)) if parts else ''
+        minutes = max(1, round(last.get('seconds', 0) / 60))
+        if english:
+            parts.append(f"You two talked on the phone on {local_now_text(datetime.fromisoformat(last['ended_at']), True)} "
+                         f"for about {minutes} min" + (f"; you talked about: {summary}" if summary else '') + '.')
+        else:
+            parts.append(f"你们在{local_now_text(datetime.fromisoformat(last['ended_at']))}通过电话，"
+                         f"约{minutes}分钟" + (f"，聊了：{summary}" if summary else '') + '。')
+    return ((CONTEXT_HEADER_EN if english else CONTEXT_HEADER) + ''.join(parts)) if parts else ''
