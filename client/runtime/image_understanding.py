@@ -230,6 +230,10 @@ async def commit_image_memory(server, row):
     lock = _commit_locks.setdefault(key, asyncio.Lock())
     async with lock:
         await _commit_image_memory(server, row)
+    if row.get('image_delivery_status') == 'DELIVERED':
+        # A promise of this reply to send the picture is done once the picture is delivered.
+        from runtime.private_world.plan_closure import schedule_settle
+        schedule_settle(server, row)
 
 
 async def _commit_image_memory(server, row):

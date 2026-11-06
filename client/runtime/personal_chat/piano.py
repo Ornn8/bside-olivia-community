@@ -100,6 +100,8 @@ async def deliver(server, row, send):
         raise
     row.update(piano_delivery_status='DELIVERED', piano_delivery_receipt=str(receipt))
     await persist_chat(server)
+    from runtime.private_world.plan_closure import schedule_settle
+    schedule_settle(server, row)  # a promise of this reply to play it is done
     await finish_delivery(server, row, send)
 
 
