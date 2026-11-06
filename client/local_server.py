@@ -6439,6 +6439,8 @@ def _record_published_media(letter: dict, *, reply_text: str, delivery_id: str,
     # A crash after this point can replay the same idempotent events on startup.
     _persist_media_state()
     _sync_media_delivery_world(letter)
+    from runtime.private_world.plan_closure import schedule_settle
+    schedule_settle(sys.modules[__name__], letter)
 
 
 async def _render_media_job(letter_id: str, content: str, reply_text: str, reply_mode: str) -> None:
@@ -7005,6 +7007,9 @@ async def _start_reply_tasks(_app: web.Application) -> None:
         diary_task.add_done_callback(media_tasks.discard)
     if daily_life_runtime is not None:
         daily_life_runtime.schedule_refresh(datetime.now(timezone.utc))
+        # Promises that a delivered picture or song already kept, from before deliveries closed them.
+        from runtime.private_world.plan_closure import schedule_backfill
+        schedule_backfill(sys.modules[__name__])
         refresh_task = asyncio.create_task(_refresh_daily_life_periodically())
         media_tasks.add(refresh_task)
         refresh_task.add_done_callback(media_tasks.discard)
@@ -7268,6 +7273,9 @@ def _schedule_daily_life_exchange(letter: dict) -> None:
             letter["daily_life_status"] = "COMMITTED"
             letter.pop("daily_life_error_code", None)
             letter.pop("daily_life_failure_reason", None)
+            # The picture or song may have been delivered before her promise to send it was recorded.
+            from runtime.private_world.plan_closure import schedule_settle
+            schedule_settle(sys.modules[__name__], letter)
         except (OSError, RuntimeError, ValueError, TypeError, KeyError, sqlite3.Error) as exc:
             letter["daily_life_error_code"] = "DAILY_LIFE_EXCHANGE_UNAVAILABLE"
             reason = str(exc)
