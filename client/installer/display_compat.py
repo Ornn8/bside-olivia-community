@@ -7,9 +7,11 @@ Graphics, saved under HKCU ``UserGpuPreferences``). When a user sets only the ma
 example to "Power saving" on a laptop with two adapters, the two programs land on different
 adapters and the window stays black.
 
-The compat action available today gives the drawing program the same choice as the main program,
-unless the user chose something for the drawing program. ``COMPAT_ACTIONS`` is ordered; a later
-action (a client command line switch, say) is added there and is picked by the same fallback.
+Two compat actions exist and are applied together: ``align_adapters`` gives the drawing program the
+same choice as the main program (unless the user chose something for the drawing program), and
+``pin_adapter`` passes ``--use-adapter-luid=<high>,<low>`` so the client's GPU process uses the
+adapter DXGI ranks first for the main program's choice. ``COMPAT_ACTIONS`` is ordered; another
+action is added there and is picked by the same fallback.
 
 Mode, saved in ``config/display-compat.json``:
 
@@ -45,6 +47,7 @@ PAGE_READY_NAME = "client-page-ready.txt"
 SCHEMA_VERSION = 1
 GOOD_STARTS_BEFORE_RECHECK = 25
 ALIGN_ADAPTERS = "align_adapters"
+PIN_ADAPTER = "pin_adapter"
 GPU_PREFERENCES_KEY = r"Software\Microsoft\DirectX\UserGpuPreferences"
 DISPLAY_CLASS_KEY = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
 # 0 lets Windows decide, 1 is power saving, 2 is high performance.
@@ -185,6 +188,118 @@ def count_display_adapters(device_ids: Iterable[object] | None) -> int | None:
     return sum(1 for value in device_ids if isinstance(value, str) and value.strip().lower().startswith("pci\\"))
 
 
+_DXGI_SOFTWARE_ADAPTER = 0x2
+
+
+def _guid(text: str):
+    import ctypes
+    import uuid
+
+    class Guid(ctypes.Structure):
+        _fields_ = [("data", ctypes.c_ubyte * 16)]
+
+    value = Guid()
+    ctypes.memmove(value.data, uuid.UUID(text).bytes_le, 16)
+    return value
+
+
+# Windows graphics choice -> DXGI_GPU_PREFERENCE: power saving is MINIMUM_POWER, high performance HIGH_PERFORMANCE.
+_DXGI_PREFERENCE = {1: 1, 2: 2}
+
+
+def dxgi_adapters_by_preference(dxgi_preference: int) -> list[tuple[int, int, int]] | None:
+    """(LUID high, LUID low, flags) of each adapter in IDXGIFactory6::EnumAdapterByGpuPreference order.
+
+    None when DXGI cannot answer (no IDXGIFactory6 before Windows 10 1803, a COM error). Every COM object
+    taken here is released before returning.
+    """
+
+    if os.name != "nt":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    class Luid(ctypes.Structure):
+        _fields_ = [("LowPart", wintypes.DWORD), ("HighPart", wintypes.LONG)]
+
+    class AdapterDesc1(ctypes.Structure):
+        _fields_ = [("Description", wintypes.WCHAR * 128), ("VendorId", wintypes.UINT), ("DeviceId", wintypes.UINT),
+                    ("SubSysId", wintypes.UINT), ("Revision", wintypes.UINT),
+                    ("DedicatedVideoMemory", ctypes.c_size_t), ("DedicatedSystemMemory", ctypes.c_size_t),
+                    ("SharedSystemMemory", ctypes.c_size_t), ("AdapterLuid", Luid), ("Flags", wintypes.UINT)]
+
+    hresult = ctypes.c_long
+    release = ctypes.WINFUNCTYPE(wintypes.ULONG, ctypes.c_void_p)
+    enum_by_preference = ctypes.WINFUNCTYPE(hresult, ctypes.c_void_p, wintypes.UINT, wintypes.UINT,
+                                            ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p))
+    get_desc1 = ctypes.WINFUNCTYPE(hresult, ctypes.c_void_p, ctypes.POINTER(AdapterDesc1))
+
+    def method(pointer, index, prototype):
+        table = ctypes.cast(ctypes.cast(pointer, ctypes.POINTER(ctypes.c_void_p))[0], ctypes.POINTER(ctypes.c_void_p))
+        return prototype(table[index])
+
+    try:
+        dxgi = ctypes.WinDLL("dxgi")
+        create = dxgi.CreateDXGIFactory1
+        create.restype = hresult
+        create.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
+    except (OSError, AttributeError):
+        return None
+    factory_iid = _guid("c1b6694f-ff09-44a9-b03c-77900a0a1d17")  # IDXGIFactory6
+    adapter_iid = _guid("29038f61-3839-4626-91fd-086879011a05")  # IDXGIAdapter1
+    factory = ctypes.c_void_p()
+    try:
+        if create(ctypes.byref(factory_iid), ctypes.byref(factory)) < 0 or not factory:
+            return None
+    except OSError:
+        return None
+    found: list[tuple[int, int, int]] = []
+    try:
+        for index in range(16):
+            adapter = ctypes.c_void_p()
+            # IDXGIFactory6::EnumAdapterByGpuPreference is vtable slot 29; past the last adapter it fails.
+            result = method(factory, 29, enum_by_preference)(factory, index, dxgi_preference,
+                                                              ctypes.byref(adapter_iid), ctypes.byref(adapter))
+            if result < 0 or not adapter:
+                break
+            try:
+                desc = AdapterDesc1()
+                if method(adapter, 10, get_desc1)(adapter, ctypes.byref(desc)) < 0:  # IDXGIAdapter1::GetDesc1
+                    return None
+                found.append((int(desc.AdapterLuid.HighPart), int(desc.AdapterLuid.LowPart), int(desc.Flags)))
+            finally:
+                method(adapter, 2, release)(adapter)
+        return found
+    except OSError:
+        return None
+    finally:
+        method(factory, 2, release)(factory)
+
+
+def read_adapter_luid(preference: int, *, adapters: Callable[[int], list[tuple[int, int, int]] | None]
+                      = dxgi_adapters_by_preference) -> tuple[int, int] | None:
+    """LUID (high, low) of the first hardware adapter DXGI ranks for a Windows graphics choice (1 or 2).
+
+    Software adapters (Microsoft Basic Render Driver, WARP) are skipped. Any failure gives None, so no
+    switch is added.
+    """
+
+    if preference not in _DXGI_PREFERENCE:
+        return None
+    try:
+        listed = adapters(_DXGI_PREFERENCE[preference])
+    except OSError:
+        return None
+    for high, low, flags in listed or ():
+        if not flags & _DXGI_SOFTWARE_ADAPTER:
+            return high, low
+    return None
+
+
+def adapter_luid_switch(luid: tuple[int, int]) -> str:
+    return f"--use-adapter-luid={int(luid[0])},{int(luid[1])}"
+
+
 # --- registry values --------------------------------------------------------------------------------------------
 
 def normalize_exe_path(path: object) -> str:
@@ -233,6 +348,7 @@ class DisplayContext:
     helper_ours: bool
     adapters: int | None
     remembered: tuple[str, ...] = ()
+    luid: tuple[int, int] | None = None
 
     @property
     def helper_preference(self) -> int | None:
@@ -247,7 +363,9 @@ class CompatAction:
     """One way to help the window paint; ``switches`` are extra client command line switches."""
 
     name = ""
-    switches: tuple[str, ...] = ()
+
+    def switches(self, context: DisplayContext) -> tuple[str, ...]:
+        return ()
 
     def available(self, context: DisplayContext) -> bool:
         raise NotImplementedError
@@ -269,7 +387,22 @@ class AlignAdapters(CompatAction):
         return (context.adapters or 0) >= 2
 
 
-COMPAT_ACTIONS: tuple[CompatAction, ...] = (AlignAdapters(),)
+class PinAdapter(CompatAction):
+    """Pin the client's GPU process to the adapter the main program uses (it honours --use-adapter-luid)."""
+
+    name = PIN_ADAPTER
+
+    def available(self, context: DisplayContext) -> bool:
+        return context.main_preference in CHOSEN_PREFERENCES and context.luid is not None
+
+    def automatic(self, context: DisplayContext) -> bool:
+        return (context.adapters or 0) >= 2
+
+    def switches(self, context: DisplayContext) -> tuple[str, ...]:
+        return (adapter_luid_switch(context.luid),) if context.luid is not None else ()
+
+
+COMPAT_ACTIONS: tuple[CompatAction, ...] = (AlignAdapters(), PinAdapter())
 
 
 def _action(name: str) -> CompatAction | None:
@@ -296,6 +429,7 @@ class DisplaySystem:
     device_ids: Callable[[], list[str] | None] = read_display_device_ids
     probe: Callable[[int], "WindowProbe"] | None = None
     watch: bool = os.name == "nt"
+    adapter_luid: Callable[[int], tuple[int, int] | None] = read_adapter_luid
 
 
 SYSTEM = DisplaySystem()
@@ -350,6 +484,17 @@ def _remembered(state: dict, context: DisplayContext) -> tuple[str, ...]:
     return tuple(name for name in actions if isinstance(name, str) and _action(name) is not None)
 
 
+def _luid(system: DisplaySystem, preference: int) -> tuple[int, int] | None:
+    try:
+        value = system.adapter_luid(preference)
+    except (OSError, ValueError, TypeError):
+        return None
+    if (isinstance(value, tuple) and len(value) == 2 and all(type(part) is int for part in value)
+            and -(1 << 31) <= value[0] < (1 << 31) and 0 <= value[1] < (1 << 32)):
+        return value
+    return None
+
+
 def prepare_display(client: Path, config_root: Path, *, system: DisplaySystem | None = None,
                     now: float | None = None) -> DisplayPlan:
     """Bring the drawing program's graphics choice in line with the mode before a client start."""
@@ -363,6 +508,8 @@ def prepare_display(client: Path, config_root: Path, *, system: DisplaySystem | 
     adapters = count_display_adapters(system.device_ids())
     context = _context(client, read_mode(config_root), values, adapters, state)
     context = replace(context, remembered=_remembered(state, context))
+    if context.mode != "off" and context.main_preference in CHOSEN_PREFERENCES:
+        context = replace(context, luid=_luid(system, context.main_preference))
     before = context.helper_preference
     wanted = wanted_actions(context)
     action = "none"
@@ -384,12 +531,13 @@ def prepare_display(client: Path, config_root: Path, *, system: DisplaySystem | 
                             "client": context.client, "at": round(stamp, 3)}
     _save_state(config_root, state)
     after = parse_gpu_preference(target) if target else (None if action == "align_removed" else before)
-    switches = tuple(switch for name in wanted if (item := _action(name)) for switch in item.switches)
+    switches = tuple(switch for name in wanted if (item := _action(name)) for switch in item.switches(context))
     fields = {
         "mode": context.mode, "main_preference": context.main_preference,
         "helper_preference_before": before, "helper_preference_after": after,
         "helper_owner": context.helper_owner, "adapters": context.adapters, "action": action,
-        "remembered": bool(context.remembered),
+        "remembered": bool(context.remembered), "applied": "+".join(wanted) or "none",
+        "adapter_luid": f"{context.luid[0]},{context.luid[1]}" if context.luid is not None else None,
     }
     return DisplayPlan(context=context, applied=wanted, switches=switches, fields=fields)
 
@@ -399,8 +547,9 @@ def fallback_action(plan: DisplayPlan) -> str | None:
 
     if plan.context.mode != "auto":
         return None
-    return next((action.name for action in COMPAT_ACTIONS
-                 if action.name not in plan.applied and action.available(plan.context)), None)
+    missing = [action.name for action in COMPAT_ACTIONS
+               if action.name not in plan.applied and action.available(plan.context)]
+    return "+".join(missing) or None
 
 
 def remember_fallback(client: Path, config_root: Path, name: str, *, system: DisplaySystem | None = None,
@@ -413,8 +562,9 @@ def remember_fallback(client: Path, config_root: Path, name: str, *, system: Dis
     values = system.store().values()
     context = _context(client, read_mode(config_root), values, None, state)
     actions = list(_remembered(state, context))
-    if name not in actions:
-        actions.append(name)
+    for item in name.split("+"):
+        if _action(item) is not None and item not in actions:
+            actions.append(item)
     state["remembered"] = {"actions": actions, "preference": context.main_preference, "client": context.client,
                            "good_starts": 0, "outcome": "pending", "at": round(stamp, 3)}
     _save_state(config_root, state)

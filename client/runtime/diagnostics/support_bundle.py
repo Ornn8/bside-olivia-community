@@ -599,6 +599,9 @@ def _project_display_fields(source: Mapping[str, object]) -> dict[str, object]:
         value = source.get(name)
         if isinstance(value, str) and _DISPLAY_TOKEN_RE.fullmatch(value):
             record[name] = value
+    luid = source.get("adapter_luid")
+    if isinstance(luid, str) and re.fullmatch(r"-?[0-9]{1,10},[0-9]{1,10}", luid):
+        record["adapter_luid"] = luid
     for name in ("remembered", "surface", "late", "loaded", "ended"):
         if type(source.get(name)) is bool:
             record[name] = source[name]

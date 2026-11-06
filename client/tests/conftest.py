@@ -39,7 +39,7 @@ def no_real_display_system(monkeypatch):
     from installer import display_compat
     monkeypatch.setattr(display_compat, "SYSTEM", display_compat.DisplaySystem(
         store=_MemoryGpuPreferences, device_ids=lambda: [], probe=lambda _pid: display_compat.WindowProbe(),
-        watch=False))
+        watch=False, adapter_luid=lambda _preference: None))
 
 
 @pytest.fixture(autouse=True)

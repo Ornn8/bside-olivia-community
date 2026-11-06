@@ -44,9 +44,9 @@ class Store:
         self.data.pop(name, None)
 
 
-def _system(store, adapters=(IGPU, DGPU)):
+def _system(store, adapters=(IGPU, DGPU), luid=None):
     return dc.DisplaySystem(store=lambda: store, device_ids=lambda: None if adapters is None else list(adapters),
-                            probe=lambda _pid: dc.WindowProbe(), watch=False)
+                            probe=lambda _pid: dc.WindowProbe(), watch=False, adapter_luid=lambda _preference: luid)
 
 
 def _mode(config, mode):
@@ -135,7 +135,8 @@ def test_auto_with_two_adapters_mirrors_the_main_choice_and_records_it(tmp_path)
     assert plan.applied == (dc.ALIGN_ADAPTERS,) and plan.switches == ()
     assert plan.fields == {"mode": "auto", "main_preference": 1, "helper_preference_before": None,
                            "helper_preference_after": 1, "helper_owner": "none", "adapters": 2,
-                           "action": "align_written", "remembered": False}
+                           "action": "align_written", "remembered": False, "applied": "align_adapters",
+                           "adapter_luid": None}
     state = json.loads((tmp_path / dc.STATE_NAME).read_text(encoding="utf-8"))
     assert state["written"] == {"path": HELPER, "value": "GpuPreference=1;", "mirrors": 1,
                                 "client": dc.normalize_exe_path(MAIN), "at": 100.0}
@@ -622,3 +623,121 @@ def test_the_diagnostic_bundle_keeps_only_bounded_display_fields():
         "unpainted_seconds": 20.0, "window_seconds": 24.0, "page_ready": "marker", "mode": "auto",
         "main_preference": 1, "adapters": 1, "applied": "none", "action": "align_adapters", "surface": True,
         "colours": 1}
+
+
+# --- pinning the GPU process to the main program's adapter ------------------------------------------------------
+
+HARDWARE = (0, 63804, 0)
+WARP = (0, 85752, 2)  # DXGI_ADAPTER_FLAG_SOFTWARE
+
+
+@pytest.mark.parametrize("preference, dxgi", [(1, 1), (2, 2)])
+def test_the_windows_choice_maps_to_the_dxgi_preference(preference, dxgi):
+    asked = []
+    assert dc.read_adapter_luid(preference, adapters=lambda value: asked.append(value) or [HARDWARE]) == (0, 63804)
+    assert asked == [dxgi]
+
+
+@pytest.mark.parametrize("preference", [0, None, 3])
+def test_no_adapter_is_looked_up_without_a_choice(preference):
+    assert dc.read_adapter_luid(preference, adapters=lambda _value: pytest.fail("not asked")) is None
+
+
+def test_software_adapters_are_skipped():
+    assert dc.read_adapter_luid(1, adapters=lambda _value: [WARP, (-1, 4294967295, 0)]) == (-1, 4294967295)
+    assert dc.read_adapter_luid(1, adapters=lambda _value: [WARP]) is None
+
+
+@pytest.mark.parametrize("answer", [None, [], OSError("COM error")])
+def test_a_failed_lookup_gives_no_adapter(answer):
+    def adapters(_value):
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+    assert dc.read_adapter_luid(2, adapters=adapters) is None
+
+
+def test_the_switch_text_is_decimal_high_then_low():
+    assert dc.adapter_luid_switch((0, 63804)) == "--use-adapter-luid=0,63804"
+    assert dc.adapter_luid_switch((-1, 4294967295)) == "--use-adapter-luid=-1,4294967295"
+
+
+def _pin_system(store, adapters, luid=(0, 63804)):
+    asked = []
+    system = _system(store, adapters=adapters)
+    system.adapter_luid = lambda preference: asked.append(preference) or luid
+    return system, asked
+
+
+PIN = ("--use-adapter-luid=0,63804",)
+
+
+@pytest.mark.parametrize("mode, adapters, pinned", [
+    ("auto", [IGPU, DGPU], True), ("auto", [IGPU], False), ("auto", None, False),
+    ("on", [IGPU], True), ("on", None, True), ("off", [IGPU, DGPU], False)])
+def test_pinning_follows_the_same_gating_as_the_alignment(tmp_path, mode, adapters, pinned):
+    store = Store({MAIN: "GpuPreference=1;"})
+    _mode(tmp_path, mode)
+    system, asked = _pin_system(store, adapters)
+    plan = dc.prepare_display(CLIENT, tmp_path, system=system)
+    assert plan.switches == (PIN if pinned else ())
+    assert plan.applied == ((dc.ALIGN_ADAPTERS, dc.PIN_ADAPTER) if pinned else ())
+    assert (HELPER in store.data) is pinned
+    assert asked == ([] if mode == "off" else [1])
+    assert plan.fields["applied"] == ("align_adapters+pin_adapter" if pinned else "none")
+    assert plan.fields["adapter_luid"] == (None if mode == "off" else "0,63804")
+
+
+@pytest.mark.parametrize("main", [None, "GpuPreference=0;", "SwapEffectUpgradeEnable=1;"])
+def test_no_switch_without_a_main_choice(tmp_path, main):
+    store = Store({MAIN: main} if main else {})
+    _mode(tmp_path, "on")
+    system, asked = _pin_system(store, [IGPU, DGPU])
+    plan = dc.prepare_display(CLIENT, tmp_path, system=system)
+    assert plan.switches == () and asked == [] and plan.fields["adapter_luid"] is None
+
+
+@pytest.mark.parametrize("luid", [None, (0,), ("0", "1"), (0, -1), (1 << 31, 0)])
+def test_a_failed_or_odd_lookup_adds_no_switch_but_still_aligns(tmp_path, luid):
+    store = Store({MAIN: "GpuPreference=2;"})
+    system, _asked = _pin_system(store, [IGPU, DGPU], luid=luid)
+    plan = dc.prepare_display(CLIENT, tmp_path, system=system)
+    assert plan.switches == () and plan.applied == (dc.ALIGN_ADAPTERS,)
+    assert store.data[HELPER] == "GpuPreference=2;" and plan.fields["adapter_luid"] is None
+
+
+def test_the_restart_brings_every_missing_action_and_remembers_them(tmp_path):
+    store = Store({MAIN: "GpuPreference=1;"})
+    system, _asked = _pin_system(store, [IGPU])
+    plan = dc.prepare_display(CLIENT, tmp_path, system=system)
+    assert plan.applied == () and dc.fallback_action(plan) == "align_adapters+pin_adapter"
+    plan = dc.remember_fallback(CLIENT, tmp_path, dc.fallback_action(plan), system=system)
+    assert plan.applied == (dc.ALIGN_ADAPTERS, dc.PIN_ADAPTER) and plan.switches == PIN
+    assert dc.fallback_action(plan) is None  # nothing new: the watch only logs client_unpainted
+    again = dc.prepare_display(CLIENT, tmp_path, system=system)
+    assert again.switches == PIN and again.fields["remembered"] is True
+
+
+def test_a_user_entry_still_leaves_the_pin_for_the_restart(tmp_path):
+    store = Store({MAIN: "GpuPreference=1;", HELPER: "GpuPreference=2;"})
+    system, _asked = _pin_system(store, [IGPU])
+    plan = dc.prepare_display(CLIENT, tmp_path, system=system)
+    assert dc.fallback_action(plan) == dc.PIN_ADAPTER
+    plan = dc.remember_fallback(CLIENT, tmp_path, dc.PIN_ADAPTER, system=system)
+    assert plan.applied == (dc.PIN_ADAPTER,) and plan.switches == PIN
+    assert store.data[HELPER] == "GpuPreference=2;"  # the user's own entry is untouched
+
+
+def test_with_both_actions_in_place_there_is_no_restart(tmp_path):
+    store = Store({MAIN: "GpuPreference=1;"})
+    system, _asked = _pin_system(store, [IGPU, DGPU])
+    plan = dc.prepare_display(CLIENT, tmp_path, system=system)
+    assert plan.applied == (dc.ALIGN_ADAPTERS, dc.PIN_ADAPTER) and dc.fallback_action(plan) is None
+
+
+def test_the_bundle_keeps_the_pinned_luid():
+    from runtime.diagnostics.support_bundle import _project_tail_record
+    record = _project_tail_record({"event": "client_display", "adapter_luid": "0,63804",
+                                   "applied": "align_adapters+pin_adapter"}, runtime=False)
+    assert record == {"event": "client_display", "adapter_luid": "0,63804", "applied": "align_adapters+pin_adapter"}
+    assert "adapter_luid" not in _project_tail_record({"event": "client_display", "adapter_luid": "C:/x"}, runtime=False)
