@@ -5834,6 +5834,54 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     body.append(choices);
   };
 
+  // Compatibility display mode. Auto lets the launcher keep the client's two drawing programs on one graphics
+  // adapter when needed; the launcher reads the choice before the next start. Loaded when the group opens.
+  const DISPLAY_COMPAT_PATH = "/api/display-compat";
+  const mountDisplayCompatSetting = (section) => {
+    const row = document.createElement("div");
+    row.className = "flex flex-col gap-2 px-0 py-3 rounded-3";
+    row.setAttribute("data-olivia-display-compat", "");
+    const state = text("div", t("窗口一直黑屏或启动画面不消失时可以选“开”。默认“自动”会在需要时自己处理。下次启动 Olivia 时生效。"),
+      "text-text-secondary text-caption-m font-regular");
+    const choices = document.createElement("div");
+    choices.setAttribute("role", "radiogroup");
+    choices.setAttribute("aria-label", t("兼容显示模式"));
+    const buttons = new Map();
+    const show = (mode) => {
+      for (const [value, item] of buttons) item.setAttribute("aria-checked", String(value === mode));
+    };
+    for (const [value, label] of [["auto", t("自动")], ["on", t("开")], ["off", t("关")]]) {
+      const choice = button(label, async () => {
+        setButtonsBusy([...buttons.values()], true);
+        try {
+          const saved = await requestSetup(DISPLAY_COMPAT_PATH, { mode: value });
+          show(saved.mode);
+          state.textContent = t("已保存，下次启动 Olivia 时生效。");
+        } catch (_error) {
+          state.textContent = t("未能保存，请稍后重试。");
+        } finally {
+          setButtonsBusy([...buttons.values()], false);
+        }
+      });
+      choice.setAttribute("role", "radio");
+      choice.setAttribute("aria-checked", "false");
+      choice.setAttribute("data-mode", value);
+      buttons.set(value, choice);
+      choices.append(choice);
+    }
+    let loaded = false;
+    const load = () => {
+      if (loaded) return;
+      loaded = true;
+      requestSetup(DISPLAY_COMPAT_PATH).then((value) => show(value.mode)).catch(() => { loaded = false; });
+    };
+    const group = section.oliviaGroup;
+    if (group && !group.open) group.addEventListener("toggle", () => { if (group.open) load(); });
+    else load();
+    row.append(text("div", t("兼容显示模式"), "text-text-body text-title-m"), choices, state);
+    section.append(row);
+  };
+
   const mountShell = () => {
     if (!isSettingsRoute()) {
       removeShell();
@@ -5867,6 +5915,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     renderLocalUpdatePanel(update);
     help.append(update);
     mountDiagnosticExport(help);
+    mountDisplayCompatSetting(help);
     requestJson("/toy/updates/local/status").then((value) => {
       reportGroupStatus(help, "version", typeof value.version === "string" ? t("当前 {version}", {version: value.version}) : t("基础安装版"));
     }).catch(() => {});
