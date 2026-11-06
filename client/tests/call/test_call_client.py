@@ -451,3 +451,17 @@ def test_the_avatar_engine_loads_before_the_call_page():
     from runtime.call_ui import JAVASCRIPT
     assert JAVASCRIPT.startswith(ENGINE) and 'root.OliviaAvatar = Avatar' in ENGINE
     assert JAVASCRIPT in BOOTSTRAP_JAVASCRIPT and '/toy/call/avatar/files/' in JAVASCRIPT
+
+
+def test_an_english_interface_puts_its_language_in_the_call_pack(monkeypatch):
+    from runtime import ui_language
+    monkeypatch.setattr(call_context, 'world', lambda server, now: ({}, {}))
+    monkeypatch.setattr(call_context, 'persona_text', lambda server: '她')
+    monkeypatch.setattr(call_context, 'nicknames', lambda server: [])
+    monkeypatch.setattr(call_context, 'recent_chat', lambda server: [])
+    monkeypatch.setattr(call_context, 'recent_calls', lambda server, now: [])
+    monkeypatch.setattr(call_context, 'relationship_text', lambda server: '')
+    monkeypatch.setattr(call_context, 'concerns', lambda server, now: [])
+    assert call_context.build(object(), None, NOW)[0] == {'persona': '她'}          # Chinese: the pack is unchanged
+    ui_language.set_language('en')
+    assert call_context.build(object(), None, NOW)[0] == {'persona': '她', 'language': 'en'}

@@ -9,6 +9,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import logging
 
+from runtime import ui_language
+
 LOCAL_WEEKDAYS = '一二三四五六日'
 STAGES = {'unknown': '还在慢慢建立', 'acquaintance': '刚认识不久，还有些拘谨', 'familiar': '渐渐熟了',
           'friend': '朋友，在一起很自在', 'trusted_friend': '彼此信赖的朋友，愿意说心里话',
@@ -279,5 +281,7 @@ def build(server, backend=None, now: datetime | None = None) -> tuple[dict, str]
         'calls': calls,
         'concerns': _optional(lambda: concerns(server, now), []),
         'world': facts,
+        # English interface: the call is spoken in English. Chinese leaves the pack exactly as before.
+        'language': ui_language.ENGLISH if ui_language.is_english() else '',
     }
     return {k: v for k, v in context.items() if v}, pickup(state)
