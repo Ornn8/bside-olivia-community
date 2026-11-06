@@ -451,3 +451,58 @@ def test_the_avatar_engine_loads_before_the_call_page():
     from runtime.call_ui import JAVASCRIPT
     assert JAVASCRIPT.startswith(ENGINE) and 'root.OliviaAvatar = Avatar' in ENGINE
     assert JAVASCRIPT in BOOTSTRAP_JAVASCRIPT and '/toy/call/avatar/files/' in JAVASCRIPT
+
+
+def test_an_english_interface_puts_its_language_in_the_call_pack(monkeypatch):
+    from runtime import ui_language
+    monkeypatch.setattr(call_context, 'world', lambda server, now: ({}, {}))
+    monkeypatch.setattr(call_context, 'persona_text', lambda server: '她')
+    monkeypatch.setattr(call_context, 'nicknames', lambda server: [])
+    monkeypatch.setattr(call_context, 'recent_chat', lambda server: [])
+    monkeypatch.setattr(call_context, 'recent_calls', lambda server, now: [])
+    monkeypatch.setattr(call_context, 'relationship_text', lambda server: '')
+    monkeypatch.setattr(call_context, 'concerns', lambda server, now: [])
+    assert call_context.build(object(), None, NOW)[0] == {'persona': '她'}          # Chinese: the pack is unchanged
+    ui_language.set_language('en')
+    assert call_context.build(object(), None, NOW)[0] == {'persona': '她', 'language': 'en'}
+
+
+def test_an_english_call_keeps_english_notes_and_frames():
+    server = Server()
+    lines = [{'role': 'her', 'text': 'Hi, you made it!'}, {'role': 'user', 'text': 'Long day. Tired.'},
+             {'role': 'her', 'text': 'Aw. Sit down, I will listen.'}]
+    notes = {'summary': 'They talked about his long day.', 'her_promises': ['listen to him play tomorrow']}
+    row = call_store.record_call(server, {'call_id': 'e1f2a3b4c5d6', 'seconds': 125, 'reason': 'hangup', 'transcript': lines,
+                                          'notes': notes, 'language': 'en'}, now=NOW)
+    assert row['language'] == 'en'
+    rows = list(call_store.memory_rows(row))
+    assert rows[0]['content'].startswith('(What I said to her in the voice call, about 2 min)')
+    assert 'Long day. Tired.' in rows[0]['content'] and 'Hi, you made it!' in rows[0]['reply_text']
+    assert rows[0]['reply_text'].endswith('Call notes: They talked about his long day.; she promised: listen to him play tomorrow')
+    assert not any('一' <= ch <= '鿿' for item in rows for ch in item['content'] + item['reply_text'])
+    # A call the cloud reports as Chinese stays Chinese whatever the interface says.
+    chinese = call_store.record_call(server, {'call_id': 'e1f2a3b4c5d7', 'seconds': 60, 'transcript': lines, 'language': 'zh'}, now=NOW)
+    assert 'language' not in chinese
+    assert list(call_store.memory_rows(chinese))[0]['content'].startswith('（语音电话里我对她说的话')
+
+
+def test_english_calls_split_into_memory_chunks_by_full_stops():
+    server = Server()
+    lines = [{'role': 'user' if i % 2 else 'her', 'text': f'Sentence number {i}. ' + 'This is a fairly long line. ' * 3} for i in range(80)]
+    row = call_store.record_call(server, {'call_id': 'e1f2a3b4c5d8', 'seconds': 1800, 'transcript': lines, 'language': 'en'}, now=NOW)
+    rows = list(call_store.memory_rows(row))
+    assert len(rows) > 1 and ', part 1/' in rows[0]['content']
+    for item in rows:
+        assert call_store._spans(item['content'], True) <= 64 and call_store._spans(item['reply_text'], True) <= 64
+
+
+def test_recent_context_and_time_text_follow_the_interface_language(monkeypatch):
+    from runtime import ui_language
+    assert call_context.local_now_text(NOW, True) == 'Wednesday in the evening at 21:30'
+    server = Server()
+    call_store.record_call(server, {'call_id': 'e1f2a3b4c5d9', 'seconds': 300, 'language': 'en',
+                                    'transcript': [{'role': 'her', 'text': 'Hi.'}], 'notes': {'summary': 'Work stress.'}}, now=NOW)
+    monkeypatch.setattr(ui_language, 'is_english', lambda: True)
+    text = call_store.recent_context(server, now=NOW + timedelta(minutes=5))
+    assert text.startswith(call_store.CONTEXT_HEADER_EN) and 'you talked about: Work stress.' in text
+    assert not any('一' <= ch <= '鿿' for ch in text)

@@ -9,6 +9,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import logging
 
+from runtime import ui_language
+
 LOCAL_WEEKDAYS = '一二三四五六日'
 STAGES = {'unknown': '还在慢慢建立', 'acquaintance': '刚认识不久，还有些拘谨', 'familiar': '渐渐熟了',
           'friend': '朋友，在一起很自在', 'trusted_friend': '彼此信赖的朋友，愿意说心里话',
@@ -110,10 +112,14 @@ def recent_chat(server) -> list[dict]:
     return lines[-RECENT_LINES:]
 
 
-def local_now_text(now: datetime) -> str:
+def local_now_text(now: datetime, english: bool = False) -> str:
     from runtime.private_world.life_rhythm import LOCAL
     local = now.astimezone(LOCAL)
     hour = local.hour
+    if english:
+        part = ('in the small hours' if hour < 5 else 'in the early morning' if hour < 9 else 'in the morning' if hour < 12
+                else 'around noon' if hour < 14 else 'in the afternoon' if hour < 18 else 'in the evening')
+        return f'{local:%A} {part} at {local:%H:%M}'
     part = ('凌晨' if hour < 5 else '早上' if hour < 9 else '上午' if hour < 12 else '中午' if hour < 14
             else '下午' if hour < 18 else '晚上')
     return f'星期{LOCAL_WEEKDAYS[local.weekday()]}{part}{local:%H:%M}'
@@ -279,5 +285,7 @@ def build(server, backend=None, now: datetime | None = None) -> tuple[dict, str]
         'calls': calls,
         'concerns': _optional(lambda: concerns(server, now), []),
         'world': facts,
+        # English interface: the call is spoken in English. Chinese leaves the pack exactly as before.
+        'language': ui_language.ENGLISH if ui_language.is_english() else '',
     }
     return {k: v for k, v in context.items() if v}, pickup(state)

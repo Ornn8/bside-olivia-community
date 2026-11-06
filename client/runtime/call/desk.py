@@ -186,7 +186,7 @@ class Line:
         if not self.calls:
             mark_ended(self.server)
         if report.get('transcript'):
-            body = {key: report.get(key) for key in ('call_id', 'seconds', 'charge_cents', 'reason', 'transcript', 'notes')}
+            body = {key: report.get(key) for key in ('call_id', 'seconds', 'charge_cents', 'reason', 'transcript', 'notes', 'language')}
             body['pickup'] = (call or {}).get('pickup', 'answer')
             try:
                 row = await asyncio.to_thread(record_call, self.server, body)

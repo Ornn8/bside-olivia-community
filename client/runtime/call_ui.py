@@ -572,7 +572,8 @@ JAVASCRIPT = r'''
       if (typeof report.charge_cents === 'number') this.ui.price.textContent = t('本次通话 {price}', {price: yuan(report.charge_cents)});
       if (report.transcript?.length && report.call_id) {
         local('/toy/call/end', {call_id: report.call_id, seconds: report.seconds, charge_cents: report.charge_cents,
-          reason: report.reason, pickup: this.pickup, transcript: report.transcript, notes: report.notes}).catch(() => {});
+          reason: report.reason, pickup: this.pickup, transcript: report.transcript, notes: report.notes,
+          language: report.language}).catch(() => {});
       }
       try { this.ws?.close(); } catch (_) {}
     }
