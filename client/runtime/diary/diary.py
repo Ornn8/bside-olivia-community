@@ -48,6 +48,9 @@ RETRY_ONCE_KEY = 'retry_rejected_once'
 # written once more by another model at the relay (2026-10-19 evening). The fourth: from 2026-11-02 most drafts from
 # the large Claude writers came back in a shape that no version could read, and days ran out of tries.
 RETRY_ONCE_KEYS = ((RETRY_ONCE_KEY, 1), ('retry_rejected_20261019', 2), ('retry_rejected_20261020', 2), ('retry_rejected_20261106', 2))
+# A month's memoir is only written when the user asks for it, and the same unreadable replies used up its tries: the
+# memoirs of 2026-11-03 and 2026-11-05 came back from Opus in the same shape. The fourth key reopens such months too.
+MONTH_REOPEN_KEYS = frozenset({'retry_rejected_20261106'})
 SHORT_DAY_CHARS = 40        # a day with less user text gets a short note
 MAX_SOURCE_CHARS = 24000    # one day's messages offered to the writer
 CONTEXT_DAYS = 3
@@ -1153,7 +1156,7 @@ class DiaryStore:
         Earlier versions refused replies that were only a little off the contract, and gave a slow writer three
         minutes, so whole days were lost. The reason kept for a day tells such a day from one that failed because
         nothing was reachable. The marker is written in the same step, so no later start repeats this, and a day
-        that fails again stays closed.
+        that fails again stays closed. Under the keys in MONTH_REOPEN_KEYS a month's memoir is reopened the same way.
         """
         reopened = []
         with self._db() as db:
@@ -1167,6 +1170,17 @@ class DiaryStore:
                     (min(days), max(days), MAX_ATTEMPTS, *REOPEN_REASONS))] if days else []
                 db.executemany("UPDATE diary_attempts SET attempts=?,last_at=0,reason='RETRY_ONCE' WHERE day=?",
                                [(MAX_ATTEMPTS - tries, day) for day in days_now])
+                if key in MONTH_REOPEN_KEYS:
+                    # A month is not tied to the catch-up window, and one unusable reply is enough: the user has to
+                    # ask for a memoir each time, so a try used on a faulty answer is not given back by waiting.
+                    months_now = [row[0] for row in db.execute(
+                        'SELECT day FROM diary_attempts WHERE length(day)=7 AND attempts>=1 '
+                        'AND reason IN (%s) AND day NOT IN (SELECT day FROM diary_entries) '
+                        'AND day NOT IN (SELECT day FROM diary_deleted)' % ','.join('?' * len(REOPEN_REASONS)),
+                        REOPEN_REASONS)]
+                    db.executemany("UPDATE diary_attempts SET attempts=MIN(attempts,?),last_at=0,reason='RETRY_ONCE' "
+                                   "WHERE day=?", [(MAX_ATTEMPTS - tries, month) for month in months_now])
+                    days_now += months_now
                 db.execute('INSERT OR IGNORE INTO diary_settings VALUES (?,?)', (key, '1'))
                 reopened += days_now
         return reopened

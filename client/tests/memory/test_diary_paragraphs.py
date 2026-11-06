@@ -6,7 +6,7 @@ import pytest
 
 from runtime.diary import diary
 from runtime.diary.diary import DiaryStore, QUALITY_PROMPT, REVISE_PROMPT, record_failure, tidy_body, validate
-from tests.memory.test_diary_lost_replies import DAY_KEY, ENTRY, Scripted, fail_once, reopen, run
+from tests.memory.test_diary_lost_replies import DAY_KEY, ENTRY, NOW, ROWS, Scripted, fail_once, reopen, run
 
 SENTENCES = [
     '今天他说下周三要考乐理，我听出他有点紧张。',
@@ -166,3 +166,60 @@ def test_the_fourth_reopen_key_gives_a_day_lost_to_unreadable_replies_two_more_t
     with store._db() as db:
         db.execute('UPDATE diary_attempts SET last_at=0')
     assert store.may_attempt(DAY_KEY) and store.retry_rejected([DAY_KEY]) == []
+
+
+# --- a month's memoir lost to the same unreadable replies ------------------------------------------------------------
+
+MONTH = '2026-10'
+
+
+def keys_before_the_fourth(store):
+    with store._db() as db:
+        db.executemany('INSERT INTO diary_settings VALUES (?,?)', [(key, '1') for key, _ in diary.RETRY_ONCE_KEYS[:-1]])
+
+
+def test_the_fourth_reopen_key_gives_a_memoir_lost_to_unreadable_replies_two_more_tries_once(tmp_path):
+    store = DiaryStore(tmp_path / 'diary.db')
+    keys_before_the_fourth(store)
+    store.failed(MONTH, 'DIARY_NOT_JSON')
+    store.failed(MONTH, 'DIARY_NOT_JSON')                            # two tries used on Opus, the third still open
+    for _ in range(diary.MAX_ATTEMPTS):
+        store.failed('2026-09', 'ProviderEmptyResponse')            # all three used up
+    assert not store.may_attempt('2026-09')
+    assert sorted(store.retry_rejected([DAY_KEY])) == ['2026-09', MONTH]
+    assert store.attempts(MONTH) == diary.MAX_ATTEMPTS - 2 and store.attempts('2026-09') == diary.MAX_ATTEMPTS - 2
+    assert store.may_attempt(MONTH) and store.may_attempt('2026-09')
+    assert store.retry_rejected([DAY_KEY]) == []                     # the marker is written: nothing is reopened twice
+    store.failed(MONTH, 'DIARY_NOT_JSON')
+    store.failed(MONTH, 'DIARY_NOT_JSON')
+    assert not store.may_attempt(MONTH)                              # a memoir that fails again stays closed
+
+
+def test_a_memoir_with_an_entry_or_lost_to_something_else_is_left_alone(tmp_path):
+    store = DiaryStore(tmp_path / 'diary.db')
+    keys_before_the_fourth(store)
+    for _ in range(diary.MAX_ATTEMPTS):
+        store.failed('2026-07', 'PermissionError')
+    store.deferred('2026-06', 'ProviderUnavailable')                 # nothing reached a service: no try was used
+    store.save('2026-08', {'title': 't', 'mood': 'm', 'body': 'b', 'facts': []}, now=NOW, model='claude-opus-5-5',
+               short=False, style='prose', photo=None)
+    for _ in range(diary.MAX_ATTEMPTS):
+        store.failed('2026-08', 'DIARY_NOT_JSON')                    # tries recorded after the entry was kept
+    assert store.retry_rejected([DAY_KEY]) == []
+    assert store.attempts('2026-07') == diary.MAX_ATTEMPTS and store.attempts('2026-06') == 0
+    assert not store.may_attempt('2026-07')
+
+
+def test_the_memoir_asked_again_after_the_reopen_is_written(tmp_path):
+    store = DiaryStore(tmp_path / 'diary.db')
+    keys_before_the_fourth(store)
+    rows = [{**row, 'life_received_at': row['life_received_at'].replace('2026-10', '2026-09')} for row in ROWS]
+    for _ in range(diary.MAX_ATTEMPTS):
+        store.failed('2026-09', 'DIARY_NOT_JSON', model='claude-opus-5-5')
+    assert not store.may_attempt('2026-09')
+    assert diary.due_days(store, NOW) is not None and store.may_attempt('2026-09')
+    writer = Scripted(ENTRY, {'narrator': 'linli'}, ENTRY, {'narrator': 'linli'}, model='deepseek-flash')
+    outcome = asyncio.run(diary.write_month(store, writer, '2026-09', rows, persona='p', now=NOW,
+                                            offered=frozenset({'deepseek-flash'})))
+    assert outcome == 'written' and store.entry('2026-09') is not None
+
