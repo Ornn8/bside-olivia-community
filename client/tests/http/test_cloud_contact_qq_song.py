@@ -52,9 +52,9 @@ def test_a_contact_song_is_fetched_by_its_task_and_sent_as_an_mp3_file_then_file
     row = env.rows[0]
     assert env.fetched == [TASK]
     assert env.sent == [('text', TEXT)]                                   # only her own words; no cover closing line
-    assert env.files == [('什么（翻唱）.mp3', b'ID3RIFFsong')]
+    assert env.files == [('什么.mp3', b'ID3RIFFsong')]                    # a song she brought is not marked as a cover
     assert row['cover_status'] == 'DELIVERED' and row['cover_finished'] is True
-    assert env.library == [('什么（翻唱）', b'RIFFsong')]                   # in the music library
+    assert env.library == [('什么', b'RIFFsong')]                          # in the music library, under the same name
     assert not cover_delivery.work_folder(env.server._local_data_root(), row).exists()
     [memory] = list(cover_chat.memory_rows(row))                           # and a memory of hers
     assert memory['letter_status'] == 'COMPLETED'

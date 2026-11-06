@@ -141,13 +141,19 @@ async def _deliver_task(server, row, send, root, request):
     await _send(server, row, send, mp3, title)
 
 
+def song_name(row, title):
+    """What the mp3 file and its music-library entry are called: a cover she sang is marked as one, a song she
+    brought him by her own message is not."""
+    return title if row.get('cover_task_only') else tr('{title}（翻唱）', title=title)
+
+
 async def _send(server, row, send, mp3, title):
     from .backend import persist_chat
     from .speech import filename
     row.update(cover_file=str(mp3), cover_status='SENDING')
     await persist_chat(server)
     try:
-        receipt = await send.file(mp3, filename(tr('{title}（翻唱）', title=title)))
+        receipt = await send.file(mp3, filename(song_name(row, title)))
         if not receipt:
             raise ValueError('QQ_FILE_ACK_INVALID')
     except asyncio.CancelledError:
@@ -182,7 +188,7 @@ async def finish(server, row, send):
         try:
             from runtime.media.local_song_library import LocalSongLibrary
             await asyncio.to_thread(LocalSongLibrary(root, os.environ).import_audio, wav,
-                                    tr('{title}（翻唱）', title=title)[:120])
+                                    song_name(row, title)[:120])
         except Exception as exc:  # noqa: BLE001 - the file is sent; the library entry is a convenience
             row['cover_library'] = 'FAILED'
             log.info('COVER_LIBRARY_IMPORT_FAILED %s', type(exc).__name__)
