@@ -58,7 +58,7 @@ def freeze_read_window(rows, *, channel, binding_id, current_id):
         order = receipt(index, row)
         if order > cutoff:
             continue
-        if (row.get('delivery_status') == 'DELIVERED' if row.get('channel') in {'qq', 'wechat'}
+        if (row.get('delivery_status') == 'DELIVERED' if row.get('channel') in {'qq', 'wechat', 'app'}
                 else row.get('letter_status') == 'COMPLETED'):
             delivered.append({**_snapshot(row), '_receipt_order': order})
         elif (same(row) and row.get('origin') != 'proactive' and not row.get('superseded_by')

@@ -17,7 +17,7 @@ def daily_candidate(rows, now):
     for row in rows:
         if row.get('origin') != 'proactive':
             continue
-        im = row.get('channel') in {'qq', 'wechat'} or row.get('reply_mode') == 'future_im'
+        im = row.get('channel') in {'qq', 'wechat', 'app'} or row.get('reply_mode') == 'future_im'
         delivered = row.get('delivery_status') == 'DELIVERED' if im else row.get('letter_status') == 'COMPLETED'
         at = next((stamp(row.get(k)) for k in ('delivered_at', 'published_at', 'replied_at', 'created_at')
                    if stamp(row.get(k))), 0)

@@ -64,7 +64,7 @@ def _record(value):
     if 'channel' in value:
         channel = value['channel']
         delivery = value.get('delivery_status')
-        if channel not in ('qq', 'wechat') or delivery not in ('DELIVERED', 'RECEIVED_ONLY'):
+        if channel not in ('qq', 'wechat', 'app') or delivery not in ('DELIVERED', 'RECEIVED_ONLY'):
             raise ValueError('LETTER_BACKUP_INVALID')
         if delivery == 'RECEIVED_ONLY' and (result['reply_text'] or result['replied_at'] is not None):
             raise ValueError('LETTER_BACKUP_INVALID')
@@ -83,10 +83,10 @@ def personal_chat_letters(chats):
     """Copy chat text for Archive, without queue state or unsent drafts."""
     snapshots = [dict(row) for row in chats]
     parents = {row.get('letter_id'): row for row in snapshots
-               if row.get('channel') in ('qq', 'wechat')}
+               if row.get('channel') in ('qq', 'wechat', 'app')}
     result = []
     for row in snapshots:
-        if row.get('channel') not in ('qq', 'wechat'):
+        if row.get('channel') not in ('qq', 'wechat', 'app'):
             continue
         parent = parents.get(row['superseded_by']) if row.get('superseded_by') else None
         sources = row.get('source_messages')

@@ -30,7 +30,7 @@ def recent(row, now, seconds):
 def blocks_initiative(row, now, *, im=False):
     if row.get('superseded_by'):
         return False
-    im = im or row.get('channel') in {'qq', 'wechat'} or row.get('reply_mode') == 'future_im'
+    im = im or row.get('channel') in {'qq', 'wechat', 'app'} or row.get('reply_mode') == 'future_im'
     if im:
         if row.get('delivery_status') == 'FAILED' and row.get('origin') != 'proactive':
             return recent(row, now, FAILED_TURN_INITIATIVE_SECONDS)
@@ -60,7 +60,7 @@ def cross_channel_reason(server, *, channel, now, profile, exclude_id=None):
             # backoff is owned by the schedulers, not every earlier failure.
             if row.get('delivery_status') != 'FAILED' and blocks_initiative(row, now):
                 return reason
-            im = row.get('channel') in {'qq', 'wechat'} or row.get('reply_mode') == 'future_im'
+            im = row.get('channel') in {'qq', 'wechat', 'app'} or row.get('reply_mode') == 'future_im'
             delivered = row.get('delivery_status') == 'DELIVERED' if im else row.get('letter_status') == 'COMPLETED'
             if row.get('origin') != 'proactive':
                 received = max(stamp(row.get(k)) for k in ('created_at', 'life_received_at', 'user_sent_at', 'read_boundary_created_at'))

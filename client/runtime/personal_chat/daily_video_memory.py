@@ -5,6 +5,7 @@ was actually sent. No model or vision call ever looks at the clip. It rides on a
 persisted chat row, like a delivered photo, and the memory outbox derives one
 source per video event from it.
 """
+from .channels import rich
 from datetime import datetime, timedelta, timezone
 import hashlib
 
@@ -45,7 +46,7 @@ def attach(rows, binding_id, record):
     if any(isinstance(item, dict) and item.get('event_id') == record['event_id']
            for row in rows for item in (row.get(KEY) if isinstance(row.get(KEY), list) else ())):
         return 'EXISTS'
-    own = [row for row in rows if row.get('channel') == 'qq' and row.get('binding_id') == binding_id]
+    own = [row for row in rows if rich(row.get('channel')) and row.get('binding_id') == binding_id]
     anchor = next((row for row in reversed(own) if row.get('delivery_status') == 'DELIVERED'),
                   next(iter(reversed(own)), None))
     if anchor is None:

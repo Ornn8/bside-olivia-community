@@ -3,6 +3,7 @@
 The queue contains transport work, not world events or conversation memory.
 Only an acknowledged QQ send enters the existing canonical media journal.
 """
+from .channels import rich
 import asyncio
 from datetime import date, datetime, timedelta, timezone
 import hashlib
@@ -424,7 +425,7 @@ class DailyVideoWorker:
         from .service import persist_state
         owner = PersonalMessage('qq', *self.binding, '', '').binding_id
         for reply in self.service.rows:
-            if (reply.get('channel') != 'qq' or reply.get('binding_id') != owner
+            if (not rich(reply.get('channel')) or reply.get('binding_id') != owner
                     or reply.get('delivery_status') != 'DELIVERED' or not reply.get('daily_video_request')
                     or reply.get('daily_video_status') in {'QUEUED', 'REJECTED'}):
                 continue

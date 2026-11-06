@@ -1,4 +1,5 @@
 """Opt-in lifecycle inside the existing local server, not a second data writer."""
+from .channels import media_hint, proactive_channel, rich
 import asyncio
 from copy import deepcopy
 from datetime import datetime
@@ -62,21 +63,22 @@ async def _stop_semantic_shadow(server):
 def _resume_now(runtime, resumed):
     """A reply queued again after a restart is not left waiting for the next message: QQ that is already
     connected takes it at once (otherwise the connection picks it up when it connects)."""
-    runner = runtime.get('qq_runner')
-    sender = getattr(runner, 'sender', None)
-    ids = {event.exchange_id for event in resumed or () if event.channel == 'qq'}
-    if not ids or not callable(getattr(runner, 'pending', None)) or sender is None or not sender.is_available():
-        return
-    tasks = runtime.setdefault('resume_tasks', set())
-    for event in runner.pending('qq'):
-        if event.exchange_id in ids:
-            task = asyncio.create_task(runner(event, sender))
-            tasks.add(task)
-            def finished(done):
-                tasks.discard(done)
-                if not done.cancelled():
-                    done.exception()  # The exchange records its own failure on the stored row.
-            task.add_done_callback(finished)
+    for name in ('qq', 'app'):
+        runner = runtime.get(name + '_runner')
+        sender = getattr(runner, 'sender', None)
+        ids = {event.exchange_id for event in resumed or () if event.channel == name}
+        if not ids or not callable(getattr(runner, 'pending', None)) or sender is None or not sender.is_available():
+            continue
+        tasks = runtime.setdefault('resume_tasks', set())
+        for event in runner.pending(name):
+            if event.exchange_id in ids:
+                task = asyncio.create_task(runner(event, sender))
+                tasks.add(task)
+                def finished(done):
+                    tasks.discard(done)
+                    if not done.cancelled():
+                        done.exception()  # The exchange records its own failure on the stored row.
+                task.add_done_callback(finished)
 
 
 async def _recover_chat_loop(server, runtime, *, interval_seconds=30):
@@ -148,7 +150,8 @@ async def deliver_default_voice(server, row, send):
             return
         row['default_voice_status'] = 'SENDING'
         await persist_chat(server)
-        ack = await send.audio(str(path))
+        with media_hint(text=text):
+            ack = await send.audio(str(path))
         row['default_voice_status'] = ('DELIVERED' if type(ack) in (str, int) and str(ack) else 'UNKNOWN')
         if row['default_voice_status'] == 'DELIVERED':
             row['default_voice_duration'] = metadata['duration_seconds']
@@ -534,7 +537,7 @@ def _plan_allows_sticker(row, event) -> bool:
     """A sticker may follow a QQ reply the media plan made as plain text or a voice message (2026-11-05: the plan used
     to drop every sticker). A photo, video, long audio, piano or cover turn carries its own media and goes without."""
     plan = row.get('companion_decision') or {}
-    return (event.channel == 'qq' and row.get('companion_delivery') in ('text', 'audio_speech')
+    return (rich(event.channel) and row.get('companion_delivery') in ('text', 'audio_speech')
             and not plan.get('speech_request') and not plan.get('piano_request') and not row.get('photo_with_words'))
 
 
@@ -558,7 +561,7 @@ async def generate(server, event, row):
     asked = getattr(event, 'text', '') if row.get('origin') != 'proactive' and row.get('contact_id') is None else ''
     with contact_context.using(row.get('contact_id')), billing_scope(
             'personal-chat:' + event.exchange_id + ':' + str(row.get('input_revision', 0)),
-            deferred=event.channel == 'qq'), using('qq'), scope(
+            deferred=rich(event.channel)), using('qq'), scope(
             event.exchange_id, 'proactive' if row.get('origin') == 'proactive' else event.channel, row.get('generation_attempts', 0)), \
             web_search.searching(asked):
         row['diagnostic_model'] = selected_model()
@@ -604,7 +607,7 @@ async def _generate_billed(server, event, row):
         observation_context += incoming_media.incoming_context(row)
     from . import cover_chat
     cover_offered = []
-    if event.channel == 'qq' and cover_chat.ENABLED and row.get('origin') != 'proactive' and row.get('contact_id') is None:
+    if rich(event.channel) and cover_chat.ENABLED and row.get('origin') != 'proactive' and row.get('contact_id') is None:
         # A song the user shares (card, link, B站 video) becomes a cover source she may choose to sing.
         from .song_intake import receive_shares, defer_share, song_waiting
         on, why = await cover_chat.availability(os.environ, eager=song_waiting(server, event))
@@ -616,7 +619,7 @@ async def _generate_billed(server, event, row):
         cover_offered = await cover_chat.offered(server, row, os.environ, checked=on)
         row['cover_orders'] = cover_chat.in_flight(server, row)
         observation_context += cover_chat.context(row)
-    if event.channel == 'qq':
+    if rich(event.channel):
         from .bilibili import link_context
         observation_context += await link_context(server, event, row)
         from .qq_games import game_context
@@ -640,9 +643,9 @@ async def _generate_billed(server, event, row):
                    'PROVIDER_UNAVAILABLE' if not server._voice_reply_configured(os.environ) else None)
     voice_available = voice_block is None
     from .speech import supported as speech_supported
-    speech_enabled = event.channel == 'qq' and await speech_supported(os.environ)
+    speech_enabled = rich(event.channel) and await speech_supported(os.environ)
     from runtime import piano
-    piano_caps = await piano.capabilities(os.environ) if event.channel == 'qq' else None
+    piano_caps = await piano.capabilities(os.environ) if rich(event.channel) else None
     from runtime.piano_collection import pieces as saved_pieces
     piano_pieces = saved_pieces(server) if piano_caps else []
     row['voice_ready'] = voice_available
@@ -654,7 +657,7 @@ async def _generate_billed(server, event, row):
     asked = row.get('contact_id') is not None
     wants_video = any(item.get('type') == 'video' for item in row.get('contact_media') or [])
     qq_media = proactive_config.media('qq')
-    image_offered = bool(not unprompted and not asked and event.channel == 'qq' and row.get('image_available')
+    image_offered = bool(not unprompted and not asked and rich(event.channel) and row.get('image_available')
                          and row['image_reply_settings'].get('enabled')
                          and os.environ.get('OLIVIA_GPU_API_URL') and os.environ.get('OLIVIA_GPU_API_KEY'))
     daily_worker = getattr(server, '_daily_video_worker', None)
@@ -664,14 +667,14 @@ async def _generate_billed(server, event, row):
         from .daily_video import tier_allows_video
         row['daily_video_candidates'] = ([candidate for candidate in daily_worker.candidates()
                                           if candidate['event_kind'] != 'moment' or image_offered]
-            if event.channel == 'qq' and daily_worker is not None and not unprompted and (wants_video or not asked)
+            if rich(event.channel) and daily_worker is not None and not unprompted and (wants_video or not asked)
             and tier_allows_video(getattr(server, 'video_reply_settings_store', None)) else [])
         await persist_chat(server)
-    daily_candidates = row['daily_video_candidates'] if event.channel == 'qq' and not unprompted else []
+    daily_candidates = row['daily_video_candidates'] if rich(event.channel) and not unprompted else []
     if 'offer_kinds' not in row:
         # Her own suggestion to play or call is weighed only in ordinary chat the user started (2026-10-22).
         row['offer_kinds'] = (await _open_offers(server, piano_caps)
-                              if event.channel == 'qq' and not unprompted and not asked else [])
+                              if rich(event.channel) and not unprompted and not asked else [])
         await persist_chat(server)
     from runtime import media_offers
     offer_experience = media_offers.experience(row['offer_kinds'] if piano_caps else
@@ -701,7 +704,7 @@ async def _generate_billed(server, event, row):
     sticker_choices = {} if unprompted or asked else choices(server.store.personal_chats, context.private_behavior,
                               channel=event.channel,
                               installed=installed_packs(getattr(server, '_local_data_root', lambda: None)())
-                              if event.channel == 'qq' else ())
+                              if rich(event.channel) else ())
     delayed_delivery = False
     try:
         sent_at = datetime.fromisoformat(row['user_sent_at']) if row.get('user_sent_at') else None
@@ -805,7 +808,7 @@ async def _generate_billed(server, event, row):
                                                              timeout_seconds=_qq_default_voice_timeout_seconds()))
         _VOICE_PREVIEWS[event.exchange_id] = (text, path, rendering)
     preview_metadata = ({'voice_preview': voice_preview}
-                        if event.channel == 'qq' and voice_available and not unprompted and not asked
+                        if rich(event.channel) and voice_available and not unprompted and not asked
                         and row.get('origin') != 'proactive' else {})
     async def save_writer_checkpoint(key, fingerprint):
         row['writer_checkpoint'] = dict(key=key, fingerprint=fingerprint,
@@ -941,7 +944,7 @@ async def _generate_billed(server, event, row):
             decision = decode(result.text, user=event.text, now=datetime.now().timestamp(),
                               proactive=row.get('origin') == 'proactive',
                               allow_user_silence=getattr(result, 'silence_authorized', False) is True,
-                              allow_speech=bool(event.channel == 'qq'
+                              allow_speech=bool(rich(event.channel)
                                    and (row.get('companion_decision') or {}).get('speech_request')),
                                daily_video_candidates=daily_candidates, cover_sources=cover_offered)
         except ValueError as exc:
@@ -1029,7 +1032,7 @@ async def _generate_billed(server, event, row):
             # The spoken line of a photo turn follows the QQ voice default; the photo stays the requested medium.
             words = delivery == 'image' and row.get('photo_with_words') is True
             if ((delivery == 'text' and not media_locked((row.get('companion_decision') or {}).get('plan')) or words)
-                    and event.channel == 'qq' and voice_available):
+                    and rich(event.channel) and voice_available):
                 reason = decision['text_reason'] if decision['delivery'] == 'text' else None
                 mode = 'text' if reason else 'voice'
                 basis = reason.upper() if reason else 'QQ_DEFAULT_VOICE'
@@ -1065,7 +1068,7 @@ async def _generate_billed(server, event, row):
         sticker = decision['sticker'] if decision['sticker'] in sticker_choices else None
         if sticker and contact is None and not unprompted and (companion is None or _plan_allows_sticker(row, event)):
             row['sticker_id'] = sticker
-        if (event.channel == 'qq' and companion is None and contact is None and not asked
+        if (rich(event.channel) and companion is None and contact is None and not asked
                 and _qq_extras(server)['gestures']):
             # Her QQ gesture from the same decision: a poke before the message.
             if decision.get('poke') is True:
@@ -1087,7 +1090,7 @@ async def _generate_billed(server, event, row):
         row.update(requested_format=mode, listening_preference='voice_ok', delivery_basis=basis)
         if not turn_is_current():
             return text  # The service merges new input before any draft is sent.
-        if decision.get('cover_request') and not unprompted and not asked and event.channel == 'qq':
+        if decision.get('cover_request') and not unprompted and not asked and rich(event.channel):
             # The writer chose to sing a song the user asked for; the order itself is made by cover_chat.deliver.
             row.update(cover_request=decision['cover_request'], cover_status=cover_chat.PENDING)
             row.pop('sticker_id', None)
@@ -1120,7 +1123,7 @@ async def _generate_billed(server, event, row):
         script = decision.get('speech')
         if row.get('piano_input'):
             script = None
-        if speech_intent and not script and event.channel == 'qq':
+        if speech_intent and not script and rich(event.channel):
             # Requested long audio the writer left out: the reply still goes out, recorded for diagnosis.
             row['speech_status'] = 'WRITER_OMITTED'
             server._safe_log('personal_chat_speech_omitted', mode=speech_intent.get('mode'))
@@ -1130,7 +1133,7 @@ async def _generate_billed(server, event, row):
             if ((row.get('companion_decision') or {}).get('plan', {}).get('proposal', {}).get('timing')
                     in {'wait_user', 'defer', 'no_reply'}):
                 raise RuntimeError('JEV_PLAN_UNSUPPORTED')
-            if not speech_intent or event.channel != 'qq':
+            if not speech_intent or not rich(event.channel):
                 raise ValueError('SPEECH_INTENT_INVALID')
             row.update(speech_script=script, speech_intent=speech_intent, requested_format='text',
                        speech_status='PENDING', speech_delivery_status='PENDING')
@@ -1151,7 +1154,7 @@ async def _generate_billed(server, event, row):
                 _drop_voice_preview(event.exchange_id)
             # A QQ reply never waits long for its voice: without one the words go as text
             # (owner 2026-10-24 「没语音也可以聊天啊」, after a reply waited 20 minutes for a voice).
-            timeout = (_qq_default_voice_timeout_seconds() if basis == 'QQ_DEFAULT_VOICE' or event.channel == 'qq'
+            timeout = (_qq_default_voice_timeout_seconds() if basis == 'QQ_DEFAULT_VOICE' or rich(event.channel)
                        else _VOICE_RENDER_TIMEOUT_SECONDS)
             started = monotonic()
             voice_status = 'failed'
@@ -1475,8 +1478,18 @@ def _absolute_file(value):
     return Path(value)
 
 
-def selected_channels(server):
-    """Explicit settings selection survives restarts and relationship changes."""
+def selected_channels(server, *, include_app=True):
+    """Explicit settings selection survives restarts and relationship changes. The phone app is
+    selected by pairing a phone, not by the QQ setup, so it is added here and not by the chooser."""
+    chosen = _selected_chat_channels(server)
+    if include_app:
+        from . import app as chat_app
+        if chat_app.active(server):
+            chosen = chosen | {'app'}
+    return chosen
+
+
+def _selected_chat_channels(server):
     from .contact_invitation import status
     from runtime.reply.proactive_letters import read_json
     root = server._state_root()
@@ -1505,6 +1518,8 @@ def install_personal_chat(app, server):
     install_routes(app, server, _RUNTIME)
 
     async def start(application):
+        from . import app as chat_app
+        app_on = chat_app.active(server)
         configured = os.environ.get("OLIVIA_PERSONAL_CHAT_CONFIG")
         if not configured and server._state_root() is not None:
             saved = server._state_root() / "personal-chat" / "config.json"
@@ -1516,16 +1531,19 @@ def install_personal_chat(app, server):
             if server._state_root() is None:
                 raise RuntimeError("PERSONAL_CHAT_DURABLE_STATE_REQUIRED")
             server._require_store_state_available()
-            if not configured:
+            if not configured and not app_on:
                 _publish_status(server, {'status': {name: 'SETUP_REQUIRED' for name in selected_channels(server)}})
                 return
-            config = json.loads(_absolute_file(configured).read_text(encoding="utf-8"))
-            if not isinstance(config, dict) or set(config) - {"wechat", "qq"} or not config:
-                raise ValueError("PERSONAL_CHAT_CONFIG_INVALID")
+            if configured:
+                config = json.loads(_absolute_file(configured).read_text(encoding="utf-8"))
+                if not isinstance(config, dict) or set(config) - {"wechat", "qq"} or not config:
+                    raise ValueError("PERSONAL_CHAT_CONFIG_INVALID")
+            else:
+                config = {}   # a phone app user without QQ
             selected = selected_channels(server)
-            missing = selected - config.keys()
+            missing = selected - config.keys() - {'app'}
             config = {name: value for name, value in config.items() if name in selected}
-            if not config:
+            if not config and not app_on:
                 _publish_status(server, {'status': {name: 'SETUP_REQUIRED' for name in missing}})
                 return
             bindings, jobs = {}, []
@@ -1562,6 +1580,9 @@ def install_personal_chat(app, server):
                 jobs.append(("qq", lambda handler, on_state: run_qq(
                     qq["url"], token, *bindings["qq"], handler, stop_event, state_callback=on_state,
                     diagnostic_callback=transport_closed)))
+            if app_on:
+                bindings['app'] = (chat_app.ACCOUNT, chat_app.OWNER)
+                jobs.append(('app', lambda handler, on_state: chat_app.run_app(handler, stop_event, on_state, server=server)))
             def sticker_allowed(key):
                 from reply_context import ReplyMode
                 from runtime.letter_stickers.selection import allowed_stickers
@@ -1632,9 +1653,11 @@ def install_personal_chat(app, server):
             from .engagement import initiating_channel
             from runtime.reply.daily_proactive import server_daily
             def qq_reachable():
+                # QQ, or the phone app when the user has no QQ (the contact target is one channel; see proactive_channel).
                 target = initiative.target
-                return bool(target and target[0].channel == 'qq' and 'qq' in selected_channels(server)
-                            and runtime['status'].get('qq') == 'CONNECTED'
+                channel = target[0].channel if target else None
+                return bool(rich(channel) and channel in selected_channels(server)
+                            and runtime['status'].get(channel) == 'CONNECTED'
                             and (not callable(getattr(target[1], 'is_available', None)) or target[1].is_available()))
             def qq_ready():
                 # Her own contact on QQ is a voice message, so QQ that cannot speak cannot start it.
@@ -1710,7 +1733,8 @@ def install_personal_chat(app, server):
                         runtime['errors'][event.channel] = 'PERSONAL_CHAT_CONTACT_NOT_ACCEPTED'
                         return  # Never replay pre-invitation messages later.
                     runtime['errors'].pop(event.channel, None)
-                    initiative.received(event, send)
+                    if proactive_channel(event.channel, service.bindings):
+                        initiative.received(event, send)
                     for attempt in range(2):
                         try:
                             await service.handle(event, send)
@@ -1767,7 +1791,7 @@ def install_personal_chat(app, server):
                 runtime.setdefault('senders', {})[channel] = send  # the live connection, for qq_presence
                 service.resume_speech(channel, send)
                 service.resume_media(channel, send)
-                if channel in service.bindings and channel in selected_channels(server):
+                if channel in service.bindings and channel in selected_channels(server) and proactive_channel(channel, service.bindings):
                     # A restart must not wait for the user to speak before she may initiate again.
                     from .events import PersonalMessage
                     initiative.restore(PersonalMessage(channel, *service.bindings[channel],
@@ -1777,6 +1801,7 @@ def install_personal_chat(app, server):
             handle.ready = ready
             from .exchange_runner import ExchangeRunner
             runtime['qq_runner'] = ExchangeRunner(handle)
+            runtime['app_runner'] = ExchangeRunner(handle)   # its own sender lease: QQ and the phone can both be up
 
             async def run(name, factory):
                 def on_state(state):
@@ -1809,7 +1834,7 @@ def install_personal_chat(app, server):
                 while not stop_event.is_set():
                     try:
                         on_state("CONNECTING")
-                        await factory(runtime['qq_runner'] if name == 'qq' else handle, on_state)
+                        await factory(runtime.get(name + '_runner') or handle, on_state)
                         if stop_event.is_set():
                             break
                     except asyncio.CancelledError:
@@ -1873,6 +1898,13 @@ def install_personal_chat(app, server):
                         raise
                     except Exception as exc:
                         runtime['errors']['presence'] = _failure_code(exc)
+            def activate_app():
+                if 'app' in service.bindings:
+                    return
+                service.bindings['app'] = (chat_app.ACCOUNT, chat_app.OWNER)
+                runtime['tasks'].append(asyncio.create_task(run('app', lambda handler, on_state: chat_app.run_app(
+                    handler, stop_event, on_state, server=server))))
+            runtime['activate_app'] = activate_app
             runtime['tasks'].append(asyncio.create_task(proactive_loop()))
             runtime['tasks'].append(asyncio.create_task(presence_loop()))
             runtime["tasks"].append(asyncio.create_task(boot()))
@@ -1889,8 +1921,9 @@ def install_personal_chat(app, server):
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
-        if runtime.get('qq_runner') is not None:
-            await runtime['qq_runner'].close()
+        for name in ('qq_runner', 'app_runner'):
+            if runtime.get(name) is not None:
+                await runtime[name].close()
         if runtime.get('daily_video') is not None:
             await runtime['daily_video'].close()
             if getattr(server, '_daily_video_worker', None) is runtime['daily_video']:
@@ -1921,6 +1954,16 @@ def install_personal_chat(app, server):
             return app.get(_RUNTIME) is not None
 
     app[ACTIVATE_SAVED_CONFIG] = activate_saved_config
+
+    async def wake_app():
+        """The first phone connected: start the chat service, or give the running one the app channel."""
+        runtime = app.get(_RUNTIME)
+        if runtime is None:
+            await activate_saved_config()
+        elif 'app' not in runtime['service'].bindings:
+            runtime['activate_app']()
+
+    server._personal_chat_wake = wake_app
     app.on_startup.append(start)
     # Installed before memory/world cleanup so no new sends race shutdown.
     app.on_cleanup.append(stop)

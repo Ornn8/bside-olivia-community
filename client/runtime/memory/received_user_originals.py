@@ -53,7 +53,7 @@ def _origins(row):
         letter_id = row.get('letter_id')
         return (('letter', '', letter_id),) if isinstance(letter_id, str) and letter_id else ()
     binding, sources = row.get('binding_id'), row.get('source_messages')
-    if channel in {'qq', 'wechat'} and isinstance(binding, str) and binding and isinstance(sources, Mapping):
+    if channel in {'qq', 'wechat', 'app'} and isinstance(binding, str) and binding and isinstance(sources, Mapping):
         return tuple((channel, binding, key) for key in sources if isinstance(key, str) and key)
     return ()
 
@@ -96,7 +96,7 @@ def received_originals(rows, *, include_undelivered=False):
         stamp = _received_at(row)
         if stamp is None:
             continue
-        if channel in {'qq', 'wechat'}:
+        if channel in {'qq', 'wechat', 'app'}:
             binding = row.get('binding_id')
             sources = row.get('source_messages')
             if not isinstance(binding, str) or not binding or not isinstance(sources, Mapping):

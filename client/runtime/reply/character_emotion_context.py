@@ -1,4 +1,5 @@
 """Project a frozen subjective state without replacing the current user input."""
+from runtime.personal_chat.channels import rich
 import hashlib
 import json
 from datetime import datetime
@@ -77,7 +78,7 @@ def latest_qq_reply_basis(rows):
     """Read the latest confirmed QQ reply's bound view, never today's live state."""
     delivered = []
     for row in rows:
-        if row.get('channel') != 'qq' or row.get('delivery_status') != 'DELIVERED':
+        if not rich(row.get('channel')) or row.get('delivery_status') != 'DELIVERED':
             continue
         try:
             stamp = datetime.fromisoformat(row['private_world_occurred_at'])

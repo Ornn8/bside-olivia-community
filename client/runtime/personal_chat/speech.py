@@ -1,5 +1,6 @@
 """QQ transport contract for server-owned story/ASMR generation."""
 import asyncio
+from .channels import media_hint
 from pathlib import Path
 import re
 import hashlib
@@ -117,7 +118,8 @@ async def deliver(server,row,send):
     row.update(speech_status='READY',speech_file=str(output),speech_delivery_status='SENDING')
     await persist_chat(server)  # Reserve the outbound operation before touching QQ.
     try:
-        receipt=await send.file(output,output.name)
+        with media_hint(kind='voice', text=script['title']):
+            receipt=await send.file(output,output.name)
         if not receipt:
             raise ValueError('QQ_FILE_ACK_INVALID')
     except Exception as exc:

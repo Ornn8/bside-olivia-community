@@ -9,6 +9,7 @@
 Every written word is one call of his QQ model, counted like any reply. Each part has its own switch
 (qq_extras.json). Nothing here ever holds up a chat reply: a failure is recorded and tried later.
 """
+from .channels import rich
 import asyncio
 import json
 import os
@@ -91,7 +92,7 @@ def photos_today(rows, now):
     found = []
     for row in rows:
         path = row.get('prepared_image')
-        if (row.get('channel') != 'qq' or row.get('image_delivery_status') != 'DELIVERED' or not path
+        if (not rich(row.get('channel')) or row.get('image_delivery_status') != 'DELIVERED' or not path
                 or not Path(path).is_file()):
             continue
         try:
@@ -223,11 +224,12 @@ async def tick(server, runtime, initiative, now=None):
     now = now or datetime.now(timezone.utc)
     root = server._state_root()
     target = getattr(initiative, 'target', None)
-    if root is None or target is None or runtime['status'].get('qq') != 'CONNECTED' or target[0].channel != 'qq':
+    channel = getattr(target[0], 'channel', None) if target is not None else None
+    if root is None or not rich(channel) or runtime['status'].get(channel) != 'CONNECTED':
         return
     old, sender = target
     # The connection that is up now; the chat's own target may still hold one that has since closed.
-    sender = (runtime.get('senders') or {}).get('qq') or sender
+    sender = (runtime.get('senders') or {}).get(channel) or sender
     if callable(getattr(sender, 'is_available', None)) and not sender.is_available():
         return
     prefs, path = settings(root), Path(root) / STATE_NAME
@@ -238,7 +240,7 @@ async def tick(server, runtime, initiative, now=None):
     try:
         if prefs['status'] and life is not None and stamp - state.get('status_at', 0) >= STATUS_EVERY:
             from .qq_faces import FACE_IDS
-            chatting = any(row.get('channel') == 'qq' and row.get('delivery_status') == 'DELIVERED'
+            chatting = any(rich(row.get('channel')) and row.get('delivery_status') == 'DELIVERED'
                            and stamp - float(row.get('created_at', 0)) <= CHATTING_SECONDS
                            for row in list(server.store.personal_chats)[-20:])
             wanted = status_for(life.snapshot(now), now, chatting)
@@ -246,7 +248,7 @@ async def tick(server, runtime, initiative, now=None):
                 state['status_at'] = stamp
                 await sender.status(FACE_IDS[wanted[0]], wanted[1])
                 state['status'] = list(wanted)
-        if prefs['like'] and state.get('liked') != today and local.hour >= 9:
+        if prefs['like'] and channel == 'qq' and state.get('liked') != today and local.hour >= 9:
             state['liked'] = today  # one try a day, kept or not
             await sender.like(10)
         # OLIVIA_QZONE_POST_NOW=1 opens the evening window for an acceptance run on a test install.
@@ -255,7 +257,8 @@ async def tick(server, runtime, initiative, now=None):
                 and stamp >= state.get('post_retry_at', 0) and life is not None):
             state['post_retry_at'] = stamp + POST_RETRY
             state['post_result'] = await _post(server, sender, state, list(server.store.personal_chats), now)
-        if prefs['qzone'] and stamp - state.get('watched_at', 0) >= WATCH_EVERY and 8 <= local.hour < 24:
+        if (prefs['qzone'] and channel == 'qq' and stamp - state.get('watched_at', 0) >= WATCH_EVERY
+                and 8 <= local.hour < 24):
             state['watched_at'] = stamp
             await _watch(server, sender, state, old.owner_id, old.account_id, now)
     except asyncio.CancelledError:

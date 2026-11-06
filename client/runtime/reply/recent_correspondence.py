@@ -62,7 +62,7 @@ def recent_correspondence(rows: Iterable[Mapping], *, query: str = "", excluded_
             "time": stamp,
             "linli_reply": reply,
         }
-        if row.get('reply_mode') == 'future_im' and row.get('channel') in {'qq', 'wechat'}:
+        if row.get('reply_mode') == 'future_im' and row.get('channel') in {'qq', 'wechat', 'app'}:
             item.update(channel=row['channel'], message_kind='instant_chat',
                         source_note='这是即时聊天，不是一封信；保留原渠道与时间，不把消息条数当作信件封数。')
         if origin == "proactive":
