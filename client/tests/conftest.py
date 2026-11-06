@@ -16,6 +16,32 @@ def immediate_reply_rhythm(monkeypatch):
     monkeypatch.setattr(local_server, "_current_life_rhythm", lambda: {})
 
 
+class _MemoryGpuPreferences:
+    """Stands in for HKCU UserGpuPreferences."""
+
+    def __init__(self):
+        self.data = {}
+
+    def values(self):
+        return dict(self.data)
+
+    def write(self, name, data):
+        self.data[name] = data
+
+    def delete(self, name):
+        self.data.pop(name, None)
+
+
+@pytest.fixture(autouse=True)
+def no_real_display_system(monkeypatch):
+    # Display compat (installer/display_compat.py) reads and writes the Windows registry and inspects windows.
+    # No test touches the real ones; tests/installer/test_display_compat.py passes its own fakes.
+    from installer import display_compat
+    monkeypatch.setattr(display_compat, "SYSTEM", display_compat.DisplaySystem(
+        store=_MemoryGpuPreferences, device_ids=lambda: [], probe=lambda _pid: display_compat.WindowProbe(),
+        watch=False))
+
+
 @pytest.fixture(autouse=True)
 def judgment_recall_unless_r3(request, monkeypatch):
     # Rerank recall (runtime/memory/r3_recall) is on by default in the product; other tests keep the former judgment and

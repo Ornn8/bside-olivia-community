@@ -15,7 +15,7 @@ import shutil
 import socket
 import subprocess
 import sys
-from threading import Event, Thread
+from threading import Event, Lock, Thread
 import time
 from urllib.error import HTTPError, URLError
 from urllib.request import ProxyHandler, build_opener
@@ -762,15 +762,16 @@ def _repair_native_navigation(root: Path) -> str:
     return str(result["status"])
 
 
-def _client_command(client: Path, local: Path) -> list[str]:
+def _client_command(client: Path, local: Path, switches: tuple[str, ...] = ()) -> list[str]:
     """The first-party launcher's profile argument, plus microphone access for voice calls.
 
     CEF denies getUserMedia unless the host grants it; these switches grant it to the
-    client's own local pages (echo cancellation still applies).
+    client's own local pages (echo cancellation still applies). ``switches`` come from
+    display compat actions (installer/display_compat.py).
     """
 
     return [str(client), f'--user-data-dir={local / "cef"}', '--enable-media-stream',
-            '--use-fake-ui-for-media-stream']
+            '--use-fake-ui-for-media-stream', *switches]
 
 
 def _repair_local_login(root: Path) -> str:
@@ -803,10 +804,22 @@ def _run_client_with_native_layout(
     data_root: Path,
     attempt: int,
     startup_player: object | None = None,
+    display_watch: object | None = None,
+    client_switches: tuple[str, ...] = (),
 ) -> int:
-    """Run the copied client while a bounded guard preserves its native layout."""
+    """Run the copied client while a bounded guard preserves its native layout.
+
+    ``display_watch`` (a ``display_compat.ClientDisplayWatch``) follows the started process from
+    its own thread; it is stopped when the client ends and never delays the return.
+    """
 
     animation = environment.get("OLIVIA_STARTUP_VIDEO")
+    command = _client_command(client, local, client_switches)
+
+    def watched(process: object) -> object:
+        if display_watch is not None:
+            display_watch.start(process)
+        return process
     client_pid_file = environment.get("OLIVIA_STARTUP_CLIENT_PID_FILE")
     player = Path(__file__).with_name("startup_animation.ps1")
     if attempt == 1 and os.name == "nt" and animation and Path(animation).is_file() and player.is_file():
@@ -836,7 +849,7 @@ def _run_client_with_native_layout(
     worker.start()
     try:
         if client_pid_file:
-            process = subprocess.Popen(_client_command(client, local), cwd=cwd, env=environment)
+            process = watched(subprocess.Popen(command, cwd=cwd, env=environment))
             try:
                 signal = Path(client_pid_file)
                 temporary = signal.with_suffix(".tmp")
@@ -851,7 +864,7 @@ def _run_client_with_native_layout(
                         pass
             return process.wait()
         if attempt == 1 and os.name == 'nt' and animation and Path(animation).is_file() and player.is_file():
-            process = subprocess.Popen(_client_command(client, local), cwd=cwd, env=environment)
+            process = watched(subprocess.Popen(command, cwd=cwd, env=environment))
             try:
                 subprocess.Popen(
                     ['powershell.exe', '-NoProfile', '-STA', '-WindowStyle', 'Hidden',
@@ -861,8 +874,12 @@ def _run_client_with_native_layout(
             except OSError:
                 pass  # The application already started; player failure cannot block it.
             return process.wait()
-        return subprocess.call(_client_command(client, local), cwd=cwd, env=environment)
+        if display_watch is not None:
+            return watched(subprocess.Popen(command, cwd=cwd, env=environment)).wait()
+        return subprocess.call(command, cwd=cwd, env=environment)
     finally:
+        if display_watch is not None:
+            display_watch.stop()
         stop.set()
         worker.join(timeout=1.0)
         status = (
@@ -1095,6 +1112,63 @@ def _refresh_stable_launcher(root: Path, data_root: Path) -> None:
         _append_launcher_event(data_root, "stable_launcher_refreshed")
 
 
+_SPLASH_OUTCOMES = frozenset({"ready", "timeout", "skipped", "client_exited", "launcher_exited", "error",
+                              "ended", "closed"})
+
+
+class _StartupSplashReport:
+    """Log the startup animation's outcome once: when it closes by itself, or when the launcher ends it."""
+
+    def __init__(self, process: object, report: Path, data_root: Path) -> None:
+        self._process, self._report, self._data_root = process, report, data_root
+        self._done = Event()
+        self._lock = Lock()
+        self._logged = False
+
+    def follow(self) -> None:
+        Thread(target=self._wait, name="olivia-startup-splash", daemon=True).start()
+
+    def _wait(self) -> None:
+        while not self._done.wait(1.0):
+            try:
+                ended = self._process.poll() is not None
+            except OSError:
+                return
+            if ended:
+                self.log()
+                return
+
+    def finish(self, *, closed_by_launcher: bool) -> None:
+        self._done.set()
+        self.log(closed_by_launcher=closed_by_launcher)
+
+    def log(self, *, closed_by_launcher: bool = False) -> None:
+        with self._lock:
+            if self._logged:
+                return
+            self._logged = True
+        try:
+            values = json.loads(self._report.read_text(encoding="utf-8-sig"))
+        except (OSError, UnicodeError, ValueError):
+            values = {}
+        values = values if isinstance(values, dict) else {}
+        outcome = values.get("outcome")
+        fields: dict[str, object] = {
+            "status": outcome if outcome in _SPLASH_OUTCOMES
+            else "closed_by_launcher" if closed_by_launcher else "unknown"}
+        stage = values.get("status")
+        if isinstance(stage, str) and re.fullmatch(r"[a-z_]{1,32}", stage):
+            fields["stage"] = stage
+        for name in ("elapsed_seconds", "ended_after_seconds", "ready_after_seconds"):
+            value = values.get(name)
+            if type(value) in (int, float) and 0 <= value <= 86400:
+                fields[name] = round(float(value), 3)
+        for name in ("loaded", "ended"):
+            if type(values.get(name)) is bool:
+                fields[name] = values[name]
+        _append_launcher_event(self._data_root, "startup_splash", **fields)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--install-root", type=Path, required=True)
@@ -1116,21 +1190,29 @@ def main(argv: list[str] | None = None) -> int:
     animation = os.environ.get("OLIVIA_STARTUP_VIDEO") or str(backend / "installer/assets/startup.mp4")
     player = backend / "installer/startup_animation.ps1"
     animation_process = None
+    splash_report = None
     signal = data_root / "logs" / f"startup-client-{os.getpid()}-{secrets.token_hex(4)}.pid"
     previous_signal = os.environ.pop("OLIVIA_STARTUP_CLIENT_PID_FILE", None)
     try:
         if os.name == "nt" and Path(animation).is_file() and player.is_file():
+            report = data_root / "logs/startup-animation.json"
             try:
                 signal.parent.mkdir(parents=True, exist_ok=True)
+                report.unlink(missing_ok=True)  # the outcome read later must be this start's
+            except OSError:
+                pass
+            try:
                 animation_process = subprocess.Popen(
                     ["powershell.exe", "-NoProfile", "-STA", "-WindowStyle", "Hidden",
                      "-ExecutionPolicy", "Bypass", "-File", str(player), "-MediaPath", animation,
                      "-LauncherProcessId", str(os.getpid()), "-ClientProcessIdFile", str(signal),
-                     "-ReportPath", str(data_root / "logs/startup-animation.json")],
+                     "-ReportPath", str(report)],
                     creationflags=subprocess.CREATE_NO_WINDOW,
                 )
                 os.environ["OLIVIA_STARTUP_CLIENT_PID_FILE"] = str(signal)
                 _append_launcher_event(data_root, "startup_animation_started")
+                splash_report = _StartupSplashReport(animation_process, report, data_root)
+                splash_report.follow()
             except OSError:
                 pass
         _refresh_stable_launcher(root, data_root)
@@ -1146,17 +1228,69 @@ def main(argv: list[str] | None = None) -> int:
         os.environ.pop("OLIVIA_STARTUP_CLIENT_PID_FILE", None)
         if previous_signal is not None:
             os.environ["OLIVIA_STARTUP_CLIENT_PID_FILE"] = previous_signal
-        if animation_process is not None and animation_process.poll() is None:
+        still_open = animation_process is not None and animation_process.poll() is None
+        if still_open:
             try:
                 animation_process.terminate()
                 animation_process.wait(timeout=5)
             except (OSError, subprocess.TimeoutExpired):
                 pass
+        if splash_report is not None:
+            splash_report.finish(closed_by_launcher=still_open)
         try:
             signal.unlink(missing_ok=True)
             signal.with_suffix(".tmp").unlink(missing_ok=True)
         except OSError:
             pass
+
+
+def _prepare_client_display(client: Path, data_root: Path, attempt: int, *, fallback: str | None = None) -> object | None:
+    """Align the client's graphics adapters for this start (installer/display_compat.py) and log what was found.
+
+    With ``fallback`` the action is remembered for this install first. Display compat is an aid only: any
+    failure is logged and the client starts as before.
+    """
+
+    try:
+        from installer import display_compat
+        if fallback:
+            plan = display_compat.remember_fallback(client, data_root / "config", fallback)
+        else:
+            plan = display_compat.prepare_display(client, data_root / "config")
+    except Exception as exc:  # Registry and file access must never stop the client from starting.
+        _append_launcher_event(data_root, "client_display", attempt=attempt, action="failed",
+                               exception_type=type(exc).__name__)
+        return None
+    _append_launcher_event(data_root, "client_display", attempt=attempt, **plan.fields)
+    return plan
+
+
+def _client_display_watch(data_root: Path, plan: object | None, attempt: int, *, allow_restart: bool) -> object | None:
+    """A watch for one client start, or None where windows cannot be inspected."""
+
+    from installer import display_compat
+    if plan is None or not display_compat.SYSTEM.watch:
+        return None
+    fields = plan.fields
+    details = {name: fields.get(name) for name in ("mode", "main_preference", "adapters", "helper_owner")}
+    details["applied"] = "+".join(plan.applied) or "none"
+    config_root = data_root / "config"
+    return display_compat.ClientDisplayWatch(
+        data_root=data_root,
+        log=lambda event, **values: _append_launcher_event(data_root, event, attempt=attempt, **values),
+        fallback=(lambda: display_compat.fallback_action(plan)) if allow_restart else None,
+        on_outcome=lambda painted: display_compat.record_outcome(config_root, painted, applied=plan.applied),
+        details=details,
+    )
+
+
+def _display_arguments(plan: object | None, watch: object | None) -> dict[str, object]:
+    arguments: dict[str, object] = {}
+    if watch is not None:
+        arguments["display_watch"] = watch
+    if plan is not None and plan.switches:
+        arguments["client_switches"] = tuple(plan.switches)
+    return arguments
 
 
 def _launch(args: argparse.Namespace, root: Path, backend: Path, entrypoint: Path, data_root: Path,
@@ -1344,51 +1478,58 @@ def _launch(args: argparse.Namespace, root: Path, backend: Path, entrypoint: Pat
         # This launcher holds the install's start lease, so a window of this install still running is left over
         # from a session that ended without it; it would make the new window quit at once.
         _end_leftover_clients(root, data_root)
+        display = _prepare_client_display(client, data_root, 1)
         _append_launcher_event(data_root, "client_start", attempt=1,
                                preparation_seconds=round(time.monotonic() - preparation_started, 3))
-        exit_code = _run_client_with_native_layout(
-            client,
-            local,
-            cwd=root / "app",
-            environment=_client_environment(client_environment, roaming, local),
-            data_root=data_root,
-            attempt=1,
-            startup_player=startup_player,
-        )
-        _append_launcher_event(
-            data_root,
-            "client_exit",
-            attempt=1,
-            exit_code=exit_code,
-        )
-        if exit_code in {_KNOWN_FRESH_PROFILE_EXIT_CODE, _LEFTOVER_CLIENT_EXIT_CODE}:
-            if exit_code == _LEFTOVER_CLIENT_EXIT_CODE:
-                _end_leftover_clients(root, data_root)
-                time.sleep(1.0)
-            _append_launcher_event(
-                data_root,
-                "client_retry",
-                attempt=2,
-                reason=("leftover_client_exit" if exit_code == _LEFTOVER_CLIENT_EXIT_CODE
-                        else "known_fresh_profile_exit" if fresh_profile else "known_client_exit"),
-            )
-            _append_launcher_event(data_root, "client_start", attempt=2)
+        # One retry for the known quick exits, and one compat restart when the window never paints.
+        attempt, retried, compat_restarted = 1, False, False
+        while True:
+            watch = _client_display_watch(data_root, display, attempt, allow_restart=not compat_restarted)
             exit_code = _run_client_with_native_layout(
                 client,
                 local,
                 cwd=root / "app",
                 environment=_client_environment(client_environment, roaming, local),
                 data_root=data_root,
-                attempt=2,
+                attempt=attempt,
                 startup_player=startup_player,
+                **_display_arguments(display, watch),
             )
             _append_launcher_event(
                 data_root,
                 "client_exit",
-                attempt=2,
+                attempt=attempt,
                 exit_code=exit_code,
             )
-        return exit_code
+            restart = getattr(watch, "restart_action", None)
+            if restart and not compat_restarted:
+                compat_restarted = True
+                _end_leftover_clients(root, data_root)  # its drawing processes may outlive it
+                time.sleep(1.0)
+                attempt += 1
+                _append_launcher_event(data_root, "client_compat_restart", attempt=attempt,
+                                       **{**watch.fields, "action": restart})
+                display = _prepare_client_display(client, data_root, attempt, fallback=restart)
+                _append_launcher_event(data_root, "client_start", attempt=attempt)
+                continue
+            if exit_code in {_KNOWN_FRESH_PROFILE_EXIT_CODE, _LEFTOVER_CLIENT_EXIT_CODE} and not retried:
+                retried = True
+                if exit_code == _LEFTOVER_CLIENT_EXIT_CODE:
+                    _end_leftover_clients(root, data_root)
+                    time.sleep(1.0)
+                attempt += 1
+                _append_launcher_event(
+                    data_root,
+                    "client_retry",
+                    attempt=attempt,
+                    reason=("leftover_client_exit" if exit_code == _LEFTOVER_CLIENT_EXIT_CODE
+                            else "known_fresh_profile_exit" if fresh_profile else "known_client_exit"),
+                )
+                if display is not None:
+                    _append_launcher_event(data_root, "client_display", attempt=attempt, **display.fields)
+                _append_launcher_event(data_root, "client_start", attempt=attempt)
+                continue
+            return exit_code
     finally:
         # Stop only the backend process spawned and owned by this launcher.
         # A healthy backend reused from an earlier launcher has no local handle.

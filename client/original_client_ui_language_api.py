@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from aiohttp import web
 
+from installer import display_compat
 from original_client_setup_api import LLMSetupError, _authorize, _body, _headers
 from runtime import ui_language
 
@@ -33,6 +34,9 @@ def mount_ui_language_api(app: web.Application, setup: object) -> None:
 
     async def save(request: web.Request) -> web.Response:
         origin = _authorize(request, confirm=True)
+        # The page reports here as soon as it starts: the launcher reads this as "the page is running"
+        # when it checks whether the client window painted (installer/display_compat.py).
+        display_compat.mark_page_ready()
         payload = await _body(request)
         if set(payload) != {"language"}:
             raise LLMSetupError("LLM_SETUP_FIELDS_INVALID", status=400)
