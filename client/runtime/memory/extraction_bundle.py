@@ -20,12 +20,12 @@ import hashlib
 import threading
 import time
 
-from .jev_memory_extraction import (CONTRACT as FACT_CONTRACT, CRITERIA, INSTRUCTION, MAX_SPANS, candidate_spans,
-                                    span_questions)
+from .jev_memory_extraction import CONTRACT as FACT_CONTRACT, CRITERIA, MAX_SPANS, candidate_spans
 from .relationship_continuity import CONTRACT as RELATIONSHIP_CONTRACT, MEANINGS, relationship_questions
 
 BUNDLE_PRICE_VERSION = 'jev-input-cny-20261108-v8'
 PRICE_HEADER = 'X-Olivia-JEV-Price'
+FACT_INSTRUCTION = '遵守state.fact_check.contract，判断state.fact_check.spans.{key}。'
 CHAT_MAX_CHARS = 400            # the JEV service gives a message up to this long the chat criteria
 MAX_EXCHANGE_CHARS = 12_000     # the same shared input budget claim_relationship_exchanges keeps
 DEFAULT_POLICY = {'mode': 'separate', 'batch': 6, 'idle_seconds': 600}
@@ -85,16 +85,21 @@ def build(items, *, fact_prompt):
     candidates, references = candidate_spans(messages)
     exchanges = [item['rel'] for item in items if item.get('rel') is not None]
     sources = [item['source_id'] for item in items]
-    state = {'contract': FACT_CONTRACT, 'memory_rules': fact_prompt, 'original_messages': messages,
+    # The two judgments keep their own sub-states: with both contracts side by side the relationship answers
+    # drifted (replay 2026-11-08: 12 of 30 former yes answers lost, against 18 lost with the flat layout).
+    state = {'fact_check': {'contract': FACT_CONTRACT, 'memory_rules': fact_prompt, 'original_messages': messages,
+                            'spans': references},
              'source_metadata': {'domain': 'conversation_memory', 'canonical': True, 'actor': 'local_user',
-                                 'bundle': True, 'source_ids': sources},
-             'spans': references}
-    questions = span_questions(candidates)
+                                 'bundle': True, 'source_ids': sources}}
+    questions = {key: {'instructions': FACT_INSTRUCTION.format(key=key), 'criteria': dict(CRITERIA)}
+                 for key in candidates}
     if exchanges:
-        state['exchanges'] = [{key: row[key] for key in ('source_id', 'user_message', 'assistant_message', 'occurred_at')}
-                              for row in exchanges]
-        state['relationship_contract'] = RELATIONSHIP_CONTRACT
-        questions.update(relationship_questions(len(exchanges), 'state.relationship_contract'))
+        state['relationship_check'] = {
+            'contract': RELATIONSHIP_CONTRACT,
+            'exchanges': [{key: row[key] for key in ('source_id', 'user_message', 'assistant_message', 'occurred_at')}
+                          for row in exchanges]}
+        questions.update(relationship_questions(len(exchanges), 'state.relationship_check.contract',
+                                                'state.relationship_check.exchanges'))
     return state, questions, dict(sources=sources, candidates=candidates, references=references, exchanges=exchanges)
 
 

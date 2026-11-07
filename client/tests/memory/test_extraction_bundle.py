@@ -34,21 +34,23 @@ def test_bundle_request_has_the_contracted_shape():
     state, questions, layout = bundle.build(
         [item('reply:a:1', '你好。明天去医院。', '路上小心。'), item('reply:b:1', '我不吃香菜。', '记住了。')],
         fact_prompt=PROMPT)
-    assert set(state) == {'contract', 'memory_rules', 'original_messages', 'source_metadata', 'spans',
-                          'exchanges', 'relationship_contract'}
-    assert state['original_messages'] == [{'role': 'user', 'content': '你好。明天去医院。'},
-                                          {'role': 'user', 'content': '我不吃香菜。'}]
+    assert set(state) == {'fact_check', 'relationship_check', 'source_metadata'}
+    assert set(state['fact_check']) == {'contract', 'memory_rules', 'original_messages', 'spans'}
+    assert set(state['relationship_check']) == {'contract', 'exchanges'}
+    assert state['fact_check']['original_messages'] == [{'role': 'user', 'content': '你好。明天去医院。'},
+                                                        {'role': 'user', 'content': '我不吃香菜。'}]
     assert state['source_metadata'] == {'domain': 'conversation_memory', 'canonical': True, 'actor': 'local_user',
                                         'bundle': True, 'source_ids': ['reply:a:1', 'reply:b:1']}
-    assert state['spans'] == {'s0': {'message_index': 0, 'start': 0, 'end': 3},
+    assert state['fact_check']['spans'] == {'s0': {'message_index': 0, 'start': 0, 'end': 3},
                               's1': {'message_index': 0, 'start': 3, 'end': 9},
                               's2': {'message_index': 1, 'start': 0, 'end': 6}}
-    assert [e['source_id'] for e in state['exchanges']] == ['reply:a:1', 'reply:b:1']
-    assert set(state['exchanges'][0]) == {'source_id', 'user_message', 'assistant_message', 'occurred_at'}
+    exchanges = state['relationship_check']['exchanges']
+    assert [e['source_id'] for e in exchanges] == ['reply:a:1', 'reply:b:1']
+    assert set(exchanges[0]) == {'source_id', 'user_message', 'assistant_message', 'occurred_at'}
     assert set(questions) == {'s0', 's1', 's2', *(f'r{i}_{k}' for i in (0, 1) for k in ('identity', 'affection', 'agreement'))}
-    assert questions['s1']['instructions'] == '遵守state.contract，判断state.spans.s1。'
-    assert '遵守state.relationship_contract' in questions['r1_agreement']['instructions']
-    assert 'state.exchanges[1]' in questions['r1_agreement']['instructions']
+    assert questions['s1']['instructions'] == '遵守state.fact_check.contract，判断state.fact_check.spans.s1。'
+    assert '遵守state.relationship_check.contract' in questions['r1_agreement']['instructions']
+    assert 'state.relationship_check.exchanges[1]' in questions['r1_agreement']['instructions']
     assert all(set(q['criteria']) == {'keep', 'skip'} for q in questions.values())
     assert bundle.is_bundle(dict(state=state, questions=questions, purpose='memory-extraction'))
     assert not bundle.is_bundle(dict(state=state, questions=questions, purpose='decide'))
@@ -56,7 +58,7 @@ def test_bundle_request_has_the_contracted_shape():
 
 def test_without_a_pending_relationship_row_only_the_fact_part_is_asked():
     state, questions, layout = bundle.build([item('reply:a:1', '明天去医院。', rel=False)], fact_prompt=PROMPT)
-    assert set(state) == {'contract', 'memory_rules', 'original_messages', 'source_metadata', 'spans'}
+    assert set(state) == {'fact_check', 'source_metadata'}
     assert set(questions) == {'s0'} and layout['exchanges'] == []
 
 
@@ -143,7 +145,7 @@ def test_plan_groups_by_batch_and_kind_and_excludes_what_cannot_fit():
     assert bundle.plan([many], batch=6, fact_prompt=PROMPT) == ([], [many])
     huge = item('reply:huge:1', '好。', 'x' * 12_001)
     assert bundle.plan([huge], batch=6, fact_prompt=PROMPT) == ([], [huge])
-    bundles, excluded = bundle.plan(items[:4], batch=6, fact_prompt=PROMPT, fits_bytes=lambda state, questions: len(state['original_messages']) <= 2)
+    bundles, excluded = bundle.plan(items[:4], batch=6, fact_prompt=PROMPT, fits_bytes=lambda state, questions: len(state['fact_check']['original_messages']) <= 2)
     assert [len(b) for b in bundles] == [2, 2] and excluded == []
 
 
@@ -214,11 +216,12 @@ class Port:
         self.calls.append((kind, state, questions))
         if kind == 'bundle' and self.fail_bundles:
             raise ValueError('JEV_UNAVAILABLE')
+        facts = state['fact_check'] if kind == 'bundle' else state
         answers = {}
         for key in questions:
             if key.startswith('s'):
-                ref = state['spans'][key]
-                sentence = state['original_messages'][ref['message_index']]['content'][ref['start']:ref['end']]
+                ref = facts['spans'][key]
+                sentence = facts['original_messages'][ref['message_index']]['content'][ref['start']:ref['end']]
                 answers[key] = 'keep' if '明天' in sentence else 'skip'
             else:
                 answers[key] = 'keep' if key.endswith('agreement') else 'skip'
@@ -279,7 +282,7 @@ def test_a_full_batch_is_judged_in_one_request_and_written_as_before(tmp_path, m
     result = scan(outbox)
     assert port.kinds() == ['bundle']
     _, state, questions = port.calls[0]
-    assert len(state['original_messages']) == 3 and len(state['exchanges']) == 3
+    assert len(state['fact_check']['original_messages']) == 3 and len(state['relationship_check']['exchanges']) == 3
     assert result.delivered == 3
     assert sorted(source for _, source in backend.added) == ['reply:chat0:1', 'reply:chat1:1', 'reply:chat2:1']
     assert all('明天去医院' in text for text, _ in backend.added)

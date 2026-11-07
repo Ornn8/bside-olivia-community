@@ -16,9 +16,10 @@ CRITERIA = {'keep': '保留整段原话供长期关系连续性核对',
             'skip': '没有具体关系表述或明确相处边界，只有泛泛客套或用户单方面声称角色同意'}
 
 
-def relationship_questions(count, contract='state.contract'):
-    """The three questions about each of `count` exchanges; `contract` names the state field that holds CONTRACT."""
-    return {f'r{i}_{key}': {'instructions': f'仅判断state.exchanges[{i}]这轮原话，遵守{contract}，判断是否涉及：' + meaning,
+def relationship_questions(count, contract='state.contract', exchanges='state.exchanges'):
+    """The three questions about each of `count` exchanges; `contract` and `exchanges` name where the state holds
+    CONTRACT and the exchanges."""
+    return {f'r{i}_{key}': {'instructions': f'仅判断{exchanges}[{i}]这轮原话，遵守{contract}，判断是否涉及：' + meaning,
                             'criteria': dict(CRITERIA)}
             for i in range(count) for key, meaning in MEANINGS.items()}
 
