@@ -424,8 +424,28 @@ class SourceRetrieval:
                            'ON CONFLICT(user,source) DO UPDATE SET digest=excluded.digest, attempts=0, categories=NULL '
                            'WHERE relationship_quotes.digest != excluded.digest', (user, source, digest))
 
-    def claim_relationship_exchanges(self, user):
-        """Claim at most eight whole exchanges within one shared input budget."""
+    _RELATIONSHIP_COLUMNS = ('source_id', 'digest', 'user_message', 'assistant_message', 'occurred_at')
+
+    def pending_relationship_exchanges(self, user, sources):
+        """The unlabelled whole exchanges among ``sources``, as claim_relationship_exchanges returns them, without
+        claiming them (runtime.memory.extraction_bundle judges them together with the fact sentences)."""
+        sources = list(dict.fromkeys(source for source in sources if isinstance(source, str)))[:64]
+        if not sources:
+            return {}
+        with closing(self.connect()) as db:
+            rows = db.execute('SELECT q.source,q.digest,u.text,l.text,l.stamp FROM relationship_quotes q '
+                "CROSS JOIN originals u ON u.user=q.user AND u.source=q.source AND u.actor='user' "
+                "CROSS JOIN originals l ON l.user=q.user AND l.source=q.source AND l.actor='linli' "
+                'WHERE q.user=? AND q.source IN (' + ','.join('?' * len(sources)) + ') '
+                'AND q.categories IS NULL AND q.attempts<3 '
+                'AND julianday(l.stamp) IS NOT NULL AND length(u.text)+length(l.text)<=12000 '
+                'AND NOT EXISTS (SELECT 1 FROM forgotten f WHERE f.user=q.user AND f.source=q.source)',
+                (user, *sources)).fetchall()
+        return {row[0]: dict(zip(self._RELATIONSHIP_COLUMNS, row)) for row in rows}
+
+    def claim_relationship_exchanges(self, user, older_than=None):
+        """Claim at most eight whole exchanges within one shared input budget. ``older_than`` (an aware datetime)
+        leaves the exchanges said after it to the bundle judgment that is still waiting for them."""
         with closing(self.connect()) as db, db:
             db.execute('BEGIN IMMEDIATE')
             rows = db.execute('SELECT q.source,q.digest,u.text,l.text,l.stamp FROM relationship_quotes q '
@@ -433,8 +453,10 @@ class SourceRetrieval:
                 "CROSS JOIN originals l ON l.user=q.user AND l.source=q.source AND l.actor='linli' "
                 'WHERE q.user=? AND q.categories IS NULL AND q.attempts<3 '
                 'AND julianday(l.stamp) IS NOT NULL AND length(u.text)+length(l.text)<=12000 '
+                + ('AND julianday(l.stamp)<=julianday(?) ' if older_than is not None else '') +
                 'AND NOT EXISTS (SELECT 1 FROM forgotten f WHERE f.user=q.user AND f.source=q.source) '
-                'ORDER BY julianday(l.stamp) DESC,q.source DESC LIMIT 8', (user,)).fetchall()
+                'ORDER BY julianday(l.stamp) DESC,q.source DESC LIMIT 8',
+                (user, *((older_than.isoformat(),) if older_than is not None else ()))).fetchall()
             originals, chars = [], 0
             for row in rows:
                 size = len(row[2]) + len(row[3])
