@@ -101,6 +101,36 @@ EN: dict[str, str] = {
         "I sang you a cover of “{title}” and sent it over.",
     "这次翻唱没能做成：{reason}（错误码 {code}）。":
         "The cover didn't work out this time: {reason} (error code {code}).",
+    "这次没能接着你唱：{reason}（错误码 {code}）。":
+        "I couldn't sing along with you this time: {reason} (error code {code}).",
+    "跟着你唱的，我也给你唱了一段，发给你了。":
+        "I sang a bit back to you, following yours, and sent it over.",
+    "清唱 {when}":
+        "A cappella {when}",
+    "这段语音打不开":
+        "the voice message can't be opened",
+    "这段语音不到 3 秒，太短了，听不出旋律，再唱长一点":
+        "the voice message is under 3 seconds, too short to pick out a melody; sing a little longer",
+    "这段语音超过 60 秒了":
+        "the voice message is longer than 60 seconds",
+    "这段语音几乎没有声音":
+        "the voice message is almost silent",
+    "没听出稳定的旋律，更像是在说话或者有杂音":
+        "I couldn't make out a steady melody; it sounded more like talking or noise",
+    "旋律太简单了，听出来的音太少":
+        "the melody is too simple; too few notes could be made out",
+    "音太密了，唱不出来":
+        "the notes are too dense to sing",
+    "这是哼唱，没有歌词，我得先写好歌词再来一次":
+        "it's a hum without words, so I need to write some lyrics first and try again",
+    "唱好以后，提取清唱的时候出了问题":
+        "something went wrong when taking the a cappella voice out after singing",
+    "接着唱的那边处理不了这段语音":
+        "the singing side can't handle this voice message",
+    "唱到一半停了":
+        "the singing stopped halfway",
+    "唱出来的太短了":
+        "what came out was too short",
     "这段音频暂时没能生成成功，稿子已经保留，稍后可以重试。":
         "That audio couldn't be generated this time. The script is saved, so you can try again later.",
     "连接测试验证码：{code}\n请原样回复这 4 位数字。回复后设置页会显示端到端已验证。":

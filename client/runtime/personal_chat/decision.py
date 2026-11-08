@@ -122,7 +122,7 @@ _RESERVED_CONTROL = re.compile(r'\[\[\s*(?:(?:chat|delivery|initiative|letter|co
 NEUTRAL_METADATA = dict(delivery='text', listening='keep', initiative='keep', pause_until=None,
                         letter='keep', letter_until=None, followup_at=None, evidence='', skip=False)
 OPTIONAL_FIELDS = frozenset({'letter_invitation', 'sticker', 'text_reason', 'speech', 'silence', 'daily_video',
-                             'poke', 'reaction', 'cover'})
+                             'poke', 'reaction', 'cover', 'sing_back'})
 
 
 def _control_body(text):
@@ -215,7 +215,7 @@ def _silence_kind(data, *, user, proactive, allow_user_silence):
 
 
 def decode(raw, *, user, now, proactive=False, allow_user_silence=False, allow_speech=True,
-           daily_video_candidates=(), cover_sources=()):
+           daily_video_candidates=(), cover_sources=(), sing_back_voices=()):
     try:
         # Tolerate a whole JSON code block, never extract JSON from mixed prose.
         if isinstance(raw, str):
@@ -311,8 +311,9 @@ def decode(raw, *, user, now, proactive=False, allow_user_silence=False, allow_s
             except (ValueError, TypeError, KeyError):
                 data.pop('daily_video', None)
                 data['dropped_daily_video'] = True
-        from .cover_chat import decode_field
+        from .cover_chat import decode_field, decode_sing_back
         decode_field(data, user=user, offered=cover_sources, proactive=proactive)
+        decode_sing_back(data, offered=sing_back_voices, proactive=proactive)
         if defaulted:
             data['defaulted_fields'] = defaulted
         return data
