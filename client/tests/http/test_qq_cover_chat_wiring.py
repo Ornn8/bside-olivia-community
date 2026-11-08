@@ -246,3 +246,20 @@ def test_an_order_in_flight_and_a_request_that_never_became_an_order_are_shown_t
     server.store.personal_chats[:] = [row, {'channel': 'qq', 'binding_id': binding, 'created_at': time.time(),
                                             'cover_request_dropped': 'COVER_EVIDENCE_NOT_QUOTED'}]
     assert cover_chat.in_flight(server, row) == [{'what': '翻唱', 'state': '没有成功下单', 'code': 'COVER_EVIDENCE_NOT_QUOTED'}]
+
+
+def test_last_hours_refusal_is_not_shown_when_covers_were_off_then_or_a_song_arrives_now(monkeypatch, covers):
+    # Linli 2026-11-08: a cover dropped at 13:33 (no song offered, capabilities unread) was reported as the failure of
+    # the 14:13 card + 「想听小离翻唱」, which would have been ordered.
+    import time
+    server, row, _, _, _ = server_fixture(monkeypatch, covers.tmp, pipeline_result())
+    binding = PersonalMessage('qq', 'b', 'u', '', '').binding_id
+    row['binding_id'] = binding
+    refused = {'channel': 'qq', 'binding_id': binding, 'created_at': time.time(), 'cover_request_dropped': 'COVER_SOURCE_NOT_OFFERED'}
+    server.store.personal_chats[:] = [row, dict(refused, cover_skip='COVER_CAPABILITIES_UNREAD')]
+    assert cover_chat.in_flight(server, row) == []
+    server.store.personal_chats[:] = [row, refused]
+    row['song_arrivals'] = [{'source': 'a' * 32, 'title': '可能否'}]
+    assert cover_chat.in_flight(server, row) == []
+    row.pop('song_arrivals')
+    assert cover_chat.in_flight(server, row)[0]['code'] == 'COVER_SOURCE_NOT_OFFERED'
