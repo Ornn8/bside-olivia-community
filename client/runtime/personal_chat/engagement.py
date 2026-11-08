@@ -1,4 +1,5 @@
 """Local contact cadence only: never writes relationship scores or permissions."""
+from .channels import rich
 from collections import defaultdict
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -97,7 +98,7 @@ class Engagement:
             for row in self.recent_rows(rows, now, newest_first=medium == 'letter'):
                 if row.get('origin') == 'proactive' or not row.get('content'):
                     continue
-                if medium == 'qq' and row.get('channel') != 'qq':
+                if medium == 'qq' and not rich(row.get('channel')):
                     continue
                 at = stamp(row.get('user_sent_at')) or stamp(row.get('life_received_at')) or stamp(row.get('created_at'))
                 if not now - self.window < at <= now:

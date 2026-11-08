@@ -99,7 +99,7 @@ def recall(backend, text: str, limit: int = 5) -> list[str]:
 
 def recent_chat(server) -> list[dict]:
     rows = [r for r in getattr(server.store, 'personal_chats', [])
-            if r.get('delivery_status') == 'DELIVERED' and r.get('channel') in ('qq', 'wechat')]
+            if r.get('delivery_status') == 'DELIVERED' and r.get('channel') in ('qq', 'wechat', 'app')]
     rows.sort(key=lambda r: r.get('life_received_at') or '')
     lines = []
     for row in rows[-RECENT_LINES:]:

@@ -234,7 +234,7 @@ def day_messages(rows, day):
         user = row.get('content') if isinstance(row.get('content'), str) else ''
         reply = row.get('reply_text') if isinstance(row.get('reply_text'), str) else ''
         inputs = [(stamp, user)]
-        if channel in {'qq', 'wechat'} and row.get('source_messages') and row.get('binding_id'):
+        if channel in {'qq', 'wechat', 'app'} and row.get('source_messages') and row.get('binding_id'):
             source = f"reply:{row['letter_id']}:{row.get('reply_revision') or 1}"
             inputs = [(o.occurred_at, o.user_message) for o in originals.get(source, [])]
         parts = {}

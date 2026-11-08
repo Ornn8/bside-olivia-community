@@ -11,6 +11,7 @@ offered unless the relay answers the song-request probe (``relay_ready``).
 """
 from __future__ import annotations
 
+from .channels import rich
 from datetime import datetime
 import hashlib
 import json
@@ -171,7 +172,7 @@ async def offered(server, row, environment, checked=None) -> list[dict]:
     from runtime.media.song_sources import SongSources
     root = getattr(server, '_local_data_root', lambda: None)()
     songs = []
-    if root is not None and row.get('channel', 'qq') == 'qq' and (
+    if root is not None and rich(row.get('channel', 'qq')) and (
             checked if checked is not None else await available(environment)):
         store = SongSources(root)
         fresh = [store.get(item.get('source')) for item in row.get('song_arrivals') or []]
@@ -195,7 +196,7 @@ ORDER_STATES = {PENDING: '制作中', 'MAKING': '制作中', 'SENDING': '制作�
 def in_flight(server, row) -> list[dict]:
     """Covers of this chat that are ordered and not yet delivered, and the last request that never became an order."""
     rows = [other for other in getattr(getattr(server, 'store', None), 'personal_chats', ()) or ()
-            if other is not row and other.get('channel') == 'qq' and other.get('binding_id') == row.get('binding_id')]
+            if other is not row and rich(other.get('channel')) and other.get('binding_id') == row.get('binding_id')]
     orders = [{'what': '翻唱', 'title': (other.get('cover_title') or (other.get('cover_request') or {}).get('title', ''))[:60],
                'state': ORDER_STATES[other['cover_status']]}
               for other in rows if other.get('cover_status') in ORDER_STATES]
@@ -343,7 +344,7 @@ def completion_text(title) -> str:
 
 def memory_rows(row):
     """A cover she sang and sent is a memory of hers (read by the shared memory outbox, like a piano recording)."""
-    if row.get('channel') != 'qq' or row.get('cover_status') != 'DELIVERED' or not row.get('cover_completed_at'):
+    if not rich(row.get('channel')) or row.get('cover_status') != 'DELIVERED' or not row.get('cover_completed_at'):
         return
     try:
         title = row['cover_title']

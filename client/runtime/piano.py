@@ -1,4 +1,5 @@
 """Optional server-owned piano recordings shared by QQ and the native client."""
+from runtime.personal_chat.channels import rich
 import asyncio
 from datetime import datetime, timezone
 import hashlib
@@ -163,7 +164,7 @@ async def remember(server, key, meta, channel='client'):
 def memory_rows(row):
     if not row.get('piano_completed_at'):
         return
-    if row.get('channel') == 'qq' and row.get('piano_delivery_status') != 'DELIVERED':
+    if rich(row.get('channel')) and row.get('piano_delivery_status') != 'DELIVERED':
         return
     try:
         text = completion_text(row['piano_meta'], source=(row.get('piano_input') or row.get('input') or {}).get('source', 'midi'),
@@ -187,7 +188,7 @@ def recent_context(server, binding_id):
     for row in sorted(rows, key=lambda r: r.get('piano_completed_at', ''), reverse=True):
         for memory in memory_rows(row):
             facts.append(dict(record=memory['reply_text'], at=row['piano_completed_at'],
-                              source='QQ' if row.get('channel') == 'qq' else '客户端上传 MIDI'))
+                              source='QQ' if rich(row.get('channel')) else '客户端上传 MIDI'))
         if len(facts) >= 4:
             break
     from runtime.piano_collection import context

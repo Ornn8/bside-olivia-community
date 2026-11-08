@@ -390,7 +390,7 @@ def project_chat_task(value: Mapping[str, object]) -> dict[str, object]:
         seconds = value.get(field)
         if type(seconds) in (int, float) and 0 <= seconds <= 86400:
             result[field] = round(float(seconds), 4)
-    if value.get('channel') in ('qq', 'wechat'):
+    if value.get('channel') in ('qq', 'wechat', 'app'):
         result['channel'] = value['channel']
         if value.get('generation_interrupted') is True:
             result['generation_interrupted'] = True
@@ -641,7 +641,7 @@ def _project_tail_record(value: object, *, runtime: bool) -> dict[str, object]:
         if event in {'personal_chat_transport_closed', 'personal_chat_transport_state', 'personal_chat_exchange_cancelled',
                      'personal_chat_napcat_state', 'personal_chat_napcat_repair',
                      'personal_chat_decision_normalized', 'personal_chat_decision_warning'}:
-            if source.get('channel') in {'qq', 'wechat'}:
+            if source.get('channel') in {'qq', 'wechat', 'app'}:
                 record['channel'] = source['channel']
         if event == 'personal_chat_napcat_repair' and type(source.get('restored')) is int and 0 <= source['restored'] <= 20000:
             record['restored'] = source['restored']  # NapCat files put back from its verified archive

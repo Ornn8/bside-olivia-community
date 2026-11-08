@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from runtime.personal_chat.channels import rich
 import asyncio
 from dataclasses import dataclass, field, replace
 import hashlib
@@ -518,7 +519,7 @@ class ReplyPipeline:
                                             TURN_CONTEXT, media_locked)
             metadata = chat_metadata if chat_metadata is not None else (TURN_CONTEXT.get() or {})
             kinds = metadata.get('semantic_kinds', ['text'])
-            offered = metadata.get('daily_video_candidates') or [] if metadata.get('channel') == 'qq' else []
+            offered = metadata.get('daily_video_candidates') or [] if rich(metadata.get('channel')) else []
             daily_experience = (dict(event_ids=[item['event_id'] for item in offered],
                 event_kinds=list(dict.fromkeys(item['event_kind'] for item in offered)), max_seconds=15)
                 if offered and 'video_speech' in kinds else None)
@@ -533,7 +534,7 @@ class ReplyPipeline:
                     speech_enabled=(chat_metadata or {}).get('speech_enabled') is True,
                     piano_experience=(chat_metadata or {}).get('piano_experience'),
                     offer_experience=(chat_metadata or {}).get('offer_experience'),
-                    bedtime_offer=(context.mode is ReplyMode.FUTURE_IM and (chat_metadata or {}).get('channel') == 'qq'
+                    bedtime_offer=(context.mode is ReplyMode.FUTURE_IM and rich((chat_metadata or {}).get('channel'))
                                    and (chat_metadata or {}).get('bedtime_offer_enabled') is True
                                    and not (chat_metadata or {}).get('proactive')),
                     daily_video_experience=daily_experience,
@@ -568,7 +569,7 @@ class ReplyPipeline:
                 # and the photo she was asked for follows it.
                 photo_with_words = bool(not degraded and context.mode is ReplyMode.FUTURE_IM and companion_delivery == 'image'
                                         and (chat_metadata or {}).get('structured')
-                                        and (chat_metadata or {}).get('channel') == 'qq')
+                                        and rich((chat_metadata or {}).get('channel')))
                 decision_note = decision_instruction(decision,
                     delivery=('letter_image' if context.mode is ReplyMode.TEXT_LETTER
                               and companion_delivery == 'image' else
@@ -576,7 +577,7 @@ class ReplyPipeline:
                               # Apply the QQ speech default without changing requested media.
                               'voice_default' if (not degraded and context.mode is ReplyMode.FUTURE_IM and companion_delivery == 'text'
                                                   and (chat_metadata or {}).get('structured')
-                                                  and (chat_metadata or {}).get('channel') == 'qq'
+                                                  and rich((chat_metadata or {}).get('channel'))
                                                   and 'audio_speech' in kinds and not media_locked(decision.plan))
                                else companion_delivery))
             except CompanionRuntimeError as error:
@@ -597,7 +598,7 @@ class ReplyPipeline:
                 generation_note += _TEXT_RECOVERY_OUTPUT
         speech_request = None if degraded or reconsidered_silence else (companion_decision or {}).get('speech_request')
         speech_note = ''
-        if speech_request and (chat_metadata or {}).get('channel') == 'qq':
+        if speech_request and rich((chat_metadata or {}).get('channel')):
             from runtime.personal_chat.speech import SPEECH_WRITER_INSTRUCTION
             speech_note = (SPEECH_WRITER_INSTRUCTION + '\n<speech_request>' + json.dumps(speech_request, ensure_ascii=False)
                            + '</speech_request>')
@@ -605,7 +606,7 @@ class ReplyPipeline:
                 from .fact_attribution import story_evidence
                 speech_note += '\n' + story_evidence((chat_metadata or {}).get('story_continuation'))
         elif (not degraded and context.mode is ReplyMode.FUTURE_IM and (chat_metadata or {}).get('structured')
-              and chat_metadata.get('channel') == 'qq' and chat_metadata.get('speech_enabled') is True
+              and rich(chat_metadata.get('channel')) and chat_metadata.get('speech_enabled') is True
               and not chat_metadata.get('proactive')
               and (companion_decision or {}).get('speech_offer') in {'none', 'bedtime', 'clarify'}):
             from runtime.personal_chat.speech import BEDTIME_OFFER_INSTRUCTION
@@ -630,11 +631,11 @@ class ReplyPipeline:
         # A story being recorded, a bedtime offer or a piano piece in this turn comes first.
         if (not degraded and not reconsidered_silence and not speech_request and not piano_note
                 and (companion_decision or {}).get('speech_offer') not in ('bedtime', 'clarify')
-                and media_offer in ('piano', 'call') and (chat_metadata or {}).get('channel') == 'qq'):
+                and media_offer in ('piano', 'call') and rich((chat_metadata or {}).get('channel'))):
             from runtime.media_offers import INSTRUCTION as OFFER_INSTRUCTION
             offer_note = OFFER_INSTRUCTION[media_offer]
         style_note = ''
-        if (not degraded and ordinary_chat and (chat_metadata or {}).get('channel') == 'qq'
+        if (not degraded and ordinary_chat and rich((chat_metadata or {}).get('channel'))
                 and isinstance((chat_metadata or {}).get('recent_replies'), list)):
             # Stock phrases she has overused lately, and the user is always 你 in her narration (2026-10-22).
             from .style_reminders import note as style_reminder
@@ -706,7 +707,7 @@ class ReplyPipeline:
         daily_candidates = []
         if final_notes and isinstance(prepared, ReplyRequest) and prepared.messages:
             daily_candidates = ((chat_metadata or {}).get('daily_video_candidates') or []
-                if (chat_metadata or {}).get('channel') == 'qq' else [])
+                if rich((chat_metadata or {}).get('channel')) else [])
             if companion_decision is not None:
                 if companion_delivery != 'video_speech':
                     daily_candidates = []
@@ -834,10 +835,10 @@ class ReplyPipeline:
                 now = datetime.fromisoformat(chat_metadata['decision_now']).timestamp()
                 options = dict(user=user_text, now=now, proactive=bool(chat_metadata.get('proactive')),
                                allow_user_silence=bool(ordinary_chat),
-                                allow_speech=bool(speech_request and chat_metadata.get('channel') == 'qq'),
+                                allow_speech=bool(speech_request and rich(chat_metadata.get('channel'))),
                                 daily_video_candidates=daily_candidates,
                                 cover_sources=((chat_metadata or {}).get('cover_sources') or []
-                                               if chat_metadata.get('channel') == 'qq' else []))
+                                               if rich(chat_metadata.get('channel')) else []))
                 decision = decode(clean_text, **options)
                 if reconsidered_silence and decision.get('speech'):
                     return PipelineResult(candidate.request_id, ReplyState.FAILED,

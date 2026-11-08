@@ -34,7 +34,7 @@ def conversation_context(rows, *, query, now, excluded_sources=(), max_chars=600
     def delivered(row):
         if row.get('read_only') or not isinstance(row.get('letter_id'), str):
             return False
-        if row.get('channel') in {'qq', 'wechat'}:
+        if row.get('channel') in {'qq', 'wechat', 'app'}:
             return row.get('delivery_status') == 'DELIVERED'
         return row.get('letter_status') == 'COMPLETED'
     def eligible(row):

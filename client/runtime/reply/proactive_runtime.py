@@ -72,7 +72,7 @@ def _stamp(row):
 
 
 def _delivered(row):
-    return (row.get('delivery_status') == 'DELIVERED' if row.get('channel') in {'qq', 'wechat'}
+    return (row.get('delivery_status') == 'DELIVERED' if row.get('channel') in {'qq', 'wechat', 'app'}
             else row.get('letter_status') == 'COMPLETED')
 
 

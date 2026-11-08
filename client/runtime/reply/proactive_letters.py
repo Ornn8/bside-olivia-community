@@ -53,7 +53,7 @@ def _stamp(value) -> float:
 
 
 def _is_im(row: dict) -> bool:
-    return row.get('channel') in {'qq', 'wechat'} or row.get('reply_mode') == 'future_im'
+    return row.get('channel') in {'qq', 'wechat', 'app'} or row.get('reply_mode') == 'future_im'
 
 
 def _life_opportunities(world: dict, profile: InitiativeProfile, latest: dict | None, now: float) -> list[dict]:

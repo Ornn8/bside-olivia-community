@@ -34,6 +34,12 @@ The generic group bot is a separate repository and must not use these credential
 - Confirmed exchanges use the same content-free Mem0 outbox and source IDs as letters, plus the existing world ledger, candidate extraction, daily-life extraction and relationship committer. Candidate completion is persisted so a crash between ledger commit and candidate extraction is recoverable. Local consumer recovery never resends a platform message.
 - The two personal channels serialize their exchanges. A world-consumer failure preserves its delivered row for background recovery without stopping the channel. Failures are persisted and capped at three consumer attempts; exhausted rows stay visible in content-free diagnostics. Network reads have bounded backoff; uncertain sends are never retried by a transport. Sanitized channel failures are logged; no message bodies or credentials are logged by these adapters.
 
+## Phone app channel (`app`)
+
+The phone app chats with her through the same service as QQ. `app.py` is only a transport: a message the user writes on the phone arrives as an `app_in` frame on the desk line (`runtime/call/desk.py`), is saved like a QQ message (`ingest`), acknowledged with `app_in_ack`, and then answered by the unchanged reply pipeline. Her items go out through a sender with the same call surface as the QQ transport (`send`, `audio`, `image`, `file`, `video`, `poke`, `status`, `qzone_post`, `game`, `start_typing`): the media is uploaded first, then the item is sent as `app_out`. Items are stored in an outbox under `personal-chat/app/` first, so a closed line loses nothing; the chat log kept there also answers `app_history`.
+
+`channels.py` holds the one place that says which channels can carry voice, photos, stickers and songs (`rich`: `qq` and `app`), and the rule for her own contact (`proactive_channel`: QQ always, the app only when no QQ channel is configured). The channel is switched on by the first phone that connects (`personal-chat/app-enabled.json`); a client without a paired phone never starts it.
+
 ## Setup security boundary
 
 The settings setup API requires the same explicit local companion-action header used by other mutating settings actions and only accepts trusted local/original-client origins. It exposes only content-free setup/listener state plus a locally rendered SVG QR data URL. Tencent's QR polling identifier, verification code, Bot token, account binding and filesystem credential paths are not returned to the settings UI. QR content is encoded locally rather than loaded as a remote image.

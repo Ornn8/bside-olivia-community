@@ -363,9 +363,9 @@ class CharacterEmotionRuntime:
             marker = row.get('private_world_occurred_at')
             if isinstance(marker, str) and marker[4:5] == marker[7:8] == '-' and not first <= marker[:10] <= last:
                 continue
-            if (row.get('channel') or 'letter') not in {'letter', 'qq', 'wechat'}:
+            if (row.get('channel') or 'letter') not in {'letter', 'qq', 'wechat', 'app'}:
                 continue
-            chat = row.get('channel') in {'qq', 'wechat'}
+            chat = row.get('channel') in {'qq', 'wechat', 'app'}
             if (row.get('delivery_status') != 'DELIVERED' if chat else
                     row.get('letter_status') != 'COMPLETED' or row.get('private_world_status') != 'COMMITTED'):
                 continue
