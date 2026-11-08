@@ -199,7 +199,10 @@ def in_flight(server, row) -> list[dict]:
     orders = [{'what': '翻唱', 'title': (other.get('cover_title') or (other.get('cover_request') or {}).get('title', ''))[:60],
                'state': ORDER_STATES[other['cover_status']]}
               for other in rows if other.get('cover_status') in ORDER_STATES]
-    dropped = [other for other in rows if other.get('cover_request_dropped') and not other.get('cover_status')]
+    # A refusal is stale when covers were unavailable in that turn (it was told then, as not_fetched, with its own code)
+    # or when a song arrives in this turn: the writer must judge this message afresh, not report last hour's failure.
+    dropped = [other for other in rows if other.get('cover_request_dropped') and not other.get('cover_status')
+               and not other.get('cover_skip') and not row.get('song_arrivals')]
     if dropped and not orders:
         last = max(dropped, key=lambda other: float(other.get('created_at') or 0))
         if time.time() - float(last.get('created_at') or 0) < 3600:
