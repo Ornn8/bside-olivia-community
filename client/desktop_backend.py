@@ -84,14 +84,16 @@ def desktop_update_status() -> dict[str, str | None]:
 
     version = running_component_version()
     if version.get("version") is None:
-        version["version"] = os.environ.get("OLIVIA_DESKTOP_VERSION", "2.5.7")
+        # Only when the bundled release metadata is missing.
+        version["version"] = os.environ.get("OLIVIA_DESKTOP_VERSION") or None
     return version
 
 
 def install_desktop_auth(app: web.Application, token: str | None) -> None:
     """Require the Electron-only bearer token on every backend request."""
     if not token:
-        return
+        # Never serve unauthenticated: Electron always supplies a per-launch token.
+        raise RuntimeError("DESKTOP_AUTH_TOKEN_REQUIRED")
 
     @web.middleware
     async def desktop_auth(request: web.Request, handler):
@@ -165,6 +167,8 @@ async def serve() -> None:
     root = Path(os.environ["OLIVIA_LOCAL_DATA_ROOT"])
     if not root.is_absolute():
         raise ValueError("OLIVIA_LOCAL_DATA_ROOT must be absolute")
+    if not os.environ.get("OLIVIA_DESKTOP_REQUEST_TOKEN"):
+        raise RuntimeError("DESKTOP_AUTH_TOKEN_REQUIRED")
     root_lock = acquire_data_root_lock(root)  # noqa: F841 - held until exit
 
     # Match the installed client runtime, but keep every writable path in this
@@ -182,8 +186,6 @@ async def serve() -> None:
     environment.setdefault("OLIVIA_MEMORY_LLM_DEFAULT_BASE_URL", environment.get("OLIVIA_LLM_BASE_URL", ""))
     environment.setdefault("OLIVIA_MEMORY_LLM_DEFAULT_MODEL", environment.get("OLIVIA_LLM_MODEL", ""))
     environment.setdefault("OLIVIA_MEMORY_LLM_DEFAULT_API_KEY_ENV", "OLIVIA_LLM_API_KEY")
-    environment["OLIVIA_DESKTOP_PROACTIVE_OPT_IN"] = "1"
-    environment["OLIVIA_DESKTOP_MEDIA_OPT_IN"] = "1"
     environment["OLIVIA_DESKTOP_DYNAMIC_PORT"] = "1"
     _configure_memory_environment(environment, root)
     import imageio_ffmpeg

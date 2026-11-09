@@ -58,20 +58,14 @@ def test_mac_installer_treats_keychain_failure_as_missing_key(tmp_path: Path, mo
     assert start_local.keychain_status() == "UNAVAILABLE"
 
 
-def test_mac_proactive_contact_requires_opt_in(monkeypatch):
-    monkeypatch.setenv("OLIVIA_DESKTOP_PROACTIVE_OPT_IN", "1")
-    assert proactive_letters.settings({})["enabled"] is False
-    assert proactive_letters.settings({"enabled": True})["enabled"] is True
-    monkeypatch.delenv("OLIVIA_DESKTOP_PROACTIVE_OPT_IN")
-    assert proactive_letters.settings({"enabled": False})["enabled"] is True
+def test_mac_proactive_contact_and_media_default_on_like_windows(tmp_path: Path):
+    # macOS gets the same defaults as Windows: no desktop-only opt-in gates.
+    import desktop_backend
 
-
-def test_mac_media_defaults_require_opt_in(tmp_path: Path, monkeypatch):
-    monkeypatch.setenv("OLIVIA_DESKTOP_MEDIA_OPT_IN", "1")
+    source = Path(desktop_backend.__file__).read_text(encoding="utf-8")
+    assert "OPT_IN" not in source
+    assert proactive_letters.settings({})["enabled"] is True
     store = VideoReplySettingsStore.initialize(tmp_path)
-    assert store.routes_snapshot() == {"voice_reply": False, "singing_video": False, "voice_song_video": False}
-    assert store.image_snapshot()["enabled"] is False
-    monkeypatch.delenv("OLIVIA_DESKTOP_MEDIA_OPT_IN")
     assert store.routes_snapshot()["voice_reply"] is True
     assert store.image_snapshot()["enabled"] is True
 

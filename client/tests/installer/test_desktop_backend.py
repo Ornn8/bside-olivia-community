@@ -31,10 +31,38 @@ def test_desktop_ready_message_rejects_invalid_port() -> None:
 
 
 def test_desktop_update_status_keeps_manifest_field(monkeypatch) -> None:
-    monkeypatch.setenv("OLIVIA_DESKTOP_VERSION", "2.5.8")
+    monkeypatch.setenv("OLIVIA_DESKTOP_VERSION", "0.0.1")
     payload = desktop_backend.desktop_update_status()
     assert set(payload) == {"version", "manifest_sha256"}
-    assert payload["version"] == "2.5.8"
+    # The bundled release metadata wins over the shell version.
+    release = json.loads(
+        (Path(desktop_backend.__file__).parent / "installer" / "release-version.json").read_text(encoding="utf-8")
+    )
+    assert payload["version"] == release["version"]
+
+
+def test_desktop_update_status_falls_back_to_shell_version(monkeypatch) -> None:
+    import original_client_update_api
+
+    monkeypatch.setattr(
+        original_client_update_api,
+        "running_component_version",
+        lambda: {"version": None, "manifest_sha256": None},
+    )
+    monkeypatch.setenv("OLIVIA_DESKTOP_VERSION", "0.0.1")
+    assert desktop_backend.desktop_update_status()["version"] == "0.0.1"
+    monkeypatch.delenv("OLIVIA_DESKTOP_VERSION")
+    assert desktop_backend.desktop_update_status()["version"] is None
+
+
+@pytest.mark.parametrize("token", [None, ""])
+def test_desktop_auth_refuses_to_run_without_a_token(token) -> None:
+    from aiohttp import web
+
+    app = web.Application()
+    with pytest.raises(RuntimeError, match="DESKTOP_AUTH_TOKEN_REQUIRED"):
+        desktop_backend.install_desktop_auth(app, token)
+    assert list(app.middlewares) == []
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="the Electron backend runs on macOS")
