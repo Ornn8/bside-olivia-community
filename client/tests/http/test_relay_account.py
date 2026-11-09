@@ -134,3 +134,35 @@ def test_deleting_the_connection_keeps_the_account_key_and_refreshes_generation(
             assert reconnected.status == 200
             assert (await (await client.post('/toy/relay/action',headers=headers,json={'action':'account'})).json())['connected'] is True
     asyncio.run(scenario())
+
+
+def test_windows_import_of_a_different_key_updates_the_account_file(tmp_path, monkeypatch):
+    import original_client_relay_api as relay
+    import original_client_setup_api as setup_api
+    from types import SimpleNamespace
+    windows = SimpleNamespace(platform='win32')
+    monkeypatch.setattr(relay, 'sys', windows)
+    monkeypatch.setattr(setup_api, 'sys', windows)
+    async def remote(base, key, method, path, payload=None):
+        return {'registered':True}
+    async def probe(*args):
+        pass
+    monkeypatch.setattr(relay,'relay_request',remote)
+    service = LLMSetupService(tmp_path, protect=lambda key:'encrypted:'+key[::-1], unprotect=lambda value:value.removeprefix('encrypted:')[::-1], probe=probe)
+    service.observe_login(success=True)
+    imported = 'olivia-' + 'b' * 40
+    async def scenario():
+        app=web.Application();mount_original_client_setup_api(app,service,trusted_origins=('https://client.example',))
+        headers={'Origin':'https://client.example','X-Olivia-Setup-Action':'confirmed','X-Olivia-Setup-Session':service._session_token}
+        async with TestClient(TestServer(app)) as client:
+            assert (await client.post('/toy/relay/action',headers=headers,json={'action':'claim'})).status == 200
+            assert (await client.post('/toy/relay/action',headers=headers,json={'action':'connect'})).status == 200
+            claimed = (await (await client.post('/toy/relay/action',headers=headers,json={'action':'export_key'})).json())['key']
+            assert claimed != imported
+            assert (await client.post('/toy/relay/action',headers=headers,json={'action':'import_key','key':imported})).status == 200
+            account_file = tmp_path/'config/olivia_relay_key.dpapi'
+            assert service._unprotect(account_file.read_text(encoding='utf-8').strip()) == imported
+            assert (await client.post('/toy/setup/llm/delete',headers=headers,json={})).status == 200
+            exported=await client.post('/toy/relay/action',headers=headers,json={'action':'export_key'})
+            assert (await exported.json())['key'] == imported
+    asyncio.run(scenario())

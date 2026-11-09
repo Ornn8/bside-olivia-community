@@ -114,9 +114,11 @@ def test_windows_keychain_status_tracks_saved_key(tmp_path: Path, monkeypatch) -
     assert service.status()["llm"]["keychain_status"] == "AVAILABLE"
 
 
-def test_relay_stored_key_prefers_active_managed_binding(tmp_path: Path, monkeypatch) -> None:
+def _relay_store_with_active_and_legacy(tmp_path: Path, monkeypatch, platform: str):
     import original_client_relay_api as relay
+    from types import SimpleNamespace
 
+    monkeypatch.setattr(relay, "sys", SimpleNamespace(platform=platform))
     service = _service(tmp_path, [])
     service._config_root.mkdir(parents=True, exist_ok=True)
     service._config_path.write_text(
@@ -134,7 +136,17 @@ def test_relay_stored_key_prefers_active_managed_binding(tmp_path: Path, monkeyp
 
     app = web.Application()
     relay.mount_relay_api(app, service)
-    assert app["olivia_relay_stored_key"]() == "active"
+    return app["olivia_relay_stored_key"]
+
+
+def test_relay_stored_key_prefers_active_managed_binding_on_macos(tmp_path: Path, monkeypatch) -> None:
+    assert _relay_store_with_active_and_legacy(tmp_path, monkeypatch, "darwin")() == "active"
+
+
+def test_relay_stored_key_prefers_account_file_off_macos(tmp_path: Path, monkeypatch) -> None:
+    # Windows/Linux keep the original precedence: the account file is the identity.
+    for platform in ("win32", "linux"):
+        assert _relay_store_with_active_and_legacy(tmp_path / platform, monkeypatch, platform)() == "legacy"
 
 
 def test_setup_opens_before_sign_in_and_never_returns_secret(tmp_path: Path) -> None:
@@ -268,7 +280,9 @@ def test_test_then_save_persists_only_dpapi_key_and_non_secret_config(
                 "max_retries": 2,
                 "model": RELAY_MODEL,
                 "provider": "openai_compatible",
-                "keychain_status": "NOT_CONFIGURED",
+                # Windows reports the saved DPAPI key; elsewhere the status
+                # comes from the macOS backend environment (unset here).
+                "keychain_status": "AVAILABLE" if os.name == "nt" else "NOT_CONFIGURED",
             }
             assert "fixture-private-key" not in json.dumps(status_payload)
 
