@@ -110,6 +110,8 @@ function startFrontendServer({ backendUrl, backendHeaders = () => ({}), getFront
         response.once("close", () => disconnected.abort());
         const upstream = await fetch(backendUrl(url.pathname + url.search), {
           method: request.method, headers, body,
+          // The desktop token is attached above; a redirect must not forward it.
+          redirect: "error",
           signal: AbortSignal.any([disconnected.signal, AbortSignal.timeout(900000)]),
         });
         const contentType = upstream.headers.get("content-type") || "application/octet-stream";

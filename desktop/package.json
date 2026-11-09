@@ -19,7 +19,7 @@
     "appId": "community.bside.olivia.mac",
     "productName": "BSide Olivia",
     "directories": { "output": "dist" },
-    "files": ["main.js", "frontend-server.js", "native-files.js", "mac-updates.js", "original-assets.js", "preload.js", "tray-icon.js", "package.json", "THIRD_PARTY_NOTICES.md"],
+    "files": ["main.js", "frontend-server.js", "native-files.js", "shell-paths.js", "mac-updates.js", "original-assets.js", "preload.js", "tray-icon.js", "package.json", "THIRD_PARTY_NOTICES.md"],
     "extraResources": [
       { "from": "../.context/mac-package/current/backend", "to": "backend" },
       { "from": "../.context/mac-package/current/python", "to": "python" },

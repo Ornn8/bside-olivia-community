@@ -8,6 +8,7 @@ const readline = require("readline");
 const { startFrontendServer } = require("./frontend-server");
 const { checkMacRelease } = require("./mac-updates");
 const { NativeFiles } = require("./native-files");
+const { openDecision } = require("./shell-paths");
 const trayIcon = require("./tray-icon");
 const { hasOriginalAssets, copyOriginalAssets } = require("./original-assets");
 
@@ -42,7 +43,7 @@ const routes = {
     /^\/toy\/relationship\/route$/, /^\/toy\/diary\/(?:settings|comment|delete|memoir\/start)$/,
     /^\/toy\/local-songs\/(?:from-letter|import|rename|delete|reveal)$/,
     /^\/toy\/companion\/memory\/(?:correct|delete|pause|resume)$/,
-    /^\/toy\/personal-chat\/setup\/(?:channel-choice|wechat\/start|wechat\/verify|qq\/configure)$/,
+    /^\/toy\/personal-chat\/setup\/(?:channel-choice|qq\/configure)$/,
     /^\/toy\/relay\/action$/, /^\/toy\/settings\/(?:reply-routes|video-reply)$/,
     /^\/toy\/proactive\/settings$/, /^\/toy\/setup\/(?:llm\/test|llm\/save|complete)$/,
     /^\/toy\/cover\/lyrics$/,
@@ -174,7 +175,7 @@ function prepareFrontend() {
 }
 
 async function readOriginalUid() {
-  const response = await fetch(backendUrl("/toy/signIn"), {
+  const response = await backendFetch("/toy/signIn", {
     method: "POST", headers: backendHeaders({ Origin: "https://olivia.local", "Content-Type": "application/json" }), body: "{}",
   });
   const payload = await response.json();
@@ -194,6 +195,12 @@ function backendHeaders(headers = {}) {
   return { ...headers, "X-Olivia-Desktop-Token": backendToken };
 }
 
+// Every backend call carries the desktop token, so never follow a redirect
+// that could forward it elsewhere.
+function backendFetch(route, init = {}) {
+  return fetch(backendUrl(route), { ...init, redirect: "error" });
+}
+
 async function request(method, route, body, internal = false, retried = false) {
   const url = new URL(route, "http://127.0.0.1");
   if (!routes[method]?.some((pattern) => pattern.test(url.pathname))) throw new Error("ROUTE_FORBIDDEN");
@@ -207,7 +214,7 @@ async function request(method, route, body, internal = false, retried = false) {
   const needsSession = url.pathname.startsWith("/toy/relay/") || url.pathname === "/toy/generation/action" ||
     (url.pathname.startsWith("/toy/setup/") && url.pathname !== "/toy/setup/status");
   if (needsSession && !setupSession) setupSession = (await request("GET", "/toy/setup/status")).session_token;
-  const response = await fetch(backendUrl(route), {
+  const response = await backendFetch(route, {
     method,
     headers: backendHeaders({
       Origin: "https://olivia.local", Accept: "application/json",
@@ -498,7 +505,7 @@ ipcMain.on("olivia:native-invoke", (event, action, data) => {
       const resolved = fs.realpathSync(target);
       if (resolved.startsWith(dataRoot + path.sep) || resolved === dataRoot || nativeFiles.granted.has(resolved) ||
           nativeFiles.granted.has(path.dirname(resolved))) {
-        if (fs.statSync(resolved).isDirectory()) shell.openPath(resolved).catch(() => {});
+        if (openDecision(action, resolved, fs.statSync(resolved).isDirectory()) === "open") shell.openPath(resolved).catch(() => {});
         else shell.showItemInFolder(resolved);
       }
     }
@@ -561,7 +568,7 @@ ipcMain.handle("olivia:diagnostics", async (event) => {
   fromApp(event);
   const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, { defaultPath: "olivia-diagnostic-bundle.zip", filters: [{ name: "ZIP", extensions: ["zip"] }] });
   if (canceled) return false;
-  const response = await fetch(backendUrl("/toy/diagnostics/export"), { headers: backendHeaders({ Origin: "https://olivia.local" }), signal: AbortSignal.timeout(60000) });
+  const response = await backendFetch("/toy/diagnostics/export", { headers: backendHeaders({ Origin: "https://olivia.local" }), signal: AbortSignal.timeout(60000) });
   if (!response.ok || response.headers.get("content-type")?.includes("json")) throw new Error("DIAGNOSTIC_EXPORT_FAILED");
   const bytes = Buffer.from(await response.arrayBuffer());
   if (bytes.length > 32 * 1024 * 1024) throw new Error("DIAGNOSTIC_TOO_LARGE");
@@ -573,7 +580,7 @@ ipcMain.handle("olivia:choose-audio", async (event) => {
   const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, { properties: ["openFile"], filters: [{ name: "Audio", extensions: ["mp3", "wav", "m4a", "flac", "ogg"] }] });
   if (canceled) return null;
   if (fs.statSync(filePaths[0]).size > 100 * 1024 * 1024) throw new Error("AUDIO_TOO_LARGE");
-  const response = await fetch(backendUrl("/toy/cover/upload"), {
+  const response = await backendFetch("/toy/cover/upload", {
     method: "POST", headers: backendHeaders({ Origin: "https://olivia.local", "X-Olivia-Companion-Action": "confirmed" }),
     body: fs.readFileSync(filePaths[0]), signal: AbortSignal.timeout(180000),
   });
@@ -603,7 +610,7 @@ ipcMain.handle("olivia:choose-midi", async (event) => {
   if (bytes.subarray(0, 4).toString("ascii") !== "MThd") throw new Error("MIDI_INVALID");
   const ticket = await request("POST", "/toy/genObjectUploadUrl", { filename: name });
   if (!/^[a-f0-9]{32}$/.test(ticket.key)) throw new Error("MIDI_TICKET_INVALID");
-  const response = await fetch(backendUrl(`/toy/midi/upload/${ticket.key}`), {
+  const response = await backendFetch(`/toy/midi/upload/${ticket.key}`, {
     method: "PUT", headers: backendHeaders({ Origin: "https://olivia.local", "Content-Type": "audio/midi" }),
     body: bytes, signal: AbortSignal.timeout(180000),
   });
@@ -615,7 +622,7 @@ ipcMain.handle("olivia:save-piano", async (event, jobId) => {
   if (typeof jobId !== "string" || !/^[a-f0-9]{32}$/.test(jobId)) throw new Error("MIDI_JOB_INVALID");
   const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, { defaultPath: "piano.mp3", filters: [{ name: "MP3", extensions: ["mp3"] }] });
   if (canceled) return false;
-  const response = await fetch(backendUrl(`/toy/midi/audio/${jobId}.mp3`), { headers: backendHeaders({ Origin: "https://olivia.local" }), signal: AbortSignal.timeout(60000) });
+  const response = await backendFetch(`/toy/midi/audio/${jobId}.mp3`, { headers: backendHeaders({ Origin: "https://olivia.local" }), signal: AbortSignal.timeout(60000) });
   if (!response.ok) throw new Error("MIDI_DOWNLOAD_FAILED");
   const bytes = Buffer.from(await response.arrayBuffer());
   if (bytes.length > 50 * 1024 * 1024) throw new Error("MIDI_DOWNLOAD_TOO_LARGE");

@@ -139,3 +139,31 @@ test("shutdown closes an active WebSocket and its upstream connection", { timeou
     upstream.close();
   }
 });
+
+test("backend redirects are not followed, so the desktop token stays local", async () => {
+  const seen = [];
+  const target = http.createServer((request, response) => {
+    seen.push(request.headers["x-olivia-desktop-token"]);
+    response.writeHead(200).end("leaked");
+  });
+  await new Promise((resolve) => target.listen(0, "127.0.0.1", resolve));
+  const redirecting = http.createServer((request, response) => {
+    response.writeHead(302, { Location: `http://127.0.0.1:${target.address().port}/elsewhere` }).end();
+  });
+  await new Promise((resolve) => redirecting.listen(0, "127.0.0.1", resolve));
+  const proxy = await startFrontendServer({
+    backendUrl: (route) => `http://127.0.0.1:${redirecting.address().port}${route}`,
+    backendHeaders: () => ({ "X-Olivia-Desktop-Token": "test-token" }),
+    getFrontendRoot: () => root,
+  });
+  try {
+    await fetch(proxy.entry);
+    const response = await fetch(proxy.origin + "/toy/setup/status", { headers: { Referer: proxy.entry } });
+    assert.equal(response.status, 502);
+    assert.deepEqual(seen, []);
+  } finally {
+    await new Promise((resolve) => proxy.server.close(resolve));
+    await new Promise((resolve) => redirecting.close(resolve));
+    await new Promise((resolve) => target.close(resolve));
+  }
+});
