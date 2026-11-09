@@ -1,6 +1,0 @@
-node_modules/
-dist/
-.icon.iconset/
-.icon-base.png
-# Legacy local prototype; the shipped window loads the authorized Windows frontend.
-renderer/
