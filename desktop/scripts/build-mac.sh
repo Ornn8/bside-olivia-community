@@ -74,16 +74,24 @@ else
   fi
 fi
 
+# Ship only files tracked by git: never untracked local files, build/ output
+# or user data from this working copy.
+backend_list="$package_root/backend-files-$arch.list"
+excluded=(tests docs tools scripts)
+pathspec=(.)
+for directory in "${excluded[@]}"; do pathspec+=(":(exclude)$directory/"); done
+pathspec+=(":(exclude,glob)**/.*" ":(exclude,glob)**/.*/**")
+for suffix in png jpg jpeg gif webp mp4 wav mp3 zip 7z exe; do pathspec+=(":(exclude,glob)**/*.$suffix"); done
+git -C "$repo_root/client" ls-files -z -- "${pathspec[@]}" > "$backend_list"
+rm -rf "$stage/backend"
 mkdir -p "$stage/backend"
-rsync -a --delete --delete-excluded "$repo_root/client/" "$stage/backend/" \
-  --exclude='.*' \
-  --exclude='*.egg-info/' \
-  --exclude='.venv/' --exclude='.olivia_data/' --exclude='__pycache__/' \
-  --exclude='tests/' --exclude='docs/' --exclude='tools/' --exclude='scripts/' \
-  --exclude='*.pyc' --exclude='*.png' --exclude='*.jpg' --exclude='*.jpeg' \
-  --exclude='*.gif' --exclude='*.webp' --exclude='*.mp4' --exclude='*.wav' \
-  --exclude='*.mp3' --exclude='*.zip' --exclude='*.7z' --exclude='*.exe'
-rsync -a --delete "$repo_root/client/runtime/letter_stickers/" "$stage/backend/runtime/letter_stickers/"
+rsync -a --from0 --files-from="$backend_list" "$repo_root/client/" "$stage/backend/"
+# Same default sticker set as the Windows patch
+# (client/installer/full_patch.py DEFAULT_STICKER_FILES: linli-01..108.png).
+for ((i = 1; i <= 108; i++)); do
+  sticker="$(printf 'linli-%02d.png' "$i")"
+  cp "$repo_root/client/runtime/letter_stickers/$sticker" "$stage/backend/runtime/letter_stickers/$sticker"
+done
 mkdir -p "$stage/backend/installer/assets"
 cp "$repo_root/client/installer/assets/wechat-payment.jpeg" "$stage/backend/installer/assets/wechat-payment.jpeg"
 if [[ "$can_run_python" == 1 ]]; then
