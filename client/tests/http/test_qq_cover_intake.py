@@ -513,6 +513,45 @@ def test_an_unquoted_or_unoffered_cover_is_dropped_and_the_reply_still_goes_out(
     assert 'cover_request' not in result and result['dropped_cover'] == reason
 
 
+STYLE_USER = '你翻唱一下这首歌吧，想听慢一点的爵士版'
+
+
+def test_a_style_the_user_asked_for_is_kept_with_the_request():
+    result = decode(STYLE_USER, {'source': 'abcd1234', 'evidence': '你翻唱一下这首歌吧', 'style': '慢一点的爵士版'})
+    assert result['cover_request']['style'] == '慢一点的爵士版' and 'dropped_cover' not in result
+
+
+@pytest.mark.parametrize('style', ['重金属', '摇滚版', 7, ['爵士'], '', '  ', None, '版'])
+def test_a_style_the_user_did_not_write_is_dropped_but_the_cover_goes_ahead(style):
+    result = decode(STYLE_USER, {'source': 'abcd1234', 'evidence': '你翻唱一下这首歌吧', 'style': style})
+    assert 'style' not in result['cover_request'] and 'dropped_cover' not in result
+    assert result['cover_request']['source'].startswith('abcd1234')
+
+
+def test_a_style_from_a_card_or_link_is_not_the_users_wording():
+    user = '[分享卡片：网易云音乐 · 摇滚之歌 · 某人] 你翻唱一下这首歌吧'
+    result = decode(user, {'source': 'abcd1234', 'evidence': '你翻唱一下这首歌吧', 'style': '摇滚之歌'})
+    assert 'style' not in result['cover_request']
+
+
+def test_a_style_is_cleaned_of_brackets_and_line_breaks_and_capped():
+    result = decode(STYLE_USER, {'source': 'abcd1234', 'evidence': '你翻唱一下这首歌吧', 'style': '[慢一点的\n爵士版]'})
+    assert result['cover_request']['style'] == '慢一点的 爵士版'
+    long_user = '你翻唱一下这首歌吧，想听' + '爵士' * 100
+    result = decode(long_user, {'source': 'abcd1234', 'evidence': '你翻唱一下这首歌吧', 'style': '爵士' * 100})
+    assert len(result['cover_request']['style']) == cover_chat.STYLE_LIMIT
+
+
+def test_a_reply_without_a_style_has_the_request_it_always_had():
+    result = decode(STYLE_USER, {'source': 'abcd1234', 'evidence': '你翻唱一下这首歌吧'})
+    assert set(result['cover_request']) == {'source', 'title', 'evidence'}
+
+
+def test_the_writer_is_told_what_a_style_is_by_meaning():
+    assert '"style"' not in decision.INSTRUCTION.split('字段必须完整')[1].split('。')[0]
+    assert 'style' in decision.INSTRUCTION and 'not_for=谁来唱' in decision.INSTRUCTION
+
+
 def test_without_offered_songs_or_in_a_proactive_turn_a_cover_is_dropped():
     assert decode('你翻唱一下', {'source': 'abcd1234', 'evidence': '你翻唱一下'}, sources=())['dropped_cover']
     result = decode('', {'source': 'abcd1234', 'evidence': '你翻唱一下'}, proactive=True)

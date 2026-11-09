@@ -162,3 +162,43 @@ def display_letter(body, signature):
     if not body or not valid_signature(signature):
         return body
     return body.rstrip() + '\n\n' + signature
+
+
+_REPLY_FENCE = re.compile(r'^\s*```[a-zA-Z]*\s*(.*?)\s*```\s*$', re.DOTALL)
+
+
+def clean_title(value, limit=40):
+    """One line of at most `limit` characters from a title a model wrote, or None. A title that runs over two lines
+    becomes one line (the lines joined by a space); quote marks around it and control characters go."""
+    if not isinstance(value, str):
+        return None
+    text = ''.join(ch for ch in value if ch.isprintable() or ch.isspace())
+    lines = [' '.join(line.split()).strip('"\'“”「」《》 ') for line in text.splitlines()]
+    lines = [line for line in lines if line]
+    joined = ' '.join(lines)
+    if 1 <= len(joined) <= limit:
+        return joined
+    return lines[0] if lines and len(lines[0]) <= limit else None
+
+
+def title_from_reply(text, limit=40):
+    """The title in a small model's answer to a request for {"title": "..."}, or None. The answer may sit inside a
+    code fence, have words around the object, or carry a title over two lines; each is read instead of thrown away,
+    because a letter whose title was lost gets the same title as every other letter."""
+    if not isinstance(text, str):
+        return None
+    fenced = _REPLY_FENCE.match(text)
+    text = fenced.group(1) if fenced else text
+    decoder = json.JSONDecoder(strict=False)
+    start = text.find('{')
+    while start != -1:
+        try:
+            value, end = decoder.raw_decode(text, start)
+        except ValueError:
+            start = text.find('{', start + 1)
+            continue
+        title = clean_title(value.get('title'), limit) if isinstance(value, dict) else None
+        if title:
+            return title
+        start = text.find('{', end)
+    return None

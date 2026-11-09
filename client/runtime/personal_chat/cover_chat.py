@@ -53,9 +53,24 @@ def _wording(text) -> str:
     return re.sub(r'\[(?:文件|语音|视频|图片)\]', ' ', text)
 
 
+STYLE_LIMIT = 120
+_BRACKETS = re.compile(r'[\[\]{}<>【】「」『』（）()《》]+')
+
+
+def _style(value, wording) -> str:
+    """The arrangement the writer quoted, cleaned (brackets and line breaks out, at most STYLE_LIMIT characters), or ''
+    when it is empty, not text, or not something the user wrote in this message: a style is never her own idea."""
+    if not isinstance(value, str):
+        return ''
+    text = re.sub(r'\s+', ' ', _BRACKETS.sub(' ', value)).strip()
+    if len(_plain(text)) < 2 or _plain(text) not in _plain(wording):
+        return ''
+    return text[:STYLE_LIMIT].strip()
+
+
 def validate_request(value, *, user, offered) -> dict:
     """The writer's ``cover`` field, or ValueError. ``offered`` is the list this turn's writer was shown."""
-    if (not isinstance(value, dict) or set(value) - {'source', 'evidence'} or not isinstance(value.get('source'), str)
+    if (not isinstance(value, dict) or set(value) - {'source', 'evidence', 'style'} or not isinstance(value.get('source'), str)
             or not isinstance(value.get('evidence'), str)):
         raise ValueError('COVER_REQUEST_SHAPE')
     song = next((item for item in offered or () if isinstance(item, dict) and item.get('id') == value['source']
@@ -65,7 +80,11 @@ def validate_request(value, *, user, offered) -> dict:
     evidence = _plain(value['evidence'])
     if len(evidence) < 2 or len(value['evidence']) > 200 or evidence not in _plain(_wording(user)):
         raise ValueError('COVER_EVIDENCE_NOT_QUOTED')
-    return {'source': song['source'], 'title': song.get('title', ''), 'evidence': value['evidence'].strip()}
+    request = {'source': song['source'], 'title': song.get('title', ''), 'evidence': value['evidence'].strip()}
+    style = _style(value.get('style'), _wording(user))
+    if style:   # an unsupported style only loses the style: the cover goes ahead and the cloud writes its own
+        request['style'] = style
+    return request
 
 
 def decode_field(data: dict, *, user, offered, proactive=False) -> None:
@@ -180,7 +199,10 @@ def in_flight(server, row) -> list[dict]:
     orders = [{'what': '翻唱', 'title': (other.get('cover_title') or (other.get('cover_request') or {}).get('title', ''))[:60],
                'state': ORDER_STATES[other['cover_status']]}
               for other in rows if other.get('cover_status') in ORDER_STATES]
-    dropped = [other for other in rows if other.get('cover_request_dropped') and not other.get('cover_status')]
+    # A refusal is stale when covers were unavailable in that turn (it was told then, as not_fetched, with its own code)
+    # or when a song arrives in this turn: the writer must judge this message afresh, not report last hour's failure.
+    dropped = [other for other in rows if other.get('cover_request_dropped') and not other.get('cover_status')
+               and not other.get('cover_skip') and not row.get('song_arrivals')]
     if dropped and not orders:
         last = max(dropped, key=lambda other: float(other.get('created_at') or 0))
         if time.time() - float(last.get('created_at') or 0) < 3600:

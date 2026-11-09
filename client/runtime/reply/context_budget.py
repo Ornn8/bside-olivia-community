@@ -114,6 +114,7 @@ def fit_reply_context(messages, *, max_input_chars, max_input_bytes=None):
         original, tag = match.group(0), match.group(1)
         try:
             from runtime.memory.memory_prompt import _unescape_reserved
+            from runtime.memory import r3_block
             if tag not in {'untrusted_history', 'evidence_summary'}:
                 if tag in _FIXED_TAGS:
                     protected.append(original)
@@ -124,8 +125,15 @@ def fit_reply_context(messages, *, max_input_chars, max_input_bytes=None):
             text = _unescape_reserved(wrapper['text'])
             if tag == 'untrusted_history' and text.startswith('[ORIGINAL_CORRESPONDENCE_UNTRUSTED]\n'):
                 lines = text.split('\n')
-                keys = {i: unit(json.loads(line), position) for i, line in enumerate(lines)
-                        if line.startswith('[{')}
+                if r3_block.is_compact(text):
+                    # Dated lines: an exchange is its head line and what follows, a former record line stands alone.
+                    keys = {}
+                    for first, end in r3_block.units(lines):
+                        key = unit(json.loads(lines[first]) if lines[first].startswith('[{') else {}, position)
+                        keys.update({i: key for i in range(first, end)})
+                else:
+                    keys = {i: unit(json.loads(line), position) for i, line in enumerate(lines)
+                            if line.startswith('[{')}
                 if keys:
                     def render(removed):
                         if not any(k in removed for k in keys.values()):

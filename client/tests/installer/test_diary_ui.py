@@ -30,7 +30,7 @@ def test_diary_list_read_comment_and_delete():
         page.add_script_tag(content=helpers + '''
           window.writes=[];
           const apiBase='http://127.0.0.1:27149';
-          const body='今天你说下周三要考乐理，复习了一下午还是记不住转调。\\n我嘴上说「我陪你复习呀」，其实心里有点心疼。';
+          const body='今天你说下周三要考乐理，复习了一下午还是记不住转调。\\n我嘴上说「我陪你复习呀」，其实心里有点心疼。\\n\\n睡前又看了一遍他的消息。';
           let entries=[{day:'2026-10-07',title:'下周三的乐理',mood:'心疼',excerpt:body.slice(0,40),short:false,seen:false,commented:false,
                         written_at:'2026-10-07T19:00:00Z'},
                        {day:'2026-10-05',title:'早安',mood:'开心',excerpt:'你只说了一句早，我也回了早呀。',short:true,seen:true,commented:true,
@@ -69,6 +69,7 @@ def test_diary_list_read_comment_and_delete():
         page.evaluate("document.querySelector('.od-photo').src+='?missing=1'")
         photo.wait_for(state='detached')
         assert page.locator('.od-body').is_visible()
+        assert page.locator('.od-body p').count() == 2  # a blank line ends a paragraph, a single break does not
         page.get_by_role('button', name='重写这篇').click()
         page.get_by_text('再点一次确认重写').wait_for()
         assert page.evaluate('window.writes.length') == 1  # the first click only explains

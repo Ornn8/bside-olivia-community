@@ -5091,7 +5091,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       const back=button(t('返回日记本'),()=>showList());
       const time=text('time',diaryDate(entry.day));time.style.color='#acb0b4';
       const body=document.createElement('div');body.className='od-body';
-      for(const paragraph of entry.body.split(/\n+/).filter(Boolean))body.append(text('p',paragraph));
+      for(const paragraph of entry.body.split(/\n[ \t]*\n+/).map(part=>part.trim()).filter(Boolean))body.append(text('p',paragraph));
       article.append(back,document.createElement('br'),time,text('h2',entry.title));
       if(typeof entry.photo==='string'&&/^\/toy\/media\/photo-[a-f0-9]{32}\.png$/.test(entry.photo)){
         const photo=document.createElement('img');photo.className='od-photo';photo.alt=t('她当天发来的照片');

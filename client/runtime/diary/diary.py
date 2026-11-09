@@ -9,6 +9,7 @@ import asyncio
 import json
 import re
 import sqlite3
+import statistics
 import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -44,8 +45,12 @@ RETRY_ONCE_KEY = 'retry_rejected_once'
 # supplier dropped Sonnet's and Opus's system text (2026-10-17..19): their diaries came back unusable until the
 # relay was fixed, and the first key had already been used. The third: installs that updated before that fix used
 # the second key at once and then lost the same days again; Opus answers that cannot be read as JSON are now
-# written once more by another model at the relay (2026-10-19 evening).
-RETRY_ONCE_KEYS = ((RETRY_ONCE_KEY, 1), ('retry_rejected_20261019', 2), ('retry_rejected_20261020', 2))
+# written once more by another model at the relay (2026-10-19 evening). The fourth: from 2026-11-02 most drafts from
+# the large Claude writers came back in a shape that no version could read, and days ran out of tries.
+RETRY_ONCE_KEYS = ((RETRY_ONCE_KEY, 1), ('retry_rejected_20261019', 2), ('retry_rejected_20261020', 2), ('retry_rejected_20261106', 2))
+# A month's memoir is only written when the user asks for it, and the same unreadable replies used up its tries: the
+# memoirs of 2026-11-03 and 2026-11-05 came back from Opus in the same shape. The fourth key reopens such months too.
+MONTH_REOPEN_KEYS = frozenset({'retry_rejected_20261106'})
 SHORT_DAY_CHARS = 40        # a day with less user text gets a short note
 MAX_SOURCE_CHARS = 24000    # one day's messages offered to the writer
 CONTEXT_DAYS = 3
@@ -64,7 +69,7 @@ QUALITY_PROMPT = '''
 - 篇幅以length_range为准；short_day为true时只写一小段。
 - 甜的程度跟着relationship_stage走，甜不是毛病：unknown、acquaintance时克制，礼貌里带点好奇；familiar、friend时自然亲近，可以开玩笑、小抱怨，偶尔流露在意；trusted_friend、close时明显地在意和想念，可以撒娇、有点黏人；committed（你们明确在一起了）时甜就大方地甜，可以直白地说想他、喜欢他，撒娇、吃醋、说情话都好。甜要落在今天真实发生的事上，不靠空喊。
 - 日记是你的心里话：聊天时嘴硬、没说出口的在意和想念，可以在这里坦白，坦白到什么程度同样跟着relationship_stage走。这只是心情，不改变你们之间发生过的事，也不改写你当时的回答。
-- 形式是一整篇散文：你自己的视角，第一人称，提到他就写“他”。不写成给他的信，不分点，不加小标题，不按时间逐条罗列。段落随心情自然分开。
+- 形式是一整篇散文：你自己的视角，第一人称，提到他就写“他”。不写成给他的信，不分点，不加小标题，不按时间逐条罗列。段落随心情自然分开：一个段落是几句连在一起的话，写成不换行的一整段，段落与段落之间只空一行（两个换行）；不要一句话一行，也不要为了排版在句子中间断行。
 - 时间用自然的说法（快天亮的时候、下课以后、睡前），不写钟点。messages里的time只用来理解先后。
 - 他说过的话、做过的事必须在「他写给你的」里有；你自己做过的事必须在day_life或sent里有。照片只说明你发过这个画面；故事和ASMR是你讲的作品，不是真事；计划中、还没做完的事不能写成做完了。不确定的细节宁可不写。
 - recent_entries是你前几天的日记，只用来接上没说完的事、避开重复的开头、句式和结尾，不能当成今天的事。以前的日记可能把谁说的、谁做的写反过：谁是谁一律以messages为准，不沿用recent_entries的说法。
@@ -77,7 +82,7 @@ REVISE_PROMPT = '''你是林离。第二天一早，你把昨晚写的日记（d
 - 删：资料里找不到依据的话和细节；空泛的总结（“今天很开心”“心里暖暖的”这类）；重复的意思；“然后……然后……”式的流水账；钟点时间。
 - 换：把概括换成具体的东西——他的一句原话、一个动作、一个画面、你当时心里转过的念头。
 - 开头直接进到最想记住的那一刻；结尾停在一个画面或一句轻轻的话上，不总结，不升华。
-- 留住你的口吻、真实的情绪和一整篇散文的形式，留住length_range的篇幅。甜度保持和relationship_stage一致：关系到了就别把甜削掉，关系还浅就别硬加。不要加新的事。
+- 留住你的口吻、真实的情绪和一整篇散文的形式（段落与段落之间空一行，段落里的句子连着写、不换行），留住length_range的篇幅。甜度保持和relationship_stage一致：关系到了就别把甜削掉，关系还浅就别硬加。不要加新的事。
 只输出title、mood、body。''' + QUALITY_PROMPT
 REVISE_SCHEMA = {'type': 'object', 'additionalProperties': False, 'required': ['title', 'mood', 'body'],
                  'properties': {}}
@@ -309,6 +314,109 @@ def _paragraphs(value):
     return _label(value)
 
 
+# A writer sometimes puts a line break after every sentence or wraps its lines like a typewriter, and the diary page
+# makes a paragraph of every line. These rules turn such a body back into paragraphs; a body that already has its
+# paragraphs comes out unchanged.
+_BLANK_LINE = re.compile(r'\n[ \t\u3000]*(?:\n[ \t\u3000]*)+')
+_OPEN_QUOTES, _CLOSE_QUOTES, _END_MARKS = '“‘「『"', '”’」』"', '。！？!?…'
+_SENTENCE_END = re.compile(r'(?<=[。！？!?…])(?![”’」』"\')）。！？!?…])|(?<=\.)(?=\s)')
+_QUOTES = {'“': 1, '”': -1, '‘': 1, '’': -1, '「': 1, '」': -1, '『': 1, '』': -1}
+SHORT_LINE_CHARS = 60       # lines this short are pieces of a paragraph; longer ones are paragraphs
+SHORT_BLOCK_CHARS = 50      # a body of five or more blocks this short is lines, not paragraphs
+FLOW_LINES = 4              # this many short lines with no blank line between them are a paragraph broken up
+PARAGRAPH_CHARS = 110       # a re-flowed paragraph closes once it reaches this, or at PARAGRAPH_SENTENCES
+PARAGRAPH_SENTENCES = 4
+
+
+def _wide(char):
+    return ord(char) >= 0x2E80 or char in '“”‘’…—·'
+
+
+def _glue(left, right):
+    return left + ('' if _wide(left[-1]) or _wide(right[0]) else ' ') + right
+
+
+def _own_turn(line):
+    """A whole spoken line: opens with a quote and ends on a quote that closes a finished sentence."""
+    return len(line) >= 3 and line[0] in _OPEN_QUOTES and line[-1] in _CLOSE_QUOTES and line[-2] in _END_MARKS
+
+
+def _join_lines(lines):
+    """Lines of one paragraph made into text. A spoken line followed by another speaker's line stays apart."""
+    units = [lines[0]]
+    for line in lines[1:]:
+        if _own_turn(units[-1]) and line[0] in _OPEN_QUOTES:
+            units.append(line)
+        else:
+            units[-1] = _glue(units[-1], line)
+    return units
+
+
+def _sentences(text):
+    """The sentences of a text, a quotation never cut in the middle."""
+    sentences, current = [], ''
+    for part in _SENTENCE_END.split(text):
+        part = part.strip()
+        if not part:
+            continue
+        current = _glue(current, part) if current else part
+        depth = sum(_QUOTES.get(char, 0) for char in current)
+        if current.count('"') % 2:
+            depth = max(depth, 1)
+        if depth <= 0:
+            sentences.append(current)
+            current = ''
+    return sentences + ([current] if current else [])
+
+
+def _reflow(text):
+    """One long text as paragraphs of a few sentences."""
+    paragraphs, current, count = [], '', 0
+    for sentence in _sentences(text):
+        current = _glue(current, sentence) if current else sentence
+        count += 1
+        if len(current) >= PARAGRAPH_CHARS or count >= PARAGRAPH_SENTENCES:
+            paragraphs.append(current)
+            current, count = '', 0
+    if current:
+        if paragraphs and len(current) < PARAGRAPH_CHARS // 3:
+            paragraphs[-1] = _glue(paragraphs[-1], current)
+        else:
+            paragraphs.append(current)
+    return paragraphs
+
+
+def _unit_paragraphs(lines):
+    return [paragraph for unit in _join_lines(lines)
+            for paragraph in (_reflow(unit) if len(unit) > PARAGRAPH_CHARS * 1.6 else [unit])]
+
+
+def tidy_body(value):
+    """A diary body as paragraphs separated by one blank line. Single line breaks inside a paragraph are joined (no
+    space between Chinese characters); a body with no blank lines at all, or only blank lines between short
+    fragments, is re-flowed into paragraphs of a few sentences. Applying it twice changes nothing."""
+    text = (value or '').replace('\r\n', '\n').replace('\r', '\n').strip()
+    if '\n' not in text:
+        return text
+    blocks = [[line.strip() for line in block.split('\n') if line.strip()] for block in _BLANK_LINE.split(text)]
+    blocks = [block for block in blocks if block]
+    if not blocks:
+        return ''
+    flat = [line for block in blocks for line in block]
+
+    def short(lines):
+        return statistics.median(len(line) for line in lines) < SHORT_LINE_CHARS
+
+    fragments = len(blocks) >= 5 and statistics.median(sum(map(len, block)) for block in blocks) < SHORT_BLOCK_CHARS
+    if fragments or (len(blocks) == 1 and len(flat) >= FLOW_LINES and short(flat)):
+        paragraphs = _unit_paragraphs(flat)
+    else:
+        paragraphs = []
+        for block in blocks:
+            paragraphs += _join_lines(block) if len(block) > 1 and short(block) else block
+    return '\n\n'.join(paragraphs)
+
+
 def _entry_object(value):
     """The entry itself, even when the writer wrapped it in a list or under one extra key."""
     for _ in range(2):
@@ -371,7 +479,7 @@ def validate(value, messages):
     if entry is None:
         raise ValueError('DIARY_ENTRY_INVALID')
     limits = _limits()
-    body = _fit_body(_paragraphs(entry.get('body')), limits['body'])
+    body = _fit_body(tidy_body(_paragraphs(entry.get('body'))), limits['body'])
     if not body:
         raise ValueError('DIARY_ENTRY_EMPTY')
     title = _clip(_label(entry.get('title')), limits['title']) or _clip(body, limits['title'])
@@ -396,10 +504,10 @@ def _json_value(text):
     """The reply as JSON: bare, inside a code fence, or with words around the object."""
     text = (text or '').strip()
     try:
-        return json.loads(text)
+        return _loads(text)
     except ValueError:
         pass
-    decoder, start = json.JSONDecoder(), text.find('{')
+    decoder, start = json.JSONDecoder(strict=False), text.find('{')
     while start != -1:
         try:
             value, _ = decoder.raw_decode(text, start)
@@ -431,6 +539,13 @@ _LABELLED = re.compile(r'^\W{0,3}(标题|题目|题|title|心情|情绪|mood|正
                        re.IGNORECASE)
 _FENCE = re.compile(r'```[A-Za-z]*[ \t]*\n(.*?)\n?```', re.DOTALL)
 _JSON_STRING = r'"((?:[^"\\]|\\.)*)"'
+# What may follow the end of a string value in the entry: the next key, or the end of the object.
+_VALUE_END = re.compile(r'\s*(?:,\s*"(?:title|mood|body|facts)"\s*:|[}\]]\s*(?:```)?\s*$)')
+
+
+def _loads(text):
+    """JSON as a writer really sends it: a line break may sit inside a string value without being escaped."""
+    return json.loads(text, strict=False)
 
 
 def _refused(text):
@@ -442,8 +557,25 @@ def _json_string(text, key):
     found = re.search(r'"%s"\s*:\s*%s' % (key, _JSON_STRING), text)
     if not found:
         return None
+    if not _VALUE_END.match(text, found.end()):
+        loose = _loose_string(text, key, found.start(1))
+        if loose is not None:
+            return loose
     try:
-        return json.loads('"' + found.group(1) + '"')
+        return _loads('"' + found.group(1) + '"')
+    except ValueError:
+        return None
+
+
+def _loose_string(text, key, start):
+    """A string value whose inner quote marks were not escaped: it ends at the last quote that is followed by the next
+    key or the end of the object."""
+    ends = [m.start() for m in re.finditer('"', text) if m.start() > start and _VALUE_END.match(text, m.end())]
+    if not ends:
+        return None
+    inner = re.sub(r'(?<!\\)"', r'\\"', text[start:ends[-1]] if key == 'body' else text[start:ends[0]])
+    try:
+        return _loads('"' + inner + '"')
     except ValueError:
         return None
 
@@ -458,7 +590,7 @@ def _prose_entry(text, bounds=None):
     candidates = [match.group(1) for match in _FENCE.finditer(text)]
     for block in candidates:
         try:
-            found = _entry_object(json.loads(block))
+            found = _entry_object(_loads(block))
         except ValueError:
             continue
         if isinstance(found, dict) and 'body' in found:
@@ -561,7 +693,10 @@ def record_failure(store, day, error):
     code = reply_failure_code(error)
     model = getattr(error, 'diary_model', None)
     if code is None:
-        store.failed(day, type(error).__name__)
+        # A writer that got the request and then failed some other way (it ran out of time, say) is tried once more;
+        # failing the same way twice moves the day to another writer.
+        again = model if _optional(lambda: store.attempts(day), 0) >= 1 and error_reached_writer(error) else None
+        store.failed(day, type(error).__name__, model=again)
         return getattr(error, 'code', None) or type(error).__name__
     text = getattr(error, 'diary_reply', None)
     store.failed(day, code if code in REPLY_FAILURES else type(error).__name__, model=model)
@@ -570,6 +705,11 @@ def record_failure(store, day, error):
     except Exception:
         pass  # a diagnostic note must never turn into another failure
     return code
+
+
+def error_reached_writer(error):
+    """Whether the failure came after the request was handed to the writer, as opposed to before it was sent."""
+    return str(error) not in ('DIARY_PACKET_TOO_LARGE', 'DIARY_WRITER_UNAVAILABLE', 'DIARY_MODEL_CHANGED')
 
 
 def unserved(error):
@@ -615,7 +755,7 @@ class DiaryStore:
         with self._db() as db:
             rows = db.execute('SELECT day,title,mood,body,style FROM diary_entries WHERE day<? AND length(day)=? '
                               'ORDER BY day DESC LIMIT 3', (day, len(day))).fetchall()
-        return [{**dict(row), 'body': row['body'][:120]} for row in rows]
+        return [{**dict(row), 'body': tidy_body(row['body'])[:120]} for row in rows]
 
     def work(self, day):
         with self._db() as db:
@@ -858,12 +998,13 @@ class DiaryStore:
                 return None
             comments = [dict(c) for c in db.execute(
                 'SELECT written_at,text FROM diary_comments WHERE day=? ORDER BY written_at', (day,))]
-        return {**self._public(row), 'body': row['body'], 'comments': comments, 'photo': local_photo(row['photo'])}
+        return {**self._public(row), 'body': tidy_body(row['body']), 'comments': comments,
+                'photo': local_photo(row['photo'])}
 
     @staticmethod
     def _public(row):
         return {'day': row['day'], 'written_at': row['written_at'], 'title': row['title'], 'mood': row['mood'],
-                'excerpt': row['body'][:80], 'short': bool(row['short']), 'seen': bool(row['seen']), 'style': row['style']}
+                'excerpt': tidy_body(row['body'])[:80], 'short': bool(row['short']), 'seen': bool(row['seen']), 'style': row['style']}
 
     def page(self, *, page=1, limit=20):
         if type(page) is not int or page < 1 or type(limit) is not int or not 1 <= limit <= 50:
@@ -945,7 +1086,7 @@ class DiaryStore:
                 return False
             db.execute('INSERT OR IGNORE INTO diary_entries (day,written_at,title,mood,body,facts,model,short,style,photo) '
                        'VALUES (?,?,?,?,?,?,?,?,?,?)',
-                       (day, now.astimezone(timezone.utc).isoformat(), entry['title'], entry['mood'], entry['body'],
+                       (day, now.astimezone(timezone.utc).isoformat(), entry['title'], entry['mood'], tidy_body(entry['body']),
                         json.dumps(entry['facts'], ensure_ascii=False), model, int(short), style, local_photo(photo)))
             db.execute('DELETE FROM diary_attempts WHERE day=?', (day,))
             db.execute('DELETE FROM diary_replies WHERE day=?', (day,))
@@ -977,6 +1118,11 @@ class DiaryStore:
     def _failed_models(db, day):
         row = db.execute('SELECT failed_models FROM diary_attempts WHERE day=?', (day,)).fetchone()
         return {name for name in (row[0] or '').split(',') if name} if row else set()
+
+    def attempts(self, day):
+        with self._db() as db:
+            row = db.execute('SELECT attempts FROM diary_attempts WHERE day=?', (day,)).fetchone()
+        return row[0] if row else 0
 
     def failed_models(self, day):
         with self._db() as db:
@@ -1010,7 +1156,7 @@ class DiaryStore:
         Earlier versions refused replies that were only a little off the contract, and gave a slow writer three
         minutes, so whole days were lost. The reason kept for a day tells such a day from one that failed because
         nothing was reachable. The marker is written in the same step, so no later start repeats this, and a day
-        that fails again stays closed.
+        that fails again stays closed. Under the keys in MONTH_REOPEN_KEYS a month's memoir is reopened the same way.
         """
         reopened = []
         with self._db() as db:
@@ -1024,6 +1170,17 @@ class DiaryStore:
                     (min(days), max(days), MAX_ATTEMPTS, *REOPEN_REASONS))] if days else []
                 db.executemany("UPDATE diary_attempts SET attempts=?,last_at=0,reason='RETRY_ONCE' WHERE day=?",
                                [(MAX_ATTEMPTS - tries, day) for day in days_now])
+                if key in MONTH_REOPEN_KEYS:
+                    # A month is not tied to the catch-up window, and one unusable reply is enough: the user has to
+                    # ask for a memoir each time, so a try used on a faulty answer is not given back by waiting.
+                    months_now = [row[0] for row in db.execute(
+                        'SELECT day FROM diary_attempts WHERE length(day)=7 AND attempts>=1 '
+                        'AND reason IN (%s) AND day NOT IN (SELECT day FROM diary_entries) '
+                        'AND day NOT IN (SELECT day FROM diary_deleted)' % ','.join('?' * len(REOPEN_REASONS)),
+                        REOPEN_REASONS)]
+                    db.executemany("UPDATE diary_attempts SET attempts=MIN(attempts,?),last_at=0,reason='RETRY_ONCE' "
+                                   "WHERE day=?", [(MAX_ATTEMPTS - tries, month) for month in months_now])
+                    days_now += months_now
                 db.execute('INSERT OR IGNORE INTO diary_settings VALUES (?,?)', (key, '1'))
                 reopened += days_now
         return reopened
@@ -1051,7 +1208,7 @@ class DiaryStore:
                                           'wearing_today 是你今天穿的那套，今天发的照片和视频里也是这一身。')
         if not recent and not facts and not gifts and not pets and not clothes:
             return None
-        entries = [{'day': r['day'], 'title': r['title'], 'body': r['body'][:CONTEXT_BODY_CHARS],
+        entries = [{'day': r['day'], 'title': r['title'], 'body': tidy_body(r['body'])[:CONTEXT_BODY_CHARS],
                     **({'user_comment': comments[r['day']][:200]} if r['day'] in comments else {})}
                    for r in reversed(recent)]
         return json.dumps({'kind': 'linli_diary',
