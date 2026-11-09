@@ -1,6 +1,7 @@
 const { randomBytes } = require("crypto");
-const dns = require("dns").promises;
+const dns = require("dns");
 const fs = require("fs");
+const https = require("https");
 const net = require("net");
 const path = require("path");
 const { execFile } = require("child_process");
@@ -42,17 +43,43 @@ function privateHost(hostname) {
   return false;
 }
 
-async function assertPublicHttpsSource(url) {
-  if (url.protocol !== "https:") return;
-  if (privateHost(url.hostname)) throw new Error("DOWNLOAD_URL_INVALID");
-  if (net.isIP(url.hostname)) return;
-  let addresses;
-  try {
-    addresses = await dns.lookup(url.hostname, { all: true, verbatim: true });
-  } catch {
-    return; // fetch will report an ordinary DNS failure without leaking details.
-  }
-  if (addresses.some(({ address }) => privateHost(address))) throw new Error("DOWNLOAD_URL_INVALID");
+// Resolve inside the connection itself, so the address that is checked is the
+// address that is used (no DNS rebinding window between check and connect).
+function publicLookup(hostname, options, callback) {
+  if (typeof options === "function") [options, callback] = [{}, options];
+  const lookupOptions = typeof options === "number" ? { family: options } : { ...options };
+  dns.lookup(hostname, { ...lookupOptions, all: true, verbatim: true }, (error, addresses) => {
+    if (error) return callback(error);
+    if (!addresses.length || addresses.some(({ address }) => privateHost(address))) {
+      return callback(Object.assign(new Error("DOWNLOAD_URL_INVALID"), { code: "DOWNLOAD_URL_INVALID" }));
+    }
+    if (lookupOptions.all) return callback(null, addresses);
+    return callback(null, addresses[0].address, addresses[0].family);
+  });
+}
+
+// External downloads: HTTPS only, public addresses only, redirects rejected.
+function publicHttpsGet(url, signal) {
+  if (url.protocol !== "https:" || privateHost(url.hostname)) return Promise.reject(new Error("DOWNLOAD_URL_INVALID"));
+  return new Promise((resolve, reject) => {
+    const request = https.get(url, { lookup: publicLookup, signal }, (response) => {
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        response.resume();
+        reject(new Error(response.statusCode >= 300 && response.statusCode < 400 ? "DOWNLOAD_REDIRECT_REJECTED" : "DOWNLOAD_FAILED"));
+        return;
+      }
+      resolve({ ok: true, body: response, headers: { get: (name) => response.headers[name.toLowerCase()] ?? null } });
+    });
+    request.on("error", reject);
+  });
+}
+
+// Downloaded media is a local file of a known container: never let ffmpeg
+// follow playlists/URLs inside it or guess another demuxer.
+function mediaInputArgs(file) {
+  const format = { ".mp4": "mp4", ".wav": "wav" }[path.extname(file.replace(/\.download$/, "")).toLowerCase()];
+  if (!format) throw new Error("MEDIA_FORMAT_UNSUPPORTED");
+  return ["-protocol_whitelist", "file", "-f", format, "-i", file];
 }
 
 function safeName(value) {
@@ -128,13 +155,7 @@ class NativeFiles {
   async _download(url, destination, task) {
     const temporary = destination + "." + task.id + ".part";
     try {
-      await assertPublicHttpsSource(url);
-      const local = url.origin === this.backendOrigin;
-      const source = local ? this.backendUrl(url.pathname + url.search) : url;
-      const response = await fetch(source, {
-        redirect: "error", headers: local ? this.backendHeaders({ Origin: "https://olivia.local" }) : {},
-        signal: AbortSignal.any([task.controller.signal, AbortSignal.timeout(180000)]),
-      });
+      const response = await this.openSource(url, AbortSignal.any([task.controller.signal, AbortSignal.timeout(180000)]));
       if (!response.ok || !response.body) throw new Error("DOWNLOAD_FAILED");
       const expected = Number(response.headers.get("content-length") || 0);
       if (expected > MAX_FILE_BYTES) throw new Error("FILE_TOO_LARGE");
@@ -265,12 +286,18 @@ class NativeFiles {
     });
   }
 
+  openSource(url, signal) {
+    if (url.origin === this.backendOrigin) {
+      return fetch(this.backendUrl(url.pathname + url.search), {
+        redirect: "error", headers: this.backendHeaders({ Origin: "https://olivia.local" }), signal,
+      });
+    }
+    return publicHttpsGet(url, signal);
+  }
+
   async fetchMedia(url, target, task) {
     const parsed = this.validSource(url);
-    await assertPublicHttpsSource(parsed);
-    const source = parsed.origin === this.backendOrigin ? this.backendUrl(parsed.pathname + parsed.search) : parsed;
-    const response = await fetch(source, { redirect: "error", headers: parsed.origin === this.backendOrigin ? this.backendHeaders({ Origin: "https://olivia.local" }) : {},
-      signal: AbortSignal.any([task.controller.signal, AbortSignal.timeout(900000)]) });
+    const response = await this.openSource(parsed, AbortSignal.any([task.controller.signal, AbortSignal.timeout(900000)]));
     if (!response.ok || !response.body) throw new Error("MEDIA_DOWNLOAD_FAILED");
     const expected = Number(response.headers.get("content-length") || 0);
     if (expected > MAX_FILE_BYTES) throw new Error("FILE_TOO_LARGE");
@@ -314,7 +341,7 @@ class NativeFiles {
       await this.fetchMedia(url, raw, task);
       task.progress = 60;
       this.reportMediaProgress(task, true);
-      await this.runFfmpeg(["-v", "error", "-nostdin", "-y", "-i", raw, "-c", "copy", target], 180000, `media:${mediaId}`);
+      await this.runFfmpeg(["-v", "error", "-nostdin", "-y", ...mediaInputArgs(raw), "-c", "copy", target], 180000, `media:${mediaId}`);
       fs.unlinkSync(raw);
       task.progress = 100;
       task.complete = true;
@@ -336,7 +363,7 @@ class NativeFiles {
     const safe = String(mediaId || "").replace(/[^a-zA-Z0-9_-]/g, "_");
     const file = path.join(this.mediaRoot, safe + extension);
     if (!fs.existsSync(file)) throw new Error("MEDIA_NOT_DOWNLOADED");
-    return this.runFfmpeg(["-v", "info", "-i", file, "-f", "null", "-"]).then(({ stderr }) => {
+    return this.runFfmpeg(["-v", "info", ...mediaInputArgs(file), "-f", "null", "-"]).then(({ stderr }) => {
       const match = /Duration: (\d+):(\d+):(\d+(?:\.\d+)?)/.exec(stderr);
       const duration = match ? Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]) : 0;
       const dimensions = /Video:.*?(\d{2,5})x(\d{2,5})/.exec(stderr);
@@ -354,7 +381,7 @@ class NativeFiles {
     const output = path.join(this.mediaRoot, String(editId) + extension);
     const args = ["-v", "error", "-nostdin", "-y", "-ss", String(Math.max(0, Number(start) || 0))];
     if (Number(end) > Number(start)) args.push("-t", String(Number(end) - Number(start)));
-    args.push("-i", source);
+    args.push(...mediaInputArgs(source));
     if (extension === ".mp4" && Number(w) > 0 && Number(h) > 0) args.push("-vf", `crop=${Math.floor(w)}:${Math.floor(h)}:${Math.max(0, Math.floor(x))}:${Math.max(0, Math.floor(y))}`);
     if (extension === ".mp4") args.push("-c:v", "libx264", "-c:a", "aac");
     else args.push("-vn", "-c:a", "pcm_s16le");
@@ -412,4 +439,4 @@ class NativeFiles {
   }
 }
 
-module.exports = { NativeFiles };
+module.exports = { NativeFiles, mediaInputArgs, publicLookup };

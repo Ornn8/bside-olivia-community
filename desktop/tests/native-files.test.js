@@ -135,3 +135,33 @@ test("downloads reject private HTTPS endpoints", async () => {
     /DOWNLOAD_URL_INVALID/,
   );
 });
+
+test("the connection-time lookup refuses names that resolve to private addresses", async () => {
+  const { publicLookup } = require("../native-files");
+  const lookup = (options) => new Promise((resolve) => publicLookup("localhost", options, (error, address) => resolve({ error, address })));
+  for (const options of [{}, { all: true }, 4]) {
+    const { error, address } = await lookup(options);
+    assert.equal(error?.message, "DOWNLOAD_URL_INVALID");
+    assert.equal(address, undefined);
+  }
+});
+
+test("external downloads never connect to a name that resolves privately", async () => {
+  const dns = require("node:dns");
+  const original = dns.lookup;
+  const asked = [];
+  // Simulates a rebinding answer: the name looks public, the address is loopback.
+  dns.lookup = (hostname, options, callback) => { asked.push(hostname); callback(null, [{ address: "127.0.0.1", family: 4 }]); };
+  try {
+    const files = new NativeFiles({ dataRoot: path.join(root, "rebinding"), backendOrigin: "http://127.0.0.1:1", backendUrl: () => "" });
+    await assert.rejects(files.openSource(new URL("https://media.example/clip.mp4"), AbortSignal.timeout(5000)), /DOWNLOAD_URL_INVALID/);
+    assert.deepEqual(asked, ["media.example"]);
+  } finally { dns.lookup = original; }
+});
+
+test("ffmpeg reads downloaded media only as a local file of the expected container", () => {
+  const { mediaInputArgs } = require("../native-files");
+  assert.deepEqual(mediaInputArgs("/m/clip.mp4.download"), ["-protocol_whitelist", "file", "-f", "mp4", "-i", "/m/clip.mp4.download"]);
+  assert.deepEqual(mediaInputArgs("/m/clip.wav"), ["-protocol_whitelist", "file", "-f", "wav", "-i", "/m/clip.wav"]);
+  assert.throws(() => mediaInputArgs("/m/list.m3u8"), /MEDIA_FORMAT_UNSUPPORTED/);
+});
