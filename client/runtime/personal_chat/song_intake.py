@@ -3,6 +3,9 @@
 normalised by ``cover_upload.validate_upload`` into ``cover-inputs/<id>/source.wav`` and indexed in
 ``runtime/media/song_sources``. What happened is written on the turn's row for the writer (``cover_chat.context``):
 ``song_arrivals`` (kept songs) and ``song_failures`` (what could not be fetched, with the reason and its code).
+
+A voice message the user sends (himself singing or humming) is kept the same way by ``keep_voice``, in its own index
+(``song_sources.VoiceSources``), and noted on the row as ``voice_arrivals``; she may sing it back.
 """
 from __future__ import annotations
 
@@ -15,10 +18,11 @@ import os
 from pathlib import Path
 import shutil
 import time
+import wave
 
 from runtime.media import song_resolver
 from runtime.media.song_resolver import SongError
-from runtime.media.song_sources import SongSources
+from runtime.media.song_sources import SongSources, VoiceSources
 from runtime.ui_i18n_backend import tr
 from . import song_shares
 
@@ -272,3 +276,52 @@ async def receive_audio_file(server, event, row, identifier, reference, name) ->
             shutil.rmtree(folder, ignore_errors=True)
     _persist(server)
     return True
+
+
+def _wav_seconds(path) -> float:
+    with wave.open(str(path), 'rb') as audio:
+        return audio.getnframes() / audio.getframerate()
+
+
+async def keep_voice(server, event, row, recording, identity, heard) -> None:
+    """A voice message the user sent in the chat, kept (the audio and what was heard in it) so that she may choose to
+    sing it back. ``recording`` is the WAV QQ handed over, ``identity`` the digest of that message (one message is kept
+    once), ``heard`` the text of its observation. Never raises: a voice that cannot be kept is simply not offered.
+    The turn's row gets ``voice_arrivals`` (the kept voices of this message), like ``song_arrivals`` for songs."""
+    from . import cover_chat
+    if (event.channel != 'qq' or not cover_chat.ENABLED or row.get('origin') == 'proactive'
+            or row.get('contact_id') is not None):
+        return
+    folder = None
+    try:
+        root = getattr(server, '_local_data_root', lambda: None)()
+        if root is None:
+            return
+        store = VoiceSources(root)
+        store.cleanup()
+        kept = store.find_key(identity)
+        if kept is None:
+            seconds = await asyncio.to_thread(_wav_seconds, recording)
+            if not 0 < seconds <= cover_chat.VOICE_MAX_SECONDS:
+                return
+            folder = store.folder(store.new_id())
+            folder.mkdir(parents=True, exist_ok=False)
+            await asyncio.to_thread(shutil.copyfile, recording, folder / 'source.part')
+            os.replace(folder / 'source.part', folder / 'source.wav')
+            text = str(heard or '').strip()
+            kept = store.add(folder.name, key=identity, title='', singer='', origin='voice', identity=identity,
+                             seconds=seconds, heard=text[:cover_chat.HEARD_LIMIT], words=cover_chat.has_words(text))
+            folder = None
+            store.cleanup()   # keeps the newest few: the one just added is never the one that goes
+        arrivals = row.setdefault('voice_arrivals', [])
+        if not any(item.get('source') == kept['id'] for item in arrivals):
+            arrivals.append({'source': kept['id'], 'seconds': float(kept.get('seconds') or 0)})
+            _persist(server)
+    except asyncio.CancelledError:
+        if folder is not None:
+            shutil.rmtree(folder, ignore_errors=True)
+        raise
+    except Exception as exc:  # noqa: BLE001 - the turn goes on; this voice is just not offered
+        log.info('VOICE_NOT_KEPT %s', type(exc).__name__)
+        if folder is not None:
+            shutil.rmtree(folder, ignore_errors=True)

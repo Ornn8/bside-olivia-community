@@ -43,21 +43,31 @@ def to_mp3(wav: Path, mp3: Path) -> None:
         staging.unlink(missing_ok=True)
 
 
-def _order(source: Path, output: Path, style: str = '') -> None:
+def _generate(source: Path, output: Path, options: dict, lyrics: str) -> None:
     """The cover pipeline with her own singing voice; waits for the account's lane instead of failing at once."""
     from runtime import remote_pipeline
     from runtime.media import cover_options
     from runtime.remote_generation import LANE_WAIT, LaneWait
-    options = {'engine': 'yue2'}
-    if style:
-        options['arrangement'] = style
     token = LANE_WAIT.set(LaneWait(cover_chat.LANE_WAIT_SECONDS))
     try:
-        remote_pipeline.generate('cover', {'lyrics': '', 'language': 'unknown',
+        remote_pipeline.generate('cover', {'lyrics': lyrics, 'language': 'unknown',
                                            'cover_options': cover_options.validate(options)},
                                  output, environment=os.environ, assets={'source_asset': source})
     finally:
         LANE_WAIT.reset(token)
+
+
+def _order(source: Path, output: Path, style: str = '') -> None:
+    options = {'engine': 'yue2'}
+    if style:
+        options['arrangement'] = style
+    _generate(source, output, options, '')
+
+
+def _order_sing_back(source: Path, output: Path, lyrics: str = '') -> None:
+    """The user's recording sung back a cappella: the same order as a cover, the arrangement marker tells the cloud.
+    ``lyrics`` are the ones she wrote for a hum; for a recording with words they are empty and the cloud hears them."""
+    _generate(source, output, {'engine': 'yue2', 'arrangement': cover_chat.SING_BACK_ARRANGEMENT}, lyrics)
 
 
 async def deliver(server, row, send):
@@ -71,20 +81,28 @@ async def deliver(server, row, send):
         return
     from runtime import remote_pipeline
     from runtime.media.cover_upload import source_path
-    from runtime.media.song_sources import SongSources
+    from runtime.media.song_sources import SongSources, VoiceSources
     root = server._local_data_root()
     request = row.get('cover_request')
     if isinstance(request, dict) and request.get('task_id'):
         await _deliver_task(server, row, send, root, request)
         return
+    sing_back = cover_chat.is_sing_back(row)
+    missing = 'SINGBACK_AUDIO_UNREADABLE' if sing_back else 'COVER_SOURCE_REQUIRED'
     if root is None or not isinstance(request, dict) or not isinstance(request.get('source'), str):
-        raise CoverFailure('COVER_SOURCE_REQUIRED')
-    store = SongSources(root)
+        raise CoverFailure(missing)
+    store = (VoiceSources if sing_back else SongSources)(root)
     song = store.get(request['source'])
     if song is None:
-        raise CoverFailure('COVER_SOURCE_REQUIRED')
-    title = (request.get('title') or song.get('title') or tr('发来的歌')).strip()[:80]
+        raise CoverFailure(missing)
+    title = (request.get('title') or (cover_chat.sing_back_title(song) if sing_back
+                                      else song.get('title') or tr('发来的歌'))).strip()[:80]
     if state == 'PENDING':
+        if sing_back:     # checked here, before anything is ordered: the cloud checks the length again
+            if float(song.get('seconds') or 0) < cover_chat.VOICE_MIN_SECONDS:
+                raise CoverFailure('SINGBACK_TOO_SHORT')
+            if float(song.get('seconds') or 0) > cover_chat.VOICE_MAX_SECONDS:
+                raise CoverFailure('SINGBACK_TOO_LONG')
         if not remote_pipeline.enabled(os.environ):
             raise CoverFailure('COVER_RUNTIME_UNAVAILABLE', tr('这台电脑现在没有连上 Olivia 云服务'))
         facts = await cover_chat.preflight_facts(os.environ)
@@ -104,12 +122,16 @@ async def deliver(server, row, send):
             try:
                 source = source_path(root, song['id'])
             except ValueError:
-                raise CoverFailure('COVER_SOURCE_REQUIRED') from None
-            style = request.get('style')
-            style = style.strip() if isinstance(style, str) else ''
-            if request.get('arrangement') == 'original':    # her voice over the song's own accompaniment and key
-                style = cover_chat.ORIGINAL_ARRANGEMENT
-            await asyncio.to_thread(*((_order, source, wav, style) if style else (_order, source, wav)))
+                raise CoverFailure(missing) from None
+            if sing_back:
+                lyrics = request.get('lyrics')
+                await asyncio.to_thread(_order_sing_back, source, wav, lyrics if isinstance(lyrics, str) else '')
+            else:
+                style = request.get('style')
+                style = style.strip() if isinstance(style, str) else ''
+                if request.get('arrangement') == 'original':    # her voice over the song's own accompaniment and key
+                    style = cover_chat.ORIGINAL_ARRANGEMENT
+                await asyncio.to_thread(*((_order, source, wav, style) if style else (_order, source, wav)))
         await asyncio.to_thread(to_mp3, wav, mp3)
     await _send(server, row, send, mp3, title)
 
@@ -145,8 +167,8 @@ async def _deliver_task(server, row, send, root, request):
 
 def song_name(row, title):
     """What the mp3 file and its music-library entry are called: a cover she sang is marked as one, a song she
-    brought him by her own message is not."""
-    return title if row.get('cover_task_only') else tr('{title}（翻唱）', title=title)
+    brought him by her own message is not, and a recording sung back is named after the time of the recording."""
+    return title if row.get('cover_task_only') or cover_chat.is_sing_back(row) else tr('{title}（翻唱）', title=title)
 
 
 async def _send(server, row, send, mp3, title):
@@ -182,7 +204,8 @@ async def finish(server, row, send):
     title = row.get('cover_title') or tr('发来的歌')
     if not row.get('cover_task_only'):
         await delivery_notice(row, send, lambda: persist_chat(server), 'cover_notice_status',
-                              cover_chat.completion_text(title))
+                              cover_chat.sing_back_completion_text() if cover_chat.is_sing_back(row)
+                              else cover_chat.completion_text(title))
     folder = work_folder(root, row)
     wav = folder / 'cover.wav'
     if not row.get('cover_library') and wav.is_file():
@@ -196,10 +219,10 @@ async def finish(server, row, send):
             log.info('COVER_LIBRARY_IMPORT_FAILED %s', type(exc).__name__)
         await persist_chat(server)
     if not row.get('cover_finished'):
-        from runtime.media.song_sources import SongSources
+        from runtime.media.song_sources import SongSources, VoiceSources
         request = row.get('cover_request') or {}
         if not row.get('cover_task_only'):
-            SongSources(root).mark_used(str(request.get('source', '')))
+            (VoiceSources if cover_chat.is_sing_back(row) else SongSources)(root).mark_used(str(request.get('source', '')))
         import shutil
         shutil.rmtree(folder, ignore_errors=True)
         row['cover_finished'] = True

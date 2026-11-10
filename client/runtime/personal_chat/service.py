@@ -76,6 +76,7 @@ def _clear_draft(row):
                 'silence_reason', 'skip_reason', 'proactive_skip', 'user_controls_applied',
                 'daily_video_request', 'daily_video_status', 'daily_video_error_code', 'daily_video_candidates',
                 'cover_request', 'cover_status', 'cover_error_code', 'cover_sources', 'cover_orders', 'cover_skip', 'cover_request_dropped',
+                'sing_back_voices',
                 'writer_checkpoint', 'generation_run_id', 'generation_attempt_id', 'generation_recovery',
                 'send_attempt_id', 'send_input_revision', 'delivery_receipt'):
         row.pop(key, None)
@@ -960,7 +961,8 @@ class PersonalChatService:
                             row['cover_status'] = 'FAILED'
                         await persist_state(self.persist)
                         # One plain message with the reason and its code, whatever stage it failed in.
-                        await delivery_notice(row, send, self.persist, 'cover_failure_notice', cover_chat.failure_words(exc))
+                        await delivery_notice(row, send, self.persist, 'cover_failure_notice',
+                                              cover_chat.failure_words(exc, sing_back=cover_chat.is_sing_back(row)))
                 finally:
                     self.speech_tasks.pop(key, None)
             self.speech_tasks[key] = asyncio.create_task(sing())
