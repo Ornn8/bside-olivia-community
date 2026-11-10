@@ -149,19 +149,22 @@ async def understand_incoming(server, event, row):
     attempted = row.setdefault('incoming_media_attempted', [])
     failed = 0
     from runtime.personal_chat.piano import receive_midi
-    from runtime.personal_chat.song_intake import receive_audio_file
+    from runtime.personal_chat.song_intake import receive_audio_file, keep_voice
     for identifier, kind, reference, name in event.media:
         if kind == 'file' and await receive_midi(server, event, row, identifier, reference, name):
             continue
         if kind == 'file' and await receive_audio_file(server, event, row, identifier, reference, name):
             continue  # a song sent as a file: kept for her to cover
         identity = hashlib.sha256(json.dumps([identifier, kind, reference, name]).encode()).hexdigest()
-        if any(item.get('input_id') == identity for item in observations):
+        path = server._state_root() / 'media' / ('qq-incoming-' + identity + '.bin')
+        observed = next((item for item in observations if item.get('input_id') == identity), None)
+        if observed is not None:
+            if kind == 'audio':
+                await keep_voice(server, event, row, path, identity, observed.get('summary'))  # kept once; idempotent
             continue
         if identity in attempted:
             failed += 1
             continue
-        path = server._state_root() / 'media' / ('qq-incoming-' + identity + '.bin')
         try:
             if not path.is_file():
                 resolver = MEDIA_RESOLVER.get()
@@ -180,6 +183,8 @@ async def understand_incoming(server, event, row):
             item['input_id'] = identity
             observations.append(item)
             server._persist_store_state()
+            if kind == 'audio':
+                await keep_voice(server, event, row, path, identity, item['summary'])  # a voice she may sing back
         except asyncio.CancelledError:
             raise
         except Exception:
