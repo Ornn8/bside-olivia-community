@@ -91,6 +91,8 @@ def _wording(text) -> str:
 
 
 STYLE_LIMIT = 120
+# The cloud's marker for "keep the song's own accompaniment and key, only the singer becomes her" (SoulX voice swap).
+ORIGINAL_ARRANGEMENT = '~~oc:1~~'
 _BRACKETS = re.compile(r'[\[\]{}<>【】「」『』（）()《》]+')
 
 
@@ -107,7 +109,7 @@ def _style(value, wording) -> str:
 
 def validate_request(value, *, user, offered) -> dict:
     """The writer's ``cover`` field, or ValueError. ``offered`` is the list this turn's writer was shown."""
-    if (not isinstance(value, dict) or set(value) - {'source', 'evidence', 'style'} or not isinstance(value.get('source'), str)
+    if (not isinstance(value, dict) or set(value) - {'source', 'evidence', 'style', 'arrangement'} or not isinstance(value.get('source'), str)
             or not isinstance(value.get('evidence'), str)):
         raise ValueError('COVER_REQUEST_SHAPE')
     song = next((item for item in offered or () if isinstance(item, dict) and item.get('id') == value['source']
@@ -119,6 +121,9 @@ def validate_request(value, *, user, offered) -> dict:
         raise ValueError('COVER_EVIDENCE_NOT_QUOTED')
     request = {'source': song['source'], 'title': song.get('title', ''), 'evidence': value['evidence'].strip()}
     style = _style(value.get('style'), _wording(user))
+    if value.get('arrangement') == 'original':   # any other value is the default: she sings it over a new arrangement
+        request['arrangement'] = 'original'
+        style = ''      # the user's arrangement words are not used when the original arrangement is kept
     if style:   # an unsupported style only loses the style: the cover goes ahead and the cloud writes its own
         request['style'] = style
     return request

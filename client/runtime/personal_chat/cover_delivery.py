@@ -129,6 +129,8 @@ async def deliver(server, row, send):
             else:
                 style = request.get('style')
                 style = style.strip() if isinstance(style, str) else ''
+                if request.get('arrangement') == 'original':    # her voice over the song's own accompaniment and key
+                    style = cover_chat.ORIGINAL_ARRANGEMENT
                 await asyncio.to_thread(*((_order, source, wav, style) if style else (_order, source, wav)))
         await asyncio.to_thread(to_mp3, wav, mp3)
     await _send(server, row, send, mp3, title)
