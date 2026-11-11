@@ -22,9 +22,12 @@ _LOCK = threading.Lock()
 
 
 class SongSources:
+    index_name = INDEX_NAME
+    max_kept = MAX_KEPT
+
     def __init__(self, data_root: Path):
         self.root = Path(data_root) / 'cover-inputs'
-        self.index = self.root / INDEX_NAME
+        self.index = self.root / self.index_name
 
     # --- storage -----------------------------------------------------------------------------------------------
 
@@ -38,7 +41,7 @@ class SongSources:
 
     def _write(self, rows: list[dict]) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
-        temporary = self.index.with_name(INDEX_NAME + '.tmp')
+        temporary = self.index.with_name(self.index_name + '.tmp')
         temporary.write_text(json.dumps(rows, ensure_ascii=False), encoding='utf-8')
         os.replace(temporary, self.index)
 
@@ -54,9 +57,9 @@ class SongSources:
     # --- the rows ----------------------------------------------------------------------------------------------
 
     def add(self, source_id: str, *, key: str, title: str, singer: str, origin: str, identity: str,
-            seconds: float, now: float | None = None) -> dict:
-        """Index a song whose WAV is already in place."""
-        row = {'id': source_id, 'key': key, 'title': title[:80], 'singer': singer[:60], 'origin': origin,
+            seconds: float, now: float | None = None, **extra) -> dict:
+        """Index a song whose WAV is already in place (``extra``: more fields of its row)."""
+        row = {**extra, 'id': source_id, 'key': key, 'title': title[:80], 'singer': singer[:60], 'origin': origin,
                'identity': identity, 'seconds': round(float(seconds), 1), 'created_at': now if now is not None else time.time(),
                'used': False}
         with _LOCK:
@@ -106,7 +109,7 @@ class SongSources:
         shutil.rmtree(self.folder(source_id), ignore_errors=True)
 
     def cleanup(self, now: float | None = None) -> list[str]:
-        """Songs unused (or used) for KEEP_SECONDS are deleted, then the oldest unused beyond MAX_KEPT. Returns the ids."""
+        """Songs unused (or used) for KEEP_SECONDS are deleted, then the oldest unused beyond ``max_kept``. Returns the ids."""
         now = now if now is not None else time.time()
         gone = []
         with _LOCK:
@@ -118,7 +121,7 @@ class SongSources:
                 else:
                     keep.append(row)
             idle = sorted((row for row in keep if not row.get('used')), key=lambda row: row.get('created_at', 0))
-            for row in idle[:max(0, len(idle) - MAX_KEPT)]:
+            for row in idle[:max(0, len(idle) - self.max_kept)]:
                 gone.append(row['id'])
                 keep.remove(row)
             if gone:
@@ -126,3 +129,16 @@ class SongSources:
         for source_id in gone:
             shutil.rmtree(self.folder(source_id), ignore_errors=True)
         return gone
+
+
+VOICE_INDEX_NAME = 'chat-voices.json'
+MAX_KEPT_VOICES = 5
+
+
+class VoiceSources(SongSources):
+    """Voice messages received in a chat (a user singing or humming), kept like songs but in an index of their own:
+    the same folder layout, so ``cover_upload.source_path`` finds them, at most MAX_KEPT_VOICES unused ones, each gone
+    after KEEP_SECONDS. A row also holds ``heard`` (what was heard in the recording) and ``words`` (it has real words)."""
+
+    index_name = VOICE_INDEX_NAME
+    max_kept = MAX_KEPT_VOICES
