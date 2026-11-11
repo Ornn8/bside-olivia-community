@@ -4,6 +4,7 @@ import base64
 import hashlib
 import io
 import json
+import logging
 import os
 import re
 from datetime import datetime, timezone
@@ -13,6 +14,7 @@ from weakref import WeakValueDictionary
 
 import aiohttp
 
+log = logging.getLogger(__name__)
 _commit_locks = WeakValueDictionary()
 _DESCRIPTION_ATTEMPTS = 3
 _DESCRIPTION_TERMINAL = {
@@ -346,19 +348,51 @@ async def _download_qq_image(url, target):
     target.write_bytes(data)
 
 
+_CODE = re.compile(r'[A-Z][A-Z0-9_]{2,63}')
+_DOWNLOAD_TRIES = 2
+_DOWNLOAD_PAUSE = 1.5
+
+
+def failure_code(exc, stage):
+    """Why one picture could not be seen, as a short code that never carries a URL or a path (a QQ picture address holds
+    a key): the code the step raised, else the stage and the kind of error (QQ_IMAGE_TimeoutError,
+    IMAGE_VISION_UnidentifiedImageError)."""
+    text = str(exc)
+    if _CODE.fullmatch(text):
+        return text
+    return ('QQ_IMAGE_' if stage == 'download' else 'IMAGE_VISION_') + re.sub(r'\W', '', type(exc).__name__)[:40]
+
+
+async def _download_with_retry(url, path):
+    """A picture that did not come once is asked for again: QQ's picture server answers a moment later."""
+    for attempt in range(_DOWNLOAD_TRIES):
+        try:
+            return await _download_qq_image(url, path)
+        except asyncio.CancelledError:
+            raise
+        except ValueError:
+            raise  # not a QQ address, or too large: asking again changes nothing
+        except Exception:
+            if attempt + 1 == _DOWNLOAD_TRIES:
+                raise
+            await asyncio.sleep(_DOWNLOAD_PAUSE)
+
+
 async def understand_incoming(server, event, row):
     if not event.images or row.get('incoming_image_status') == 'COMPLETED':
         return
     observations = row.setdefault('incoming_image_observations', [])
-    failures = 0
+    reasons = []
     for identifier, url in event.images:
         identity = hashlib.sha256((identifier + '\0' + url).encode()).hexdigest()
         if any(item.get('input_id') == identity for item in observations):
             continue
         path = server._state_root() / 'media' / ('qq-incoming-' + identity + '.img')
+        stage = 'download'
         try:
             if not path.exists():
-                await _download_qq_image(url, path)
+                await _download_with_retry(url, path)
+            stage = 'vision'
             item = await describe_image(server, path, source='user',
                 operation_id=str(row['letter_id']) + ':' + identity)
             item['input_id'] = identity
@@ -366,10 +400,16 @@ async def understand_incoming(server, event, row):
             server._persist_store_state()
         except asyncio.CancelledError:
             raise
-        except Exception:
-            failures += 1
-    row['incoming_image_status'] = 'PARTIAL' if failures else 'COMPLETED'
-    row['incoming_image_failed'] = failures
+        except Exception as exc:
+            reasons.append(failure_code(exc, stage))
+            if stage == 'vision' and isinstance(exc, (OSError, ValueError)):
+                # what came was not a picture (an expired address answers 200 with a page): fetch it again next time
+                path.unlink(missing_ok=True)
+    row['incoming_image_status'] = 'PARTIAL' if reasons else 'COMPLETED'
+    row['incoming_image_failed'] = len(reasons)
+    row['incoming_image_reasons'] = reasons[:4]
+    if reasons:
+        log.warning('QQ picture not seen: %s', ', '.join(reasons[:4]))
     await commit_image_memory(server, row)
 
 
@@ -410,4 +450,7 @@ def incoming_context(row):
     return '\n[系统图片观察，非用户原话]\n' + json.dumps({
         'meaning': IMAGE_BOUNDARY, 'current_turn_has_images': True, 'images': values,
         'unrecognized_count': row.get('incoming_image_failed', 0),
-        'unrecognized_instruction': '未识别的图片不能猜内容，可以请用户说明。'}, ensure_ascii=False)
+        **({'unrecognized_reasons': row['incoming_image_reasons']}
+           if row.get('incoming_image_failed') and row.get('incoming_image_reasons') else {}),
+        'unrecognized_instruction': '未识别的图片不能猜内容，可以请用户说明；如实说没能看到，需要时带上原因代码。'},
+        ensure_ascii=False)
