@@ -548,7 +548,7 @@ async def run_qq(url, token, account_id, owner_id, handle_message, stop_event,
             try:
                 publish("CONNECTING" if failures == 0 else "RECONNECTING")
                 async with session.ws_connect(url, headers={"Authorization": "Bearer " + token}, heartbeat=20,
-                                              max_msg_size=8 * 1024 * 1024) as ws:
+                                              max_msg_size=32 * 1024 * 1024) as ws:   # a 5 min voice message is 14 MB of WAV, 19 MB as base64 (was 8 MB: ~125 s)
                     await _connection(ws, account_id, owner_id, handle_message, stop_event, ack_timeout, merge_seconds,
                                       state_callback=publish, media_ack_timeout=media_ack_timeout,
                                       diagnostic_callback=diagnostic_callback)

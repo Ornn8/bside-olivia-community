@@ -302,7 +302,7 @@ async def keep_voice(server, event, row, recording, identity, heard) -> None:
         kept = store.find_key(identity)
         if kept is None:
             seconds = await asyncio.to_thread(_wav_seconds, recording)
-            if not 0 < seconds <= cover_chat.VOICE_MAX_SECONDS:
+            if not 0 < seconds <= cover_chat.VOICE_KEEP_SECONDS or Path(recording).stat().st_size > cover_chat.VOICE_KEEP_BYTES:
                 return
             folder = store.folder(store.new_id())
             folder.mkdir(parents=True, exist_ok=False)

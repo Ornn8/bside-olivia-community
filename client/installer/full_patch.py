@@ -102,6 +102,7 @@ PAYLOAD_EXTRA_FILES = (
     "runtime/proactive_config.py",
     "runtime/model_routes.py",
     "runtime/incoming_media.py",
+    "runtime/voice_clip.py",
     "runtime/cloud_service.py",
     "runtime/gpu_settings.py",
     "runtime/music_settings.py",
@@ -270,6 +271,7 @@ PAYLOAD_REQUIRED_RELATIVE_FILES = {
     "runtime/diagnostics/support_bundle.py",
     "runtime/reply/stage_recovery.py",
     "runtime/incoming_media.py",
+    "runtime/voice_clip.py",
     "runtime/original_client_media_http.py",
     "runtime/video_reply_settings.py",
 }
