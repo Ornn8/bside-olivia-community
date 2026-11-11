@@ -181,6 +181,47 @@ def test_delivered_photo_scene_does_not_move_world_current_location(tmp_path):
     asyncio.run(scenario())
 
 
+def test_unseen_qq_picture_keeps_its_reason_and_is_fetched_again(tmp_path, monkeypatch):
+    async def scenario():
+        downloads = []
+        async def download(url, path):
+            downloads.append(url)
+            if len(downloads) <= 2:
+                raise RuntimeError('QQ_IMAGE_DOWNLOAD_FAILED')
+            path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(b'synthetic')
+        async def describe(server, path, source, **kwargs): return observation(source)
+        monkeypatch.setattr(vision, '_download_qq_image', download)
+        monkeypatch.setattr(vision, 'describe_image', describe)
+        monkeypatch.setattr(vision, '_DOWNLOAD_PAUSE', 0)
+        server = SimpleNamespace(_state_root=lambda: tmp_path, _persist_store_state=lambda: None, daily_life_runtime=None)
+        event = PersonalMessage('qq', '100', '200', '1', '[图片]', images=(('1', 'https://gchat.qpic.cn/a?rkey=secret'),))
+        row = dict(letter_id=event.exchange_id, incoming_images=list(event.images))
+        await vision.understand_incoming(server, event, row)
+        assert len(downloads) == 2, 'one more try before giving up'
+        assert row['incoming_image_status'] == 'PARTIAL' and row['incoming_image_reasons'] == ['QQ_IMAGE_DOWNLOAD_FAILED']
+        packet = json.loads(vision.incoming_context(row).split('\n', 2)[2])
+        assert packet['unrecognized_reasons'] == ['QQ_IMAGE_DOWNLOAD_FAILED'] and 'secret' not in json.dumps(packet)
+        await vision.understand_incoming(server, event, row)
+        assert row['incoming_image_status'] == 'COMPLETED' and row['incoming_image_reasons'] == []
+        assert 'unrecognized_reasons' not in json.loads(vision.incoming_context(row).split('\n', 2)[2])
+    asyncio.run(scenario())
+
+
+def test_a_page_where_a_picture_should_be_names_its_reason_and_is_not_kept(tmp_path, monkeypatch):
+    async def scenario():
+        async def download(url, path): path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(b'<html>expired</html>')
+        monkeypatch.setattr(vision, '_download_qq_image', download)
+        server = SimpleNamespace(_state_root=lambda: tmp_path, _persist_store_state=lambda: None, daily_life_runtime=None,
+                                 letters_adapter=SimpleNamespace(config=SimpleNamespace(base_url='', api_key_env=''),
+                                                                 gateway=SimpleNamespace()))
+        event = PersonalMessage('qq', '100', '200', '1', '[图片]', images=(('1', 'https://gchat.qpic.cn/a'),))
+        row = dict(letter_id=event.exchange_id, incoming_images=list(event.images))
+        await vision.understand_incoming(server, event, row)
+        assert row['incoming_image_reasons'] == ['IMAGE_VISION_UnidentifiedImageError']
+        assert not list(tmp_path.rglob('qq-incoming-*')), 'the next try downloads it again'
+    asyncio.run(scenario())
+
+
 def test_incoming_retry_uses_saved_pixel_observation_and_world_failure_keeps_reply_available(tmp_path, monkeypatch):
     async def scenario():
         calls = []
