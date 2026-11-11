@@ -68,10 +68,10 @@ const requestSetup=async(path,body)=>{
  holdPreview=false;
  const prepared=await window.__oliviaPrepareLetterRoute({url:'/toy/letter/send',data:{content:input.value}});
  check(prepared.data.material[mode==='cover'?'cover_output':'original_output']==='video','resend did not use video');
- check(paymentMessage.includes('视频回信')&&paymentMessage.includes('¥5.00'),'video confirmation missing format or price');
+ check(paymentMessage==='','no charge question before a video letter goes out');
  document.querySelector('.olivia-compose-'+mode+' .olivia-cover-options button').click();
- await window.__oliviaPrepareLetterRoute({url:'/toy/letter/send',data:{content:input.value}});
- check(paymentMessage.includes('音频回信')&&paymentMessage.includes('¥1.00'),'audio confirmation missing format or price');
+ const audio=await window.__oliviaPrepareLetterRoute({url:'/toy/letter/send',data:{content:input.value}});
+ check(paymentMessage===''&&audio.data.material[mode==='cover'?'cover_output':'original_output']==='audio','audio letter goes out as chosen, no charge question');
  document.getElementById('acceptance').textContent='PASS';
 })().catch(error=>document.getElementById('acceptance').textContent='FAIL:'+error.message);
 </script></html>''')
