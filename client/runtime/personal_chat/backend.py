@@ -604,6 +604,7 @@ async def _generate_billed(server, event, row):
         observation_context += incoming_media.incoming_context(row)
     from . import cover_chat
     cover_offered = []
+    sing_back_offered = []
     if event.channel == 'qq' and cover_chat.ENABLED and row.get('origin') != 'proactive' and row.get('contact_id') is None:
         # A song the user shares (card, link, B站 video) becomes a cover source she may choose to sing.
         from .song_intake import receive_shares, defer_share, song_waiting
@@ -614,8 +615,10 @@ async def _generate_billed(server, event, row):
             defer_share(server, event, row, why)  # said plainly to the user with its code, picked up on a later turn
             row['cover_sources'] = []
         cover_offered = await cover_chat.offered(server, row, os.environ, checked=on)
+        # The voice messages he sang or hummed (kept while the turn's media was read) she may sing back.
+        sing_back_offered = await cover_chat.voices_offered(server, row, checked=on)
         row['cover_orders'] = cover_chat.in_flight(server, row)
-        observation_context += cover_chat.context(row)
+        observation_context += cover_chat.context(row) + cover_chat.voice_context(row)
     if event.channel == 'qq':
         from .bilibili import link_context
         observation_context += await link_context(server, event, row)
@@ -830,6 +833,7 @@ async def _generate_billed(server, event, row):
                                                    and isinstance(r.get('reply_text'), str)][-40:],
                                 'daily_video_candidates': daily_candidates,
                                 'cover_sources': cover_offered,
+                                'sing_back_voices': sing_back_offered,
                                 'incoming_observation_context': observation_context,
                                 'semantic_kinds': semantic_kinds,
                                 'received_source_id': f'reply:{event.exchange_id}:user',
@@ -943,7 +947,8 @@ async def _generate_billed(server, event, row):
                               allow_user_silence=getattr(result, 'silence_authorized', False) is True,
                               allow_speech=bool(event.channel == 'qq'
                                    and (row.get('companion_decision') or {}).get('speech_request')),
-                               daily_video_candidates=daily_candidates, cover_sources=cover_offered)
+                               daily_video_candidates=daily_candidates, cover_sources=cover_offered,
+                               sing_back_voices=sing_back_offered)
         except ValueError as exc:
             # Diagnostic categories only; never persist rejected model text.
             reason = getattr(exc, 'reason', 'UNKNOWN')
@@ -1090,6 +1095,10 @@ async def _generate_billed(server, event, row):
         if decision.get('cover_request') and not unprompted and not asked and event.channel == 'qq':
             # The writer chose to sing a song the user asked for; the order itself is made by cover_chat.deliver.
             row.update(cover_request=decision['cover_request'], cover_status=cover_chat.PENDING)
+            row.pop('sticker_id', None)
+        elif decision.get('sing_back_request') and not unprompted and not asked and event.channel == 'qq':
+            # The writer chose to sing a voice message back; it is ordered and sent by the cover delivery.
+            row.update(cover_request=decision['sing_back_request'], cover_status=cover_chat.PENDING)
             row.pop('sticker_id', None)
         elif decision.get('dropped_cover'):
             row['cover_request_dropped'] = decision['dropped_cover']
