@@ -837,7 +837,9 @@ class ReplyPipeline:
                                 allow_speech=bool(speech_request and chat_metadata.get('channel') == 'qq'),
                                 daily_video_candidates=daily_candidates,
                                 cover_sources=((chat_metadata or {}).get('cover_sources') or []
-                                               if chat_metadata.get('channel') == 'qq' else []))
+                                               if chat_metadata.get('channel') == 'qq' else []),
+                                sing_back_voices=((chat_metadata or {}).get('sing_back_voices') or []
+                                                  if chat_metadata.get('channel') == 'qq' else []))
                 decision = decode(clean_text, **options)
                 if reconsidered_silence and decision.get('speech'):
                     return PipelineResult(candidate.request_id, ReplyState.FAILED,
