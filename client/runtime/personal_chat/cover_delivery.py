@@ -193,6 +193,8 @@ async def _send(server, row, send, mp3, title):
     row.update(cover_status='DELIVERED', cover_delivery_receipt=str(receipt),
                cover_completed_at=datetime.now(timezone.utc).isoformat())
     await persist_chat(server)
+    from runtime.private_world.plan_closure import schedule_settle
+    schedule_settle(server, row)  # a promise of this reply to sing it is done
     await finish(server, row, send)
 
 
