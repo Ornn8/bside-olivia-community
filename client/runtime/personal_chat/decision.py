@@ -76,6 +76,8 @@ INSTRUCTION += ('如输入里有[系统歌曲，非用户原话]，其中songs�
                 'not_for=谁来唱或换声音、改歌词、什么时候发、没有要求的泛泛聊音乐口味、用户没提过而你自己想到的风格；'
                 'examples=「想听摇滚版的」→"摇滚版"；「慢一点，只用钢琴」→"慢一点，只用钢琴"；只说"唱一下"没提风格→省略style。'
                 'style必须是用户本条消息里的原话摘录，不加方括号、不换行，没有就整个省略。'
+                'cover可选arrangement，唯一取值"original"：what=用户本条明确要原曲编曲、保留原伴奏和调，只换成你来唱；'
+                'not_for=没提编曲、或要换曲风乐器快慢（用style）；examples=「按原版编曲唱，别改编」→original；「想听摇滚版」→style。original保留原曲自己的伴奏和调，只有唱歌的人变成你，不要同时写style；拿不准就省略。'
                 '输出cover时正文先自然答应：说你会唱、要做一会儿（大概十几分钟）、做好了发给他；'
                 '不声称已经唱好或已经发出；正文里答应了要唱就必须输出cover，不唱就不要在正文里说要唱；只翻唱，不写原创歌。'
                 '没有这类说明时省略cover。\n')
@@ -122,7 +124,7 @@ _RESERVED_CONTROL = re.compile(r'\[\[\s*(?:(?:chat|delivery|initiative|letter|co
 NEUTRAL_METADATA = dict(delivery='text', listening='keep', initiative='keep', pause_until=None,
                         letter='keep', letter_until=None, followup_at=None, evidence='', skip=False)
 OPTIONAL_FIELDS = frozenset({'letter_invitation', 'sticker', 'text_reason', 'speech', 'silence', 'daily_video',
-                             'poke', 'reaction', 'cover'})
+                             'poke', 'reaction', 'cover', 'sing_back'})
 
 
 def _control_body(text):
@@ -215,7 +217,7 @@ def _silence_kind(data, *, user, proactive, allow_user_silence):
 
 
 def decode(raw, *, user, now, proactive=False, allow_user_silence=False, allow_speech=True,
-           daily_video_candidates=(), cover_sources=()):
+           daily_video_candidates=(), cover_sources=(), sing_back_voices=()):
     try:
         # Tolerate a whole JSON code block, never extract JSON from mixed prose.
         if isinstance(raw, str):
@@ -311,8 +313,9 @@ def decode(raw, *, user, now, proactive=False, allow_user_silence=False, allow_s
             except (ValueError, TypeError, KeyError):
                 data.pop('daily_video', None)
                 data['dropped_daily_video'] = True
-        from .cover_chat import decode_field
+        from .cover_chat import decode_field, decode_sing_back
         decode_field(data, user=user, offered=cover_sources, proactive=proactive)
+        decode_sing_back(data, offered=sing_back_voices, proactive=proactive)
         if defaulted:
             data['defaulted_fields'] = defaulted
         return data

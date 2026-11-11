@@ -101,7 +101,7 @@ def world(tmp_path, monkeypatch):
     return state
 
 
-def asked_row(world, letter_id='turn-1', *, share=NETEASE_CARD, words='你翻唱这首歌吧', style=None):
+def asked_row(world, letter_id='turn-1', *, share=NETEASE_CARD, words='你翻唱这首歌吧', style=None, arrangement=None):
     """A turn in which he shared a song and asked for a cover: the writer's answer decoded as the backend does."""
     row = {'letter_id': letter_id, 'channel': 'qq', 'delivery_status': 'DELIVERED', 'letter_status': 'COMPLETED',
            'binding_id': PersonalMessage('qq', 'b', 'u', '', '').binding_id}
@@ -112,7 +112,7 @@ def asked_row(world, letter_id='turn-1', *, share=NETEASE_CARD, words='你翻唱
         await song_intake.receive_shares(world.server, event, row)
         return await cover_chat.offered(world.server, row, {})
     offered = asyncio.run(prepare())
-    written = decision.decode(envelope(text='好呀，我唱给你听。', cover={'source': offered[0]['id'], 'evidence': words, **({} if style is None else {'style': style})}),
+    written = decision.decode(envelope(text='好呀，我唱给你听。', cover={'source': offered[0]['id'], 'evidence': words, **({} if style is None else {'style': style}), **({} if arrangement is None else {'arrangement': arrangement})}),
                               user=text, now=time.time(), cover_sources=offered)
     row.update(cover_request=written['cover_request'], cover_status=cover_chat.PENDING)
     world.rows.append(row)
@@ -455,3 +455,34 @@ def test_a_delivered_cover_is_read_by_the_memory_outbox_and_an_unsure_one_is_not
     outbox.state_path = state
     remembered = [item for item in outbox._read_letters() if str(item.get('letter_id', '')).startswith('cover-')]
     assert len(remembered) == 1 and '晴天' in remembered[0]['reply_text'] and remembered[0]['origin'] == 'user'
+
+
+def test_the_original_arrangement_orders_only_the_marker_and_survives_a_restart(pipeline, monkeypatch):
+    world = pipeline
+    row = asked_row(world, words='你翻唱这首歌吧，按原版的编曲唱，想听摇滚版的', style='摇滚版', arrangement='original')
+    assert row['cover_request']['arrangement'] == 'original' and 'style' not in row['cover_request']
+    restarted = json.loads(json.dumps(row))
+    world.rows[:] = [restarted]
+    service = Service(submits=[task('task-5', 'queued', 'queued')],
+                      statuses=[task('task-5', 'succeeded', 'completed')]).install(monkeypatch)
+    run_service(world, restarted, Send())
+    submitted = service.of('submit')[0]
+    assert submitted['kind'] == 'cover' and submitted['input']['cover_options'] == {
+        'audio_cover_strength': 0.6, 'cover_noise_strength': 0.25, 'engine': 'yue2', 'arrangement': '~~oc:1~~'}
+    assert restarted['cover_status'] == 'DELIVERED'
+
+
+@pytest.mark.parametrize('value', ['new', 'Original', '', None, True, ['original']])
+def test_any_other_arrangement_value_is_the_default_cover(pipeline, monkeypatch, value):
+    world = pipeline
+    row = asked_row(world, arrangement=value)
+    assert 'arrangement' not in row['cover_request']
+    service = Service(submits=[task('task-6', 'queued', 'queued')],
+                      statuses=[task('task-6', 'succeeded', 'completed')]).install(monkeypatch)
+    run_service(world, row, Send())
+    assert 'arrangement' not in service.of('submit')[0]['input']['cover_options']
+
+
+def test_the_writer_is_told_when_to_keep_the_original_arrangement_without_keyword_lists():
+    text = decision.INSTRUCTION
+    assert 'arrangement' in text and 'original' in text and '原曲自己的伴奏和调' in text and 'not_for=' in text
