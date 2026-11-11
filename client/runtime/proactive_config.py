@@ -22,7 +22,7 @@ CHANNEL_POLICIES = ('preferred', 'qq_first', 'letter_first')
 DEFAULT_QUIET = ('00:00', '08:30')  # The hours her own initiative already keeps.
 DEFAULT_RULES = {
     'initiative_media': {'letter': ['text'], 'qq': ['audio_speech']},
-    'initiative_photo': False,
+    'initiative_photo': True,
     'channel_policy': 'preferred',
     'max_per_day': None,
     'min_gap_minutes': None,
