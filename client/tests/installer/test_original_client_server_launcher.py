@@ -887,7 +887,8 @@ def _run_launcher_with_client_results(
     client_events = [
         {key: value for key, value in record.items() if key not in ("timestamp", "preparation_seconds")}
         for line in launcher_log.splitlines()
-        if (record := json.loads(line))["event"].startswith("client_")
+        # client_display is the graphics adapter diagnostic logged before each start (test_display_compat.py).
+        if (record := json.loads(line))["event"].startswith("client_") and record["event"] != "client_display"
     ]
     return root, result, client_runs, client_events, launcher_log
 
@@ -939,6 +940,64 @@ def test_a_window_that_quits_because_another_copy_runs_is_opened_again_after_the
     assert {"event": "client_leftover_ended", "count": 1} in client_events
     assert {"attempt": 2, "event": "client_retry", "reason": "leftover_client_exit"} in client_events
     assert client_events[-1] == {"attempt": 2, "event": "client_exit", "exit_code": 0}
+
+
+def test_an_unpainted_window_gets_one_compat_restart_with_the_adapters_aligned(tmp_path, monkeypatch):
+    from installer import display_compat, version_launcher
+
+    class Store:
+        def __init__(self):
+            self.data = {}
+
+        def values(self):
+            return dict(self.data)
+
+        def write(self, name, data):
+            self.data[name] = data
+
+        def delete(self, name):
+            self.data.pop(name, None)
+
+    store = Store()
+    monkeypatch.setattr(display_compat, "SYSTEM", display_compat.DisplaySystem(
+        store=lambda: store, device_ids=lambda: ["PCI\\VEN_1002&DEV_1638"], watch=True,
+        adapter_luid=lambda preference: (0, 63804) if preference == 1 else None))
+    main = str((tmp_path / "installed").resolve() / "app" / "0.0.9.627" / "Olivia.exe")
+    store.data[main] = "GpuPreference=1;"
+    ended = []
+    monkeypatch.setattr(version_launcher, "_running_client_processes", lambda root: [])
+    monkeypatch.setattr(start_local, "_end_leftover_clients", lambda root, data_root: ended.append("ended"))
+    monkeypatch.setattr(start_local.time, "sleep", lambda seconds: None)
+    runs = []
+
+    def run(client, local, *, attempt, display_watch=None, **kwargs):
+        runs.append((attempt, display_watch, dict(store.data), kwargs.get("client_switches", ())))
+        if attempt == 1:  # what the watch does when the window stays black: it ends that client
+            display_watch.restart_action = display_watch._fallback()
+            display_watch.fields = {"reason": "window_unpainted", "unpainted_seconds": 20.0, "adapters": 1,
+                                    "main_preference": 1, "mode": "auto"}
+            return 1
+        return 0
+
+    monkeypatch.setattr(start_local, "_run_client_with_native_layout", run)
+    root, result, _runs, client_events, launcher_log = _run_launcher_with_client_results(tmp_path, monkeypatch, ())
+    assert result == 0 and [attempt for attempt, *_ in runs] == [1, 2]
+    helper = str(Path(main).parent / "CefView" / "Olivia.exe")
+    assert helper not in runs[0][2] and runs[1][2][helper] == "GpuPreference=1;"  # aligned before the restart
+    assert store.data[main] == "GpuPreference=1;"  # the user's own choice is never changed
+    assert runs[0][1]._fallback is not None and runs[1][1]._fallback is None  # one compat restart only
+    assert runs[0][3] == () and runs[1][3] == ("--use-adapter-luid=0,63804",)  # GPU process pinned on the restart
+    assert ended == ["ended", "ended"]
+    assert [event["event"] for event in client_events] == [
+        "client_start", "client_exit", "client_compat_restart", "client_start", "client_exit"]
+    restart = client_events[2]
+    assert restart["attempt"] == 2 and restart["action"] == "align_adapters+pin_adapter"
+    assert restart["reason"] == "window_unpainted"
+    displays = [json.loads(line) for line in launcher_log.splitlines() if '"client_display"' in line]
+    assert [(event["attempt"], event["action"]) for event in displays] == [(1, "none"), (2, "align_written")]
+    assert displays[1]["remembered"] is True and displays[1]["helper_preference_after"] == 1
+    assert displays[1]["applied"] == "align_adapters+pin_adapter" and displays[1]["adapter_luid"] == "0,63804"
+    assert str(root.resolve()) not in launcher_log
 
 
 @pytest.mark.parametrize("native_tail", [b"", b"\x01native-appended-record"])

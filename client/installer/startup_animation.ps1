@@ -3,14 +3,22 @@ param(
     [string]$ReportPath,
     [int]$ClientProcessId = 0,
     [int]$LauncherProcessId = 0,
-    [string]$ClientProcessIdFile
+    [string]$ClientProcessIdFile,
+    # The splash never outlives these, painted client window or not.
+    [double]$HoldAfterEndSeconds = 30,
+    [double]$MaxSeconds = 60
 )
 
 $ErrorActionPreference = 'Stop'
-$script:report = [ordered]@{ status = 'starting'; loaded = $false; ended = $false; error = $null; geometry = $null }
+$script:clock = [Diagnostics.Stopwatch]::StartNew()
+$script:report = [ordered]@{ status = 'starting'; outcome = $null; loaded = $false; ended = $false; error = $null; geometry = $null }
+$script:report.started_at = [DateTimeOffset]::UtcNow.ToString('o')
 $script:exitCode = 0
 $script:window = $null
 $script:media = $null
+$script:endedAt = -1.0
+
+function Get-Elapsed { [Math]::Round($script:clock.Elapsed.TotalSeconds, 3) }
 
 function Save-Report {
     if ($ReportPath) {
@@ -21,12 +29,25 @@ function Save-Report {
     }
 }
 
-function Fail-Media([string]$Message) {
-    $script:exitCode = 1
-    $script:report.status = 'error'
-    $script:report.error = $Message
+function Set-Outcome([string]$Outcome) {
+    # The first outcome wins; the launcher reads it into launcher.jsonl as startup_splash.
+    if (-not $script:report.outcome) {
+        $script:report.outcome = $Outcome
+        $script:report.elapsed_seconds = Get-Elapsed
+    }
+}
+
+function Close-Splash([string]$Outcome) {
+    $script:report.status = $Outcome
+    Set-Outcome $Outcome
     Save-Report
     if ($script:window) { $script:window.Close() }
+}
+
+function Fail-Media([string]$Message) {
+    $script:exitCode = 1
+    $script:report.error = $Message
+    Close-Splash 'error'
 }
 
 try {
@@ -66,6 +87,23 @@ public static class OliviaStartupReady {
         return colors.Count>=16; // Blank loading surfaces cannot hand off the overlay.
       }
     } catch { return false; }
+  }
+  // PrintWindow waits on the client's window; probes run on a pool thread so the splash never stalls.
+  static int busy; static long lastFound; static int lastPid; static long probes;
+  public static void Begin(int pid) {
+    if (System.Threading.Interlocked.CompareExchange(ref busy, 1, 0) != 0) return;
+    System.Threading.ThreadPool.QueueUserWorkItem(state => {
+      long handle = 0;
+      try { handle = Find(pid); } catch { handle = 0; }
+      System.Threading.Interlocked.Exchange(ref lastFound, handle);
+      System.Threading.Interlocked.Exchange(ref lastPid, pid);
+      System.Threading.Interlocked.Increment(ref probes);
+      System.Threading.Interlocked.Exchange(ref busy, 0);
+    });
+  }
+  public static long Probes { get { return System.Threading.Interlocked.Read(ref probes); } }
+  public static long Result(int pid) {
+    return System.Threading.Interlocked.CompareExchange(ref lastPid, 0, 0) == pid ? System.Threading.Interlocked.Read(ref lastFound) : 0;
   }
   public static long Find(int pid) {
     long found=0;
@@ -146,34 +184,46 @@ public static class OliviaStartupReady {
         $media.Pause() # Hold the final decoded frame; never loop the audio.
         $script:report.ended = $true
         $script:report.status = 'holding_last_frame'
+        $script:endedAt = $script:clock.Elapsed.TotalSeconds
+        $script:report.ended_after_seconds = Get-Elapsed
         Save-Report
-        if ($ClientProcessId -le 0 -and -not $ClientProcessIdFile) { $window.Close() }
+        if ($ClientProcessId -le 0 -and -not $ClientProcessIdFile) { Set-Outcome 'ended'; $window.Close() }
     })
     $media.Add_MediaFailed({ param($sender, $eventArgs) Fail-Media $eventArgs.ErrorException.Message })
     $window.Add_PreviewKeyDown({
         param($sender, $eventArgs)
         if ($eventArgs.Key -eq [Windows.Input.Key]::Escape) {
             $eventArgs.Handled = $true
-            $script:report.status = 'skipped'
-            Save-Report
-            $window.Close()
+            Close-Splash 'skipped'
         }
+    })
+    $window.Add_PreviewMouseLeftButtonUp({
+        param($sender, $eventArgs)
+        $eventArgs.Handled = $true
+        Close-Splash 'skipped' # A click dismisses the splash, like Esc.
     })
     $window.Add_Closed({
         $media.Close()
         if ($script:timer) { $script:timer.Stop() }
-        if ($script:report.status -notin @('holding_last_frame', 'ready', 'client_exited', 'launcher_exited', 'skipped', 'error')) {
+        if ($script:report.status -notin @('holding_last_frame', 'ready', 'timeout', 'client_exited', 'launcher_exited', 'skipped', 'error')) {
             $script:report.status = 'closed'
         }
+        Set-Outcome 'closed'
         Save-Report
     })
     $script:readyCount = 0
+    $script:seenProbes = [long]0
     $script:clientId = $ClientProcessId
     $script:timer = New-Object Windows.Threading.DispatcherTimer
     $timer.Interval = [TimeSpan]::FromMilliseconds(500)
     $timer.Add_Tick({
         if ($LauncherProcessId -gt 0 -and -not (Get-Process -Id $LauncherProcessId -ErrorAction SilentlyContinue)) {
-            $script:report.status = 'launcher_exited'; Save-Report; $window.Close(); return
+            Close-Splash 'launcher_exited'; return
+        }
+        # Close even when the client window never paints (a black window must not keep the splash up).
+        $elapsed = $script:clock.Elapsed.TotalSeconds
+        if (($script:endedAt -ge 0 -and $elapsed - $script:endedAt -ge $HoldAfterEndSeconds) -or $elapsed -ge $MaxSeconds) {
+            Close-Splash 'timeout'; return
         }
         if ($ClientProcessIdFile) {
             try {
@@ -189,15 +239,23 @@ public static class OliviaStartupReady {
             if ($ClientProcessIdFile -and $LauncherProcessId -gt 0) {
                 $script:readyCount = 0; return # Keep the frame during a native-client retry.
             }
-            $script:report.status = 'client_exited'; Save-Report; $window.Close(); return
+            Close-Splash 'client_exited'; return
         }
         if (-not $script:report.ended) { return }
-        $handle = [OliviaStartupReady]::Find($script:clientId)
-        if ($handle -gt 0) { $script:readyCount++ } else { $script:readyCount = 0 }
+        # Read the last finished probe, then ask for the next one; neither waits on the client.
+        $probes = [OliviaStartupReady]::Probes
+        if ($probes -ne $script:seenProbes) {
+            $script:seenProbes = $probes
+            $handle = [OliviaStartupReady]::Result($script:clientId)
+            if ($handle -gt 0) { $script:readyCount++; $script:readyHandle = $handle } else { $script:readyCount = 0 }
+        }
+        [OliviaStartupReady]::Begin($script:clientId)
         if ($script:report.ended -and $script:readyCount -ge 3) {
-            $script:report.status = 'ready'; $script:report.main_window = $handle
-            Save-Report; $window.Close()
-            $null = [OliviaStartupReady]::SetForegroundWindow([IntPtr]$handle)
+            $script:report.main_window = $script:readyHandle
+            $script:report.ready_after_seconds = Get-Elapsed
+            $script:report.probe_count = $probes
+            Close-Splash 'ready'
+            $null = [OliviaStartupReady]::SetForegroundWindow([IntPtr]$script:readyHandle)
             return
         }
     })
