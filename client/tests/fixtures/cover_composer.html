@@ -60,9 +60,9 @@ if(params.has('verify'))(async()=>{
  config=await window.__oliviaPrepareLetterRoute({url:'/toy/letter/send',data:{content:input.value}});
  assert(config.data.material.original_output==='audio'&&config.data.material.music_options.caption==='温暖的钢琴民谣','original style snapshot');
  assert(!config.data.material.cover_source_id&&config.data.content.includes('秋天'),'original submission');
- paid=true;let paymentCancelled=false;try{await window.__oliviaPrepareLetterRoute({url:'/toy/letter/send',data:{content:input.value}})}catch(e){paymentCancelled=e.__CANCEL__===true}
- assert(paymentCancelled&&paymentMessage.includes('¥1.00')&&intent.value==='秋天的晚风','paid audio cap shown and cancel keeps draft');
- approvePayment=true;state.originalOutput='video';await window.__oliviaPrepareLetterRoute({url:'/toy/letter/send',data:{content:input.value}});assert(paymentMessage.includes('¥5.00')&&paymentMessage.includes('失败全退'),'paid video cap and refund shown');paid=false;state.originalOutput='audio';
+ paid=true;config=await window.__oliviaPrepareLetterRoute({url:'/toy/letter/send',data:{content:input.value}});
+ assert(paymentMessage===''&&config.data.material.original_output==='audio'&&intent.value==='秋天的晚风','paid audio letter goes out without a confirmation question');
+ state.originalOutput='video';config=await window.__oliviaPrepareLetterRoute({url:'/toy/letter/send',data:{content:input.value}});assert(paymentMessage===''&&config.data.material.original_output==='video','paid video letter goes out without a confirmation question');paid=false;state.originalOutput='audio';
  state.select('cover');state.select('original');assert(intent.value==='秋天的晚风'&&document.querySelector('[name=caption]').value==='温暖的钢琴民谣','original draft retained');
  assert(Math.abs(grid.getBoundingClientRect().height-beforeSwitch.height)<1,'all modes same height');state.select('letter');assert(input.value===draft,'ordinary draft retained');
  mountCoverComposer(input);assert(document.querySelectorAll('.olivia-compose-grid').length===1,'idempotent mount');const dialog=document.querySelector('.el-dialog').getBoundingClientRect();assert(Math.abs(dialog.left+dialog.width/2-innerWidth/2)<2,'dialog centered');assert(document.documentElement.scrollWidth<=innerWidth,'no horizontal page overflow');assert(grid.closest('[role=dialog]')!==null,'controls inside native dialog');assert(!document.querySelector('select[name=language]'),'no language selector');document.getElementById('acceptance').textContent='PASS';

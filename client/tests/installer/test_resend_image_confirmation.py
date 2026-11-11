@@ -43,7 +43,7 @@ async function confirmAction(){assert.fail('Rejected resend must not confirm a n
     assert result.returncode == 0, result.stderr
 
 
-def test_resend_loads_original_preview_and_requires_image_confirmation(tmp_path):
+def test_resend_loads_original_preview_and_sends_without_a_charge_question(tmp_path):
     node = shutil.which('node')
     if not node:
         pytest.skip('Node unavailable')
@@ -63,15 +63,11 @@ async function confirmAction(message){prompts.push(message);return accepted}
 ''' + source[start:end] + r'''
 (async()=>{
  const request={url:'/toy/letter/resend',data:{letterId:'failed-original'}};
- await assert.rejects(()=>window.__oliviaPrepareLetterRoute(request),e=>e.code==='ERR_CANCELED');
- assert.equal(prompts.length,1);assert.match(prompts[0],/图片/);
- assert.deepEqual(previews[0].body,{letter_id:'failed-original'});
- assert.equal(request.data.material,undefined);
- accepted=true;
  const result=await window.__oliviaPrepareLetterRoute(request);
+ assert.deepEqual(previews[0].body,{letter_id:'failed-original'});
  assert.equal(result.data.material.route_preview_token,'verified-original-token');
  assert.equal(result.data.letterId,'failed-original');
- assert.equal(prompts.length,2);
+ assert.equal(prompts.length,0,'an image attachment sends without a charge question');
 })().catch(e=>{console.error(e);process.exitCode=1});
 '''
     path=tmp_path/'resend.cjs'

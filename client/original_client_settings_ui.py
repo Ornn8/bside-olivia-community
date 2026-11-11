@@ -4387,11 +4387,6 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     requireUnchangedComposer();
     let once;
     let videoOnce;
-    if (preview.image_enabled && !await confirmAction(
-      (preview.image_requested ? t('本次回信预计生成图片附件。') : t('图片附件已开启，本次回信可能生成图片。')) +
-      t('生成图片会按图片服务计费。是否附图以正式回信判断为准，未生成不会收取图片费用。确认寄出？'))) {
-      throw Object.assign(new Error(t('已取消发送，草稿保留。')),{config,code:'ERR_CANCELED',__CANCEL__:true});
-    }
     if (preview.requested_route && (!preview.ready || preview.needs_confirmation || preview.needs_video_confirmation)) {
       if (!await confirmReplyRoute(preview.requested_route, preview.ready, preview.needs_video_confirmation)) {
         const error = new Error(t("已取消发送，信件内容保留")); error.name = "CanceledError"; error.code = "ERR_CANCELED"; error.__CANCEL__ = true; throw error;
@@ -4407,18 +4402,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     }
     delete material.route_allow_once;
     delete material.route_video_once;
-    let quote={paid:false};
     const originalCharge=!preview.requires_cover_audio&&['singing_video','voice_song_video','musical_video'].includes(preview.reply_mode);
-    try{if(preview.reply_mode!=='text_letter')quote=await requestSetup('/toy/generation/action',{action:'billing_quote',video:preview.video_enabled===true,original:originalCharge});}
+    try{if(preview.reply_mode!=='text_letter')await requestSetup('/toy/generation/action',{action:'billing_quote',video:preview.video_enabled===true,original:originalCharge});}
     catch(error){error.config=config;error.message=error.code==='GPU_CLIENT_UPDATE_REQUIRED'?t('请重启客户端以更新原创收费确认。草稿已保留。'):error.code==='GPU_INSUFFICIENT_BALANCE'?t('Olivia 可用余额不足，无法预留本次生成费用，请先充值。草稿已保留。'):t('无法核对云端生成费用，请检查云端连接后重试。草稿已保留。');throw error;}
-    if(quote.paid){
-      const cap=(quote.max_charge_cents/100).toFixed(2);
-      const musicPrice=quote.original_music_retail_price;
-      const priceDetail=originalCharge?(musicPrice?t('原创单曲每首 ¥{min}–{max}，提交时锁定随机报价；视频另含视频费用，以本次总上限为准。', {min: (musicPrice.min_cents/100).toFixed(2), max: (musicPrice.max_cents/100).toFixed(2)}):t('原创音乐按时长定价 ¥2–3，含小幅随机浮动，最终不超过 ¥3；视频另含视频费用，以本次总上限为准。')):t('成功后按实际占用结算。');
-      if(!await confirmAction(t('本次生成{kind}。云端生成将从 Olivia 余额预留 ¥{cap}，本次最多收费 ¥{cap}。{detail}多余预留释放；失败全退。回信文字另按 Token 计费。确认寄出？', {kind: preview.video_enabled===true?t('视频回信'):t('音频回信'), cap, detail: priceDetail}))){
-        throw Object.assign(new Error(t('已取消发送，草稿保留。')),{config,code:'ERR_CANCELED',__CANCEL__:true});
-      }
-    }
     requireUnchangedComposer();
     if (once) material.route_allow_once = once;
     if (videoOnce) material.route_video_once = videoOnce;
