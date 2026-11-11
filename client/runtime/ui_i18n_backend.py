@@ -111,8 +111,12 @@ EN: dict[str, str] = {
         "the voice message can't be opened",
     "这段语音不到 3 秒，太短了，听不出旋律，再唱长一点":
         "the voice message is under 3 seconds, too short to pick out a melody; sing a little longer",
-    "这段语音超过 60 秒了":
-        "the voice message is longer than 60 seconds",
+    "这段语音太长了，一次最多唱 5 分钟":
+        "the voice message is too long; I can sing at most 5 minutes at a time",
+    "你这段太长了，我挑了其中最清楚的第 {start} 到 {end} 秒唱给你，发给你了。":
+        "Yours was long, so I picked the clearest part, seconds {start} to {end}, sang that back to you and sent it over.",
+    "清唱 {when}（第 {start} 到 {end} 秒）":
+        "A cappella {when} (seconds {start} to {end})",
     "这段语音几乎没有声音":
         "the voice message is almost silent",
     "没听出稳定的旋律，更像是在说话或者有杂音":

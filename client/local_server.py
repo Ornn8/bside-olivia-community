@@ -1109,6 +1109,9 @@ class LetterAdapter:
         rows = self.recent_letters() if READ_WINDOW.get() is None and self.recent_letters is not None else ()
         recent, historical = conversation_context(rows, query=content,
             now=now, excluded_sources=self._memory_source_exclusions(), include_history=not selection_only)
+        if not selection_only and self.recent_letters is not None:
+            from runtime.reply.proactive_photo import add_in_transit
+            recent = add_in_transit(recent, self.recent_letters())  # A letter of hers held for its photo is on its way.
         fragments = tuple(UntrustedFragment(name, text) for name, text in
                      (('chat.recent', recent), ('chat.historical', historical)) if text)
         if selection_only:
@@ -3616,7 +3619,7 @@ def _proactive_gate_reason():
     return 'ready'
 
 
-def _proactive_instruction(intent, *, planning, mode='text'):
+def _proactive_instruction(intent, *, planning, mode='text', photo=None):
     from runtime.personal_chat.initiative_profile import profile_from_rows
     from runtime import cloud_contact, proactive_config
     if intent.get('kind') == 'contact':
@@ -3636,6 +3639,9 @@ def _proactive_instruction(intent, *, planning, mode='text'):
         if mode == 'text':
             from runtime.reply.letter_presentation import LETTER_PRESENTATION_INSTRUCTION
             task += '\n' + LETTER_PRESENTATION_INSTRUCTION
+        if photo is not None:
+            from runtime.reply.proactive_photo import writer_note
+            task += '\n' + writer_note(photo)  # The letter speaks of a photo only when one goes with it.
     if intent.get('kind') == 'diary_due':
         task += '\n' + (proactive_config.template('diary_due') or (
                  '今天是她日记里记下的日子：opportunity.remembered 写明了是什么事。'
@@ -3704,7 +3710,8 @@ async def _prepare_proactive_turn(intent: dict, *, now: datetime) -> dict:
         persona = letters_adapter.persona_provider.snapshot()
         required = len(persona.system_prompt) + len(query) + 2
     task_reserve = max(len(_proactive_instruction(intent, planning=True)),
-        *(len(_proactive_instruction(intent, planning=False, mode=mode)) for mode in ('text', 'voice')))
+        *(len(_proactive_instruction(intent, planning=False, mode=mode, photo=photo))
+          for mode in ('text', 'voice') for photo in (True, False)))
     world = None
     for fragment in letters_adapter.daily_life_fragments('', recent_fragments=(), now=now):
         if fragment.fragment_id == 'linli.daily-life':
@@ -3824,7 +3831,7 @@ async def _proactive_complete(intent: dict, *, planning: bool, turn: dict, mode:
         raise ValueError('PROACTIVE_SOURCE_UNAVAILABLE')
     if letters_adapter.config.persona_v2_enabled != turn['persona_v2']:
         raise ValueError('PROACTIVE_PERSONA_CHANGED')
-    task = _proactive_instruction(turn['intent'], planning=planning, mode=mode)
+    task = _proactive_instruction(turn['intent'], planning=planning, mode=mode, photo=turn.get('photo'))
     # Preserve the complete shared context, including native dialogue roles.
     # Only the current task changes: an opportunity is not a new user message.
     messages = turn['context_messages']
@@ -3850,6 +3857,53 @@ async def _proactive_complete(intent: dict, *, planning: bool, turn: dict, mode:
     return text
 
 
+async def _proactive_photo_wanted(intent: dict, turn: dict) -> bool:
+    """Whether a photo goes with the letter she is about to write; asked before the writing, so the writer is told."""
+    from runtime import proactive_config
+    from runtime.reply import proactive_photo
+    if (intent.get('kind') in ('contact', 'contact_invitation') or not proactive_config.rule('initiative_photo')
+            or not video_reply_settings_store.image_snapshot().get('enabled') or not proactive_photo.gpu_configured()):
+        return False
+    from runtime.reply.jev_questions import configured_questions
+    from runtime.reply.proactive_runtime import contact_summary
+    port = configured_questions()
+    if port is None:
+        return False
+    now = datetime.now(timezone.utc)
+    packet = json.loads(turn['packet'])
+    try:
+        unanswered = contact_summary([*store.letters, *store.personal_chats], now)['unanswered_count']
+    except (KeyError, TypeError, ValueError):
+        unanswered = 0
+    state = proactive_photo.question_state(kind=intent.get('kind'), now=turn['as_of'], world=turn['adopted']['world'],
+        previous_letter=packet.get('previous_linli_letter'), previous_user_letter=packet.get('previous_user_letter'),
+        unanswered=unanswered)
+    return await proactive_photo.decide(port, state)
+
+
+PROACTIVE_PHOTO_WAIT_SECONDS = 480  # How long a finished letter is held for the photo that goes with it.
+
+
+async def _await_proactive_photo(letter: dict) -> bool:
+    """Plan and make the photo of a letter held back for it; True when it is there, else nothing of it is left."""
+    from runtime import cloud_contact
+    from runtime import image_reply
+    terminal = {'COMPLETED', 'SKIPPED', 'FAILED'}
+    image_reply.schedule(sys.modules[__name__], letter)
+    await cloud_contact.wait_until(lambda: letter.get('image_status') in terminal, PROACTIVE_PHOTO_WAIT_SECONDS)
+    if letter.get('image_status') == 'COMPLETED' and letter.get('prepared_image'):
+        return True
+    job = image_reply._jobs.get(letter['letter_id'])
+    if job is not None and not job.done():
+        job.cancel()
+        await asyncio.gather(job, return_exceptions=True)
+    for key in ('prepared_image', 'reply_image_url', 'image_plan', 'image_server_request', 'image_phase',
+                'image_description', 'image_generation_binding', 'image_receipt_required', 'image_retry_at'):
+        letter.pop(key, None)
+    letter.update(image_status='SKIPPED', proactive_photo=False)
+    return False
+
+
 async def _publish_proactive(intent: dict, plan: dict, *, turn: dict) -> dict | None:
     """Write and publish one proactive letter; the letter, or None when nothing was published."""
     global _proactive_busy
@@ -3868,16 +3922,21 @@ async def _publish_proactive(intent: dict, plan: dict, *, turn: dict) -> dict | 
     letter = None
     try:
         fixed = intent['contact']['body'] if contact else None  # The cloud's own text: no model writes it.
-        body = fixed or await _proactive_complete(intent, planning=False, mode=plan['format'], turn=turn)
-        if intent.get('kind') == 'contact_invitation' and 'QQ' not in body.upper():
-            raise ValueError('PROACTIVE_CONTACT_INVITATION_INCOMPLETE')
-        signature = None
-        from runtime.reply.letter_presentation import split_signature
-        if not fixed:
-            from runtime.reply.letter_presentation import unwrap_envelope
-            body, signature = split_signature(unwrap_envelope(body))
-        if not body.strip():
-            raise ValueError('PROACTIVE_RESPONSE_INVALID')
+        if not contact:
+            turn['photo'] = await _proactive_photo_wanted(intent, turn)
+        async def written():
+            text = fixed or await _proactive_complete(intent, planning=False, mode=plan['format'], turn=turn)
+            if intent.get('kind') == 'contact_invitation' and 'QQ' not in text.upper():
+                raise ValueError('PROACTIVE_CONTACT_INVITATION_INCOMPLETE')
+            signed = None
+            from runtime.reply.letter_presentation import split_signature
+            if not fixed:
+                from runtime.reply.letter_presentation import unwrap_envelope
+                text, signed = split_signature(unwrap_envelope(text))
+            if not text.strip():
+                raise ValueError('PROACTIVE_RESPONSE_INVALID')
+            return text, signed
+        body, signature = await written()
         if not contact and (not _proactive_turn_current(intent, turn) or not _proactive_opportunity_current(intent)):
             _observe_letter_initiative('deferred')
             return
@@ -3905,12 +3964,45 @@ async def _publish_proactive(intent: dict, plan: dict, *, turn: dict) -> dict | 
         letter['reply_signature'] = signature
         store.letters.append(letter)
         _persist_store_state()
-        if not contact and (not _proactive_turn_current(intent, turn)
-                            or not _proactive_opportunity_current(intent, pending_draft=letter)):
+        def draft_current():
+            return contact or (_proactive_turn_current(intent, turn)
+                               and _proactive_opportunity_current(intent, pending_draft=letter))
+        if not draft_current():
             _observe_letter_initiative('deferred')
             letter['letter_status'] = 'CANCELED'
             _persist_store_state()
             return
+        if turn.get('photo') and not contact:
+            # Held back, unseen, until the photo it speaks of is made; without it the letter is written again
+            # as one with no photo, so it never claims one that is not there.
+            from runtime.reply.character_emotion_context import freeze_expression_context, store_expression_context
+            store_expression_context(letter, freeze_expression_context('proactive:' + intent['id'] + ':body',
+                turn['as_of'], world=turn['adopted']['world'], emotion=turn['adopted']['emotion']), body)
+            letter.update(proactive_photo=True, image_reply_settings=video_reply_settings_store.image_snapshot())
+            _persist_store_state()
+            if not await _await_proactive_photo(letter):
+                turn['photo'] = False
+                if not draft_current():  # Nothing was paid for, so what he wrote meanwhile still withdraws the letter.
+                    _observe_letter_initiative('deferred')
+                    letter['letter_status'] = 'CANCELED'
+                    _persist_store_state()
+                    return
+                body, signature = await written()
+                for key in ('reply_revision', 'private_world_delivery_id'):
+                    letter.pop(key, None)
+                letter['reply_text'] = ''
+                _prepare_private_world_delivery(letter, body)
+                letter['reply_text'] = body
+                letter['reply_signature'] = signature
+                _persist_store_state()
+                if not draft_current():
+                    _observe_letter_initiative('deferred')
+                    letter['letter_status'] = 'CANCELED'
+                    _persist_store_state()
+                    return
+            # Otherwise the photo is made and paid for: the letter goes out with it even if he wrote meanwhile.
+            # Letters cross in the mail, and her answer to his new message is a separate turn that knows this
+            # one is on its way.
         now = datetime.now(timezone.utc)
         letter.update(letter_status='COMPLETED', published_at=now.timestamp(),
                       created_at=int(now.timestamp()), replied_at=int(now.timestamp()),
@@ -6439,6 +6531,8 @@ def _record_published_media(letter: dict, *, reply_text: str, delivery_id: str,
     # A crash after this point can replay the same idempotent events on startup.
     _persist_media_state()
     _sync_media_delivery_world(letter)
+    from runtime.private_world.plan_closure import schedule_settle
+    schedule_settle(sys.modules[__name__], letter)
 
 
 async def _render_media_job(letter_id: str, content: str, reply_text: str, reply_mode: str) -> None:
@@ -7005,6 +7099,9 @@ async def _start_reply_tasks(_app: web.Application) -> None:
         diary_task.add_done_callback(media_tasks.discard)
     if daily_life_runtime is not None:
         daily_life_runtime.schedule_refresh(datetime.now(timezone.utc))
+        # Promises that a delivered picture or song already kept, from before deliveries closed them.
+        from runtime.private_world.plan_closure import schedule_backfill
+        schedule_backfill(sys.modules[__name__])
         refresh_task = asyncio.create_task(_refresh_daily_life_periodically())
         media_tasks.add(refresh_task)
         refresh_task.add_done_callback(media_tasks.discard)
@@ -7268,6 +7365,9 @@ def _schedule_daily_life_exchange(letter: dict) -> None:
             letter["daily_life_status"] = "COMMITTED"
             letter.pop("daily_life_error_code", None)
             letter.pop("daily_life_failure_reason", None)
+            # The picture or song may have been delivered before her promise to send it was recorded.
+            from runtime.private_world.plan_closure import schedule_settle
+            schedule_settle(sys.modules[__name__], letter)
         except (OSError, RuntimeError, ValueError, TypeError, KeyError, sqlite3.Error) as exc:
             letter["daily_life_error_code"] = "DAILY_LIFE_EXCHANGE_UNAVAILABLE"
             reason = str(exc)

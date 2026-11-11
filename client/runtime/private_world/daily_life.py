@@ -833,6 +833,43 @@ class DailyLifeStore:
                 (event['event_id'], _time(datetime.fromisoformat(event['occurred_at'])), 'media', _json({'delivery': event})))
             return cursor.rowcount == 1
 
+    def open_deliverables(self, now: datetime) -> dict[str, list[dict]]:
+        """Her open items per exchange that wrote them (source id), for matching a delivery to its own turn."""
+        with self._db() as db:
+            db.execute('BEGIN')
+            projects = self._projects_at(db, now)
+        result: dict[str, list[dict]] = {}
+        for project in projects:
+            if (project.get('actor', 'linli') == 'linli' and project.get('status') in {'planned', 'ongoing'}
+                    and str(project.get('source_id', '')).startswith('reply:')):
+                result.setdefault(project['source_id'], []).append(project)
+        return result
+
+    def close_delivered(self, closure_id: str, ids: list[str], *, occurred_at: datetime, delivered: list[str]) -> list[str]:
+        """Complete open items because the thing they promised was delivered.
+
+        The closure is its own journal event, so the exchange that wrote an item stays as it was said.
+        A closed identity stays closed (see record_exchange); repeating a closure changes nothing.
+        """
+        stamp = _time(occurred_at)
+        closed = []
+        with self._db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            if db.execute('SELECT 1 FROM life_moments WHERE source_id=?', (closure_id,)).fetchone():
+                return []
+            for item_id in ids:
+                row = db.execute('SELECT payload FROM life_projects WHERE id=?', (item_id,)).fetchone()
+                item = json.loads(row[0]) if row else None
+                if item is None or item.get('status') not in {'planned', 'ongoing'}:
+                    continue
+                item = {**item, 'status': 'completed', 'updated_at': max(stamp, item['updated_at'])}
+                db.execute('INSERT OR REPLACE INTO life_projects VALUES (?,?)', (item_id, _json(item)))
+                closed.append(item)
+            if closed:
+                db.execute('INSERT INTO life_moments VALUES (?,?,?,?)', (closure_id, stamp, 'closure',
+                           _json({'closed': closed, 'delivered': delivered, 'basis': 'delivery'})))
+        return [item['id'] for item in closed]
+
     def daily_video_event_matches(self, request: dict, *, now: datetime | None = None) -> bool:
         from runtime.personal_chat.daily_video import validate_input
         request = validate_input(request)
@@ -1174,8 +1211,9 @@ class DailyLifeStore:
                 FROM life_moments m, json_each(CASE m.kind
                     WHEN 'daily' THEN json_extract(m.payload, '$.progress')
                     WHEN 'phase_seed' THEN json_extract(m.payload, '$.updates')
-                    WHEN 'exchange' THEN json_extract(m.payload, '$.updates') END) j
-                WHERE m.occurred_at<=? AND m.kind IN ('daily','exchange','phase_seed')
+                    WHEN 'exchange' THEN json_extract(m.payload, '$.updates')
+                    WHEN 'closure' THEN json_extract(m.payload, '$.closed') END) j
+                WHERE m.occurred_at<=? AND m.kind IN ('daily','exchange','phase_seed','closure')
             ) WHERE position<=? ORDER BY json_extract(item, '$.id'), position DESC
         """, (_time(now), per_project))
         from .phase_settings import project_at

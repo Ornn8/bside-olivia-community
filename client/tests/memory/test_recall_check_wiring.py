@@ -195,7 +195,8 @@ def test_proactive_planning_and_body_use_the_same_prepared_evidence(monkeypatch,
     assert len(events) == 2
     assert events[0][0] == 'check'
     task_reserve = max(len(local_server._proactive_instruction(intent, planning=True)),
-        *(len(local_server._proactive_instruction(intent, planning=False, mode=m)) for m in ('text', 'voice')))
+        *(len(local_server._proactive_instruction(intent, planning=False, mode=m, photo=photo))
+          for m in ('text', 'voice') for photo in (True, False)))
     recall_budget = 9000 - task_reserve - sum(map(len, turn['common_blocks']))
     assert events[0][2:] == (gateway, recall_budget, 'proactive:opportunity:context')
     assert 'original-persona-and-evidence' in events[-1][1][0]['content']

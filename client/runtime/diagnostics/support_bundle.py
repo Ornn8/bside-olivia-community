@@ -583,6 +583,35 @@ def project_diary_failure(source: Mapping[str, object]) -> dict[str, object]:
     return record
 
 
+_DISPLAY_TOKEN_RE = re.compile(r"^[a-z][a-z0-9_+]{0,63}$")
+
+
+def _project_display_fields(source: Mapping[str, object]) -> dict[str, object]:
+    """Graphics adapter and window paint diagnostics (installer/display_compat.py): fixed tokens and numbers."""
+    record: dict[str, object] = {}
+    for name in ("main_preference", "helper_preference_before", "helper_preference_after"):
+        if type(source.get(name)) is int and source[name] in (0, 1, 2):
+            record[name] = source[name]
+    for name, limit in (("adapters", 64), ("colours", 1_000_000)):
+        if type(source.get(name)) is int and 0 <= source[name] <= limit:
+            record[name] = source[name]
+    for name in ("mode", "action", "applied", "helper_owner", "page_ready", "next_action", "stage"):
+        value = source.get(name)
+        if isinstance(value, str) and _DISPLAY_TOKEN_RE.fullmatch(value):
+            record[name] = value
+    luid = source.get("adapter_luid")
+    if isinstance(luid, str) and re.fullmatch(r"-?[0-9]{1,10},[0-9]{1,10}", luid):
+        record["adapter_luid"] = luid
+    for name in ("remembered", "surface", "late", "loaded", "ended"):
+        if type(source.get(name)) is bool:
+            record[name] = source[name]
+    for name in ("unpainted_seconds", "window_seconds", "ended_after_seconds", "ready_after_seconds"):
+        value = source.get(name)
+        if type(value) in (int, float) and 0 <= value <= 86400:
+            record[name] = round(float(value), 3)
+    return record
+
+
 def _project_tail_record(value: object, *, runtime: bool) -> dict[str, object]:
     source = _mapping(value)
     event = source.get("event")
@@ -637,6 +666,8 @@ def _project_tail_record(value: object, *, runtime: bool) -> dict[str, object]:
         value = source.get(name)
         if type(value) in (int, float) and 0 <= value <= 3600:
             record[name] = round(float(value), 3)
+    if not runtime:
+        record.update(_project_display_fields(source))
     if runtime:
         if event in {'personal_chat_transport_closed', 'personal_chat_transport_state', 'personal_chat_exchange_cancelled',
                      'personal_chat_napcat_state', 'personal_chat_napcat_repair',
