@@ -36,7 +36,13 @@ LANE_WAIT_SECONDS = 20 * 60
 OFFER_LIMIT = 5
 SING_BACK_ARRANGEMENT = '~~sb:1~~ a cappella, solo female vocal, no instruments'   # the marker is the flag
 VOICE_MIN_SECONDS = 3
-VOICE_MAX_SECONDS = 60
+VOICE_MAX_SECONDS = 60       # what the YuE2 route takes (SINGBACK_TOO_LONG above 60.5 s)
+VOICE_WHOLE_SECONDS = 300    # what the voice-conversion route takes: a kept voice up to this is sung back whole
+# A voice is KEPT up to five minutes and 16 MB of 24 kHz WAV (2026-11-11: a 76 s sung voice message was refused before it
+# was heard). Only when the whole recording is refused as too long is the clearest passage of VOICE_PASSAGE_SECONDS sung.
+VOICE_KEEP_SECONDS = 300
+VOICE_KEEP_BYTES = 16 * 1024 * 1024
+VOICE_PASSAGE_SECONDS = 58
 VOICE_OFFER_LIMIT = 3
 VOICE_RECENT_SECONDS = 30 * 60   # an earlier voice still belongs to this moment, for a little while
 HEARD_LIMIT = 400
@@ -56,7 +62,7 @@ VOICE_MEANING = ('用户通过QQ发来的语音（voices，id是短编号；arri
                  'real_words=true：他唱的有真正的歌词，系统会按他唱的词来唱，你不要写lyrics；'
                  'real_words=false：没有听出真正的歌词（哼唱或只有拟声），要唱它得由你自己写lyrics。'
                  '你可以直接用自己的声音把他唱或哼的这段清唱回给他，不需要先听过，音频由系统取得；唱不唱由你自己判断。'
-                 '时长要在3到60秒之间，太短就自然地请他多唱一点，不要下单。')
+                 '时长要在3秒到5分钟之间，太短就自然地请他多唱一点，不要下单；超过一分钟的整段也能唱，不要因为长而拒绝。')
 
 # How she decides (2026-11-08), judged by meaning as {what, not_for, examples}; the examples only show the kind of
 # moment, they are not a list. It travels with the voices, so a turn without a voice message carries none of it.
@@ -439,7 +445,7 @@ def _sing_back_reason(code, sing_back) -> str:
     if code == 'SINGBACK_TOO_SHORT':
         return tr('这段语音不到 3 秒，太短了，听不出旋律，再唱长一点')
     if code == 'SINGBACK_TOO_LONG':
-        return tr('这段语音超过 60 秒了')
+        return tr('这段语音太长了，一次最多唱 5 分钟')
     if code == 'SINGBACK_SILENT':
         return tr('这段语音几乎没有声音')
     if code == 'SINGBACK_NO_MELODY':
@@ -524,13 +530,19 @@ def completion_text(title) -> str:
     return tr('给你唱了《{title}》的翻唱，发给你了。', title=title)
 
 
-def sing_back_completion_text() -> str:
+def sing_back_completion_text(passage=None) -> str:
+    if passage:      # no silent cut: he is told which part of his recording was sung
+        return tr('你这段太长了，我挑了其中最清楚的第 {start} 到 {end} 秒唱给你，发给你了。',
+                  start=f'{passage[0]:g}', end=f'{passage[1]:g}')
     return tr('跟着你唱的，我也给你唱了一段，发给你了。')
 
 
-def sing_back_title(voice) -> str:
-    """What a sing-back is called in the music library and as a file: the time of the recording it answers."""
+def sing_back_title(voice, passage=None) -> str:
+    """What a sing-back is called in the music library and as a file: the time of the recording it answers (and, when
+    only a passage of it was sung, which seconds)."""
     when = datetime.fromtimestamp(float((voice or {}).get('created_at') or time.time())).strftime('%m-%d %H-%M')
+    if passage:
+        return tr('清唱 {when}（第 {start} 到 {end} 秒）', when=when, start=f'{passage[0]:g}', end=f'{passage[1]:g}')
     return tr('清唱 {when}', when=when)
 
 

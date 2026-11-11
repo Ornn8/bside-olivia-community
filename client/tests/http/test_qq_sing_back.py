@@ -76,8 +76,8 @@ def test_the_same_message_is_kept_once(tmp_path):
     assert len(VoiceSources(tmp_path).unused()) == 1 and len(row['voice_arrivals']) == 1
 
 
-@pytest.mark.parametrize('seconds', [61, 120])
-def test_a_voice_longer_than_a_minute_is_never_kept(tmp_path, seconds):
+@pytest.mark.parametrize('seconds', [301, 400])
+def test_a_voice_longer_than_five_minutes_is_never_kept(tmp_path, seconds):
     row = keep(server_in(tmp_path), tmp_path, 'long', seconds=seconds)
     assert 'voice_arrivals' not in row and VoiceSources(tmp_path).unused() == []
     assert not (tmp_path / 'cover-inputs').exists()
@@ -216,7 +216,7 @@ def test_the_note_has_facts_only_and_says_when_there_are_no_real_words(tmp_path)
     body = json.loads(note.split('\n', 2)[2])
     assert body['voices'] == [{'id': row['sing_back_voices'][0]['id'], 'seconds': 7, 'heard': HUM, 'real_words': False,
                                'arrived': 'this_turn'}]
-    assert '不是用户原话' in body['meaning'] and 'lyrics' in body['meaning'] and '3到60秒' in body['meaning']
+    assert '不是用户原话' in body['meaning'] and 'lyrics' in body['meaning'] and '3秒到5分钟' in body['meaning']
     assert cover_chat.voice_context({}) == '' and cover_chat.voice_context({'sing_back_voices': []}) == ''
 
 
@@ -544,7 +544,7 @@ def failing_cloud(monkeypatch, error):
 @pytest.mark.parametrize('code,words', [
     ('SINGBACK_AUDIO_UNREADABLE', '这段语音打不开'),
     ('SINGBACK_TOO_SHORT', '不到 3 秒'),
-    ('SINGBACK_TOO_LONG', '超过 60 秒'),
+    ('SINGBACK_TOO_LONG', '太长了'),
     ('SINGBACK_SILENT', '几乎没有声音'),
     ('SINGBACK_NO_MELODY', '没听出稳定的旋律'),
     ('SINGBACK_TOO_FEW_NOTES', '听出来的音太少'),

@@ -70,6 +70,50 @@ def _order_sing_back(source: Path, output: Path, lyrics: str = '') -> None:
     _generate(source, output, {'engine': 'yue2', 'arrangement': cover_chat.SING_BACK_ARRANGEMENT}, lyrics)
 
 
+def _drop_receipt(wav: Path) -> None:
+    """The media service's receipt of an order that was refused: the order is over and must not be polled again."""
+    for name in ('-remote-order.private.json', '-remote-order.private.tmp'):
+        wav.with_name(wav.stem + name).unlink(missing_ok=True)
+
+
+async def _sing_back_order(server, row, request, song, source: Path, wav: Path, folder: Path):
+    """Order the recording sung back and return the passage of it that was sung, or None for the whole recording.
+
+    A recording is sung whole up to VOICE_WHOLE_SECONDS (a voice is not kept longer). Only when it is longer than that, or
+    the whole recording is refused as too long on a voice over a minute (the voice-conversion route failed and the
+    fallback takes a minute), the clearest passage of up to VOICE_PASSAGE_SECONDS is sung, as a new order (the refused one
+    cost nothing); the passage is kept in the request, so a restart repeats it and she can say which part it was."""
+    from .backend import persist_chat
+    from runtime import voice_clip
+    lyrics = request.get('lyrics')
+    lyrics = lyrics if isinstance(lyrics, str) else ''
+    seconds = float(song.get('seconds') or 0)
+
+    async def passage_of():
+        found = list(await asyncio.to_thread(voice_clip.passage, source, cover_chat.VOICE_PASSAGE_SECONDS))
+        request['passage'] = found
+        await persist_chat(server)
+        return found
+
+    async def sung(passage):
+        part = source
+        if passage:
+            part = await asyncio.to_thread(voice_clip.cut, source, passage[0], passage[1], folder / 'passage.wav')
+        await asyncio.to_thread(_order_sing_back, part, wav, lyrics)
+
+    passage = request.get('passage') or (await passage_of() if seconds > cover_chat.VOICE_WHOLE_SECONDS else None)
+    try:
+        await sung(passage)
+    except Exception as exc:  # noqa: BLE001 - only the one refusal that has an answer is caught
+        if passage or seconds <= cover_chat.VOICE_MAX_SECONDS or cover_chat.error_code(exc) != 'SINGBACK_TOO_LONG':
+            raise
+        log.info('SINGBACK_PASSAGE_FALLBACK')
+        _drop_receipt(wav)
+        passage = await passage_of()
+        await sung(passage)
+    return passage
+
+
 async def deliver(server, row, send):
     from .backend import persist_chat
     from .speech import filename
@@ -95,14 +139,12 @@ async def deliver(server, row, send):
     song = store.get(request['source'])
     if song is None:
         raise CoverFailure(missing)
-    title = (request.get('title') or (cover_chat.sing_back_title(song) if sing_back
+    title = (request.get('title') or (cover_chat.sing_back_title(song, request.get('passage')) if sing_back
                                       else song.get('title') or tr('发来的歌'))).strip()[:80]
     if state == 'PENDING':
         if sing_back:     # checked here, before anything is ordered: the cloud checks the length again
             if float(song.get('seconds') or 0) < cover_chat.VOICE_MIN_SECONDS:
                 raise CoverFailure('SINGBACK_TOO_SHORT')
-            if float(song.get('seconds') or 0) > cover_chat.VOICE_MAX_SECONDS:
-                raise CoverFailure('SINGBACK_TOO_LONG')
         if not remote_pipeline.enabled(os.environ):
             raise CoverFailure('COVER_RUNTIME_UNAVAILABLE', tr('这台电脑现在没有连上 Olivia 云服务'))
         facts = await cover_chat.preflight_facts(os.environ)
@@ -124,8 +166,9 @@ async def deliver(server, row, send):
             except ValueError:
                 raise CoverFailure(missing) from None
             if sing_back:
-                lyrics = request.get('lyrics')
-                await asyncio.to_thread(_order_sing_back, source, wav, lyrics if isinstance(lyrics, str) else '')
+                passage = await _sing_back_order(server, row, request, song, source, wav, folder)
+                if passage:
+                    title = row['cover_title'] = cover_chat.sing_back_title(song, passage)[:80]
             else:
                 style = request.get('style')
                 style = style.strip() if isinstance(style, str) else ''
@@ -196,6 +239,12 @@ async def _send(server, row, send, mp3, title):
     await finish(server, row, send)
 
 
+def request_passage(row):
+    request = row.get('cover_request')
+    passage = request.get('passage') if isinstance(request, dict) else None
+    return passage if isinstance(passage, list) and len(passage) == 2 else None
+
+
 async def finish(server, row, send):
     """After the file went out: her closing line once, the library entry, the source marked used, the work files gone."""
     from .backend import persist_chat
@@ -204,7 +253,7 @@ async def finish(server, row, send):
     title = row.get('cover_title') or tr('发来的歌')
     if not row.get('cover_task_only'):
         await delivery_notice(row, send, lambda: persist_chat(server), 'cover_notice_status',
-                              cover_chat.sing_back_completion_text() if cover_chat.is_sing_back(row)
+                              cover_chat.sing_back_completion_text(request_passage(row)) if cover_chat.is_sing_back(row)
                               else cover_chat.completion_text(title))
     folder = work_folder(root, row)
     wav = folder / 'cover.wav'
