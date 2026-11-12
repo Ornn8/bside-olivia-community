@@ -9,6 +9,7 @@ callers.  It contains no original client assets or source excerpts.
 from __future__ import annotations
 
 from enum import IntEnum
+import os
 import re
 import time
 from typing import Iterable, Mapping
@@ -221,13 +222,21 @@ def _safe_local_media_url(value: object, names: re.Pattern[str] = _MEDIA_NAME) -
         port = parsed.port
     except ValueError:
         return ""
-    if port is None or not 1 <= port <= 65535:
+    if port is None or not 0 <= port <= 65535:
         return ""
     prefix = "/toy/media/"
     if not parsed.path.startswith(prefix):
         return ""
     name = parsed.path[len(prefix) :]
-    return value if names.fullmatch(name) else ""
+    if not names.fullmatch(name):
+        return ""
+    if os.environ.get("OLIVIA_DESKTOP_DYNAMIC_PORT") == "1":
+        try:
+            current = int(os.environ.get("OLIVIA_DESKTOP_BOUND_PORT", ""))
+        except ValueError:
+            return ""
+        return f"http://127.0.0.1:{current}{prefix}{name}" if 1 <= current <= 65535 else ""
+    return value if 1 <= port <= 65535 else ""
 
 
 def _reply_projection(

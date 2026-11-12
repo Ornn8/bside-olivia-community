@@ -46,7 +46,7 @@ def test_verified_dependencies_repair_existing_install_without_touching_config(t
 
 
 def test_existing_component_install_runs_dependency_repair(tmp_path, monkeypatch):
-    monkeypatch.setattr(installer.os, 'name', 'nt')
+    monkeypatch.setattr(installer, 'os', SimpleNamespace(name='nt'))
     monkeypatch.setattr(installer, 'find_shell', lambda root: tmp_path)
     calls = []
     monkeypatch.setattr(deps, 'ensure_dependencies', lambda *args: calls.append(args))

@@ -266,7 +266,9 @@ def test_wizard_connect_tab_offers_claim_button_that_opens_the_account_page():
   assert.equal(heading(), "欢迎使用 Olivia");
   const claim = dialog().querySelectorAll("button").find((item) => item.textContent === "去领取 Key");
   assert.ok(claim, "claim button missing in the connect panel");
-  assert.ok(dialog().querySelectorAll("input").length >= 1);   // import field stays
+  // The harness has no native bridge, so the Windows/browser fallback keeps
+  // its legacy input field. macOS uses the native secure prompt instead.
+  assert.ok(dialog().querySelectorAll("input").length >= 1);
   assert.ok(labels().includes("连接并保存"));
   await claim.click();
   assert.equal(isAccountPage(), true);

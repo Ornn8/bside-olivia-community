@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bside.olivia.local/contracts/desktop-handshake.v1.schema.json",
+  "title": "Olivia Electron desktop startup handshake",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "port", "pid", "nonce"],
+  "properties": {
+    "schema_version": {"const": "olivia-ready.v1"},
+    "kind": {"const": "olivia-ready"},
+    "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+    "pid": {"type": "integer", "minimum": 1},
+    "nonce": {"type": "string", "minLength": 1}
+  }
+}

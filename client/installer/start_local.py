@@ -49,10 +49,33 @@ from runtime.media.managed_voice_reference import (
 )
 
 
+_KEYCHAIN_STATUS = "NOT_CONFIGURED"
+
+
+def keychain_status() -> str:
+    """Return a content-free credential state for diagnostics and the UI."""
+
+    return _KEYCHAIN_STATUS
+
+
 def _load_dpapi_key(path: Path) -> str:
+    global _KEYCHAIN_STATUS
     if not path.is_file():
+        _KEYCHAIN_STATUS = "NOT_CONFIGURED"
         return ""
+    if sys.platform == "darwin":
+        try:
+            from runtime.mac_keychain import unprotect
+            value = unprotect(path.read_text(encoding="utf-8").strip())
+            _KEYCHAIN_STATUS = "AVAILABLE"
+            return value
+        except Exception:
+            # Keep the backend alive, but preserve the distinction between a
+            # missing binding and a Keychain item that cannot be read.
+            _KEYCHAIN_STATUS = "UNAVAILABLE"
+            return ""
     if os.name != "nt":
+        _KEYCHAIN_STATUS = "UNAVAILABLE"
         from original_client_setup_api import LLMSetupError, _dpapi_unprotect
         try:
             return _dpapi_unprotect(path.read_text(encoding="utf-8"))
@@ -61,6 +84,7 @@ def _load_dpapi_key(path: Path) -> str:
     try:
         protected = path.read_text(encoding="utf-8").strip()
         if not protected:
+            _KEYCHAIN_STATUS = "UNAVAILABLE"
             return ""
         modern = protected.startswith("dpapi-v1:")
         script = (
@@ -79,8 +103,14 @@ def _load_dpapi_key(path: Path) -> str:
             capture_output=True,
             check=False,
         )
-        return result.stdout.strip() if result.returncode == 0 else ""
+        value = result.stdout.strip()
+        if result.returncode == 0 and value:
+            _KEYCHAIN_STATUS = "AVAILABLE"
+            return value
+        _KEYCHAIN_STATUS = "UNAVAILABLE"
+        return ""
     except (OSError, UnicodeError):
+        _KEYCHAIN_STATUS = "UNAVAILABLE"
         return ""
 
 
@@ -251,12 +281,16 @@ def _load_llm_environment(
     # Third-party provider keys must never be forwarded to the Olivia relay.
     values.pop("DEEPSEEK_API_KEY", None)
     values.pop("OPENAI_API_KEY", None)
+    if sys.platform == "darwin":
+        values.setdefault("OLIVIA_KEYCHAIN_STATUS", keychain_status())
     if (
         saved_key_binding
         and include_secret
         and not values.get("OLIVIA_LLM_API_KEY")
     ):
         configured_key = _load_dpapi_key(key_path)
+        if sys.platform == "darwin":
+            values["OLIVIA_KEYCHAIN_STATUS"] = keychain_status()
         if configured_key:
             values["OLIVIA_LLM_API_KEY"] = configured_key
         else:

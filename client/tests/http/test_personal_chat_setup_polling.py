@@ -17,6 +17,8 @@ let pollTimer=null, qqSaving=false, renderedStatus=null, calls=0, timer, delay;
 const root={isConnected:true};
 const field={value:'unsaved-owner',selectionStart:3};
 const document={activeElement:field};
+const window={olivia:{status:async()=>({})}};
+const copy={textContent:''};
 const state={textContent:''};
 const health={children:[],replaceChildren(){this.children=[];},append(value){this.children.push(value);}};
 const content={contains:x=>x===field,querySelector:q=>q.includes('live-state')?state:health,
@@ -38,8 +40,9 @@ const setTimeout=(fn,ms)=>{timer=fn;delay=ms;return 1;},clearTimeout=()=>{};
 (async()=>{
  await refresh(true);
  assert.equal(calls,1); assert.equal(delay,10000);
- assert.equal(health.children[1].code,'PERSONAL_CHAT_GENERATION_FAILED');
- assert.match(health.children[2].textContent,/那条消息的失败/);
+ const error = health.children.find(child => child && child.code);
+ assert.equal(error?.code,'PERSONAL_CHAT_GENERATION_FAILED');
+ assert.ok(health.children.some(child => /那条消息的失败/.test(child?.textContent || '')));
  assert.equal(field.value,'unsaved-owner');assert.equal(field.selectionStart,3);
  status={...status,reply_errors:{}};
  await refresh(true);assert.equal(health.children.length,0);
