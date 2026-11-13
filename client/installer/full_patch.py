@@ -120,6 +120,7 @@ PAYLOAD_EXTRA_FILES = (
     "runtime/__init__.py",
     "runtime/original_client_media_http.py",
     "runtime/video_reply_settings.py",
+    "runtime/mac_keychain.py",
 )
 PAYLOAD_SUFFIXES = {".py", ".json", ".toml", ".ini", ".txt", ".ps1", ".patch"}
 IMAGE_SUFFIXES = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.avif'}
@@ -279,6 +280,13 @@ PAYLOAD_EXCLUDED_ROOT_FILES = {
     "letter_pairs.json",
     "memory_store.json",
     "llm_config.json",
+    # macOS desktop host only; never part of a Windows patch.
+    "desktop_backend.py",
+    "desktop_original_frontend.py",
+}
+# (parent directory name, file name) pairs that only the macOS desktop host uses.
+PAYLOAD_EXCLUDED_NESTED_FILES = {
+    ("contracts", "desktop_handshake.schema.json"),
 }
 
 
@@ -480,8 +488,10 @@ def _is_non_runtime_payload_file(name: str) -> bool:
 
 def _ignore_payload_copy(directory: str, names: list[str], *, include_base_stickers=True) -> set[str]:
     excluded = _ignore_official_copy(directory, names)
+    parent = Path(directory).name
     excluded.update(
-        name for name in names if _is_non_runtime_payload_file(name) or (
+        name for name in names if (parent, name) in PAYLOAD_EXCLUDED_NESTED_FILES
+        or _is_non_runtime_payload_file(name) or (
             Path(name).suffix.lower() in IMAGE_SUFFIXES and not (
                 include_base_stickers and Path(directory).name == 'letter_stickers' and name in DEFAULT_STICKER_FILES))
     )

@@ -868,6 +868,14 @@ def _run_launcher_with_client_results(
         "_backend_executable",
         lambda: Path("pythonw-fixture.exe"),
     )
+    # No real client window exists: the guard ends when the client exits.
+    # Fix its result so Windows (no window found) and macOS (no Win32 API)
+    # log the same status.
+    monkeypatch.setattr(
+        start_local,
+        "guard_native_window_layout",
+        lambda *_args, **_kwargs: start_local.LayoutStatus.SKIPPED,
+    )
     monkeypatch.setattr(
         start_local.subprocess,
         "Popen",

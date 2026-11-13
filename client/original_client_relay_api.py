@@ -3,6 +3,7 @@ from decimal import Decimal
 import asyncio
 import re
 import secrets
+import sys
 from aiohttp import ClientSession, ClientTimeout, ClientError, ClientSSLError, ClientConnectionError, web
 from original_client_setup_api import LLMSetupError, _authorize, _body, _headers, SESSION_HEADER
 from runtime.remote_generation import gpu_tls_context
@@ -87,11 +88,17 @@ def mount_relay_api(app, setup):
     pending_path = setup._config_root / 'olivia_relay_registration.pending'
 
     def stored_key():
-        if key_path.is_file():
-            return setup._unprotect(key_path.read_text(encoding='utf-8').strip())
         config = setup._config()
         active = setup._active_key_path()
-        if config.base_url.rstrip('/') == RELAY_BASE and active:
+        managed = config.base_url.rstrip('/') == RELAY_BASE and active
+        # Windows/Linux: the account file is the relay identity and wins.
+        # macOS: save() keeps the account file pointing at the active Keychain
+        # item, so a current managed binding wins there.
+        if sys.platform == 'darwin' and managed:
+            return setup._unprotect(active.read_text(encoding='utf-8').strip())
+        if key_path.is_file():
+            return setup._unprotect(key_path.read_text(encoding='utf-8').strip())
+        if managed:
             return setup._unprotect(active.read_text(encoding='utf-8').strip())
         return None
 
@@ -111,6 +118,9 @@ def mount_relay_api(app, setup):
         payload = {'base_url':RELAY_BASE, 'model':model, 'api_key':key}
         await setup.test(payload)
         setup.save(payload)
+        refresh = app.get('olivia_gpu_refresh')
+        if refresh is not None:
+            refresh()  # Cloud generation uses the same account key.
 
     async def action(request):
         origin = _authorize(request, confirm=True)
@@ -205,7 +215,8 @@ def mount_relay_api(app, setup):
                 if operation == 'export_key':
                     return web.json_response({'key':key}, headers=_headers(origin))
                 await connect(key)
-                store_key(key)
+                if sys.platform != 'darwin':
+                    store_key(key)  # macOS: save() already rewrote the account Keychain reference.
                 pending_path.unlink(missing_ok=True)
                 return web.json_response({'connected':True, 'key_prefix':key[:15]}, headers=_headers(origin))
         try:
