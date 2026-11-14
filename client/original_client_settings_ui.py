@@ -2373,80 +2373,51 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const topup = document.createElement("div"); topup.className="olivia-account-topup"; topup.hidden = true;
     const status = text("p", "", "text-text-secondary text-body-m"); status.setAttribute("role", "status");
     const orderView = document.createElement("div"); orderView.style.cssText="display:grid;grid-template-columns:minmax(0,1fr);min-width:0;gap:12px";
-    const controls = actions(); controls.style.cssText="display:flex;flex-wrap:wrap;gap:12px;min-width:0";
-    let busy = false, active = null, generation = 0, shownSignature = "", pollTimer = null;
-    const select = document.createElement("select");
-    select.className = "rounded-3 border border-grey-5 bg-transparent px-4 py-2.5 text-text-body text-body-m";
-    select.setAttribute("aria-label", t("充值面额"));
-    for (const value of [10,20,50,100]) {
-      const option = document.createElement("option"); option.value = String(value*100);
-      option.textContent = t('充值 ¥{value}', {value}); select.append(option);
-    }
+    let busy = false, lastRemaining = null;
     const errors = {RELAY_NOT_CONFIGURED:t("请先申请 Key，或导入已有 Key。"),
-      RELAY_AUTH_FAILED:t("Key 已失效，请联系管理员。"), RELAY_PHONE_OFFLINE:t("收款服务暂时离线，请稍后再充值。"),
-      RELAY_ORDER_LIMIT:t("创建订单过于频繁，请稍后重试。"), RELAY_SLOTS_FULL:t("当前充值人数较多，请稍后重试。")};
+      RELAY_AUTH_FAILED:t("Key 已失效，请联系管理员。")};
     const call = payload => requestSetup("/toy/relay/action", payload);
-    const enabled = () => { refresh.disabled=busy; create.disabled=busy || Boolean(active); select.disabled=busy || Boolean(active); };
-    const queuePoll = serial => {
-      if (pollTimer !== null) window.clearTimeout(pollTimer);
-      pollTimer = window.setTimeout(async () => {
-        if (!box.isConnected || serial !== generation) return;
-        try { const next=await call({action:"order_status"}); if (!box.isConnected || serial !== generation) return;
-          drawOrder(next); if (next.order?.state === "credited") await readBalance();
-        } catch (_) { if(box.isConnected && serial === generation) status.textContent=t("到账状态暂时无法更新，请点击刷新。请勿重复付款。"); }
-      },3000);
-    };
-    const drawOrder = data => {
-      const order = data.order;
-      const signature = JSON.stringify(order && [order.id, order.state, order.expires_at]);
-      // Keep the pending controls mounted so polling cannot steal keyboard focus.
-      if (order && order.state === "pending" && signature === shownSignature) { queuePoll(generation); return; }
-      if (order && order.state === "pending") topup.hidden = false;
-      shownSignature = signature; orderView.replaceChildren(); active = null;
-      const serial = ++generation;
-      if (!order) { enabled(); return; }
-      const credit = Number(order.credit_yuan).toFixed(2);
-      if (order.state === "credited") {
-        status.textContent = t('充值已到账 ¥{credit}。', {credit});
-        orderView.append(text("p", t('已到账 ¥{credit}。', {credit}), "text-text-title text-body-m")); enabled(); return;
-      }
-      if (order.state === "expired") {
-        status.textContent = t("付款金额已过期，请勿继续付款。");
-        orderView.append(text("p", t("此付款金额已过期，请勿再按它付款。还没付款：点「获取付款金额」重新生成即可。已经付款但没到账：请不要重复付款，联系管理员核对。"), "text-text-secondary text-body-m")); enabled(); return;
-      }
-      active = order;
-      select.value = String(Math.round(Number(order.credit_yuan)*100));
-      const amount = "¥"+(order.amount_cents/100).toFixed(2);
-      const pay = text("p", t('请用微信支付 {amount}', {amount}), "text-text-title text-title-m");
-      pay.style.cssText="font-size:24px;font-weight:600;line-height:1.4;font-variant-numeric:tabular-nums";
-      const countdown = text("p", "", "text-text-secondary text-body-m");
-      countdown.setAttribute("aria-live", "off");
-      const qr = document.createElement("img");
-      qr.src = new URL('/toy/images/ui/wechat-payment', apiBase).href;
-      qr.alt = t("微信收款码，收款人 Ornn，请按订单显示金额付款");
-      qr.style.cssText = "display:block;width:280px;max-width:100%;height:auto;margin:12px auto;border-radius:12px";
-      const paid = document.createElement("ol");
-      paid.className = "text-text-secondary text-body-m";
-      paid.style.cssText = "margin:0;padding-left:1.4em;display:grid;gap:6px";
-      for (const step of [
-        t("打开微信「扫一扫」，扫描下方收款码。"),
-        t('付款金额填 {amount}，带小数、一分不差。这几分钱的差别是用来自动认出你的付款的，到账按 ¥{credit} 计算。', {amount, credit}),
-        t("付完留在这个页面，通常 1 分钟内自动到账，不用截图，也不用联系客服。")]) {
-        const item = document.createElement("li"); item.textContent = step; paid.append(item);
-      }
-      orderView.append(pay, paid, qr, countdown);
-      status.textContent = t('付款金额 {amount}，到账余额 ¥{credit}。', {amount, credit});
-      const deadline = Date.now() + Math.max(0, order.expires_at-data.server_time)*1000;
-      const tick = () => {
-        if (!box.isConnected || serial !== generation) return;
-        const seconds = Math.max(0, Math.ceil((deadline-Date.now())/1000));
-        countdown.textContent = t('请在 {time} 内付款 · 正在等待微信到账通知', {time: `${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,"0")}`});
-        if (!seconds) { pay.textContent=t("付款金额已过期，请勿继续付款。"); qr.remove(); paid.hidden=true; active=null; enabled(); return; }
-        window.setTimeout(tick,1000);
+    const enabled = () => { refresh.disabled=busy; };
+    let afdianShown = false;
+    // Top-up is paid on 爱发电 (owner 2026-11-14): the account's own 匹配码, then the plan of the amount he wants.
+    const drawAfdian = data => {
+      const code = String(data.code || "");
+      orderView.replaceChildren();
+      const codeLine = document.createElement("div");
+      codeLine.style.cssText = "display:flex;flex-wrap:wrap;align-items:center;gap:12px";
+      const codeText = text("span", code, "text-text-title text-title-m");
+      codeText.style.cssText = "font-size:28px;font-weight:600;letter-spacing:.12em;font-variant-numeric:tabular-nums;user-select:all";
+      const copyText = (value, done) => async () => {
+        try { await navigator.clipboard.writeText(value); status.textContent = done; }
+        catch (_) { status.textContent = t("复制失败，请手动选中后复制。"); }
       };
-      tick(); enabled();
-      queuePoll(serial);
+      codeLine.append(text("span", t("你的匹配码"), "text-text-secondary text-body-m"), codeText,
+        button(t("复制匹配码"), copyText(code, t("匹配码已复制。"))));
+      const steps = document.createElement("ol");
+      steps.className = "text-text-secondary text-body-m";
+      steps.style.cssText = "margin:0;padding-left:1.4em;display:grid;gap:6px";
+      for (const step of [
+        t("在下面选想充的金额，点「去爱发电」，在爱发电里选对应的方案。"),
+        t('付款页的「匹配码」一栏填 {code}；没有这一栏就写在留言里。', {code}),
+        t("付完留在这个页面，通常 1 分钟内自动到账；付多少到账多少。")]) {
+        const item = document.createElement("li"); item.textContent = step; steps.append(item);
+      }
+      const plans = document.createElement("div");
+      plans.style.cssText = "display:grid;grid-template-columns:minmax(0,1fr);gap:8px";
+      for (const plan of Array.isArray(data.plans) ? data.plans : []) {
+        const row = document.createElement("div");
+        row.style.cssText = "display:flex;flex-wrap:wrap;align-items:center;gap:12px";
+        row.append(text("span", t('充 ¥{value} → 选「{name}」', {value: Math.round(plan.cents/100), name: plan.name}), "text-text-title text-body-m"));
+        const go = document.createElement("a");
+        go.href = plan.link; go.target = "_blank"; go.rel = "noopener noreferrer";
+        go.textContent = t("去爱发电"); go.className = "olivia-primary-action";
+        row.append(go, button(t("复制链接"), copyText(plan.link, t("链接已复制，可粘贴到浏览器打开。"))));
+        plans.append(row);
+      }
+      orderView.append(codeLine, steps, plans);
+      afdianShown = true;
     };
+    const loadAfdian = async () => drawAfdian(await call({action:"afdian"}));
     const unifiedHistory=document.createElement("section");
     const readBalance = async () => {
       const data = await call({action:"balance"});
@@ -2454,6 +2425,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       if (data.billing_mode !== "money") throw {error_code:"RELAY_NOT_CONFIGURED"};
       balance.textContent = t('可用余额 ¥{remaining} · 累计消费 ¥{used}', {remaining: Number(data.remaining_yuan).toFixed(4), used: Number(data.used_yuan).toFixed(4)});
       balance.hidden=true;
+      if (lastRemaining !== null && Number(data.remaining_yuan) > lastRemaining) status.textContent=t('充值已到账 ¥{credit}。', {credit:(Number(data.remaining_yuan)-lastRemaining).toFixed(2)});
+      lastRemaining = Number(data.remaining_yuan);
       available.textContent=`¥${Number(data.remaining_yuan).toFixed(4)}`;
       spent.textContent=`¥${Number(data.used_yuan).toFixed(4)}`;
       try {drawUnifiedStatement(unifiedHistory,await call({action:'statement'}));} catch(_){unifiedHistory.textContent=t('统一账单暂时无法读取，请稍后刷新。');}
@@ -2465,14 +2438,11 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       catch(e) {status.textContent=errors[e.code || e.error_code] || t("服务暂时无法连接，请重试；已付款请勿重复支付。");}
       finally {busy=false;enabled();}
     };
-    const refresh = button(t("刷新"), () => run(async()=>{await readBalance();drawOrder(await call({action:"order_status"}));}));
-    const create = button(t("获取付款金额"), () => run(async()=>{await readBalance();drawOrder(await call({action:"create_order",amount_cents:Number(select.value)}));}));
-    controls.append(select,create);
-    create.className += " olivia-primary-action";
-    const charge = button(t("充值"), () => { topup.hidden = !topup.hidden; });
+    const refresh = button(t("刷新"), () => run(async()=>{await readBalance();}));
+    const charge = button(t("充值"), () => { topup.hidden = !topup.hidden; if (!topup.hidden && !afdianShown) void run(loadAfdian); });
     charge.className += " olivia-primary-action";
     quick.append(charge,refresh);
-    topup.append(text("h3",t("账户充值"),"text-text-title text-title-m"),controls,orderView);
+    topup.append(text("h3",t("账户充值"),"text-text-title text-title-m"),orderView);
     balance.hidden = true;
     box.append(metrics,balance,topup,status);
     (records || box).append(usage,unifiedHistory);
@@ -2486,7 +2456,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       } else window.setTimeout(recordRechargePage,1000);
     };
     recordRechargePage();
-    void run(async()=>{await readBalance();drawOrder(await call({action:"order_status"}));});
+    void run(async()=>{await readBalance();});
     const refreshVisibleBalance = async () => {
       if (!box.isConnected) return;
       if (!document.hidden && box.getClientRects().length && !busy) {
