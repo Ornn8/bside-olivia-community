@@ -4,7 +4,7 @@ import pytest
 from original_client_settings_ui import BOOTSTRAP_JAVASCRIPT
 
 
-def test_pending_poll_preserves_payment_display_and_credits_face_value():
+def test_topup_is_paid_on_afdian_with_the_accounts_own_code_and_the_credit_is_announced():
     node = shutil.which('node')
     if not node:
         pytest.skip('Node required')
@@ -17,35 +17,46 @@ class Element {
  replaceChildren(...items){this.children=items}
  setAttribute(k,v){this.attrs[k]=v}
 }
-const elements=[],timers=new Map();let sequence=0,credited=false;
+const elements=[];let credited=false;
 const make=tag=>{const e=new Element(tag);elements.push(e);return e};
 const text=(tag,value)=>{const e=make(tag);e.textContent=value;return e};
-const calls=[];
+const calls=[],copied=[];
+const link=n=>'https://ifdian.net/order/create?plan_id=p'+n+'&remark=K7M2QX9';
 const context={document:{createElement:make},text,actions:()=>make('div'),
  URL,apiBase:'http://127.0.0.1:27149/',
  button:(label,fn)=>{const e=text('button',label);e.click=fn;return e},
- window:{setTimeout:(fn,delay)=>{timers.set(++sequence,{fn,delay});return sequence},clearTimeout:id=>timers.delete(id)},
- navigator:{clipboard:{writeText:async()=>{}}},
- requestSetup:async(path,data)=>{calls.push(data);return data.action==='balance'
- ?{billing_mode:'money',remaining_yuan:credited?'10.00000000':'0.00000000',used_yuan:'0'}
- :{server_time:1000,order:{id:'synthetic',amount_cents:999,credit_yuan:'10.00000000',expires_at:1300,state:credited?'credited':'pending'}}}
+ window:{setTimeout:()=>1,clearTimeout:()=>{}},
+ navigator:{clipboard:{writeText:async value=>{copied.push(value)}}},
+ requestSetup:async(path,data)=>{calls.push(data.action);
+  if(data.action==='balance')return{billing_mode:'money',remaining_yuan:credited?'10.00000000':'0.00000000',used_yuan:'0'};
+  if(data.action==='afdian')return{channel:'afdian',code:'K7M2QX9',page:'https://ifdian.net/a/x',plans:[
+    {cents:1000,name:'一小碗白饭',link:link(10)},{cents:2000,name:'一大碗白饭',link:link(20)}]};
+  return{}}
 };
 vm.runInNewContext(fs.readFileSync(0,'utf8')+';globalThis.mount=mountRelayBalance;',context);
+const settle=()=>new Promise(resolve=>setImmediate(resolve));
 (async()=>{
  const panel=make('main');context.mount(panel);
- await new Promise(resolve=>setImmediate(resolve));
- assert.equal(elements.find(e=>e.tag==='select').value,'1000');
- const payment=elements.find(e=>e.textContent==='请用微信支付 ¥9.99');
- assert.equal(elements.find(e=>e.tag==='img').src,'http://127.0.0.1:27149/toy/images/ui/wechat-payment');
- await [...timers.values()].find(t=>t.delay===3000).fn();
- assert.equal(elements.filter(e=>e.textContent==='请用微信支付 ¥9.99').length,1);
- const holds=(e,t)=>e===t||(e.children||[]).some(c=>holds(c,t));
- assert.ok(holds(panel,payment)); // still mounted (inside the top-up area under the balance card)
- assert.equal([...timers.values()].filter(t=>t.delay===3000).length,1);
- credited=true;await [...timers.values()].find(t=>t.delay===3000).fn();
- assert.ok(elements.some(e=>e.textContent==='已到账 ¥10.00。'));
+ await settle();
+ assert.ok(!calls.includes('afdian')&&!calls.includes('order_status')&&!calls.includes('create_order')); // nothing until 充值 is opened
+ elements.find(e=>e.tag==='button'&&e.textContent==='充值').click();
+ await settle();
+ assert.ok(calls.includes('afdian'));
+ assert.ok(elements.some(e=>e.textContent==='K7M2QX9'));
+ const links=elements.filter(e=>e.tag==='a');
+ assert.deepEqual(links.map(e=>e.href),[link(10),link(20)]);
+ assert.ok(links.every(e=>e.target==='_blank'&&e.rel==='noopener noreferrer'));
+ assert.ok(elements.some(e=>e.textContent==='充 ¥10 → 选「一小碗白饭」'));
+ assert.ok(!elements.some(e=>e.tag==='img'||/微信/.test(e.textContent||'')));
+ elements.find(e=>e.tag==='button'&&e.textContent==='复制匹配码').click();
+ elements.filter(e=>e.tag==='button'&&e.textContent==='复制链接')[1].click();
+ await settle();
+ assert.deepEqual(copied,['K7M2QX9',link(20)]);
+ credited=true;
+ elements.find(e=>e.tag==='button'&&e.textContent==='刷新').click();
+ await settle();
  assert.ok(elements.some(e=>e.textContent==='可用余额 ¥10.0000 · 累计消费 ¥0.0000'));
- assert.ok(calls.every(c=>!('paid' in c)));
+ assert.ok(elements.some(e=>e.textContent==='充值已到账 ¥10.00。'));
 })().catch(e=>{console.error(e.stack);process.exitCode=1});
 '''
     result = subprocess.run([node,'-e',harness],input=source.encode(),capture_output=True,timeout=15)

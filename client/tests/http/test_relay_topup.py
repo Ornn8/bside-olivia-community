@@ -46,3 +46,34 @@ def test_zero_balance_connection_probe_does_not_generate_text(monkeypatch):
     monkeypatch.setattr(relay,'relay_request',remote)
     asyncio.run(_probe_openai_compatible('https://relay.example/v1','qwen3.7-flash','olivia-synthetic'))
     assert calls==[('https://relay.example/v1','olivia-synthetic','GET','/models')]
+
+
+def test_afdian_action_asks_the_relay_for_the_accounts_code(tmp_path, monkeypatch):
+    import original_client_relay_api as relay
+    monkeypatch.setattr(relay, 'RELAY_BASE', 'https://relay.example/v1')
+    calls = []
+    async def remote(base, key, method, path, payload=None):
+        if path.split('?')[0] == '/telemetry/events':
+            return {'accepted':[e['event_id'] for e in payload['events']]}
+        calls.append((method, path, payload))
+        return {'channel':'afdian','code':'K7M2QX9','page':'https://ifdian.net/a/x','plans':[]}
+    monkeypatch.setattr(relay,'relay_request',remote)
+    service = LLMSetupService(tmp_path,unprotect=lambda value:'olivia-synthetic-private-key')
+    cipher=tmp_path/'cipher';cipher.write_text('encrypted')
+    monkeypatch.setattr(service,'_config',lambda:SimpleNamespace(model='qwen3.7-flash',base_url='https://relay.example/v1'))
+    monkeypatch.setattr(service,'_active_key_path',lambda:cipher)
+    service.observe_login(success=True)
+    async def scenario():
+        app=web.Application();mount_original_client_setup_api(app,service,trusted_origins=('https://client.example',))
+        async with TestClient(TestServer(app)) as client:
+            headers={'Origin':'https://client.example','X-Olivia-Setup-Action':'confirmed'}
+            response=await client.post('/toy/relay/action',headers=headers,json={'action':'afdian'})
+            assert response.status==403 and not calls
+            headers['X-Olivia-Setup-Session']=service._session_token
+            response=await client.post('/toy/relay/action',headers=headers,json={'action':'afdian'})
+            assert response.status==200 and (await response.json())['code']=='K7M2QX9'
+            assert 'private-key' not in await response.text()
+            assert calls==[('GET','/payments/afdian',None)]
+            response=await client.post('/toy/relay/action',headers=headers,json={'action':'afdian','key':'attacker'})
+            assert response.status==400 and len(calls)==1
+    asyncio.run(scenario())

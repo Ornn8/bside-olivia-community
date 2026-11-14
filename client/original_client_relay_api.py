@@ -220,6 +220,8 @@ def mount_relay_api(app, setup):
             result = await relay_request(RELAY_BASE, key, 'GET', '/billing/statement')
         elif data == {'action':'order_status'}:
             result = await relay_request(RELAY_BASE, key, 'GET', '/payments/orders/latest')
+        elif data == {'action':'afdian'}:
+            result = await relay_request(RELAY_BASE, key, 'GET', '/payments/afdian')
         elif set(data) == {'action','amount_cents'} and data['action'] == 'create_order' and type(data['amount_cents']) is int and data['amount_cents'] in (1000,2000,5000,10000):
             result = await relay_request(RELAY_BASE, key, 'POST', '/payments/orders', {'amount_cents':data['amount_cents']})
         else:

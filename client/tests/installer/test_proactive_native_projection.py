@@ -183,3 +183,24 @@ if(text.length!==1||text[0].type!=='text')throw Error('text '+JSON.stringify(tex
 ''' % expression, encoding='utf-8')
     result = subprocess.run([node, str(script)], capture_output=True, text=True, timeout=20)
     assert result.returncode == 0, result.stderr
+
+
+def test_her_own_letter_gets_the_download_button():
+    # 2026-11-14 「下载按钮没了」: her letter's header had only the title and the time.
+    from patch_companion_settings import (
+        _repair_native_proactive_download, _repair_native_proactive_video, _repair_native_proactive_video_text)
+    header = 'n("div",Kw,v(o(Ws)(0)),1)])]),'
+    capture = 'if(!m.value)throw new Error("ContentBody not mounted");return m.value.capture()'
+    save = 'if(O.sentTextImage&&await yn(O.sentTextImage,`${R}/mail-${H}-sent.png`),O.replyVideoUrl){'
+    bundle = header + NATIVE_PROACTIVE_PAPER.replace('n("div",Hw,[', 'n("div",Hw,[', 1) + ';' + capture + ';' + save
+    bundle = bundle.replace(header + 'n("div",Hw,[', 'n("div",Kw,v(o(Ws)(0)),1)])]),n("div",Hw,[', 1)
+    ready = _repair_native_proactive_video_text(_repair_native_proactive_video(bundle))
+    patched = _repair_native_proactive_download(ready)
+    assert patched.startswith('/*olivia-proactive-download-v1*/')
+    assert 'onClick:g},[k(ke,{class:"rotate-180",type:"upload"}),pe(" "+v(o(i)("common_download"))' in patched
+    assert patched.count('ref_key:"contentBodyRef",ref:m') == 2
+    assert 'replyTextImage:await m.value.capture(),replyVideoUrl:' in patched
+    assert 'O.replyVideoUrl&&O.replyTextImage&&await yn(O.replyTextImage,' in patched
+    assert _repair_native_proactive_download(patched) == patched
+    assert _repair_native_proactive_download(ready.replace(save, '')) == ready.replace(save, '')
+    assert _repair_native_proactive_download(bundle) == bundle  # needs the video text step
