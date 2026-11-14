@@ -573,6 +573,7 @@ def _repair_mailbox_write_access(root: Path) -> str:
     source = _repair_native_proactive_collection(source)
     source = _repair_native_proactive_video(source)
     source = _repair_native_proactive_video_text(source)
+    source = _repair_native_proactive_download(source)
     source = _repair_native_silent_reply(source)
     source = _repair_native_reply_failure(source)
     source = _repair_native_mailbox_order_and_time(source)
@@ -996,6 +997,55 @@ def _repair_native_proactive_video_text(source: str) -> str:
     source = (source[:opening.start()] + stack + opening.group(1) + source[opening.end():end]
               + text_paper + source[end:])
     return _NATIVE_PROACTIVE_VIDEO_TEXT_MARKER + source
+
+
+_NATIVE_PROACTIVE_DOWNLOAD_MARKER = "/*olivia-proactive-download-v1*/"
+_PROACTIVE_DOWNLOAD_HEADER_TAIL = ',1)])]),n("div",Hw,['
+_PROACTIVE_DOWNLOAD_BUTTON = (
+    ',x.selectedMail?.origin==="proactive"?n("button",{type:"button",style:"margin-left:auto",'
+    'class:"flex items-center gap-1 px-3 py-1.5 rounded-3 border border-grey-4 text-text-secondary text-body-s '
+    'font-medium cursor-pointer hover:bg-surface-1 transition-colors",onClick:g},'
+    '[k(ke,{class:"rotate-180",type:"upload"}),pe(" "+v(o(i)("common_download")),1)]):Y("",!0)'
+)
+_PROACTIVE_DOWNLOAD_CAPTURE = 'if(!m.value)throw new Error("ContentBody not mounted");return m.value.capture()'
+_PROACTIVE_DOWNLOAD_SAVE = 'if(O.sentTextImage&&await yn(O.sentTextImage,`${R}/mail-${H}-sent.png`),O.replyVideoUrl){'
+_PROACTIVE_DOWNLOAD_TEXT_PAPER = 'k(ks,({bodyText:x.selectedMail.received.bodyText,'
+
+
+def _repair_native_proactive_download(source: str) -> str:
+    """Her own letter gets the Download button the letters you wrote have.
+
+    Her letters render on the welcome-paper path, whose header has only the title and the time, so the button was
+    missing (2026-11-14 「下载按钮没了」). The button reuses the mailbox's own download handler; it captures her text
+    paper (the one the stacked layout keeps below a video) and the handler saves it next to her video, audio, song
+    and photo. A bundle without the anchors is left as it is.
+    """
+    if _NATIVE_PROACTIVE_DOWNLOAD_MARKER in source or _NATIVE_PROACTIVE_VIDEO_TEXT_MARKER not in source:
+        return source
+    anchors = (_PROACTIVE_DOWNLOAD_HEADER_TAIL, _PROACTIVE_DOWNLOAD_CAPTURE, _PROACTIVE_DOWNLOAD_SAVE,
+               _PROACTIVE_PAPER_HEAD, _PROACTIVE_DOWNLOAD_TEXT_PAPER)
+    if any(source.count(anchor) != 1 for anchor in anchors):
+        return source
+    paper_ref = 'ref_key:"contentBodyRef",ref:m'
+    source = source.replace(
+        _PROACTIVE_DOWNLOAD_HEADER_TAIL,
+        ',1)])' + _PROACTIVE_DOWNLOAD_BUTTON + ']),n("div",Hw,[', 1)
+    source = source.replace(
+        _PROACTIVE_PAPER_HEAD,
+        _PROACTIVE_PAPER_HEAD + '...(x.selectedMail?.received?.type==="video"?{}:{' + paper_ref + '}),', 1)
+    source = source.replace(
+        _PROACTIVE_DOWNLOAD_TEXT_PAPER,
+        'k(ks,({' + paper_ref + ',bodyText:x.selectedMail.received.bodyText,', 1)
+    source = source.replace(
+        _PROACTIVE_DOWNLOAD_CAPTURE,
+        'if(!m.value)throw new Error("ContentBody not mounted");const _p=a.selectedMail;'
+        'if(_p&&_p.origin==="proactive"){const _r=_p.received||{};return{replyTextImage:await m.value.capture(),'
+        'replyVideoUrl:_r.type==="video"?_r.videoUrl:void 0}}return m.value.capture()', 1)
+    source = source.replace(
+        _PROACTIVE_DOWNLOAD_SAVE,
+        'if(O.sentTextImage&&await yn(O.sentTextImage,`${R}/mail-${H}-sent.png`),'
+        'O.replyVideoUrl&&O.replyTextImage&&await yn(O.replyTextImage,`${R}/mail-${H}-reply.png`),O.replyVideoUrl){', 1)
+    return _NATIVE_PROACTIVE_DOWNLOAD_MARKER + source
 
 
 def _repair_native_proactive_collection(source: str) -> str:
