@@ -2398,7 +2398,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       steps.style.cssText = "margin:0;padding-left:1.4em;display:grid;gap:6px";
       for (const step of [
         t("在下面选想充的金额，点「去爱发电」，在爱发电里选对应的方案。"),
-        t('付款页的「匹配码」一栏填 {code}；没有这一栏就写在留言里。', {code}),
+        t('点下面的金额会打开付款页，页面最下面的「匹配码」一栏已填好 {code}，不用自己输。上面「登录账号」填手机号或邮箱，收到的验证码是爱发电的，不是匹配码。', {code}),
         t("付完留在这个页面，通常 1 分钟内自动到账；付多少到账多少。")]) {
         const item = document.createElement("li"); item.textContent = step; steps.append(item);
       }
