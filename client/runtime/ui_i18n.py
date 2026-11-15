@@ -497,7 +497,7 @@ EN: dict[str, str] = {
     "匹配码已复制。": "Code copied.",
     "复制失败，请手动选中后复制。": "Couldn't copy. Please select and copy it manually.",
     "在下面选想充的金额，点「去爱发电」，在爱发电里选对应的方案。": "Pick the amount below, tap “Go to Afdian”, and choose the matching plan there.",
-    "付款页的「匹配码」一栏填 {code}；没有这一栏就写在留言里。": "Enter {code} in the “matching code” field on the payment page; if there is no such field, put it in the message.",
+    "点下面的金额会打开付款页，页面最下面的「匹配码」一栏已填好 {code}，不用自己输。上面「登录账号」填手机号或邮箱，收到的验证码是爱发电的，不是匹配码。": "Tapping an amount below opens the payment page; the “matching code” field at the bottom is already filled in with {code}, so you do not type it. Enter your phone number or email as the login account above; the verification code you receive is from the payment site, not the matching code.",
     "付完留在这个页面，通常 1 分钟内自动到账；付多少到账多少。": "Stay on this page after paying. It usually arrives within a minute, and the full amount you pay is credited.",
     "充 ¥{value} → 选「{name}」": "Top up ¥{value} → choose “{name}”",
     "去爱发电": "Go to Afdian",
