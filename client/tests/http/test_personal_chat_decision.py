@@ -460,3 +460,41 @@ def test_rejection_diagnostic_counts_only_original_unknown_annotations(extra):
         decode(json.dumps(body), user='你好', now=1)
     assert caught.value.extra_field_count == int(extra)
     assert 'private' not in str(caught.value) and not caught.value.missing_fields
+
+
+# 11-20: a QQ reply failed six writer calls in a row on JSON_SYNTAX. Careless escaping inside her words is
+# repaired; nothing that is not one whole object is guessed at.
+@pytest.mark.parametrize('broken, text', [
+    (envelope(text='占位').replace('占位', '他说"周日见"就走了'), '他说"周日见"就走了'),
+    (envelope(text='占位').replace('占位', '第一行\n第二行'), '第一行\n第二行'),
+    (envelope(text='好呀').replace('"skip": false}', '"skip": false,}'), '好呀'),
+    ('```json\n' + envelope(text='占位').replace('占位', '"老婆"先演奏') + '\n```', '"老婆"先演奏'),
+])
+def test_careless_escaping_inside_her_words_is_repaired_and_noted(broken, text):
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(broken.strip('`json\n'))
+    result = decode(broken, user='周日见', now=1)
+    assert result['text'] == text
+    assert result['initiative'] == result['letter'] == result['listening'] == 'keep'
+    shape = result['repaired_syntax']
+    assert shape['message'] and isinstance(shape['position'], int) and shape['first'] == '{'
+    assert '周日' not in json.dumps(shape, ensure_ascii=False) and '老婆' not in json.dumps(shape, ensure_ascii=False)
+
+
+@pytest.mark.parametrize('raw', [
+    envelope(text='好呀')[:-1],                                  # cut off
+    '好的：' + envelope(text='好呀'),                              # prose before
+    envelope(text='好呀') + '\n以上',                              # prose after
+    envelope(text='好呀').replace('"delivery": "text"', '"delivery" "text"'),   # a broken structure, not an escape
+])
+def test_what_is_not_one_careless_object_is_still_rejected_with_its_shape_only(raw):
+    with pytest.raises(ValueError, match='PERSONAL_CHAT_DECISION_INVALID') as caught:
+        decode(raw, user='你好', now=1)
+    assert caught.value.reason == 'JSON_SYNTAX'
+    shape = caught.value.syntax
+    assert shape['length'] == len(raw) and isinstance(shape['message'], str)
+    assert '好' not in json.dumps(shape, ensure_ascii=False)
+
+
+def test_a_valid_reply_is_not_marked_repaired():
+    assert 'repaired_syntax' not in decode(envelope(text='好呀'), user='你好', now=1)

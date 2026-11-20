@@ -216,15 +216,113 @@ def _silence_kind(data, *, user, proactive, allow_user_silence):
     return silence['kind']
 
 
+_STRUCTURAL_AFTER_QUOTE = frozenset(',:}]')
+
+
+def repair_string_escapes(raw):
+    """One whole JSON object whose strings were written carelessly: a raw line break or tab inside a string, an
+    unescaped double quote inside a string (他说"好"), a trailing comma before } or ]. Only escaping and those commas
+    change; no key, value or nesting is added, dropped or guessed. None when ``raw`` is not one object from its first
+    to its last character (prose around it, a cut-off reply) or the repair still does not parse to an object."""
+    text = raw.strip() if isinstance(raw, str) else ''
+    if len(text) < 2 or text[0] != '{' or text[-1] != '}':
+        return None
+    out, in_string, escaped, i = [], False, False, 0
+    while i < len(text):
+        ch = text[i]
+        if in_string:
+            if escaped:
+                escaped = False
+                out.append(ch)
+            elif ch == '\\':
+                escaped = True
+                out.append(ch)
+            elif ch == '"':
+                j = i + 1
+                while j < len(text) and text[j] in ' \t\r\n':
+                    j += 1
+                if j >= len(text) or text[j] in _STRUCTURAL_AFTER_QUOTE:
+                    in_string = False
+                    out.append(ch)
+                else:
+                    out.append('\\"')              # a quote inside her words, not the end of the string
+            elif ch == '\n':
+                out.append('\\n')
+            elif ch == '\r':
+                out.append('\\r')
+            elif ch == '\t':
+                out.append('\\t')
+            else:
+                out.append(ch)
+        else:
+            if ch == '"':
+                in_string = True
+                out.append(ch)
+            elif ch == ',':
+                j = i + 1
+                while j < len(text) and text[j] in ' \t\r\n':
+                    j += 1
+                if j < len(text) and text[j] in '}]':
+                    i += 1
+                    continue                       # a trailing comma
+                out.append(ch)
+            else:
+                out.append(ch)
+        i += 1
+    if in_string:
+        return None
+    try:
+        data = json.loads(''.join(out))
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _char_kind(ch):
+    if not ch:
+        return 'none'
+    if ch in '{}[],:"\\`':
+        return ch
+    if ch.isspace():
+        return 'space'
+    if ch.isascii():
+        return 'ascii'
+    return 'wide'
+
+
+def syntax_shape(raw, exc):
+    """Where and how a reply failed to parse, without any of its words (rejected model text is never kept):
+    the parser's message, the position, the length and the kinds of the characters at the ends and around the break."""
+    text = raw if isinstance(raw, str) else ''
+    pos = getattr(exc, 'pos', None)
+    pos = pos if isinstance(pos, int) and 0 <= pos <= len(text) else None
+    stripped = text.strip()
+    return {'message': str(getattr(exc, 'msg', '') or type(exc).__name__)[:60], 'position': pos, 'length': len(text),
+            'first': _char_kind(stripped[:1]), 'last': _char_kind(stripped[-1:]),
+            'around': [_char_kind(text[k:k + 1]) for k in range(pos - 3, pos + 3)] if pos is not None else [],
+            'fence': '```' in text}
+
+
 def decode(raw, *, user, now, proactive=False, allow_user_silence=False, allow_speech=True,
            daily_video_candidates=(), cover_sources=(), sing_back_voices=()):
+    syntax = None
     try:
         # Tolerate a whole JSON code block, never extract JSON from mixed prose.
         if isinstance(raw, str):
             fenced = re.fullmatch(r'\s*```(?:json)?\s*\n(.*?)\n```\s*', raw, re.DOTALL | re.IGNORECASE)
             if fenced:
                 raw = fenced.group(1)
-        data = json.loads(raw)
+        try:
+            data = json.loads(raw)
+            repaired = False
+        except json.JSONDecodeError as exc:
+            # 11-20: a QQ reply failed six writer calls in a row on JSON_SYNTAX (deepseek-flash).
+            # A careless quote or line break inside her words is repaired; anything else stays a rejection.
+            syntax = syntax_shape(raw, exc)
+            data = repair_string_escapes(raw)
+            if data is None:
+                raise
+            repaired = True
         if isinstance(data, list) and len(data) == 1 and isinstance(data[0], dict):
             data = data[0]  # The model sometimes wraps its one decision in an array.
         required = {'text'}
@@ -318,9 +416,13 @@ def decode(raw, *, user, now, proactive=False, allow_user_silence=False, allow_s
         decode_sing_back(data, offered=sing_back_voices, proactive=proactive)
         if defaulted:
             data['defaulted_fields'] = defaulted
+        if repaired:
+            data['repaired_syntax'] = syntax
         return data
     except (ValueError, TypeError, KeyError, OverflowError) as exc:
         error = ValueError('PERSONAL_CHAT_DECISION_INVALID')
+        error.syntax = syntax if syntax is not None else (
+            syntax_shape(raw, exc) if isinstance(exc, json.JSONDecodeError) else None)
         if isinstance(locals().get('data'), dict):
             error.missing_fields = sorted(required - data.keys())
             error.extra_field_count = extra_field_count
