@@ -9,17 +9,26 @@ CONTRACT = (
     '判断只用于保留整段带来源的往来原话，不改写为客观事实，不裁定当前关系。'
 )
 
+MEANINGS = {'identity': '双方关系身份或阶段的明确定位及其条件、更正、拒绝或撤回；普通亲昵称呼不算关系身份',
+            'affection': '角色对对方明确表达的持续感情、接受或拒绝心意及其更正或撤回',
+            'agreement': '双方相处的具体约定、角色自己的承诺、许可或拒绝及其条件、更正或撤回，也保留用户本人明确的相处边界及其撤回'}
+CRITERIA = {'keep': '保留整段原话供长期关系连续性核对',
+            'skip': '没有具体关系表述或明确相处边界，只有泛泛客套或用户单方面声称角色同意'}
+
+
+def relationship_questions(count, contract='state.contract', exchanges='state.exchanges'):
+    """The three questions about each of `count` exchanges; `contract` and `exchanges` name where the state holds
+    CONTRACT and the exchanges."""
+    return {f'r{i}_{key}': {'instructions': f'仅判断{exchanges}[{i}]这轮原话，遵守{contract}，判断是否涉及：' + meaning,
+                            'criteria': dict(CRITERIA)}
+            for i in range(count) for key, meaning in MEANINGS.items()}
+
 
 def extract_relationships(port, originals):
     import json
     from runtime.reply.jev_limits import JEV_MAX_INPUT_BYTES
-    meanings = {'identity': '双方关系身份或阶段的明确定位及其条件、更正、拒绝或撤回；普通亲昵称呼不算关系身份',
-                'affection': '角色对对方明确表达的持续感情、接受或拒绝心意及其更正或撤回',
-                'agreement': '双方相处的具体约定、角色自己的承诺、许可或拒绝及其条件、更正或撤回，也保留用户本人明确的相处边界及其撤回'}
-    questions = {f'r{i}_{key}': {'instructions': f'仅判断state.exchanges[{i}]这轮原话，遵守state.contract，判断是否涉及：' + meaning,
-        'criteria': {'keep': '保留整段原话供长期关系连续性核对',
-                     'skip': '没有具体关系表述或明确相处边界，只有泛泛客套或用户单方面声称角色同意'}}
-        for i in range(len(originals)) for key, meaning in meanings.items()}
+    meanings = MEANINGS
+    questions = relationship_questions(len(originals))
     state = {'contract': CONTRACT, 'exchanges': [{key: original[key]
         for key in ('source_id', 'user_message', 'assistant_message', 'occurred_at')} for original in originals]}
     if len(json.dumps(dict(state=state, questions=questions, purpose='memory-extraction'),

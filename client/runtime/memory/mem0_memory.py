@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from contextlib import closing, contextmanager
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import errno
 import importlib
@@ -625,6 +625,11 @@ class DeferredConversationMemoryAdapter:
             refresh = getattr(delegate, 'refresh_relationship_memory', None)
             return refresh(**kwargs) if callable(refresh) else False
 
+    def prejudge_extraction(self, **kwargs):
+        with self._using_current() as delegate:
+            prejudge = getattr(delegate, 'prejudge_extraction', None)
+            return prejudge(**kwargs) if callable(prejudge) else ()
+
     def index_received_user(self, **kwargs):
         with self._using_current() as delegate:
             index = getattr(delegate, 'index_received_user', None)
@@ -1182,7 +1187,13 @@ class Mem0ConversationMemoryAdapter:
         if port is None:
             return False
         user = self._normalized_user_id(user_id)
-        claim = lambda: self._originals.claim_relationship_exchanges(user)
+        from . import extraction_bundle
+        waiting = extraction_bundle.policy()
+        # While bundle judgments are enabled they take the fresh exchanges (with their fact sentences); this former
+        # path only picks up what no bundle judged within its longest wait.
+        older_than = (datetime.now(timezone.utc) - timedelta(seconds=4 * waiting['idle_seconds'])
+                      if waiting['mode'] == 'bundle' else None)
+        claim = lambda: self._originals.claim_relationship_exchanges(user, older_than=older_than)
         originals = memory_lifecycle.run_write(claim) if memory_lifecycle is not None else claim()
         if not originals:
             return False
@@ -1202,6 +1213,51 @@ class Mem0ConversationMemoryAdapter:
         # Lifecycle uses a reentrant lock: recheck every source while holding it,
         # then persist the bounded batch atomically, without locking during Jev.
         return bool(memory_lifecycle.run_write(save) if memory_lifecycle is not None else save())
+
+    def prejudge_extraction(self, *, user_id, deliveries, batch, memory_lifecycle=None):
+        """One judgment for up to ``batch`` live exchanges at a time (runtime.memory.extraction_bundle): the fact
+        sentences of their user messages and the relationship questions about them. The kept sentences wait for the
+        per-message write of the same source (``extraction_bundle.take``); the relationship labels are saved here.
+        Returns the sources it answered. A failure raises; whatever it did not answer keeps the former path."""
+        if self.config.context_max_chars == 0:
+            return ()
+        from runtime.reply.jev_limits import JEV_MAX_INPUT_BYTES
+        from runtime.reply.jev_questions import configured_questions
+        from . import extraction_bundle
+        port = configured_questions()
+        if port is None:
+            return ()
+        user = self._normalized_user_id(user_id)
+        blocks = memory_lifecycle.blocks_delivery if memory_lifecycle is not None else (lambda _moment: False)
+        wanted = [d for d in deliveries if not self._originals.letter_deleted(user, d.source_id)]
+        pending = self._originals.pending_relationship_exchanges(user, [d.source_id for d in wanted])
+        items = []
+        for delivery in wanted:
+            row = pending.get(delivery.source_id)
+            if row is not None and blocks(_date(row['occurred_at'])):
+                row = None
+            items.append({'source_id': delivery.source_id, 'user_message': delivery.user_message, 'rel': row})
+        fits = lambda state, questions: port.request_size_bytes(
+            state, questions, purpose='memory-extraction') <= JEV_MAX_INPUT_BYTES
+        bundles, _excluded = extraction_bundle.plan(items, batch=batch, fact_prompt=_HISTORY_USER_FACT_PROMPT,
+                                                    fits_bytes=fits)
+        answered = []
+        for bundle in bundles:
+            state, questions, layout = extraction_bundle.build(bundle, fact_prompt=_HISTORY_USER_FACT_PROMPT)
+            if not questions:
+                continue
+            answers = port.ask_sync(state, questions, purpose='memory-extraction')
+            kept, related = extraction_bundle.split(layout, answers)
+            for item in bundle:
+                extraction_bundle.put(item['source_id'], item['user_message'], kept[item['source_id']])
+                answered.append(item['source_id'])
+            # Recheck the pause state while holding the lifecycle lock, then persist, as the former path does.
+            def save():
+                labelled = [(row['source_id'], row['digest'], categories) for row, categories in related
+                            if not blocks(_date(row['occurred_at']))]
+                return self._originals.finish_relationship_exchanges(user, labelled) if labelled else False
+            memory_lifecycle.run_write(save) if memory_lifecycle is not None else save()
+        return tuple(answered)
 
     def retract_received_user(self, *, user_id, source_ids):
         removed = self._originals.retract_received(self._normalized_user_id(user_id), source_ids)
@@ -2097,7 +2153,11 @@ class Mem0ConversationMemoryAdapter:
             semantic_port = configured_questions()
             def add_with_semantics(messages, *, prompt, **kwargs):
                 if semantic_port is not None:
-                    return add_originals(semantic_port, self.backend, messages, prompt=prompt, **kwargs)
+                    from . import extraction_bundle
+                    # A bundle judgment (extraction_bundle) may already have judged exactly this live message.
+                    judged = (extraction_bundle.take(kwargs.get("metadata", {}).get("source_id"), messages[0]["content"])
+                              if len(messages) == 1 and kwargs.get("metadata", {}).get("actor") == "local_user" else None)
+                    return add_originals(semantic_port, self.backend, messages, prompt=prompt, prejudged=judged, **kwargs)
                 return self.backend.add(messages, prompt=prompt, **kwargs)
             if source_id.startswith("history:"):
                 for actor, role, content, prompt in (

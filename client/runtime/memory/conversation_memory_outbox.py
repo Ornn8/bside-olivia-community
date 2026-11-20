@@ -121,6 +121,7 @@ class CanonicalMemoryOutbox:
         self.archive_memory = archive_memory
         self._scan_lock = asyncio.Lock()
         self._rejudge = None
+        self._bundle_failures: dict[str, int] = {}
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
@@ -205,6 +206,7 @@ class CanonicalMemoryOutbox:
                     indexed += bool(await index_original(delivery))
                     if indexed >= 20:
                         break
+            waiting = await self._bundle_step(deliveries, terminal_sources)
             for delivery in deliveries:
                 discovered += 1
                 if delivery.source_id in terminal_sources:
@@ -213,6 +215,8 @@ class CanonicalMemoryOutbox:
                 if self._budget_exhausted(delivery.source_id):
                     pending += 1
                     continue
+                if delivery.source_id in waiting:
+                    continue  # judged with its batch (extraction_bundle); the raw index already holds it
                 result = await self.committer.commit(delivery)
                 drain = getattr(self.committer, "drain_completed", None)
                 if callable(drain):
@@ -254,6 +258,37 @@ class CanonicalMemoryOutbox:
                 pending=pending,
                 ignored=ignored,
             )
+
+    async def _bundle_step(self, deliveries, terminal_sources) -> set[str]:
+        """With the cloud policy ``memory_extraction: bundle``: judge the waiting live exchanges together once a batch
+        has filled or the conversation has gone quiet (runtime.memory.extraction_bundle) and return the sources that
+        must still wait for their batch. Any trouble returns nothing to wait for: those exchanges then take the
+        former per-judgment path, so a failing bundle never holds memory back."""
+        prejudge = getattr(self.committer, "prejudge", None)
+        if not callable(prejudge):
+            return set()
+        from runtime.memory import extraction_bundle
+        policy = extraction_bundle.policy()
+        if policy["mode"] != "bundle":
+            return set()
+        now = datetime.now(timezone.utc)
+        live = sorted((d for d in deliveries
+                       if d.source_id.startswith("reply:") and d.origin == "user"
+                       and d.source_id not in terminal_sources and not self._budget_exhausted(d.source_id)
+                       and self._bundle_failures.get(d.source_id, 0) < 2), key=lambda d: d.occurred_at)
+        count = extraction_bundle.flush_count([(now - d.occurred_at).total_seconds() for d in live],
+                                              policy["batch"], policy["idle_seconds"])
+        waiting = {d.source_id for d in live[count:]}
+        for start in range(0, count, policy["batch"]):
+            chunk = live[start:start + policy["batch"]]
+            try:
+                await asyncio.wait_for(prejudge(chunk, policy["batch"]), timeout=120)
+            except Exception:  # noqa: BLE001 - content-free: the former path runs for these exchanges
+                for delivery in chunk:
+                    self._bundle_failures[delivery.source_id] = self._bundle_failures.get(delivery.source_id, 0) + 1
+        if len(self._bundle_failures) > 512:
+            self._bundle_failures.clear()
+        return waiting
 
     async def rejudge_step(self) -> str:
         """One paced step of the one-time QQ second look (runtime.memory.qq_memory_rejudge)."""

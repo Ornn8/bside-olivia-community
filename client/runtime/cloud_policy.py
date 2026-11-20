@@ -42,6 +42,10 @@ DEFAULTS = {
     # Finding stored facts by meaning with the cloud model (2026-10-20): 'shadow' measures without changing the
     # reply, 'on' uses it, 'off' skips it.
     'embedding_memory': {'mode': 'shadow'},
+    # Memory extraction (runtime.memory.extraction_bundle): 'separate' judges each exchange as before; 'bundle' judges
+    # an exchange's fact sentences and relationship questions in one request, up to `batch` exchanges at a time,
+    # waiting at most about `idle_seconds` of quiet (three times that for the oldest) for a batch to fill.
+    'memory_extraction': {'mode': 'separate', 'batch': 6, 'idle_seconds': 600},
 }
 VERSION_PATTERN = r'[A-Za-z0-9][A-Za-z0-9_.-]{0,63}'
 CODE_PATTERN = r'[A-Z][A-Z0-9_]{0,95}'
@@ -125,6 +129,12 @@ def _validate_key(key, value, strict):
         if mode not in ('off', 'shadow', 'on'):
             raise ValueError('CLIENT_POLICY_INVALID')
         return {'mode': mode}
+    if key == 'memory_extraction':
+        mode = value.get('mode', default['mode'])
+        if mode not in ('separate', 'bundle'):
+            raise ValueError('CLIENT_POLICY_INVALID')
+        return {'mode': mode, 'batch': _number(value.get('batch', default['batch']), 1, 6, strict),
+                'idle_seconds': _number(value.get('idle_seconds', default['idle_seconds']), 60, 1800, strict)}
     if key == 'notices':
         if len(value) > 128 or any(not isinstance(code, str) or not re.fullmatch(CODE_PATTERN, code)
                 or not isinstance(text, str) or not 1 <= len(text.strip()) <= 500
