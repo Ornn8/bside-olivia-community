@@ -909,6 +909,8 @@ async def _generate_billed(server, event, row):
         from runtime.diagnostics.support_bundle import project_chat_task
         # The previous reason has already informed this retry; only retain its new result.
         row.pop('decision_rejection_reason', None)
+        row.pop('decision_syntax', None)
+        row.pop('decision_repaired_syntax', None)
         quality_fields = ('quality_status', 'reviewer_calls', 'rewrite_calls', 'decision_rejection_reason',
                           'decision_dropped_media',
                           'quality_error_code', 'quality_failure_stage', 'quality_violation_codes',
@@ -953,10 +955,16 @@ async def _generate_billed(server, event, row):
             # Diagnostic categories only; never persist rejected model text.
             reason = getattr(exc, 'reason', 'UNKNOWN')
             row['decision_rejection_reason'] = reason
+            syntax = getattr(exc, 'syntax', None)
+            if syntax:
+                row['decision_syntax'] = syntax          # where it broke, never her words
             server._safe_log('personal_chat_decision_rejected', reason=reason,
                 missing_fields=getattr(exc, 'missing_fields', []),
-                extra_field_count=getattr(exc, 'extra_field_count', 0))
+                extra_field_count=getattr(exc, 'extra_field_count', 0), **({'syntax': syntax} if syntax else {}))
             raise
+        if decision.get('repaired_syntax'):
+            row['decision_repaired_syntax'] = decision['repaired_syntax']
+            server._safe_log('personal_chat_decision_repaired', channel=event.channel, syntax=decision['repaired_syntax'])
         if decision.get('dropped_controls'):
             row['decision_dropped_controls'] = decision['dropped_controls']
             server._safe_log('personal_chat_decision_normalized', channel=event.channel,
