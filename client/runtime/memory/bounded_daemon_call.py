@@ -25,10 +25,12 @@ def validate_timeout_seconds(value: object) -> float:
 class BoundedDaemonCall:
     """Run a blocking provider call without accumulating executor threads."""
 
-    def __init__(self, *, thread_name: str) -> None:
+    def __init__(self, *, thread_name: str,
+                 on_failure: Callable[[BaseException], None] | None = None) -> None:
         if not isinstance(thread_name, str) or not thread_name:
             raise ValueError("thread_name is required")
         self._thread_name = thread_name
+        self._on_failure = on_failure  # told what raised in the worker; the caller still only sees "failed"
         self._lock = threading.Lock()
         self._inflight = False
         self._pending: tuple[threading.Event, dict[str, object]] | None = None
@@ -129,8 +131,13 @@ class BoundedDaemonCall:
         def run() -> None:
             try:
                 outcome["value"] = operation()
-            except BaseException:
+            except BaseException as error:
                 outcome["failed"] = True
+                if self._on_failure is not None:
+                    try:
+                        self._on_failure(error)
+                    except Exception:
+                        pass  # a diagnostic can never change the outcome
             finally:
                 with self._lock:
                     self._inflight = False
