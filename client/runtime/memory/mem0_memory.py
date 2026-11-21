@@ -283,6 +283,24 @@ def _initialization_step(stage, operation, *args, **kwargs):
         raise Mem0AdapterError(_initialization_error_code(error, stage)) from None
 
 
+def _write_failure_code(error: BaseException | None) -> str:
+    """What a failed memory write was, as a constant code (MEM0_WRITE_VECTOR_STORE_RUNTIME, MEM0_STORAGE_LOCKED...):
+    the component the error came from and its kind, never its text, paths or content. No error at all means the
+    provider answered a write without acknowledging any memory."""
+    if error is None:
+        return "MEM0_WRITE_ACK_MISSING"
+    return _initialization_error_code(error, "WRITE").replace("MEM0_INIT_WRITE_", "MEM0_WRITE_", 1)
+
+
+def _note_write_failure(error: BaseException | None = None) -> None:
+    """Keep that code in the diagnostics. The delivery outbox still sees only MEM0_WRITE_FAILED."""
+    try:
+        from runtime.diagnostics.failure_context import record_memory_write_failure
+        record_memory_write_failure(_write_failure_code(error), error)
+    except Exception:
+        pass
+
+
 _EXTRACTION_INVALID_CODES = frozenset(
     "MEM0_EXTRACTION_RESPONSE_INVALID_" + suffix
     for suffix in ("NOT_TEXT", "EMPTY", "JSON", "ROOT", "MEMORY_MISSING", "MEMORY_LIST",
@@ -1231,7 +1249,7 @@ class Mem0ConversationMemoryAdapter:
         self._lock = threading.RLock()
         self._read_request_lock = threading.RLock()
         self._provider_call = BoundedDaemonCall(thread_name="olivia-mem0-read")
-        self._write_call = BoundedDaemonCall(thread_name="olivia-mem0-write")
+        self._write_call = BoundedDaemonCall(thread_name="olivia-mem0-write", on_failure=_note_write_failure)
         self._write_gate = threading.Lock()
         self._pending_exchange_key: tuple[str, str] | None = None
         self._last_error_code: str | None = None
@@ -1836,13 +1854,15 @@ class Mem0ConversationMemoryAdapter:
             )
             acknowledgements = _add_acknowledgements(value)
             if acknowledgements is None:
+                _note_write_failure()
                 return MemoryWriteResult(
                     MemoryWriteStatus.UNAVAILABLE,
                     source_id,
                     error_code="MEM0_WRITE_FAILED",
                 )
             created_ids = tuple(memory_id for memory_id, _ in acknowledgements)
-        except Exception:
+        except Exception as error:
+            _note_write_failure(error)
             pending_ids = self._delete_provider_memories(created_ids)
             return MemoryWriteResult(
                 MemoryWriteStatus.UNAVAILABLE,
@@ -2157,6 +2177,8 @@ class Mem0ConversationMemoryAdapter:
                         )
                     )
         except Exception as error:
+            if _extraction_failure_code(error) == "MEM0_WRITE_FAILED":
+                _note_write_failure(error)  # the code below cannot tell these apart; the diagnostics can
             pending_ids = self._delete_provider_memories(tuple(created_ids))
             return MemoryWriteResult(
                 MemoryWriteStatus.UNAVAILABLE,
@@ -2179,6 +2201,7 @@ class Mem0ConversationMemoryAdapter:
                 if acknowledgements
                 for memory_id, _memory in acknowledgements
             )
+            _note_write_failure()
             pending_ids = self._delete_provider_memories(created_ids)
             return MemoryWriteResult(
                 MemoryWriteStatus.UNAVAILABLE,
