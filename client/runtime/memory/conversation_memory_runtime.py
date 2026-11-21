@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import atexit
 from dataclasses import dataclass, replace
+import json
 import os
 from pathlib import Path
 import re
@@ -228,6 +229,31 @@ class ConversationMemoryRuntime:
         self._reply_provider_ready = ready
         self._reply_provider_checked_at = time.monotonic()
 
+    REGRANT_SECONDS = 24 * 3600
+
+    def _regrant_exhausted(self) -> None:
+        """Deliveries that used up their tries get one more each, at most once a day and only while the provider is
+        reachable. A cause that has passed since (an older bug, a provider that was down) then clears them by itself;
+        one that has not costs one more failed try per delivery per day, and the delivery stays where it was.
+        Before this a delivery that failed for a few days stayed failed until the user pressed the retry button."""
+        stamp = self.outbox.journal_path.with_name('memory-regrant.json')
+        try:
+            health = self.outbox.health()
+            if (health.get("reason_code") != "MEMORY_OUTBOX_RETRY_EXHAUSTED" or not self._reply_provider_ready
+                    or self.outbox.committer.delivery_pending):
+                return
+            try:
+                last = float(json.loads(stamp.read_text(encoding='utf-8')).get('at', 0))
+            except (OSError, ValueError, AttributeError, TypeError):
+                last = 0.0
+            now = time.time()
+            if 0 <= now - last < self.REGRANT_SECONDS:
+                return
+            count = self.outbox.retry_exhausted_once()
+            stamp.write_text(json.dumps({'at': now, 'count': count}), encoding='utf-8')
+        except Exception:
+            pass  # a retry that cannot be granted today is granted tomorrow
+
     def _run(self) -> None:
         while not self._stop_event.is_set():
             try:
@@ -238,6 +264,7 @@ class ConversationMemoryRuntime:
                     self._reply_provider_ready = False
                 self.status()
                 if scan.status != "unavailable":
+                    self._regrant_exhausted()
                     try:
                         # One-time second look at skipped QQ lines; paced, never on the reply path.
                         asyncio.run(self.outbox.rejudge_step())

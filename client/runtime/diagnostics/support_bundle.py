@@ -691,6 +691,8 @@ def _project_tail_record(value: object, *, runtime: bool) -> dict[str, object]:
         record.update(project_reply_quality(source))
         if event in _DIARY_FAILURE_EVENTS:
             record.update(project_diary_failure(source))
+        if event == 'memory_write_failed' and type(source.get('count')) is int and 1 <= source['count'] <= 10**9:
+            record['count'] = source['count']  # how many times this kind of write failure has happened in this run
         if event == "history_recall":
             from runtime.diagnostics.recall_trace import project
             record.update(project(dict(source)))
