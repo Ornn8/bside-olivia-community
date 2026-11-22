@@ -1977,7 +1977,10 @@ Set-DurableTransactionState -Path "$installTransaction.active" -State $installSt
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $runtimeRoot) | Out-Null
 try {
     Write-SetupProgress -Phase 'INSTALL_CORE' -CurrentBytes 0 -TotalBytes 0
-    Expand-Archive -LiteralPath $coreAssets.Runtime -DestinationPath $runtimeStaging -Force
+    # Not Expand-Archive: Windows PowerShell 5.1 started from a PowerShell 7 session loads PowerShell 7's Archive module,
+    # which calls a .NET overload that .NET Framework does not have. The staging folder is new, so there is nothing to overwrite.
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    [IO.Compression.ZipFile]::ExtractToDirectory([IO.Path]::GetFullPath([string]$coreAssets.Runtime), [IO.Path]::GetFullPath([string]$runtimeStaging))
     if (-not [IO.File]::Exists((Join-Path $runtimeStaging 'python.exe'))) {
         throw 'OFFLINE_CORE_RUNTIME_INVALID'
     }
