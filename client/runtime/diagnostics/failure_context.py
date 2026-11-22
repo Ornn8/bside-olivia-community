@@ -66,6 +66,8 @@ CODES |= {'PROVIDER_USAGE_PENDING', 'PROVIDER_REQUEST_DUPLICATE', 'PROVIDER_AUTH
 KINDS = {"TimeoutError", "TypeError", "ValueError", "AttributeError", "RuntimeError", "ClientConnectorError", "ClientConnectorCertificateError", "ClientConnectorSSLError", "ServerDisconnectedError", "ClientPayloadError", "OTHER"}
 DETAILS = {"invalid_json", "invalid_response_shape", "missing_tools", "invalid_tool_entry", "invalid_tool_name", "invalid_tool_arguments"}
 KINDS.add('ClientConnectorDNSError')
+KINDS |= {'OSError', 'PermissionError', 'FileNotFoundError', 'KeyError', 'ImportError', 'ModuleNotFoundError',
+          'OperationalError', 'DatabaseError', 'UnexpectedResponse', 'ResponseHandlingException', 'MemoryError'}
 KINDS |= {'URLError', 'HTTPError', 'RemoteDisconnected', 'IncompleteRead',
           'ConnectionResetError', 'ConnectionRefusedError', 'JSONDecodeError', 'UnicodeDecodeError'}
 DETAILS |= {'structured_truncated', 'structured_validation_failed', 'tool_truncated',
@@ -212,6 +214,31 @@ def failure_snapshot():
 def set_failure_logger(logger):
     global _FAILURE_LOGGER
     _FAILURE_LOGGER = logger
+
+
+_MEMORY_WRITE_SEEN = {}
+_MEMORY_WRITE_LOG_AT = (1, 10, 100, 1000)
+
+
+def record_memory_write_failure(code, exc=None):
+    """One content-free line for a kind of long-term memory write failure: the fixed code (what failed, e.g.
+    MEM0_WRITE_VECTOR_STORE_RUNTIME) and the exception's class name when it is a known one. Written at its first
+    occurrence and then at the 10th, 100th and 1000th, so a delivery that keeps failing never fills the recent list."""
+    if not isinstance(code, str) or not _CAUSE_CODE.fullmatch(code):
+        return None
+    count = _MEMORY_WRITE_SEEN[code] = _MEMORY_WRITE_SEEN.get(code, 0) + 1
+    if count not in _MEMORY_WRITE_LOG_AT:
+        return None
+    kind = type(exc).__name__ if exc is not None else ''
+    safe = project_failure_context({'cause_code': code, 'failure_stage': 'internal',
+                                    'exception_type': kind if kind in KINDS else 'OTHER' if exc is not None else None})
+    _RECENT_FAILURES.append({'event': 'memory_write_failed', **safe, 'count': count})
+    if callable(_FAILURE_LOGGER):
+        try:
+            _FAILURE_LOGGER('memory_write_failed', **safe, count=count)
+        except Exception:
+            pass
+    return safe
 
 
 def record_jev_failure(exc, code, stage, *, request_id=None, http_status=None):

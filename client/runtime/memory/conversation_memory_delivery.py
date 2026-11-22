@@ -402,7 +402,12 @@ def _deliver_to_provider(
         return memory.remember_exchange(
             **values,
         )
-    except Exception:
+    except Exception as error:
+        try:
+            from runtime.diagnostics.failure_context import record_memory_write_failure
+            record_memory_write_failure("MEM0_WRITE_DELIVERY_FAILED", error)
+        except Exception:
+            pass
         return CanonicalMemoryDeliveryResult(
             CanonicalMemoryDeliveryStatus.UNAVAILABLE,
             delivery.source_id,
