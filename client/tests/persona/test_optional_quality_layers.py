@@ -170,3 +170,40 @@ def test_successful_review_clears_optional_failure_receipt():
     clean = reviewer.review('第二条合成正文', _context())
     assert clean.verdict is ReviewVerdict.PASS
     assert not clean.violations and reviewer.last_failure_diagnostics == ()
+
+
+def test_trim_input_keeps_newest_entries_and_says_so():
+    from runtime.reply.jev_quality import _trim_input
+    value = {'current_user_input': 'x', 'recent_turns': list(range(20)), 'selected_memory': [1, 2],
+             'history_coverage': '窗口。'}
+    assert _trim_input(value, 0) is value
+    once = _trim_input(value, 1)
+    assert once['recent_turns'] == list(range(10, 20)) and once['selected_memory'] == [1, 2]
+    assert '进一步缩短' in once['history_coverage'] and value['recent_turns'] == list(range(20))
+    assert _trim_input(value, 2)['recent_turns'] == list(range(16, 20))
+    assert _trim_input({'recent_turns': [1, 2, 3]}, 2) == {'recent_turns': [1, 2, 3]}
+
+
+def test_review_too_large_for_every_split_retries_with_older_material_cut(monkeypatch):
+    monkeypatch.setattr(jev_questions, 'configured_questions', lambda: object())
+    from runtime.reply import jev_quality
+    seen = []
+    async def reviewed(port, requests, candidate, evidence_bound, **kwargs):
+        seen.append((kwargs.get('max_spans'), kwargs.get('trim')))
+        if not kwargs.get('trim'):
+            raise ValueError('JEV_INPUT_TOO_LARGE')
+        return [_layer_payload(item.name) for item, _ in requests], {item.name: [] for item, _ in requests}
+    monkeypatch.setattr(jev_quality, 'review_layers_json', reviewed)
+    result, _ = _run_diagnostic_review(FailingQualityGateway(failure='unused'))
+    assert result.verdict is ReviewVerdict.PASS
+    assert seen[-1] == (8, 1) and all(trim == 0 for _, trim in seen[:-1])
+
+
+def test_review_still_too_large_after_cutting_fails_as_before(monkeypatch):
+    monkeypatch.setattr(jev_questions, 'configured_questions', lambda: object())
+    from runtime.reply import jev_quality
+    async def reviewed(*args, **kwargs):
+        raise ValueError('JEV_INPUT_TOO_LARGE')
+    monkeypatch.setattr(jev_quality, 'review_layers_json', reviewed)
+    result, _ = _run_diagnostic_review(FailingQualityGateway(failure='unused'))
+    assert result.verdict is ReviewVerdict.UNAVAILABLE

@@ -324,7 +324,31 @@ def _candidate_spans(candidate, *, with_text=False, limit=MAX_REVIEW_SPANS):
             for i, (start, end) in enumerate(sentences)}
 
 
-async def review_layers_json(port, requests, candidate, evidence_bound, adjudication_contexts=None, *, max_spans=MAX_REVIEW_SPANS):
+# Lists of earlier material in a layer's input, oldest first. A heavy account's window can leave one layer too large for
+# the JEV service even with the fewest spans, so a last resort keeps only the newest part of each (2026-11-25).
+_TRIMMABLE = ('recent_turns', 'selected_memory', 'world_facts', 'known_continuations', 'relationship_history')
+_TRIM_KEEP = (1.0, 0.5, 0.2)
+_TRIM_FLOOR = 4
+
+
+def _trim_input(value, level):
+    """The same input with the oldest entries of each long list dropped; level 0 is unchanged."""
+    if not level:
+        return value
+    keep = _TRIM_KEEP[min(level, len(_TRIM_KEEP) - 1)]
+    out = dict(value)
+    shortened = False
+    for key in _TRIMMABLE:
+        rows = out.get(key)
+        if isinstance(rows, list) and len(rows) > _TRIM_FLOOR:
+            out[key] = rows[-max(_TRIM_FLOOR, int(len(rows) * keep + .999)):]
+            shortened = True
+    if shortened and isinstance(out.get('history_coverage'), str):
+        out['history_coverage'] += '本次提供的窗口因篇幅进一步缩短，只保留较新的部分，更早的内容没有提供不代表不存在。'
+    return out
+
+
+async def review_layers_json(port, requests, candidate, evidence_bound, adjudication_contexts=None, *, max_spans=MAX_REVIEW_SPANS, trim=0):
     """Detect in one request; confirm only the flagged spans in a second one.
 
     Most replies have no finding, so confirmations are not asked up front:
@@ -356,8 +380,8 @@ async def review_layers_json(port, requests, candidate, evidence_bound, adjudica
     for layer, messages in requests:
         name, layer_id = layer.name, layer_ids[layer.name]
         scoped = _purpose_state(layer, messages, {})
-        inputs[name] = scoped['input']
-        layers[name] = {'rules': scoped['rules'], 'input_refs': {key: ref(value) for key, value in scoped['input'].items()}}
+        inputs[name] = _trim_input(scoped['input'], trim)
+        layers[name] = {'rules': scoped['rules'], 'input_refs': {key: ref(value) for key, value in inputs[name].items()}}
         for code in layer.allowed_codes:
             if code == 'OFF_TURN_REPLY':
                 # A whole-reply judgment, not a span: which message does the candidate answer?
