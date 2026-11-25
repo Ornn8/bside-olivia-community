@@ -1836,7 +1836,9 @@ def _complete_layer_reviews(
             # coarser spans rather than failing a reply the user already paid
             # for. The whole letter is always reviewed.
             reviewed = None
-            for max_spans in (32, 16, 8):
+            # Last resort, after every split: the layer's own earlier material is cut to its newest part
+            # (jev_quality._trim_input) rather than failing a letter the user already paid for.
+            for trim, max_spans in ((0, 32), (0, 16), (0, 8), (1, 8), (2, 8)):
                 for groups in ([list(requests)], [[item] for item in requests]):
                     try:
                         attempt = []
@@ -1844,7 +1846,7 @@ def _complete_layer_reviews(
                             for retry in range(2):
                                 try:
                                     texts, decisions = await review_layers_json(
-                                        port, group, candidate, evidence_bound, max_spans=max_spans)
+                                        port, group, candidate, evidence_bound, max_spans=max_spans, trim=trim)
                                     break
                                 except ValueError as transient:
                                     # A timeout or busy service re-checks this same candidate once;
