@@ -33,6 +33,10 @@ class JevQuestionsPort:
             raise ValueError('JEV_INPUT_TOO_LARGE')
         digest = hashlib.sha256(body).hexdigest()
         headers = self.transport.request_headers(digest)
+        from runtime.memory import extraction_bundle
+        if extraction_bundle.is_bundle(packet):
+            # Only a bundle request names the version the relay prices it by; every other request is unchanged.
+            headers[extraction_bundle.PRICE_HEADER] = extraction_bundle.BUNDLE_PRICE_VERSION
         req = urllib.request.Request(self.transport.endpoint.rsplit('/', 1)[0] + '/semantic-decisions',
                                      data=body, headers=headers, method='POST')
         from runtime.diagnostics.reply_telemetry import timing

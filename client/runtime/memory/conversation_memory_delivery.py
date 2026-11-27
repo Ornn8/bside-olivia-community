@@ -194,6 +194,17 @@ class ConversationMemoryDeliveryCommitter:
         if callable(register):
             await asyncio.to_thread(register, user_id=user_id, sources=sources)
 
+    async def prejudge(self, deliveries, batch):
+        """Judge fresh exchanges together (runtime.memory.extraction_bundle); the sources it answered."""
+        judge = getattr(self.memory, 'prejudge_extraction', None)
+        if not callable(judge) or not deliveries:
+            return ()
+        for delivery in deliveries:
+            await self.index_original(delivery)  # the relationship row the judgment answers exists from here on
+        return await asyncio.to_thread(lambda: judge(
+            user_id=deliveries[0].user_id, deliveries=list(deliveries), batch=batch,
+            memory_lifecycle=self.memory_lifecycle))
+
     async def refresh_relationship_memory(self, user_id):
         refresh = getattr(self.memory, 'refresh_relationship_memory', None)
         if not callable(refresh):
